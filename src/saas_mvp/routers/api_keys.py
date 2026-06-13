@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,8 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 # ── Schemas ───────────────────────────────────────────────────
 
 class ApiKeyCreate(BaseModel):
-    name: str
+    # P2: 空字串或超長名稱在 DB 層會炸（PostgreSQL VARCHAR 截斷/DataError），改在 Pydantic 層攔截
+    name: str = Field(..., min_length=1, max_length=128)
 
 
 class ApiKeyCreated(BaseModel):
@@ -61,7 +62,8 @@ def create_key(
 ) -> ApiKeyCreated:
     """建立 API key。明文 plain_key 僅此一次，請妥善保存。"""
     plain_key = generate_api_key()
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    # P1: 保留 tzinfo，與 model 的 DateTime(timezone=True) 對齊（移除 .replace(tzinfo=None)）
+    now = datetime.datetime.now(datetime.timezone.utc)
     api_key = ApiKey(
         user_id=current_user.id,
         tenant_id=current_user.tenant_id,
