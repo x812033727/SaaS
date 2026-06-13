@@ -21,6 +21,10 @@ from saas_mvp.db import get_db
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.models.user import User
 
+# SQLite 不支援 SKIP LOCKED，但 with_for_update() 在 SQLite 會升為
+# connection-level exclusive lock，足以序列化同一程序內的並發寫入。
+# PostgreSQL 則完整使用 SELECT … FOR UPDATE 行鎖。
+
 # ── 配額常數 ─────────────────────────────────────────────────
 PLAN_DAILY_LIMITS: dict[str, int] = {
     "free": 100,
@@ -44,20 +48,38 @@ def validate_count(value: object) -> int:
     return value
 
 
-def _get_or_create_usage(db: Session, tenant_id: int) -> ApiUsage:
-    """取得今日計量列；不存在則建立 count=0。"""
-    today = datetime.datetime.now(datetime.timezone.utc).date()
+def _get_or_create_usage_locked(db: Session, tenant_id: int, today: datetime.date) -> ApiUsage:
+    """取得今日計量列（帶 FOR UPDATE 鎖定），不存在則先 INSERT count=0。
+
+    FOR UPDATE 確保同一時刻只有一個 session 持有該列，消除
+    「兩個 session 同時讀到 count=99 → 都通過檢查 → 都 +1」的競態。
+    """
     row = db.execute(
-        select(ApiUsage).where(
+        select(ApiUsage)
+        .where(
             ApiUsage.tenant_id == tenant_id,
             ApiUsage.period == today,
         )
+        .with_for_update()          # SELECT … FOR UPDATE（SQLite: connection-level lock）
     ).scalar_one_or_none()
 
     if row is None:
-        row = ApiUsage(tenant_id=tenant_id, period=today, count=0)
-        db.add(row)
-        db.flush()
+        # INSERT 前可能另一個 session 已先插入（SQLite: 不太可能，PG: 可能）
+        # 用 get_or_create 模式：INSERT 若 UNIQUE 衝突則 SELECT 再鎖一次
+        try:
+            row = ApiUsage(tenant_id=tenant_id, period=today, count=0)
+            db.add(row)
+            db.flush()          # 取得 id；尚未 commit，可回滾
+        except Exception:
+            db.rollback()
+            row = db.execute(
+                select(ApiUsage)
+                .where(
+                    ApiUsage.tenant_id == tenant_id,
+                    ApiUsage.period == today,
+                )
+                .with_for_update()
+            ).scalar_one()
 
     return row
 
@@ -65,10 +87,13 @@ def _get_or_create_usage(db: Session, tenant_id: int) -> ApiUsage:
 def check_and_increment(db: Session, tenant_id: int, plan: str) -> int:
     """檢查今日配額；未超量則 +1 並 commit；超量拋 HTTP 429。
 
+    使用 SELECT FOR UPDATE 序列化並發存取，消除 read-check-write 競態。
     回傳更新後的 count。
     """
     limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
-    row = _get_or_create_usage(db, tenant_id)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+
+    row = _get_or_create_usage_locked(db, tenant_id, today)
 
     validate_count(row.count)   # 防衛性：DB 異常值（含 bool）一律攔截
 
