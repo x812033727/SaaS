@@ -336,7 +336,7 @@ class TestUsageEndpoint:
         assert isinstance(data["api_keys"], list)
 
     def test_usage_api_key_item_fields(self, client, alice_jwt):
-        """每個 per-key 條目必須含規定欄位。"""
+        """每個 per-key 條目必須含規定欄位（含 remaining）。"""
         # 確保有至少一次 API key 呼叫，讓 api_keys 不為空
         key = _create_key(client, alice_jwt, "field-check-key")
         client.get("/notes/", headers={"X-API-Key": key["plain_key"]})
@@ -347,7 +347,28 @@ class TestUsageEndpoint:
             assert "name" in item
             assert "key_prefix" in item
             assert "used_today" in item
+            assert "remaining" in item
             assert "period" in item
+            # remaining 不為負
+            assert item["remaining"] >= 0
+
+    def test_usage_api_key_remaining_equals_limit_minus_used(self, client, alice_jwt):
+        """per-key remaining = max(0, daily_limit - used_today)。"""
+        key = _create_key(client, alice_jwt, "remaining-check-key")
+        plain = key["plain_key"]
+        key_id = key["id"]
+
+        N = 2
+        for _ in range(N):
+            client.get("/notes/", headers={"X-API-Key": plain})
+
+        data = client.get("/usage/", headers={"Authorization": f"Bearer {alice_jwt}"}).json()
+        daily_limit = data["tenant"]["daily_limit"]
+        per_key = {item["api_key_id"]: item for item in data["api_keys"]}
+        assert key_id in per_key
+        item = per_key[key_id]
+        assert item["used_today"] == N
+        assert item["remaining"] == max(0, daily_limit - N)
 
     def test_usage_no_auth_401(self, client):
         resp = client.get("/usage/")

@@ -51,7 +51,8 @@ class ApiKeyUsageItem(BaseModel):
     name: str
     key_prefix: str
     used_today: int
-    period: str   # ISO date string
+    remaining: int   # max(0, tenant_daily_limit - used_today)；per-key 共享租戶配額
+    period: str      # ISO date string
 
 
 class UsageResponse(BaseModel):
@@ -96,6 +97,7 @@ def get_usage(
             name=k.name,
             key_prefix=k.key_prefix,
             used_today=ku.count,
+            remaining=max(0, daily_limit - ku.count),
             period=today.isoformat(),
         )
         for ku, k in key_rows

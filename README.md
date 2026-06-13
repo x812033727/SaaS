@@ -110,6 +110,7 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
       "name": "my-service-key",
       "key_prefix": "aB3cD4eF",
       "used_today": 15,
+      "remaining": 85,
       "period": "2026-06-14"
     }
   ]
@@ -127,7 +128,8 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 | `api_keys[].name` | key 名稱 |
 | `api_keys[].key_prefix` | 隨機部分前 8 字元（用於識別） |
 | `api_keys[].used_today` | 今日透過該 key 的呼叫次數 |
-| `api_keys[].period` | 計量日期（UTC，ISO 8601） |
+| `api_keys[].remaining` | 今日透過該 key 的剩餘額度（`max(0, daily_limit - used_today)`）；per-key 共享租戶配額，無獨立上限 |
+| `api_keys[].period` | 計量日期（ISO 8601） |
 
 ## 配額規則
 
