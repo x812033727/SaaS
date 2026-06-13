@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 import saas_mvp
 from saas_mvp.db import init_db
-from saas_mvp.routers import auth, notes
+from saas_mvp.routers import auth, notes, tenants
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth.router)
+    app.include_router(tenants.router)
     app.include_router(notes.router)
 
     @app.get("/", tags=["root"])
