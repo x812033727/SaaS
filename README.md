@@ -145,13 +145,29 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 
 ## 執行測試
 
+### 推薦方式（跨環境一鍵）
+
+```bash
+bash run_tests.sh
+```
+
+`run_tests.sh` 會自動：
+1. 偵測可用的 Python（優先 `/opt/ti/.venv/bin/python`，後備 `python3`）
+2. 嘗試安裝依賴（`pip install -e ".[test]"`）
+3. 設定 `SAAS_DATABASE_URL=sqlite:///:memory:` 避免沙盒寫入限制
+4. 以 `PYTHONPATH=src` 執行 `pytest -q`
+
+### 手動方式
+
 ```bash
 # 使用專案 venv（推薦）
 PYTHONPATH=src /opt/ti/.venv/bin/python -m pytest -q
 
-# 或先安裝再跑（需可寫 site-packages 的環境）
+# 或先安裝再跑
 pip install -e ".[test]"
-python3 -m pytest -q
+PYTHONPATH=src python3 -m pytest -q
 ```
 
 所有測試使用 in-memory SQLite，無需外部網路。
+
+> **注意**：此環境無 `python` 命令（只有 `python3`），請使用 `bash run_tests.sh` 或明確指定 `python3` / venv 路徑。
