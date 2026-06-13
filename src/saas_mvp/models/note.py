@@ -13,7 +13,7 @@ class Note(Base):
     title = Column(String(256), nullable=False)
     content = Column(Text, nullable=False, default="")
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
 
     owner = relationship("User", back_populates="notes")
     tenant = relationship("Tenant", back_populates="notes")
