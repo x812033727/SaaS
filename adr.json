@@ -1,0 +1,144 @@
+{
+  "entries": [
+    {
+      "decision": "**Key 格式** — `myapp_` + `secrets.token_urlsafe(32)`，總長約 49 字元。",
+      "rationale": "固定 prefix 方便 regex 掃描洩漏；`token_urlsafe(32)` 提供 256-bit 熵，無需額外防護。",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0560882
+    },
+    {
+      "decision": "**key_prefix 取法** — 跳過固定 prefix，取隨機部分前 8 字元，即 `key[6:14]`，存入 `key_prefix` 欄位（加 index）。",
+      "rationale": "原「前 8 字元」含 6 字元固定 `myapp_`，隨機部分只剩 2 字元（4096 種），縮候選集效果近乎無效；取隨機部分前 8 字元（`base64url`，≈ 64^8 ≈ 2^48 種），大量 key 時仍能有效縮候選集。",
+      "rejected": "取整串前 8 字元（工程師與高級工程師均指出為地雷，強烈否決）。",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0560944
+    },
+    {
+      "decision": "**Hash 方式** — `hashlib.sha256(key.encode()).hexdigest()`，無 salt，`key_hash` 加 UNIQUE index。",
+      "rationale": "256-bit 隨機 key 本身高熵，無需 salt 防彩虹表；不加 salt 才能由輸入 key 直接反推 hash 查 DB。",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0560958
+    },
+    {
+      "decision": "**ApiKey model 欄位** — `id / user_id(FK users) / tenant_id(FK tenants, index) / name / key_prefix(8 char, index) / key_hash(64 char, unique) / is_active(bool) / created_at`。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0560968
+    },
+    {
+      "decision": "**ApiKeyUsage 獨立表** — `(id, api_key_id FK api_keys, tenant_id FK tenants, period Date, count)`，`UniqueConstraint(\"api_key_id\", \"period\")`，`api_key_id` 非 nullable。",
+      "rationale": "SQLite 與 PostgreSQL 的 UNIQUE constraint 中 NULL ≠ NULL，若在 `ApiUsage` 加 nullable `api_key_id` 改 constraint，舊 tenant-level 列無法被唯一鍵攔住重複，`_get_or_create_usage_locked` 邏輯直接炸裂。",
+      "rejected": "修改 `ApiUsage` 加 nullable `api_key_id`（NULL uniqueness 無解，不可行）。",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.056098
+    },
+    {
+      "decision": "**`ApiUsage` 維持原樣** — 欄位、constraint、`check_and_increment` 邏輯全部零改動，現有 tenant-level quota 行為完整保留。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561004
+    },
+    {
+      "decision": "**period 型別** — `ApiKeyUsage.period` 與 `ApiUsage.period` 均用 SQLAlchemy `Date` 型別（`datetime.date`），Python 層統一傳 `datetime.date` 物件，避免 `/usage` 聚合兩表時跨格式轉換。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.056101
+    },
+    {
+      "decision": "**Actor dataclass** — `@dataclass class Actor: user: User; api_key_id: Optional[int] = None`，置於 `auth/dependencies.py`。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.056102
+    },
+    {
+      "decision": "**dependency 串接** — `get_current_actor` 是新核心 dependency（回傳 `Actor`）；`get_current_user` 包裝它只回傳 `actor.user`（router 零改動）；`require_quota` 改 depends `get_current_actor`，取得 `api_key_id` 後仍回傳 `User`。FastAPI 同一 request 內同一 dependency 只呼叫一次，`get_current_actor` 定義為一般 `def`（非 `async def`）確保快取行為一致。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561032
+    },
+    {
+      "decision": "**認證三路 if/elif/else** — `X-API-Key` header 有值 → API key 路徑；`Authorization: Bearer myapp_*` → API key 路徑；`Authorization: Bearer eyJ*` → JWT 路徑；三者皆無或皆無效 → 401。條件必須互斥且窮舉，測試須覆蓋「三者皆無」確認不回 200。",
+      "rationale": "",
+      "rejected": "巢狀 try/except 隱式判斷（條件不互斥，易漏接）。",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.056104
+    },
+    {
+      "decision": "**`check_and_increment_key` 失敗行為** — `ApiKeyUsage` 寫入拋例外一律向上傳播（回 500），不靜默吞掉。",
+      "rationale": "靜默失敗會造成計量偶發性漏記，形成不可見的隱性 bug；MVP 寧可明確 500 也不要無聲計量錯誤。",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561047
+    },
+    {
+      "decision": "**quota 責任切分** — tenant-level 上限判定在 `check_and_increment`（ApiUsage），超量回 429；per-key 只累計計數（ApiKeyUsage），不設額外上限；MVP 階段無 per-key 配額需求。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561054
+    },
+    {
+      "decision": "**撤銷** — `is_active=False` 軟刪除；auth lookup 加 `ApiKey.is_active == True` 過濾，撤銷後下一次請求即失效；`ApiKeyUsage` 外鍵保留歷史。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561063
+    },
+    {
+      "decision": "**跨租戶隔離** — key lookup 驗 `ApiKey.tenant_id == actor.user.tenant_id`；`/api-keys` 與 `/usage` 均只查自身 tenant 資料；跨租戶回 403。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561068
+    },
+    {
+      "decision": "**建立端點回應** — `POST /api-keys` 回傳 `plain_key`（完整明文，唯一一次）+ 其餘欄位；`GET /api-keys` 只回 `key_prefix`，不含 hash 或明文。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561075
+    },
+    {
+      "decision": "**/usage 回應結構** — `{ tenant: { plan, daily_limit, used_today, remaining, period }, api_keys: [{ api_key_id, name, key_prefix, used_today, period }] }`；欄位名寫入 README。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561082
+    },
+    {
+      "decision": "**新 router 掛載** — `api_keys.router` → `/api-keys`；`usage.router` → `/usage`；`app.py` lifespan 的 `init_db` 補 import 兩個新 model。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561087
+    },
+    {
+      "decision": "**`init_db` import 順序** — `db.py` 的 `init_db` 明確列出所有 model import（`api_key`, `api_key_usage`），`create_all()` 前必須 import，順序：被依賴的 model（`ApiKey`）先於依賴它的（`ApiKeyUsage`）。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561097
+    },
+    {
+      "decision": "**不引入新外部依賴** — 僅用 `hashlib`、`secrets`（stdlib）與 FastAPI 內建 `fastapi.security.APIKeyHeader`；`OAuth2PasswordBearer` 改 `auto_error=False`。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561106
+    },
+    {
+      "decision": "**測試策略** — `conftest.py` 新增 `test_api_key` fixture（含明文 key）；覆蓋：key 建立/撤銷、`X-API-Key` + Bearer 雙標頭、用量累加可手算核對、429 超量、跨租戶 403、「三者皆無→401」；既有測試集不動；全部離線 in-memory SQLite。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "de531e66d29e",
+      "created_at": 1781367790.0561118
+    }
+  ]
+}
