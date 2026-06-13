@@ -7,6 +7,7 @@ from fastapi import FastAPI
 import saas_mvp
 from saas_mvp.db import init_db
 from saas_mvp.routers import auth, notes, tenants
+from saas_mvp.routers import quota as quota_router
 
 
 @asynccontextmanager
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(tenants.router)
     app.include_router(notes.router)
+    app.include_router(quota_router.router)
 
     @app.get("/", tags=["root"])
     def root():

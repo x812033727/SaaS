@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from saas_mvp.deps import get_current_user, get_db
+from saas_mvp.deps import get_current_user, get_db, require_quota
 from saas_mvp.models.user import User
 from saas_mvp.services.notes import (
     create_note,
@@ -47,7 +47,12 @@ class NoteResponse(BaseModel):
 
 # ─────────────────────────────── Endpoints ───────────────────────────────────
 
-@router.post("/", response_model=NoteResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=NoteResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_quota)],
+)
 def create(
     body: NoteCreate,
     current_user: User = Depends(get_current_user),
