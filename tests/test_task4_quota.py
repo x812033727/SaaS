@@ -296,7 +296,7 @@ class TestQuotaEndpoint:
 
         # 直接用同一個 engine 的 session 塞滿配額
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         direct_db = _HttpSession()
         try:
             direct_db.execute(
@@ -362,7 +362,7 @@ class TestQuotaEndpoint:
         # 設定 count = limit
         tenant_id = http_client.get("/tenants/me", headers=auth).json()["id"]
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         direct_db = _HttpSession()
         try:
             direct_db.execute(

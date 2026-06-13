@@ -16,3 +16,4 @@ class User(Base):
 
     tenant = relationship("Tenant", back_populates="users")
     notes = relationship("Note", back_populates="owner", cascade="all, delete-orphan")
+    api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")

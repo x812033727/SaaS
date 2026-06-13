@@ -457,7 +457,7 @@ class TestQuotaOnAllEndpoints:
         # 取 tenant_id 並將 count 設到上限
         tenant_id = client.get("/tenants/me", headers=auth).json()["id"]
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         db = _Session()
         try:
             db.execute(
