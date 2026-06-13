@@ -21,6 +21,9 @@ dependencies = [
     "email-validator==2.3.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0", "httpx>=0.27"]
+
 [project.scripts]
 saas-mvp = "saas_mvp.__main__:main"
 
@@ -29,3 +32,9 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.pytest.ini_options]
+# pythonpath 讓 pytest 在 sys.path 最前面插入 src/，
+# 確保 task-5 的程式碼優先於 .pth 指向的舊版 /tmp/test_clean/src 被 import。
+pythonpath = ["src"]
+testpaths = ["tests"]

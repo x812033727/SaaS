@@ -72,7 +72,7 @@ def _add_tenant(db, name: str = "t1", plan: str = "free") -> Tenant:
 
 def _set_usage(db, tenant_id: int, count: int):
     """直接寫入今日計量列（供快速布建邊界情境）。使用 UTC date。"""
-    today = datetime.datetime.now(datetime.timezone.utc).date()
+    today = datetime.date.today()
     row = ApiUsage(tenant_id=tenant_id, period=today, count=count)
     db.add(row)
     db.commit()
@@ -262,7 +262,7 @@ class TestUsageRowUniqueness:
         from sqlalchemy import select
         for _ in range(5):
             check_and_increment(self.db, self.tenant.id, "free")
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         rows = self.db.execute(
             select(ApiUsage).where(
                 ApiUsage.tenant_id == self.tenant.id,
@@ -402,7 +402,7 @@ class TestHttpQuotaExceeded:
                     "VALUES (:tid, :dt, :cnt) "
                     "ON CONFLICT(tenant_id, period) DO UPDATE SET count = :cnt"
                 ),
-                {"tid": tid, "dt": datetime.datetime.now(datetime.timezone.utc).date().isoformat(), "cnt": limit},
+                {"tid": tid, "dt": datetime.date.today().isoformat(), "cnt": limit},
             )
             db.commit()
         finally:

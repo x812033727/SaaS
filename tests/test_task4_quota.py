@@ -112,7 +112,7 @@ class TestCheckAndIncrement:
     def test_raises_429_when_limit_reached(self):
         """free 上限為 100；直接把 DB 計數設到 limit，下一次應 429。"""
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         row = ApiUsage(tenant_id=self.tenant_id, period=today, count=limit)
         self.db.add(row)
         self.db.commit()
@@ -125,7 +125,7 @@ class TestCheckAndIncrement:
     def test_boundary_at_limit_minus_1_passes(self):
         """count = limit-1 時，呼叫應成功（返回 limit）。"""
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         row = ApiUsage(tenant_id=self.tenant_id, period=today, count=limit - 1)
         self.db.add(row)
         self.db.commit()
@@ -136,7 +136,7 @@ class TestCheckAndIncrement:
     def test_pro_has_higher_limit(self):
         """pro 上限遠高於 free；直接設到 free 上限呼叫 pro plan 不會 429。"""
         free_limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         row = ApiUsage(tenant_id=self.tenant_id, period=today, count=free_limit)
         self.db.add(row)
         self.db.commit()
@@ -176,7 +176,7 @@ class TestGetQuotaStatus:
 
     def test_remaining_never_negative(self):
         """即使 count 超過 limit（手動注入），remaining 應不為負。"""
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         row = ApiUsage(
             tenant_id=self.tenant_id,
             period=today,
@@ -296,7 +296,7 @@ class TestQuotaEndpoint:
 
         # 直接用同一個 engine 的 session 塞滿配額
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         direct_db = _HttpSession()
         try:
             direct_db.execute(
@@ -362,7 +362,7 @@ class TestQuotaEndpoint:
         # 設定 count = limit
         tenant_id = http_client.get("/tenants/me", headers=auth).json()["id"]
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        today = datetime.date.today()
         direct_db = _HttpSession()
         try:
             direct_db.execute(
