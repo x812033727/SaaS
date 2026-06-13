@@ -1,6 +1,6 @@
 """User model."""
 
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from saas_mvp.db import Base
@@ -13,6 +13,7 @@ class User(Base):
     email = Column(String(256), unique=True, nullable=False, index=True)
     hashed_password = Column(String(256), nullable=False)  # bcrypt hash only — no plaintext
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    is_admin = Column(Boolean, nullable=False, default=False)
 
     tenant = relationship("Tenant", back_populates="users")
     notes = relationship("Note", back_populates="owner", cascade="all, delete-orphan")
