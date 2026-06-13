@@ -8,6 +8,8 @@
 4. 時窗過期後計數重置，請求恢復正常。
 5. 不同 API key 各自獨立計數，不互相干擾。
 6. rate_limit_enabled=false 時 BusinessRateLimiter 直接放行（不拋 429）。
+7. _parse_rate 非正值（0 或負值）回預設，防止全面服務中斷。
+8. _BoundedTimestampLog 超出 maxsize 時 FIFO evict，不無限增長。
 
 全部離線，in-memory SQLite，無任何 time.sleep。
 """
@@ -28,6 +30,8 @@ from saas_mvp.auth.dependencies import Actor, get_current_actor
 from saas_mvp.auth.ratelimit import (
     BusinessRateLimiter,
     SlidingWindowRateLimiter,
+    _BoundedTimestampLog,
+    _parse_rate,
     require_rate_limit,
 )
 from saas_mvp.db import Base, get_db
@@ -98,13 +102,9 @@ def base_app():
 @pytest.fixture()
 def make_client(base_app):
     """接受 limiter，注入 dependency_overrides 並回傳 TestClient；測試後清理。"""
-    created_clients = []
-
     def factory(limiter) -> TestClient:
         base_app.dependency_overrides[require_rate_limit] = limiter
-        c = TestClient(base_app, raise_server_exceptions=True)
-        created_clients.append(c)
-        return c
+        return TestClient(base_app, raise_server_exceptions=True)
 
     yield factory
     base_app.dependency_overrides.pop(require_rate_limit, None)
@@ -128,6 +128,78 @@ def _create_api_key(client: TestClient, token: str, name: str) -> str:
     )
     assert r.status_code == 201, r.text
     return r.json()["plain_key"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0. 新增：安全修正驗證（風險 1 & 2）
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestParseRate:
+    """_parse_rate 邊界驗證（風險 1 修正）。"""
+
+    def test_valid_format(self):
+        assert _parse_rate("100/60", 10, 30) == (100, 60)
+
+    def test_zero_calls_falls_back_to_default(self):
+        """SAAS_KEY_RATE_LIMIT=0/60 → 回預設，防止 max_calls=0 全面拒絕請求。"""
+        assert _parse_rate("0/60", 50, 30) == (50, 30)
+
+    def test_negative_calls_falls_back_to_default(self):
+        assert _parse_rate("-5/60", 50, 30) == (50, 30)
+
+    def test_zero_window_falls_back_to_default(self):
+        """window=0 除零風險，回預設。"""
+        assert _parse_rate("100/0", 50, 30) == (50, 30)
+
+    def test_negative_window_falls_back_to_default(self):
+        assert _parse_rate("100/-10", 50, 30) == (50, 30)
+
+    def test_invalid_format_falls_back_to_default(self):
+        assert _parse_rate("not_a_number", 10, 5) == (10, 5)
+
+    def test_missing_slash_falls_back_to_default(self):
+        assert _parse_rate("100", 10, 5) == (10, 5)
+
+    def test_whitespace_trimmed(self):
+        assert _parse_rate(" 200 / 120 ", 10, 5) == (200, 120)
+
+
+class TestBoundedTimestampLog:
+    """_BoundedTimestampLog 有界記憶體（風險 2 修正）。"""
+
+    def test_get_missing_key_returns_empty_list(self):
+        log = _BoundedTimestampLog(maxsize=10)
+        assert log.get("nonexistent") == []
+
+    def test_set_and_get(self):
+        log = _BoundedTimestampLog(maxsize=10)
+        log.set("k1", [1.0, 2.0])
+        assert log.get("k1") == [1.0, 2.0]
+
+    def test_evicts_oldest_key_when_full(self):
+        """超出 maxsize 時 FIFO evict 最舊 key，確保記憶體有界。"""
+        log = _BoundedTimestampLog(maxsize=3)
+        log.set("a", [1.0])
+        log.set("b", [2.0])
+        log.set("c", [3.0])
+
+        # 加入第 4 個 key，應 evict "a"（最舊）
+        log.set("d", [4.0])
+        assert log.get("a") == [], "最舊 key 應被 evict"
+        assert log.get("b") == [2.0]
+        assert log.get("c") == [3.0]
+        assert log.get("d") == [4.0]
+
+    def test_update_existing_key_does_not_grow(self):
+        """更新既有 key 不增加 dict 大小。"""
+        log = _BoundedTimestampLog(maxsize=2)
+        log.set("a", [1.0])
+        log.set("b", [2.0])
+        log.set("a", [1.0, 3.0])  # 更新 "a"，不應增加 size
+        log.set("c", [4.0])       # 加入 "c"：此時應 evict "b"（"a" 已被 move_to_end）
+        assert log.get("b") == [], "b 應被 evict（a 更新後移至末尾）"
+        assert log.get("a") == [1.0, 3.0]
+        assert log.get("c") == [4.0]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -260,15 +332,19 @@ def test_per_tenant_rate_limit_429(make_client):
 def test_business_rate_limiter_disabled_bypasses_check():
     """rate_limit_enabled=False 時，BusinessRateLimiter 直接 return，不拋 429。"""
     from saas_mvp.config import settings
-    from dataclasses import dataclass
 
     fake = FakeClock()
-    # max_calls=0：只要有任何請求就超限（若有檢查的話）
+    # max_calls=0 正常路徑會立刻超限；但 disabled 時不應拋例外
     key_lim = SlidingWindowRateLimiter(max_calls=0, window_seconds=60, clock=fake)
     tenant_lim = SlidingWindowRateLimiter(max_calls=0, window_seconds=60, clock=fake)
     prod_limiter = BusinessRateLimiter(key_lim, tenant_lim)
 
-    # 模擬 actor（duck typing，不用真正的 Actor dataclass）
+    # max_calls=0 直接 call _check_rate_limit 會 429（黑樣本確認）
+    with pytest.raises(HTTPException) as exc:
+        key_lim._check_rate_limit("sanity")
+    assert exc.value.status_code == 429
+
+    # 模擬 actor（duck typing）
     class _FakeUser:
         tenant_id = 99
 
@@ -279,7 +355,7 @@ def test_business_rate_limiter_disabled_bypasses_check():
     original = settings.rate_limit_enabled
     try:
         settings.rate_limit_enabled = False
-        # 直接呼叫（不透過 FastAPI DI）；Depends 的 default 只是 marker，不會自動解析
+        # 直接呼叫（繞過 FastAPI DI，Depends 只是 default marker）
         prod_limiter.__call__(actor=_FakeActor())  # 不應拋例外
     finally:
         settings.rate_limit_enabled = original
