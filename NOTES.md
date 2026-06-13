@@ -658,3 +658,5 @@ Bearer 其他              → decode_access_token（PyJWT驗簽）
 
 ## 任務 #4 完成：實作管理面板 admin API：`require_admin` dependency（非 admin 回 403）＋ `GET /admin/tenants`、`/admin/tenants/{id}/usage`、`PATCH /admin/tenants/{id}`（停/啟用、改方案）、`GET /admin/api-keys`
 
+## 任務 #5 完成：補 pytest 測試：涵蓋升降級與 quota 調整、降級超量 409、速率限制 429+Retry-After（注入假時鐘無 sleep）、admin 權限邊界、跨租戶隔離回歸；既有測試集不動、全離線
+
