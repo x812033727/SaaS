@@ -46,7 +46,7 @@ def validate_count(value: object) -> int:
 
 def _get_or_create_usage(db: Session, tenant_id: int) -> ApiUsage:
     """取得今日計量列；不存在則建立 count=0。"""
-    today = datetime.date.today()
+    today = datetime.datetime.now(datetime.timezone.utc).date()
     row = db.execute(
         select(ApiUsage).where(
             ApiUsage.tenant_id == tenant_id,
@@ -82,7 +82,7 @@ def check_and_increment(db: Session, tenant_id: int, plan: str) -> int:
 
 def get_quota_status(db: Session, tenant_id: int, plan: str) -> dict:
     """回傳今日用量狀態（供 API 查詢）。"""
-    today = datetime.date.today()
+    today = datetime.datetime.now(datetime.timezone.utc).date()
     limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
     row = db.execute(
         select(ApiUsage).where(

@@ -296,7 +296,7 @@ class TestQuotaEndpoint:
 
         # 直接用同一個 engine 的 session 塞滿配額
         limit = PLAN_DAILY_LIMITS["free"]
-        today = datetime.date.today()
+        today = datetime.datetime.now(datetime.timezone.utc).date()
         direct_db = _HttpSession()
         try:
             direct_db.execute(
@@ -319,3 +319,64 @@ class TestQuotaEndpoint:
         )
         assert resp2.status_code == 429
         assert "Quota" in resp2.json()["detail"]
+
+    def test_get_notes_also_consumes_quota(self, http_client):
+        """GET /notes/ 也應計量（讀操作不可繞過 quota）。"""
+        # 建一個新 tenant，初始 used=0
+        resp = http_client.post("/auth/register", json={
+            "email": "get_quota@example.com",
+            "password": "GetQuota99!",
+            "tenant_name": "get-corp",
+        })
+        assert resp.status_code == 201, resp.text
+        token = resp.json()["access_token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        # 呼叫前確認 used=0
+        before = http_client.get("/quota/status", headers=auth).json()
+        assert before["used"] == 0
+
+        # GET /notes/ 應計量 +1
+        list_resp = http_client.get("/notes/", headers=auth)
+        assert list_resp.status_code == 200
+
+        after = http_client.get("/quota/status", headers=auth).json()
+        assert after["used"] == 1  # GET /notes/ 消耗了 1 次配額
+
+    def test_get_single_note_also_consumes_quota(self, http_client):
+        """GET /notes/{id} 也應計量；超量後讀操作同樣 429。"""
+        resp = http_client.post("/auth/register", json={
+            "email": "single_quota@example.com",
+            "password": "Single999!",
+            "tenant_name": "single-corp",
+        })
+        assert resp.status_code == 201, resp.text
+        token = resp.json()["access_token"]
+        auth = {"Authorization": f"Bearer {token}"}
+
+        # 先建一筆 note（消耗 1 quota）
+        note_id = http_client.post(
+            "/notes/", json={"title": "t", "content": "c"}, headers=auth,
+        ).json()["id"]
+
+        # 設定 count = limit
+        tenant_id = http_client.get("/tenants/me", headers=auth).json()["id"]
+        limit = PLAN_DAILY_LIMITS["free"]
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        direct_db = _HttpSession()
+        try:
+            direct_db.execute(
+                text(
+                    "INSERT INTO api_usage (tenant_id, period, count) "
+                    "VALUES (:tid, :dt, :cnt) "
+                    "ON CONFLICT(tenant_id, period) DO UPDATE SET count = :cnt"
+                ),
+                {"tid": tenant_id, "dt": today.isoformat(), "cnt": limit},
+            )
+            direct_db.commit()
+        finally:
+            direct_db.close()
+
+        # GET /notes/{id} 應也觸發 429
+        resp2 = http_client.get(f"/notes/{note_id}", headers=auth)
+        assert resp2.status_code == 429
