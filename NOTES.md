@@ -656,3 +656,5 @@ Bearer 其他              → decode_access_token（PyJWT驗簽）
 
 ## 任務 #2 完成：實作帳單升降級流程：新增 `POST /billing/checkout|upgrade|downgrade`，立即生效改 `Tenant.plan`、同交易寫歷程表、回模擬 `payment_id`；降級超量回 409 附 `current_usage/new_limit`
 
+## 任務 #4 完成：實作管理面板 admin API：`require_admin` dependency（非 admin 回 403）＋ `GET /admin/tenants`、`/admin/tenants/{id}/usage`、`PATCH /admin/tenants/{id}`（停/啟用、改方案）、`GET /admin/api-keys`
+
