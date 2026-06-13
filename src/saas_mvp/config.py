@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # Rate limiting — set SAAS_RATE_LIMIT_ENABLED=false to bypass (e.g. in tests)
     rate_limit_enabled: bool = True
 
+    # Business endpoint rate limits — format: "{calls}/{window_seconds}"
+    # SAAS_KEY_RATE_LIMIT:    per-API-key limit (default 100 calls/60s)
+    # SAAS_TENANT_RATE_LIMIT: per-tenant limit  (default 1000 calls/60s)
+    key_rate_limit: str = "100/60"
+    tenant_rate_limit: str = "1000/60"
+
     @field_validator("secret_key")
     @classmethod
     def secret_key_must_be_changed(cls, v: str) -> str:

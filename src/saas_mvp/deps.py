@@ -8,3 +8,4 @@ from saas_mvp.auth.dependencies import get_current_actor as get_current_actor  #
 from saas_mvp.auth.dependencies import get_current_user as get_current_user  # noqa: F401
 from saas_mvp.db import get_db as get_db  # noqa: F401
 from saas_mvp.quota import require_quota as require_quota  # noqa: F401
+from saas_mvp.auth.ratelimit import require_rate_limit as require_rate_limit  # noqa: F401
