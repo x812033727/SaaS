@@ -650,3 +650,13 @@ Bearer 其他              → decode_access_token（PyJWT驗簽）
 
 ## 任務 #3 完成：擴充既有 get_current_user：X-API-Key/Bearer 走 prefix 縮候選+SHA-256 比對，無則 fallback 既有 JWT，回傳相同 User，下游 router 不改
 
+## 任務 #1 完成：擴充資料模型與權限基礎：新增 `PlanChangeHistory` model、`User.is_admin`、`Tenant.is_active`，並在 `db.py/init_db` 補 import（順序：被依賴者先），不破壞既有 schema
+
+## 任務 #3 完成：強化速率限制：重構 `SlidingWindowRateLimiter` 接受可注入 `clock`，新增 per-API-key／per-tenant 維度限制掛上業務端點，超限回 429 + `Retry-After`
+
+## 任務 #2 完成：實作帳單升降級流程：新增 `POST /billing/checkout|upgrade|downgrade`，立即生效改 `Tenant.plan`、同交易寫歷程表、回模擬 `payment_id`；降級超量回 409 附 `current_usage/new_limit`
+
+## 任務 #4 完成：實作管理面板 admin API：`require_admin` dependency（非 admin 回 403）＋ `GET /admin/tenants`、`/admin/tenants/{id}/usage`、`PATCH /admin/tenants/{id}`（停/啟用、改方案）、`GET /admin/api-keys`
+
+## 任務 #5 完成：補 pytest 測試：涵蓋升降級與 quota 調整、降級超量 409、速率限制 429+Retry-After（注入假時鐘無 sleep）、admin 權限邊界、跨租戶隔離回歸；既有測試集不動、全離線
+
