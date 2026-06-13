@@ -287,11 +287,28 @@ class TestQuotaExceededViaApiKey:
 # ── 9. 跨租戶隔離 ─────────────────────────────────────────────
 
 class TestCrossTenantIsolation:
-    def test_bob_cannot_use_alice_key(self, client, alice_key, bob_jwt):
-        """以 Alice 的 key 呼叫，應以 Alice 的租戶身份認證，而非 Bob 的。"""
-        # 用 Alice key 可以成功
-        r = client.get("/notes/", headers={"X-API-Key": alice_key["plain_key"]})
+    def test_bob_cannot_use_alice_key(self, client, alice_key, alice_jwt, bob_jwt):
+        """以 Alice 的 key 呼叫 /tenants/me，確認身份是 Alice 的租戶，而非 Bob 的。"""
+        # 取得 Alice 與 Bob 各自的 tenant_id
+        alice_tenant_id = client.get(
+            "/tenants/me", headers={"Authorization": f"Bearer {alice_jwt}"}
+        ).json()["id"]
+        bob_tenant_id = client.get(
+            "/tenants/me", headers={"Authorization": f"Bearer {bob_jwt}"}
+        ).json()["id"]
+
+        # 用 Alice 的 key 呼叫 /tenants/me
+        r = client.get("/tenants/me", headers={"X-API-Key": alice_key["plain_key"]})
         assert r.status_code == 200
+        authenticated_tenant_id = r.json()["id"]
+
+        # 必須是 Alice 的租戶，且確實與 Bob 的租戶不同
+        assert authenticated_tenant_id == alice_tenant_id, (
+            f"預期 Alice 租戶 {alice_tenant_id}，實際得到 {authenticated_tenant_id}"
+        )
+        assert authenticated_tenant_id != bob_tenant_id, (
+            "Alice 的 key 不應認證為 Bob 的租戶"
+        )
 
     def test_bob_usage_does_not_show_alice_keys(self, client, alice_jwt, bob_jwt):
         """Bob 的 /usage api_keys 不含 Alice 的 key。"""
