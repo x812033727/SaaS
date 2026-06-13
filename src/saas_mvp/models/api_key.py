@@ -44,10 +44,13 @@ class ApiKey(Base):
     key_prefix = Column(String(8), nullable=False, index=True)   # key[6:14]
     key_hash = Column(String(64), nullable=False, unique=True)   # sha256 hex
     is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime, nullable=False,
-                        default=datetime.datetime.utcnow)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
 
-    user = relationship("User")
+    user = relationship("User", back_populates="api_keys")
     tenant = relationship("Tenant")
     usages = relationship("ApiKeyUsage", back_populates="api_key",
                           cascade="all, delete-orphan")
