@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 # ── Schemas ───────────────────────────────────────────────────
 
 class ApiKeyCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=128)
 
 
 class ApiKeyCreated(BaseModel):
