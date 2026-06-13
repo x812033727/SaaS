@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.auth.security import PyJWTError, decode_access_token
 from saas_mvp.db import get_db
+from saas_mvp.models.api_key import ApiKey, _KEY_PREFIX  # 頂層 import，統一常數來源
 from saas_mvp.models.user import User
 
 # Bearer scheme — auto_error=False 讓我們自行處理 fallback
@@ -47,10 +48,6 @@ class Actor:
 
 def _resolve_api_key(key_str: str, db: Session) -> Actor:
     """以 prefix 縮候選集 + SHA-256 比對，驗證 API key 並回傳 Actor。"""
-    from saas_mvp.models.api_key import ApiKey  # 避免頂層循環 import
-
-    from saas_mvp.models.api_key import _KEY_PREFIX  # 避免頂層循環 import
-
     # 格式防衛：key 至少需要 prefix（len(_KEY_PREFIX)字元）+ 8 字元隨機部分
     if len(key_str) < len(_KEY_PREFIX) + 8:
         raise _401
@@ -85,13 +82,13 @@ def get_current_actor(
     """核心 dependency：解析請求憑證，回傳 Actor。"""
     # Path 1: X-API-Key header
     if x_api_key:
-        if not x_api_key.startswith("myapp_"):
+        if not x_api_key.startswith(_KEY_PREFIX):
             raise _401
         return _resolve_api_key(x_api_key, db)
 
     # Path 2 & 3: Authorization: Bearer <token>
     if bearer_token:
-        if bearer_token.startswith("myapp_"):
+        if bearer_token.startswith(_KEY_PREFIX):
             # Bearer <api_key>
             return _resolve_api_key(bearer_token, db)
         # JWT 路徑

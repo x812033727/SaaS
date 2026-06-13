@@ -15,8 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from saas_mvp.auth.dependencies import get_current_user
-from saas_mvp.db import get_db
+from saas_mvp.deps import get_current_user, get_db
 from saas_mvp.models.api_key import ApiKey, generate_api_key, get_key_prefix, hash_api_key
 from saas_mvp.models.user import User
 
