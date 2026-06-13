@@ -17,6 +17,7 @@ src/saas_mvp/auth/dependencies.py
 src/saas_mvp/auth/ratelimit.py
 src/saas_mvp/auth/security.py
 src/saas_mvp/models/__init__.py
+src/saas_mvp/models/api_key.py
 src/saas_mvp/models/note.py
 src/saas_mvp/models/tenant.py
 src/saas_mvp/models/usage.py
