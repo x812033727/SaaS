@@ -1,9 +1,12 @@
 """Task #2 驗收測試：帳號模組（註冊/登入/token 驗證）
 
 所有測試使用 in-memory SQLite + FastAPI TestClient，完全離線。
+速率限制在測試中透過 env 變數停用（SAAS_RATE_LIMIT_ENABLED=false）。
 """
 
 from __future__ import annotations
+
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +19,9 @@ from saas_mvp.models import tenant as _t, user as _u, note as _n  # noqa: F401
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
 
+# 停用速率限制，避免測試因累積請求數而 429
+os.environ.setdefault("SAAS_RATE_LIMIT_ENABLED", "false")
+
 # ──────────────────────────── 測試用 DB 設定 ─────────────────────────────────
 
 TEST_DB_URL = "sqlite:///:memory:"
@@ -24,15 +30,12 @@ TEST_DB_URL = "sqlite:///:memory:"
 @pytest.fixture(scope="module")
 def client():
     # StaticPool：所有連線共用同一個 in-memory connection
-    # （否則 sqlite:///:memory: 每次開新連線都是空白 DB，表格消失）
     engine = create_engine(
         TEST_DB_URL,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-    # 所有 models 已在頂部 import，Base.metadata 已完整 → 建表
     Base.metadata.create_all(bind=engine)
 
     app = create_app()
@@ -46,23 +49,21 @@ def client():
 
     app.dependency_overrides[get_db] = override_get_db
 
-    # TestClient 進入 context 時 lifespan 會呼叫 init_db()，
-    # 但 get_db 已被覆寫，HTTP 請求一律走 test engine。
     with TestClient(app, raise_server_exceptions=True) as c:
-        yield c, engine  # 也傳 engine 給需要直查 DB 的測試
+        yield c, engine
 
 
 @pytest.fixture(scope="module")
 def registered(client):
-    """預先註冊一個帳號，供後續測試複用。"""
+    """預先註冊 alice（新 tenant acme），供後續測試複用。"""
     c, _ = client
     resp = c.post("/auth/register", json={
         "email": "alice@example.com",
-        "password": "s3cr3t!",
+        "password": "s3cr3t!Pass",   # ≥ 8 chars
         "tenant_name": "acme",
     })
     assert resp.status_code == 201, resp.text
-    return resp.json()  # {"access_token": "...", "token_type": "bearer"}
+    return resp.json()
 
 
 # ─────────────────────────── 1. 註冊 ─────────────────────────────────────────
@@ -72,7 +73,7 @@ class TestRegister:
         c, _ = client
         resp = c.post("/auth/register", json={
             "email": "bob@example.com",
-            "password": "p@ssword",
+            "password": "p@ssw0rd!",   # ≥ 8 chars
             "tenant_name": "bob-corp",
         })
         assert resp.status_code == 201, resp.text
@@ -83,22 +84,45 @@ class TestRegister:
     def test_register_duplicate_email(self, client, registered):
         c, _ = client
         resp = c.post("/auth/register", json={
-            "email": "alice@example.com",  # already registered
-            "password": "other",
+            "email": "alice@example.com",   # already registered
+            "password": "anotherPass1",
             "tenant_name": "other-tenant",
         })
         assert resp.status_code == 400
         assert "already registered" in resp.json()["detail"].lower()
 
-    def test_register_same_tenant_different_user(self, client):
-        """同租戶可有多位使用者。"""
+    # ── 安全修正 3：Tenant 名稱保護 ─────────────────────────────────────────
+    def test_register_existing_tenant_rejected(self, client, registered):
+        """已存在的 tenant 名稱不可被其他人搶入（防範 tenant 搶佔攻擊）。"""
         c, _ = client
         resp = c.post("/auth/register", json={
-            "email": "carol@example.com",
-            "password": "carol-pw",
-            "tenant_name": "acme",  # same tenant as alice
+            "email": "intruder@example.com",
+            "password": "intruderPass9",
+            "tenant_name": "acme",          # 已被 alice 創建
         })
-        assert resp.status_code == 201, resp.text
+        assert resp.status_code == 400
+        assert "tenant name already taken" in resp.json()["detail"].lower()
+
+    # ── 安全修正 1：密碼最短長度 ────────────────────────────────────────────
+    def test_register_password_too_short_rejected(self, client):
+        """密碼少於 8 個字元，Pydantic 422 驗證失敗。"""
+        c, _ = client
+        resp = c.post("/auth/register", json={
+            "email": "short@example.com",
+            "password": "abc123",           # 6 chars — too short
+            "tenant_name": "short-corp",
+        })
+        assert resp.status_code == 422
+
+    def test_register_empty_password_rejected(self, client):
+        """空字串密碼應被拒絕（422）。"""
+        c, _ = client
+        resp = c.post("/auth/register", json={
+            "email": "empty@example.com",
+            "password": "",
+            "tenant_name": "empty-corp",
+        })
+        assert resp.status_code == 422
 
 
 # ─────────────────────────── 2. 密碼儲存安全 ─────────────────────────────────
@@ -111,9 +135,8 @@ class TestPasswordSecurity:
             rows = conn.execute(text("SELECT hashed_password FROM users")).fetchall()
         assert rows, "DB 中沒有使用者"
         for (hp,) in rows:
-            assert "s3cr3t!" not in hp, "明文密碼洩漏進 DB"
-            assert "p@ssword" not in hp
-            assert "carol-pw" not in hp
+            assert "s3cr3t!Pass" not in hp
+            assert "p@ssw0rd!" not in hp
             # bcrypt hash 以 $2b$ 或 $2a$ 開頭
             assert hp.startswith("$2"), f"不像 bcrypt hash: {hp!r}"
 
@@ -135,17 +158,16 @@ class TestLogin:
         c, _ = client
         resp = c.post("/auth/token", data={
             "username": "alice@example.com",
-            "password": "s3cr3t!",
+            "password": "s3cr3t!Pass",
         })
         assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert "access_token" in data
+        assert "access_token" in resp.json()
 
     def test_login_wrong_password(self, client, registered):
         c, _ = client
         resp = c.post("/auth/token", data={
             "username": "alice@example.com",
-            "password": "wrong!",
+            "password": "wrongpassword",
         })
         assert resp.status_code == 401
 
@@ -153,7 +175,7 @@ class TestLogin:
         c, _ = client
         resp = c.post("/auth/token", data={
             "username": "nobody@example.com",
-            "password": "whatever",
+            "password": "whatever123",
         })
         assert resp.status_code == 401
 
@@ -208,9 +230,40 @@ class TestTokenValidation:
         c, _ = client
         login_resp = c.post("/auth/token", data={
             "username": "alice@example.com",
-            "password": "s3cr3t!",
+            "password": "s3cr3t!Pass",
         })
         token = login_resp.json()["access_token"]
         me_resp = c.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert me_resp.status_code == 200
         assert me_resp.json()["email"] == "alice@example.com"
+
+    # ── 安全修正 2：速率限制驗證（啟用後觸發 429）──────────────────────────
+    def test_rate_limiter_blocks_excess_requests(self, client):
+        """當速率限制啟用時，超量請求應收到 429。"""
+        from saas_mvp.auth.ratelimit import token_limiter
+        # 暫時將 max_calls 設為 1，驗證 429 行為
+        original = token_limiter._max_calls
+        token_limiter._max_calls = 1
+        # 清除紀錄讓計數從零開始
+        token_limiter._log.clear()
+
+        from saas_mvp.config import settings
+        original_enabled = settings.rate_limit_enabled
+        settings.rate_limit_enabled = True
+
+        c, _ = client
+        try:
+            # 第 1 次（允許）
+            r1 = c.post("/auth/token", data={
+                "username": "nobody@rate.com", "password": "whatever"
+            })
+            assert r1.status_code != 429, "第 1 次不應被限流"
+            # 第 2 次（應被攔截）
+            r2 = c.post("/auth/token", data={
+                "username": "nobody@rate.com", "password": "whatever"
+            })
+            assert r2.status_code == 429
+        finally:
+            token_limiter._max_calls = original
+            token_limiter._log.clear()
+            settings.rate_limit_enabled = original_enabled

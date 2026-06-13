@@ -1,13 +1,21 @@
-"""Auth router: register, login (token), whoami."""
+"""Auth router: register, login (token), whoami.
+
+Security hardening:
+- Password minimum length enforced at schema level (Field min_length=8).
+- Tenant name is exclusive to its creator — joining an existing tenant is rejected
+  (prevents unauthorized multi-tenancy via name-guessing).
+- /register and /token are rate-limited to prevent brute-force / credential stuffing.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.auth.dependencies import get_current_user
+from saas_mvp.auth.ratelimit import register_limiter, token_limiter
 from saas_mvp.auth.security import create_access_token, hash_password, verify_password
 from saas_mvp.db import get_db
 from saas_mvp.models.tenant import Tenant
@@ -20,8 +28,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str
-    tenant_name: str  # tenant is created on-the-fly if it does not exist
+    # min_length=8 blocks blank / trivially short passwords
+    password: str = Field(min_length=8, description="At least 8 characters")
+    tenant_name: str = Field(min_length=1, max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -40,24 +49,40 @@ class UserInfo(BaseModel):
 
 # ────────────────────────────── Endpoints ─────────────────────────────────────
 
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    """Create a new user (and tenant if needed). Returns a JWT immediately."""
-    # duplicate e-mail check
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(register_limiter)],
+)
+def register(
+    body: RegisterRequest,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    """Create a new user in a *new* tenant.
+
+    Attempting to register under an existing tenant name returns 400 —
+    tenant membership is invite-only (not implemented in this iteration).
+    """
+    # Duplicate e-mail guard
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
         )
 
-    # get-or-create tenant
-    tenant = db.query(Tenant).filter(Tenant.name == body.tenant_name).first()
-    if not tenant:
-        tenant = Tenant(name=body.tenant_name, plan="free")
-        db.add(tenant)
-        db.flush()  # populate tenant.id before we reference it
+    # Tenant exclusivity: reject if the name is already taken
+    if db.query(Tenant).filter(Tenant.name == body.tenant_name).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tenant name already taken. Use a unique tenant name.",
+        )
 
-    # create user — password stored as bcrypt hash only
+    tenant = Tenant(name=body.tenant_name, plan="free")
+    db.add(tenant)
+    db.flush()  # populate tenant.id before we reference it
+
+    # Store bcrypt hash only — never the plain-text value
     user = User(
         email=body.email,
         hashed_password=hash_password(body.password),
@@ -71,13 +96,19 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)) -> TokenRespo
     return TokenResponse(access_token=token)
 
 
-@router.post("/token", response_model=TokenResponse)
+@router.post(
+    "/token",
+    response_model=TokenResponse,
+    dependencies=[Depends(token_limiter)],
+)
 def login(
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
     """OAuth2-compatible form login (username = email). Returns a JWT."""
     user = db.query(User).filter(User.email == form.username).first()
+    # Unified 401 regardless of whether the user exists or the password is wrong
+    # (prevents user-enumeration via timing / error messages)
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

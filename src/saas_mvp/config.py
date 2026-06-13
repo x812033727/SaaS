@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # "dev" skips the secret_key guard so tests/local runs still work
     env: str = "dev"
 
+    # Rate limiting — set SAAS_RATE_LIMIT_ENABLED=false to bypass (e.g. in tests)
+    rate_limit_enabled: bool = True
+
     @field_validator("secret_key")
     @classmethod
     def secret_key_must_be_changed(cls, v: str) -> str:
