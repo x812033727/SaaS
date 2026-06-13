@@ -21,6 +21,7 @@ src/saas_mvp/models/__init__.py
 src/saas_mvp/models/api_key.py
 src/saas_mvp/models/api_key_usage.py
 src/saas_mvp/models/note.py
+src/saas_mvp/models/plan_change_history.py
 src/saas_mvp/models/tenant.py
 src/saas_mvp/models/usage.py
 src/saas_mvp/models/user.py
