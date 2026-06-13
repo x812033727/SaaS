@@ -19,7 +19,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from saas_mvp.auth.security import PyJWTError, decode_access_token
 from saas_mvp.db import get_db
@@ -67,7 +67,9 @@ def _resolve_api_key(key_str: str, db: Session) -> Actor:
     if row is None:
         raise _401
 
-    user = db.get(User, row.user_id)
+    user = db.execute(
+        select(User).where(User.id == row.user_id).options(joinedload(User.tenant))
+    ).scalar_one_or_none()
     if user is None:
         raise _401
 
@@ -79,18 +81,21 @@ def get_current_actor(
     bearer_token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> Actor:
-    """核心 dependency：解析請求憑證，回傳 Actor。"""
+    """核心 dependency：解析請求憑證，回傳 Actor。
+
+    三路認證後統一執行租戶停用檢查（is_active=False → 403，不豁免 admin）。
+    """
     # Path 1: X-API-Key header
     if x_api_key:
         if not x_api_key.startswith(_KEY_PREFIX):
             raise _401
-        return _resolve_api_key(x_api_key, db)
+        return _check_tenant_active(_resolve_api_key(x_api_key, db))
 
     # Path 2 & 3: Authorization: Bearer <token>
     if bearer_token:
         if bearer_token.startswith(_KEY_PREFIX):
             # Bearer <api_key>
-            return _resolve_api_key(bearer_token, db)
+            return _check_tenant_active(_resolve_api_key(bearer_token, db))
         # JWT 路徑
         try:
             payload = decode_access_token(bearer_token)
@@ -101,13 +106,25 @@ def get_current_actor(
         except (PyJWTError, ValueError):
             raise _401
 
-        user = db.get(User, user_id)
+        user = db.execute(
+            select(User).where(User.id == user_id).options(joinedload(User.tenant))
+        ).scalar_one_or_none()
         if user is None:
             raise _401
-        return Actor(user=user, api_key_id=None)
+        return _check_tenant_active(Actor(user=user, api_key_id=None))
 
     # Path 4: 無憑證
     raise _401
+
+
+def _check_tenant_active(actor: Actor) -> Actor:
+    """租戶停用攔截：is_active=False → 403（不豁免 admin）。"""
+    if actor.user.tenant and not actor.user.tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="tenant disabled",
+        )
+    return actor
 
 
 def get_current_user(
