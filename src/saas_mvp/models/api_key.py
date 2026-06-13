@@ -1,7 +1,7 @@
 """ApiKey model — per-tenant API key，SHA-256 雜湊儲存。
 
 Key 格式: myapp_ + token_urlsafe(32)，總長約 49 字元。
-key_prefix: key[6:14]（跳過固定 prefix，取隨機部分前 8 字元）。
+key_prefix: key[len(_KEY_PREFIX):len(_KEY_PREFIX)+8]（跳過固定 prefix，取隨機部分前 8 字元）。
 key_hash: sha256(key).hexdigest()，unique index，無 salt（高熵 key 不需要）。
 """
 
@@ -30,8 +30,9 @@ def hash_api_key(key: str) -> str:
 
 
 def get_key_prefix(key: str) -> str:
-    """取隨機部分前 8 字元（key[6:14]，跳過 'myapp_'）。"""
-    return key[6:14]
+    """取隨機部分前 8 字元（跳過固定 prefix，長度動態計算）。"""
+    start = len(_KEY_PREFIX)
+    return key[start:start + 8]
 
 
 class ApiKey(Base):
@@ -41,7 +42,7 @@ class ApiKey(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
     name = Column(String(128), nullable=False)
-    key_prefix = Column(String(8), nullable=False, index=True)   # key[6:14]
+    key_prefix = Column(String(8), nullable=False, index=True)   # 隨機部分前 8 字元
     key_hash = Column(String(64), nullable=False, unique=True)   # sha256 hex
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(
