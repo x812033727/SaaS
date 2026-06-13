@@ -160,12 +160,18 @@ bash run_tests.sh
 ### 手動方式
 
 ```bash
-# 使用專案 venv（推薦）
-PYTHONPATH=src /opt/ti/.venv/bin/python -m pytest -q
+# 驗收指令（綁定專案 venv，排除系統 Python 干擾）
+/opt/ti/.venv/bin/python -m pytest -q
+```
 
-# 或先安裝再跑
+> **注意**：系統 `python` / `python3` 可能缺少 sqlalchemy 等依賴，請一律使用上方絕對路徑。
+> `pyproject.toml` 已設定 `pythonpath = ["src"]`，不需額外 `PYTHONPATH=src`。
+
+乾淨環境安裝步驟：
+
+```bash
 pip install -e ".[test]"
-PYTHONPATH=src python3 -m pytest -q
+/opt/ti/.venv/bin/python -m pytest -q
 ```
 
 所有測試使用 in-memory SQLite，無需外部網路。

@@ -49,12 +49,15 @@ def _resolve_api_key(key_str: str, db: Session) -> Actor:
     """以 prefix 縮候選集 + SHA-256 比對，驗證 API key 並回傳 Actor。"""
     from saas_mvp.models.api_key import ApiKey  # 避免頂層循環 import
 
-    # 格式防衛：myapp_（6字元）+ 8字元隨機 prefix 最短需 14 字元
-    if len(key_str) < 14:
+    from saas_mvp.models.api_key import _KEY_PREFIX  # 避免頂層循環 import
+
+    # 格式防衛：key 至少需要 prefix（len(_KEY_PREFIX)字元）+ 8 字元隨機部分
+    if len(key_str) < len(_KEY_PREFIX) + 8:
         raise _401
 
     key_hash = hashlib.sha256(key_str.encode()).hexdigest()
-    key_prefix = key_str[6:14]  # 跳過 'myapp_'，取隨機部分前 8 字元
+    # P3: 用 _KEY_PREFIX 長度而非 hardcode 6，避免未來 prefix 改長度時靜默偏移
+    key_prefix = key_str[len(_KEY_PREFIX):len(_KEY_PREFIX) + 8]
 
     row = db.execute(
         select(ApiKey).where(
