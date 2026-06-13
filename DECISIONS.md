@@ -68,3 +68,75 @@
 ## **測試策略** — `conftest.py` 新增 `test_api_key` fixture（含明文 key）；覆蓋：key 建立/撤銷、`X-API-Key` + Bearer 雙標頭、用量累加可手算核對、429 超量、跨租戶 403、「三者皆無→401」；既有測試集不動；全部離線 in-memory SQLite。
 - 時間：2026-06-14 00:23
 
+## `PlanChangeHistory` model 欄位：`(id PK, tenant_id FK non-null, from_plan, to_plan, changed_by_user_id FK nullable, changed_at UTC non-null, reason nullable)`。
+- 時間：2026-06-14 02:51
+- 理由：`changed_by_user_id` 允許 NULL 以應對 API key 認證（見下）。
+
+## actor 為 API key 認證時，`PlanChangeHistory.changed_by_user_id` 填入 `actor.user.id`（API key 所屬 User），不填 NULL。
+- 時間：2026-06-14 02:51
+- 理由：API key 對應的 `Actor.user` 已在 `get_current_actor` 解析完畢，可直接取 user.id；避免歷程出現無法追溯的空值。
+- 否決方案：填 NULL ── 日後 admin 查歷程無法追溯是誰透過 API key 觸發了降級。
+
+## `User.is_admin = Column(Boolean, default=False, nullable=False)`；`Tenant.is_active = Column(Boolean, default=True, nullable=False)`。
+- 時間：2026-06-14 02:51
+
+## 停用租戶（`is_active=False`）不建立 audit trail，屬已知技術債，在程式碼加 `# TODO: add TenantAuditLog if compliance needed`。
+- 時間：2026-06-14 02:51
+- 理由：現階段無 compliance 需求，不過度設計；高級工程師意見已知悉，決策有意識地暫緩。
+
+## `init_db` import 順序：`Tenant` → `User` → `ApiKey` → `ApiKeyUsage` → `ApiUsage` → `PlanChangeHistory`。
+- 時間：2026-06-14 02:51
+
+## 降級超量檢查移入 transaction 內，使用 `SELECT ... FOR UPDATE`（`query.with_for_update()`）鎖住 `ApiUsage` row 後再讀 count；若 `count > PLAN_DAILY_LIMITS[new_plan]` 則 rollback 並回 409，否則同一 transaction 寫 `Tenant.plan` 與 `PlanChangeHistory`。
+- 時間：2026-06-14 02:51
+- 理由：消除 TOCTOU race window；單 worker 鎖無效能負擔，多 worker 亦可正確序列化。
+- 否決方案：transaction 外先查再寫 ── 並發降級請求可同時通過檢查，工程師與高級工程師均已指出此缺陷。
+
+## `services/billing.py` 的 `downgrade_plan(db, tenant, new_plan, actor_user_id)` 在同一 db session 內完成：`with_for_update()` 讀 usage → 超量 raise 409 ValueError → 否則更新 plan + insert history → commit。router 捕捉 ValueError 轉成 HTTP 409。
+- 時間：2026-06-14 02:51
+
+## 模擬 payment_id 格式：`"simulated_" + secrets.token_hex(6)`（12 hex chars），完全 stdlib，無外部請求。
+- 時間：2026-06-14 02:51
+
+## `get_current_actor` 查 User 時改用 `joinedload(User.tenant)`，一次 SQL 取齊 user + tenant，避免 lazy chain `actor.user.tenant.is_active` 觸發 N+1 或 `DetachedInstanceError`。
+- 時間：2026-06-14 02:51
+- 理由：高級工程師與工程師均指出此風險；eager load 無額外 round-trip，成本低。
+- 否決方案：依賴 SQLAlchemy lazy load ── session 若已關閉直接拋例外，且每請求多一次 DB query。
+
+## 租戶停用攔截點：`get_current_actor` 組裝 `Actor` 前，若 `user.tenant.is_active == False` 則 `raise HTTPException(status_code=403, detail="tenant disabled")`；admin 使用者不豁免（停用即全停）。
+- 時間：2026-06-14 02:51
+
+## `SlidingWindowRateLimiter.__init__` 新增 `clock: Callable[[], float] = time.monotonic`，存 `self._clock`，內部所有 `time.monotonic()` 改為 `self._clock()`；既有 instance 不傳 clock，預設行為不變。
+- 時間：2026-06-14 02:51
+
+## Per-key dict 不加 LRU，但在 `_log` dict 初始化處加註 `# TODO: replace with LRU(maxsize=10_000) before multi-tenant scale` 明確記錄技術債。
+- 時間：2026-06-14 02:51
+- 理由：當前規模無問題；加 LRU 引入額外依賴不值得現在做。
+
+## Rate limiter 在 README 與部署說明區段明確標注「**單 worker 限定**：in-memory dict 不跨 process 共享，多 worker 需改 Redis 後端」。
+- 時間：2026-06-14 02:51
+
+## `require_rate_limit` 依賴判斷優先順序：`actor.api_key_id` 不為 None → per-key limiter；否則 → per-tenant limiter（key 為 `tenant_id`）；兩個 limiter 為 module-level singleton，env var `SAAS_KEY_RATE_LIMIT` / `SAAS_TENANT_RATE_LIMIT` 解析格式 `"{calls}/{window_seconds}"`。
+- 時間：2026-06-14 02:51
+
+## 429 response 帶 `Retry-After: {window_seconds}` header（純整數），透過 `HTTPException(headers={"Retry-After": str(window)})` 回傳；不帶 `X-RateLimit-*` 系列 header（非本次需求範圍）。
+- 時間：2026-06-14 02:51
+
+## `require_admin` 為獨立 dependency（`deps.py` 匯出），`Depends(get_current_actor)` 後檢查 `actor.user.is_admin`；非 admin 回 `403 Forbidden`，不回 401。
+- 時間：2026-06-14 02:51
+
+## `routers/admin.py` 整個 `APIRouter` 掛 `dependencies=[Depends(require_admin)]`，所有子路由自動繼承，不需逐一宣告。
+- 時間：2026-06-14 02:51
+
+## `PATCH /admin/tenants/{id}` body `{is_active?: bool, plan?: str}`；改方案時複用 `billing.upgrade_plan` / `billing.downgrade_plan`（不重複邏輯）；停用/啟用僅寫 `Tenant.is_active`，不呼叫 billing service。
+- 時間：2026-06-14 02:51
+
+## 新增三個測試檔：`tests/test_billing.py`、`tests/test_ratelimit_enhanced.py`、`tests/test_admin.py`；既有測試檔不改。
+- 時間：2026-06-14 02:51
+
+## `FakeClock` 實作為 `conftest.py` 中的 class，`__call__` 回傳 `self.t`，`.advance(n)` 遞增；測試傳入 `SlidingWindowRateLimiter(max_calls=N, window_seconds=W, clock=fake_clock)`，無任何 `time.sleep`。
+- 時間：2026-06-14 02:51
+
+## `conftest.py` 新增 `admin_user` fixture（`is_admin=True`）與 `admin_token` fixture；`test_api_key`、`test_tenant` 等既有 fixture 不動。
+- 時間：2026-06-14 02:51
+
