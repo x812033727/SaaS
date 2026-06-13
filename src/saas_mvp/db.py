@@ -29,5 +29,7 @@ def get_db():
 def init_db() -> None:
     """Create all tables (idempotent)."""
     # import models so their metadata is registered
+    # 順序：被依賴的 model 先於依賴它的（ApiKey 先於 ApiKeyUsage）
     from saas_mvp.models import tenant, user, note, usage  # noqa: F401
+    from saas_mvp.models import api_key, api_key_usage  # noqa: F401
     Base.metadata.create_all(bind=engine)
