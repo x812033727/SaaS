@@ -17,3 +17,4 @@ src/saas_mvp/models/user.py
 src/saas_mvp/routers/__init__.py
 src/saas_mvp/routers/auth.py
 src/saas_mvp/routers/notes.py
+tests/test_task1_structure.py
