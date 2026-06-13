@@ -41,3 +41,7 @@ ENV/
 .gitmodules
 .ripgreprc
 .mcp.json
+
+# --- Ti baseline（自動補上,避免交付沙箱/環境 junk）---
+.idea
+.vscode
