@@ -5,6 +5,7 @@ src/saas_mvp/app.py
 src/saas_mvp/config.py
 src/saas_mvp/db.py
 src/saas_mvp/deps.py
+src/saas_mvp/quota.py
 src/saas_mvp.egg-info/PKG-INFO
 src/saas_mvp.egg-info/SOURCES.txt
 src/saas_mvp.egg-info/dependency_links.txt
@@ -18,10 +19,12 @@ src/saas_mvp/auth/security.py
 src/saas_mvp/models/__init__.py
 src/saas_mvp/models/note.py
 src/saas_mvp/models/tenant.py
+src/saas_mvp/models/usage.py
 src/saas_mvp/models/user.py
 src/saas_mvp/routers/__init__.py
 src/saas_mvp/routers/auth.py
 src/saas_mvp/routers/notes.py
+src/saas_mvp/routers/quota.py
 src/saas_mvp/routers/tenants.py
 src/saas_mvp/services/__init__.py
 src/saas_mvp/services/notes.py
@@ -29,3 +32,5 @@ src/saas_mvp/services/tenants.py
 tests/test_task1_structure.py
 tests/test_task2_auth.py
 tests/test_task3_tenant.py
+tests/test_task4_qa.py
+tests/test_task4_quota.py

@@ -29,5 +29,5 @@ def get_db():
 def init_db() -> None:
     """Create all tables (idempotent)."""
     # import models so their metadata is registered
-    from saas_mvp.models import tenant, user, note  # noqa: F401
+    from saas_mvp.models import tenant, user, note, usage  # noqa: F401
     Base.metadata.create_all(bind=engine)

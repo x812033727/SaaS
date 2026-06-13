@@ -1,7 +1,8 @@
-"""Notes router — CRUD，受認證 + 租戶隔離管控。
+"""Notes router — CRUD，受認證 + 租戶隔離 + quota 管控。
 
 所有操作均透過 services/notes.py，Router 只做輸入驗證 → Service 呼叫。
 跨租戶存取一律由 Service 層回 404（不洩漏 ID 存在性）。
+quota：所有端點（讀/寫/刪）皆計量，超量一律 429。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from saas_mvp.deps import get_current_user, get_db
+from saas_mvp.deps import get_current_user, get_db, require_quota
 from saas_mvp.models.user import User
 from saas_mvp.services.notes import (
     create_note,
@@ -20,7 +21,12 @@ from saas_mvp.services.notes import (
     update_note,
 )
 
-router = APIRouter(prefix="/notes", tags=["notes"])
+# ── 所有 /notes/* 端點皆受 quota 管控 ────────────────────────
+router = APIRouter(
+    prefix="/notes",
+    tags=["notes"],
+    dependencies=[Depends(require_quota)],
+)
 
 
 # ─────────────────────────────── Schemas ─────────────────────────────────────

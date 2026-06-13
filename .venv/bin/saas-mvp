@@ -1,4 +1,4 @@
-#!/opt/ti/workspaces/project-c49d0f685da7/.venv/bin/python3
+#!/opt/ti/workspaces/project-c49d0f685da7.lanes/task-4/.venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

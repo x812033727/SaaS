@@ -124,7 +124,7 @@ class TestPackageInstalled:
             ("uvicorn", "uvicorn"),
             ("sqlalchemy", "sqlalchemy"),
             ("passlib", "passlib"),
-            ("jose", "python-jose"),
+            ("jwt", "PyJWT"),
             ("multipart", "python-multipart"),
             ("pydantic", "pydantic"),
             ("pydantic_settings", "pydantic-settings"),
