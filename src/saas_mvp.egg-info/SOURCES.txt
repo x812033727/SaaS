@@ -34,6 +34,7 @@ src/saas_mvp/routers/usage.py
 src/saas_mvp/services/__init__.py
 src/saas_mvp/services/notes.py
 src/saas_mvp/services/tenants.py
+tests/test_ratelimit_enhanced.py
 tests/test_task1_structure.py
 tests/test_task2_apikey_mgmt.py
 tests/test_task2_auth.py

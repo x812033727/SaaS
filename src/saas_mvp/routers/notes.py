@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from saas_mvp.deps import get_current_user, get_db, require_quota
+from saas_mvp.deps import get_current_user, get_db, require_quota, require_rate_limit
 from saas_mvp.models.user import User
 from saas_mvp.services.notes import (
     create_note,
@@ -21,11 +21,11 @@ from saas_mvp.services.notes import (
     update_note,
 )
 
-# ── 所有 /notes/* 端點皆受 quota 管控 ────────────────────────
+# ── 所有 /notes/* 端點皆受 rate limit + quota 管控 ──────────
 router = APIRouter(
     prefix="/notes",
     tags=["notes"],
-    dependencies=[Depends(require_quota)],
+    dependencies=[Depends(require_rate_limit), Depends(require_quota)],
 )
 
 
