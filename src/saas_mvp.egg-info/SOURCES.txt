@@ -34,3 +34,5 @@ tests/test_task2_auth.py
 tests/test_task3_tenant.py
 tests/test_task4_qa.py
 tests/test_task4_quota.py
+tests/test_task5_crud.py
+tests/test_tenant_isolation.py
