@@ -146,7 +146,12 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 ## 執行測試
 
 ```bash
-python -m pytest -q
+# 使用專案 venv（推薦）
+PYTHONPATH=src /opt/ti/.venv/bin/python -m pytest -q
+
+# 或先安裝再跑（需可寫 site-packages 的環境）
+pip install -e ".[test]"
+python3 -m pytest -q
 ```
 
 所有測試使用 in-memory SQLite，無需外部網路。
