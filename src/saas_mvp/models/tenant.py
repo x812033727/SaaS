@@ -16,3 +16,9 @@ class Tenant(Base):
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     notes = relationship("Note", back_populates="tenant", cascade="all, delete-orphan")
+    line_channel_config = relationship(
+        "LineChannelConfig",
+        back_populates="tenant",
+        uselist=False,          # 一對一
+        cascade="all, delete-orphan",
+    )

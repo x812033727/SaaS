@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # "dev" skips the secret_key guard so tests/local runs still work
     env: str = "dev"
 
+    # LINE channel config encryption key (Fernet, URL-safe base64, decodes to 32 bytes)
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # MUST override in production via SAAS_LINE_CHANNEL_ENCRYPT_KEY env var.
+    line_channel_encrypt_key: str = "ZGV2LWxpbmUtc2VjcmV0LWtleS0zMmJ5dGVzLWxvbmc="
+
     # Rate limiting — set SAAS_RATE_LIMIT_ENABLED=false to bypass (e.g. in tests)
     rate_limit_enabled: bool = True
 
