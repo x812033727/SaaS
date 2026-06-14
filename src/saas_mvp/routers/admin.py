@@ -14,7 +14,7 @@ from saas_mvp.deps import get_db, get_current_actor, require_admin
 from saas_mvp.auth.dependencies import Actor
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import line_config as line_config_svc
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 router = APIRouter(
@@ -75,8 +75,8 @@ def list_api_keys(
 # ── LINE Channel Config 管理端點 ──────────────────────────────────────────────
 
 class LineConfigUpsertBody(BaseModel):
-    channel_secret: str
-    access_token: str
+    channel_secret: str = Field(..., min_length=1)
+    access_token: str = Field(..., min_length=1)
     default_target_lang: str = "zh-TW"
 
 

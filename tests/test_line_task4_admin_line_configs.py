@@ -416,6 +416,65 @@ class TestBCP47Validation:
         assert r.status_code == 200
 
 
+# ── PUT body 欄位驗證（Pydantic min_length） ──────────────────────────────────
+
+class TestPutBodyValidation:
+    def test_empty_channel_secret_422(self, client, admin):
+        """channel_secret 空字串 → Pydantic min_length=1 → 422。"""
+        token, _ = admin
+        _, _, fresh_tid = _register(client)
+        r = client.put(
+            f"/admin/line-configs/{fresh_tid}",
+            headers=_auth(token),
+            json={"channel_secret": "", "access_token": "valid-token"},
+        )
+        assert r.status_code == 422
+
+    def test_empty_access_token_422(self, client, admin):
+        """access_token 空字串 → Pydantic min_length=1 → 422。"""
+        token, _ = admin
+        _, _, fresh_tid = _register(client)
+        r = client.put(
+            f"/admin/line-configs/{fresh_tid}",
+            headers=_auth(token),
+            json={"channel_secret": "valid-secret", "access_token": ""},
+        )
+        assert r.status_code == 422
+
+    def test_both_empty_422(self, client, admin):
+        """兩欄位皆空 → 422。"""
+        token, _ = admin
+        _, _, fresh_tid = _register(client)
+        r = client.put(
+            f"/admin/line-configs/{fresh_tid}",
+            headers=_auth(token),
+            json={"channel_secret": "", "access_token": ""},
+        )
+        assert r.status_code == 422
+
+    def test_missing_channel_secret_422(self, client, admin):
+        """缺少必要欄位 channel_secret → 422。"""
+        token, _ = admin
+        _, _, fresh_tid = _register(client)
+        r = client.put(
+            f"/admin/line-configs/{fresh_tid}",
+            headers=_auth(token),
+            json={"access_token": "t"},
+        )
+        assert r.status_code == 422
+
+    def test_missing_access_token_422(self, client, admin):
+        """缺少必要欄位 access_token → 422。"""
+        token, _ = admin
+        _, _, fresh_tid = _register(client)
+        r = client.put(
+            f"/admin/line-configs/{fresh_tid}",
+            headers=_auth(token),
+            json={"channel_secret": "s"},
+        )
+        assert r.status_code == 422
+
+
 # ── 跨租戶隔離 ────────────────────────────────────────────────────────────────
 
 class TestCrossTenantIsolation:
