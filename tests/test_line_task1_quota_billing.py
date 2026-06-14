@@ -81,6 +81,11 @@ class FailingLineReplyClient(FakeLineReplyClient):
         self.attempts.append(text)
         raise LineReplyError("simulated reply failure")
 
+    def reset(self) -> None:
+        """同步清 sent 與 attempts，避免漏同步（高工審查建議）。"""
+        super().reset()
+        self.attempts.clear()
+
 
 _stub_translator = StubTranslator()
 _failing_translator = FailingTranslator()
@@ -200,8 +205,7 @@ def _seed_usage(tid: int, count: int) -> None:
 @pytest.fixture(autouse=True)
 def _reset():
     _fake_line_client.reset()
-    _failing_line_client.reset()
-    _failing_line_client.attempts.clear()
+    _failing_line_client.reset()  # override 後一併清 attempts
     _active["translator"] = _stub_translator
     _active["client"] = _fake_line_client
     yield
@@ -305,3 +309,37 @@ class TestQuotaExceededNoCharge:
         assert r.status_code == 200
         assert _fake_line_client.last_text == "[ZH-TW] last one"  # 有翻譯
         assert _used(tid) == limit  # +1 達上限
+
+
+# ── #1：increment_usage 鎖內重驗 limit（TOCTOU 防護，資安審查建議） ──────────
+
+class TestIncrementUsageRecheck:
+    def test_increment_does_not_exceed_limit_when_plan_given(self, client):
+        """模擬 TOCTOU：count 已達 limit 時，increment_usage(plan) 不再 +1。"""
+        from saas_mvp.quota import increment_usage
+        tid = _new_tenant(client)
+        limit = PLAN_DAILY_LIMITS["free"]
+        _seed_usage(tid, limit)
+
+        db = _Session()
+        try:
+            result = increment_usage(db, tid, plan="free")
+        finally:
+            db.close()
+        assert result == limit       # 未遞增
+        assert _used(tid) == limit   # DB 仍為 limit，永不超賣
+
+    def test_increment_without_plan_still_increments(self, client):
+        """反向對照：未傳 plan（無重驗）時仍 +1，證明重驗確實由 plan 觸發。"""
+        from saas_mvp.quota import increment_usage
+        tid = _new_tenant(client)
+        limit = PLAN_DAILY_LIMITS["free"]
+        _seed_usage(tid, limit)
+
+        db = _Session()
+        try:
+            result = increment_usage(db, tid)  # 無 plan → 不重驗
+        finally:
+            db.close()
+        assert result == limit + 1
+        assert _used(tid) == limit + 1

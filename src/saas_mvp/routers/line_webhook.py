@@ -205,6 +205,7 @@ async def line_webhook(
         line_client.reply(reply_token, translated, access_token=access_token)
 
         # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────
-        increment_usage(db, tenant_id)
+        # 傳入 plan 啟用鎖內重驗 limit，消除 has_quota→increment 的 TOCTOU 超賣。
+        increment_usage(db, tenant_id, tenant.plan)
 
     return {"status": "ok"}

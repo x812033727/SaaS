@@ -119,16 +119,31 @@ def has_quota(db: Session, tenant_id: int, plan: str) -> bool:
     return used < limit
 
 
-def increment_usage(db: Session, tenant_id: int) -> int:
+def increment_usage(db: Session, tenant_id: int, plan: str | None = None) -> int:
     """副作用成功後才計量 +1（SELECT FOR UPDATE 序列化）並 commit。
 
     與 :func:`has_quota` 搭配使用：呼叫端應先以 has_quota 判斷是否放行，
     待下游副作用全部成功後才呼叫本函式，避免下游失敗造成「白扣」。
+
+    若提供 ``plan``，會在鎖內**重驗** ``count < limit``：has_quota 與
+    increment_usage 之間存在 TOCTOU 窗口，並發請求可能都通過 has_quota；
+    鎖內重驗確保 count 永不超過 limit（恢復舊版 check_and_increment 的
+    原子保證）。已達上限時不遞增、回傳現值（極端並發下偶有「免費一次」，
+    但永不超賣計費，較超量計費更安全）。
+
     回傳更新後的 count。
     """
     today = datetime.date.today()
     row = _get_or_create_usage_locked(db, tenant_id, today)
     validate_count(row.count)
+
+    if plan is not None:
+        limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
+        if row.count >= limit:
+            # TOCTOU：has_quota 放行後、本函式取得鎖前，配額已被並發請求用盡。
+            db.commit()  # 釋放 FOR UPDATE 鎖，不遞增
+            return row.count
+
     row.count += 1
     db.commit()
     return row.count
