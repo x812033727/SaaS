@@ -149,45 +149,71 @@ class TestDualEntryPoints:
     """啟動 server、健康檢查、再 kill"""
 
     @staticmethod
-    def _start_and_check(cmd: list[str], port: int, label: str) -> None:
-        import time, signal, tempfile
+    def _free_port() -> int:
+        """取得一個目前可用的 TCP port，避免硬編 port 在並行/殘留時衝突。"""
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    @staticmethod
+    def _start_and_check(cmd: list[str], label: str) -> None:
+        # 動態取空 port，並在「address already in use」時換 port 重試，
+        # 徹底消除固定 port 與其他測試/殘留進程相撞的根因。
+        import time, tempfile
         tmpdir = os.environ.get("TMPDIR", tempfile.gettempdir())
-        log_path = f"{tmpdir}/{label}.log"
-        db_path = f"{tmpdir}/test_task1_{port}.db"
-        with open(log_path, "w") as log:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log, stderr=log,
-                env={**os.environ, "SAAS_DATABASE_URL": f"sqlite:///{db_path}",
-                     "SAAS_PORT": str(port)},
-            )
-        try:
-            # 等待最多 10 秒啟動
-            time.sleep(4)
-            result = subprocess.run(
-                ["curl", "-sf", f"http://127.0.0.1:{port}/"],
-                capture_output=True, text=True, timeout=5
-            )
-            log_content = Path(log_path).read_text()
-            assert result.returncode == 0, (
-                f"{label} health check 失敗\ncurl stderr: {result.stderr}\nserver log:\n{log_content[-1500:]}"
-            )
-            assert '"status"' in result.stdout or "saas-mvp" in result.stdout, \
-                f"回應不符預期: {result.stdout}"
-        finally:
-            proc.terminate()
+        last_err = ""
+        for attempt in range(3):
+            port = TestDualEntryPoints._free_port()
+            log_path = f"{tmpdir}/{label}.log"
+            db_path = f"{tmpdir}/test_task1_{label}_{port}.db"
+            with open(log_path, "w") as log:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log, stderr=log,
+                    env={**os.environ, "SAAS_DATABASE_URL": f"sqlite:///{db_path}",
+                         "SAAS_PORT": str(port)},
+                )
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            # 清理 db
-            Path(db_path).unlink(missing_ok=True)
+                # 輪詢啟動，最多 ~10 秒（取代死等，更快也更穩）
+                result = None
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    time.sleep(0.3)
+                    if proc.poll() is not None:
+                        break  # server 已退出（多半是 bind 失敗），跳出去看 log
+                    result = subprocess.run(
+                        ["curl", "-sf", f"http://127.0.0.1:{port}/"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        break
+                log_content = Path(log_path).read_text()
+                # port 撞了就換一個 port 重試，而非直接 fail
+                if "address already in use" in log_content and attempt < 2:
+                    last_err = log_content[-1500:]
+                    continue
+                assert result is not None and result.returncode == 0, (
+                    f"{label} health check 失敗\ncurl stderr:"
+                    f" {result.stderr if result else 'n/a'}\nserver log:\n{log_content[-1500:]}"
+                )
+                assert '"status"' in result.stdout or "saas-mvp" in result.stdout, \
+                    f"回應不符預期: {result.stdout}"
+                return
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                # 清理 db
+                Path(db_path).unlink(missing_ok=True)
+        raise AssertionError(f"{label} 連續重試後仍無法啟動\nserver log:\n{last_err}")
 
     def test_python_m_entry(self):
         """`python -m saas_mvp` 能啟動 HTTP 服務"""
         self._start_and_check(
             [PYTHON, "-m", "saas_mvp"],
-            port=18001,
             label="python_m_saas_mvp",
         )
 
@@ -197,6 +223,5 @@ class TestDualEntryPoints:
         script = str(venv_bin / "saas-mvp")
         self._start_and_check(
             [script],
-            port=18002,
             label="console_script_saas_mvp",
         )
