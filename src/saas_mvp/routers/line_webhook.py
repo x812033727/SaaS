@@ -139,6 +139,18 @@ async def line_webhook(
 
     # ── 6. 處理每個 event ──────────────────────────────────────────────────────
     for event in events:
+        # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，
+        # deliveryContext.isRedelivery=true。對重送 event 一律略過——不翻譯、
+        # 不回覆、不計 quota——避免重複翻譯與重複扣量。
+        # 缺 deliveryContext 或 isRedelivery 非 True 時，視為首投，行為不變。
+        delivery_ctx = event.get("deliveryContext") or {}
+        if delivery_ctx.get("isRedelivery") is True:
+            _log.info(
+                "Skipping redelivered LINE event for tenant %d (isRedelivery=true)",
+                tenant_id,
+            )
+            continue
+
         event_type = event.get("type")
 
         # 非 message event → 略過
