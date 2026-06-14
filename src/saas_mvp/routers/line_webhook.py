@@ -5,6 +5,8 @@
 * raw body 用 Request.body() 取得，再 JSON decode，確保 HMAC 比對用原始 bytes。
 * X-Line-Signature 驗章失敗 → 400（符合 LINE 文件建議）。
 * 非文字事件靜默略過，回 200 OK。
+* 重送去重：deliveryContext.isRedelivery=true 的 event 一律略過（不翻譯、不計量、回 200），
+  避免 LINE 重投造成重複翻譯與重複扣 quota。判定採無狀態旗標，缺欄位視為首投。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
 * 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig，找不到 → 404。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
@@ -139,6 +141,15 @@ async def line_webhook(
 
     # ── 6. 處理每個 event ──────────────────────────────────────────────────────
     for event in events:
+        # 重送去重：LINE 重投（redelivery）的 event 一律略過，避免重複翻譯與
+        # 重複計量。判定鍵採無狀態旗標 deliveryContext.isRedelivery（缺欄位視為首投）。
+        if event.get("deliveryContext", {}).get("isRedelivery") is True:
+            _log.info(
+                "skip redelivered LINE event for tenant %d (isRedelivery=true)",
+                tenant_id,
+            )
+            continue
+
         event_type = event.get("type")
 
         # 非 message event → 略過
