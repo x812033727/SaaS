@@ -387,3 +387,33 @@ Sources:
 - [Get LINE Official Account (bot) info — Messaging API reference](https://developers.line.biz/en/reference/messaging-api/#get-bot-info)
 - [Using the Messaging API from a module channel](https://developers.line.biz/en/docs/partner-docs/module-technical-using-messaging-api/)
 
+## 2026-06-14 16:30
+
+先讀現有 quota 實作與 webhook handler 的關鍵檔案：
+現有程式碼已實作 post-deduction，但讓我確認是否還有殘留的舊呼叫點：
+已有足夠資訊。整理報告：
+
+---
+
+## 調研報告：quota 後扣改良任務
+
+### 核心發現：**功能已完整實作**
+
+重點: `line_webhook.py` 步驟 6a→6d 已落實後扣模式：`has_quota`（非遞增檢查）→ translate → reply → `increment_usage(+1)`；任一下游失敗不計量，白扣問題已消除。
+重點: `quota.py` 的 `increment_usage(plan=...)` 在 `SELECT FOR UPDATE` 鎖內重驗 `count < limit`，消除 `has_quota→increment` 的 TOCTOU 超賣窗口——符合資安最佳實踐（atomic check-then-update with row lock）。
+重點: `test_line_task1_quota_billing.py` 已覆蓋全部驗收案例：translate 失敗不扣、reply 失敗不扣、正常路徑 +1、超量回配額訊息不 +1、TOCTOU 防護（increment 鎖內不超賣）；每個「不扣」案例皆附反向對照組防假綠。
+重點: 舊版 `check_and_increment`（前扣）仍存在，但**只被 `require_quota` dependency 用於一般 API**（Notes、Billing 等），**不影響 LINE webhook 路徑**，兩套路徑並立、互不干擾。
+重點: 業界最佳實踐（TOCTOU 文獻）：對 billing-critical 計量，推薦「SELECT FOR UPDATE + 鎖內最終驗證 + 單一 commit」，現有實作完全對齊。來源：[TOCTOU Wikipedia](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use)
+
+### 建議
+
+建議: **本輪任務目標已達成，無需新開發**。建議 PM 確認本次改良需求是否來自舊版狀態描述，若是則直接關單，跑一次 `pytest tests/test_line_task1_quota_billing.py` 作驗收憑證即可。
+建議: 若團隊仍想補強，唯一可考慮的缺口是：**`require_quota`（一般 API dependency）仍採前扣**。若要統一，可仿 webhook 路徑改為 `has_quota` + 業務邏輯 + `increment_usage`，但需評估其他端點（Notes/Billing）是否有明確的「成功副作用」定義，否則語意模糊不適合強制後扣。
+建議: M2 技術債提醒：`line_client.reply` 仍為同步阻塞 I/O（見 webhook 檔案 NOTE），高並發時應 `asyncio.to_thread` 包裝，但與 quota 機制無關，另案追蹤。
+
+---
+
+**Sources:**
+- [Time-of-check to time-of-use — Wikipedia](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use)
+- [What Is TOCTOU? — DeepStrike](https://deepstrike.io/blog/what-is-time-of-check-time-of-use-toctou)
+
