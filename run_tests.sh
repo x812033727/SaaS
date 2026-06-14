@@ -32,16 +32,22 @@ else
     PIP="$PYTHON -m pip"
 fi
 
-# 嘗試安裝 editable + test extra，失敗（唯讀 FS / 權限）時靜默繼續。
+# 依賴已可匯入時跳過 pip（省去在唯讀 FS 下注定失敗、仍耗數秒的解析開銷）。
+# 否則才嘗試安裝 editable + test extra，失敗（唯讀 FS / 權限）時靜默繼續。
 # PYTHONPATH=src 確保不依賴 site-packages 也能 import saas_mvp。
-"$PIP" install --quiet -e ".[test]" 2>/dev/null || true
+if ! PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c \
+        "import sqlalchemy, fastapi, pytest, saas_mvp" 2>/dev/null; then
+    "$PIP" install --quiet -e ".[test]" 2>/dev/null || true
+fi
 
 # ── 3. 設環境變數 ─────────────────────────────────────────────
 # DB 指向 in-memory，避免 init_db() 嘗試建立檔案型 SQLite
 export SAAS_DATABASE_URL="${SAAS_DATABASE_URL:-sqlite:///:memory:}"
 export SAAS_RATE_LIMIT_ENABLED="${SAAS_RATE_LIMIT_ENABLED:-false}"
-# 測試加速：bcrypt 降到最低 cost（僅測試；生產不設此 env 維持預設安全強度）。
+# 測試環境用最低 bcrypt cost 加速大量密碼雜湊（生產維持預設 12，見 auth/security.py）。
 # 大量 register/login 測試走 bcrypt 雜湊，預設 12 rounds 使整套接近逾時邊界。
+# SAAS_TESTING=1 是低成本值的明確放行旗標；缺它時 security.py 對 <10 的值會 fail-closed。
+export SAAS_TESTING="${SAAS_TESTING:-1}"
 export SAAS_BCRYPT_ROUNDS="${SAAS_BCRYPT_ROUNDS:-4}"
 
 # ── 4. 執行 pytest ────────────────────────────────────────────

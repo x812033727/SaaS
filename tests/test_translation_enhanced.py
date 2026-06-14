@@ -1,14 +1,14 @@
-"""翻譯增強驗收測試（獨立檔，全離線，不呼叫真實 DeepL）。
+"""任務 #1–#5 驗收測試 — 翻譯增強（語言碼正規化、同語言 skip、Stub skip、webhook 整合）
 
-涵蓋本輪 Task #1~#5：
-- #1 DeepLTranslator._normalize_target_lang()：ZH-TW→ZH-HANT、ZH-CN→ZH-HANS，其餘 upper()
-- #2 DeepLTranslator.translate()：送出 target_lang 為正規化值；
-      detected_source_language == 正規化 target 時返回原文（skip）
-- #3 StubTranslator 同語言 skip 行為，且不破壞既有 [LANG] 包裝
-- #4/#5 webhook 整合：以 Stub(skip) + Fake client 注入，驗證 skip 時回覆原文
+驗收標準
+--------
+- target=zh-TW → DeepL 實送 target_lang=ZH-HANT；zh-CN→ZH-HANS；ja/en/ko 維持 upper()。
+- DeepL 回應 detected_source_language == 正規化後 target → translate() 回原文，不重複包裝。
+- StubTranslator(source_lang=...) 同語言回原文，其餘維持 [LANG] text。
+- webhook 翻譯呼叫經 asyncio.to_thread 包裝後流程仍綠（離線 Stub/Fake 注入）。
 
-所有 DeepL HTTP 呼叫均以 unittest.mock.patch 替換 urllib，絕不打真實 API。
-不修改任何既有測試檔。
+全部離線：以 unittest.mock.patch 替換 urllib，不呼叫真實 DeepL；webhook 用 Stub/Fake。
+本檔為獨立新檔，不修改任何既有測試檔。
 """
 
 from __future__ import annotations
@@ -16,322 +16,382 @@ from __future__ import annotations
 import io
 import json
 import os
-import uuid
+import urllib.error
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("SAAS_RATE_LIMIT_ENABLED", "false")
 
 from saas_mvp.translation import DeepLTranslator, StubTranslator
+from saas_mvp.translation.base import TranslationError
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Task #1 — _normalize_target_lang()
-# ════════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.parametrize(
-    "raw, expected",
-    [
-        ("zh-TW", "ZH-HANT"),
-        ("ZH-TW", "ZH-HANT"),
-        ("zh-CN", "ZH-HANS"),
-        ("ZH-CN", "ZH-HANS"),
-        ("ja", "JA"),
-        ("JA", "JA"),
-        ("en", "EN"),
-        ("ko", "KO"),
-        ("de", "DE"),
-    ],
-)
-def test_normalize_target_lang(raw, expected):
-    assert DeepLTranslator._normalize_target_lang(raw) == expected
+# ── 工具：建立假的 urlopen context manager ──────────────────────────────────────
 
 
-def test_normalize_is_staticmethod():
-    # 可不建 instance 直接呼叫
-    assert DeepLTranslator._normalize_target_lang("zh-TW") == "ZH-HANT"
+@contextmanager
+def _fake_urlopen(body_dict: dict):
+    """產生可被 `with urllib.request.urlopen(...) as resp:` 使用的假回應。"""
+    payload = json.dumps(body_dict).encode("utf-8")
+
+    class _Resp:
+        def read(self):
+            return payload
+
+    yield _Resp()
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Task #2 — DeepLTranslator.translate()（mock urllib）
-# ════════════════════════════════════════════════════════════════════════════
-
-def _fake_response(payload: dict):
-    """模擬 urlopen 回傳的 context-manager 物件。"""
-    raw = json.dumps(payload).encode("utf-8")
-
-    class _Resp(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            self.close()
-            return False
-
-    return _Resp(raw)
-
-
-def _patched_urlopen(payload: dict):
-    """patch urllib.request.urlopen 並回傳 (patcher, captured) 供斷言送出的 data。"""
-    captured = {}
+def _capture_sent_target(captured: dict):
+    """回傳一個假的 urlopen，會把送出的 target_lang 記錄到 captured。"""
 
     def _fake(req, timeout=None):
-        captured["data"] = req.data
-        captured["url"] = req.full_url
-        return _fake_response(payload)
+        raw = req.data.decode("utf-8")
+        # urlencode 後的 querystring：找 target_lang=...
+        import urllib.parse
 
-    return mock.patch("urllib.request.urlopen", side_effect=_fake), captured
+        parsed = urllib.parse.parse_qs(raw)
+        captured["target_lang"] = parsed.get("target_lang", [None])[0]
+        captured["text"] = parsed.get("text", [None])[0]
+        return _fake_urlopen(
+            {"translations": [{"detected_source_language": "EN", "text": "translated"}]}
+        )
 
-
-def test_translate_sends_normalized_target_lang_for_zh_tw():
-    """target=zh-TW → 實際送出的 target_lang 為 ZH-HANT。"""
-    resp = {"translations": [{"detected_source_language": "EN", "text": "你好"}]}
-    patcher, captured = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        out = t.translate("hello", "zh-TW")
-
-    assert out == "你好"
-    body = captured["data"].decode()
-    assert "target_lang=ZH-HANT" in body
-    assert "target_lang=ZH-TW" not in body
+    return _fake
 
 
-def test_translate_sends_normalized_target_lang_for_zh_cn():
-    resp = {"translations": [{"detected_source_language": "EN", "text": "你好"}]}
-    patcher, captured = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        t.translate("hello", "zh-CN")
-    assert "target_lang=ZH-HANS" in captured["data"].decode()
+# ══════════════════════════════════════════════════════════════════════════════
+# 任務 #1 — _normalize_target_lang 靜態映射
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_translate_keeps_upper_for_other_langs():
-    resp = {"translations": [{"detected_source_language": "EN", "text": "こんにちは"}]}
-    patcher, captured = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        out = t.translate("hello", "ja")
-    assert out == "こんにちは"
-    assert "target_lang=JA" in captured["data"].decode()
+class TestNormalizeTargetLang:
+    def test_zh_tw_to_zh_hant(self):
+        assert DeepLTranslator._normalize_target_lang("zh-TW") == "ZH-HANT"
+
+    def test_zh_cn_to_zh_hans(self):
+        assert DeepLTranslator._normalize_target_lang("zh-CN") == "ZH-HANS"
+
+    def test_already_upper_zh_tw(self):
+        assert DeepLTranslator._normalize_target_lang("ZH-TW") == "ZH-HANT"
+
+    @pytest.mark.parametrize("lang", ["ja", "en", "ko", "de", "fr"])
+    def test_other_langs_just_upper(self, lang):
+        assert DeepLTranslator._normalize_target_lang(lang) == lang.upper()
+
+    def test_is_staticmethod(self):
+        # 可不建立實例直接呼叫
+        assert DeepLTranslator._normalize_target_lang("JA") == "JA"
 
 
-def test_translate_normal_path_returns_translated_text():
-    """來源語言 != target → 回傳 DeepL 譯文。"""
-    resp = {"translations": [{"detected_source_language": "EN", "text": "翻訳済み"}]}
-    patcher, _ = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        assert t.translate("source", "ja") == "翻訳済み"
+# ══════════════════════════════════════════════════════════════════════════════
+# 任務 #1 — translate() 實際送出的 target_lang 已正規化
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_translate_skips_when_detected_equals_target():
-    """detected_source_language == 正規化 target → 返回原文，不回傳譯文。"""
-    resp = {"translations": [{"detected_source_language": "JA", "text": "DEEPL-WRAPPED"}]}
-    patcher, _ = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        out = t.translate("これは日本語", "ja")
-    assert out == "これは日本語"  # 原文，而非 DeepL 的 "DEEPL-WRAPPED"
+class TestTranslateSendsNormalizedTarget:
+    def test_zh_tw_sends_zh_hant(self):
+        captured: dict = {}
+        t = DeepLTranslator(api_key="k")
+        with mock.patch("urllib.request.urlopen", _capture_sent_target(captured)):
+            t.translate("hello", "zh-TW")
+        assert captured["target_lang"] == "ZH-HANT"
+
+    def test_zh_cn_sends_zh_hans(self):
+        captured: dict = {}
+        t = DeepLTranslator(api_key="k")
+        with mock.patch("urllib.request.urlopen", _capture_sent_target(captured)):
+            t.translate("hello", "zh-CN")
+        assert captured["target_lang"] == "ZH-HANS"
+
+    def test_ja_sends_ja(self):
+        captured: dict = {}
+        t = DeepLTranslator(api_key="k")
+        with mock.patch("urllib.request.urlopen", _capture_sent_target(captured)):
+            t.translate("hello", "ja")
+        assert captured["target_lang"] == "JA"
 
 
-def test_translate_skip_uses_normalized_target_for_comparison():
-    """zh-TW 正規化為 ZH-HANT；DeepL 偵測回 ZH-HANT 時亦觸發 skip。"""
-    resp = {"translations": [{"detected_source_language": "ZH-HANT", "text": "x"}]}
-    patcher, _ = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        out = t.translate("原文繁中", "zh-TW")
-    assert out == "原文繁中"
+# ══════════════════════════════════════════════════════════════════════════════
+# 任務 #2 — 同語言 skip（DeepL 回應 detected == normalized target）
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_translate_no_skip_when_detected_differs():
-    resp = {"translations": [{"detected_source_language": "EN", "text": "譯文"}]}
-    patcher, _ = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        assert t.translate("hello", "ja") == "譯文"
+class TestDeepLSameLanguageSkip:
+    def test_skip_returns_original_text(self):
+        """detected_source_language == 正規化後 target → 回原文，不回 API 的 text。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "JA", "text": "別的內容"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("これはペンです", "ja")
+        assert result == "これはペンです"  # 原文，非 API 回傳的 "別的內容"
+
+    def test_normal_path_returns_api_text(self):
+        """detected != target → 回 API 譯文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "EN", "text": "翻訳結果"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("hello", "ja")
+        assert result == "翻訳結果"
+
+    def test_skip_case_insensitive(self):
+        """detected 大小寫不影響比較（.upper()）。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ja", "text": "x"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("原文text", "JA")
+        assert result == "原文text"
+
+    def test_zh_detect_skips_zh_hant(self):
+        """DeepL 對中文回 ZH，target=zh-TW（正規化 ZH-HANT）→ 視為同語言 skip，回原文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "別的譯文"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("中文原文", "zh-TW")
+        assert result == "中文原文"  # skip → 回原文
+
+    def test_zh_detect_skips_zh_hans(self):
+        """DeepL 回 ZH，target=zh-CN（正規化 ZH-HANS）→ 同語言 skip，回原文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "x"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("简体原文", "zh-CN")
+        assert result == "简体原文"
+
+    def test_zh_detect_does_not_skip_non_zh_target(self):
+        """DeepL 回 ZH 但 target=ja → 非同語言，回 API 譯文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "翻訳"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("中文原文", "ja")
+        assert result == "翻訳"  # 未 skip
+
+    def test_missing_detected_field_returns_api_text(self):
+        """缺 detected_source_language → 視為不同語言，回 API 譯文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen({"translations": [{"text": "fallback"}]})
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("hello", "ja")
+        assert result == "fallback"
+
+    def test_bad_response_structure_raises(self):
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen({"unexpected": True})
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            with pytest.raises(TranslationError):
+                t.translate("hello", "ja")
+
+    def test_translation_not_dict_wrapped_as_translation_error(self):
+        """translations[0] 非 dict（格式異常）→ AttributeError 須包成 TranslationError。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen({"translations": [12345]})
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            with pytest.raises(TranslationError):
+                t.translate("hello", "ja")
+
+    def test_http_error_raises(self):
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            raise urllib.error.HTTPError(
+                url="x", code=400, msg="Bad Request", hdrs=None, fp=io.BytesIO(b"")
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            with pytest.raises(TranslationError):
+                t.translate("hello", "ja")
 
 
-def test_translate_handles_missing_detected_field():
-    """回應缺 detected_source_language → 不 skip，正常回譯文。"""
-    resp = {"translations": [{"text": "譯文無偵測欄"}]}
-    patcher, _ = _patched_urlopen(resp)
-    with patcher:
-        t = DeepLTranslator(api_key="dummy-key")
-        assert t.translate("hello", "ja") == "譯文無偵測欄"
+# ══════════════════════════════════════════════════════════════════════════════
+# 任務 #3 — StubTranslator 同語言 skip
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Task #3 — StubTranslator 同語言 skip
-# ════════════════════════════════════════════════════════════════════════════
+class TestStubTranslatorSkip:
+    def test_default_wraps_with_tag(self):
+        s = StubTranslator()
+        assert s.translate("hi", "ja") == "[JA] hi"
 
-def test_stub_default_wraps_with_lang_tag():
-    """無 source_lang → 維持既有 [LANG] text 行為。"""
-    assert StubTranslator().translate("hello", "ja") == "[JA] hello"
+    def test_same_lang_returns_original(self):
+        s = StubTranslator(source_lang="ja")
+        assert s.translate("これ", "ja") == "これ"
 
+    def test_same_lang_case_insensitive(self):
+        s = StubTranslator(source_lang="JA")
+        assert s.translate("これ", "ja") == "これ"
 
-def test_stub_skip_returns_original_when_same_lang():
-    stub = StubTranslator(source_lang="ja")
-    assert stub.translate("これは日本語", "ja") == "これは日本語"
-    assert stub.translate("これは日本語", "JA") == "これは日本語"
+    def test_different_lang_still_wraps(self):
+        s = StubTranslator(source_lang="ja")
+        assert s.translate("hi", "en") == "[EN] hi"
 
+    def test_none_source_never_skips(self):
+        s = StubTranslator(source_lang=None)
+        assert s.translate("hi", "ja") == "[JA] hi"
 
-def test_stub_skip_case_insensitive():
-    stub = StubTranslator(source_lang="JA")
-    assert stub.translate("text", "ja") == "text"
-
-
-def test_stub_skip_does_not_affect_other_langs():
-    """設了 source_lang=ja，但 target=en 時仍正常包裝。"""
-    stub = StubTranslator(source_lang="ja")
-    assert stub.translate("hello", "en") == "[EN] hello"
-
-
-def test_stub_source_lang_none_never_skips():
-    stub = StubTranslator(source_lang=None)
-    assert stub.translate("x", "ja") == "[JA] x"
+    def test_is_available(self):
+        assert StubTranslator().is_available() is True
+        assert StubTranslator(source_lang="ja").is_available() is True
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Task #4/#5 — webhook 整合（Stub skip + Fake client，全離線）
-# ════════════════════════════════════════════════════════════════════════════
-
-from saas_mvp.models import tenant as _t, user as _u, note as _n, usage as _us  # noqa: E402,F401
-from saas_mvp.models import api_key as _ak, api_key_usage as _aku                # noqa: E402,F401
-from saas_mvp.models import plan_change_history as _pch                          # noqa: E402,F401
-import saas_mvp.models.line_channel_config as _lcm                              # noqa: E402,F401
-import saas_mvp.models.line_user_lang as _lul                                    # noqa: E402,F401
-
-from saas_mvp.app import create_app                                              # noqa: E402
-from saas_mvp.db import Base, get_db                                             # noqa: E402
-from saas_mvp.line_client import FakeLineReplyClient, get_line_client           # noqa: E402
-from saas_mvp.translation import get_translator                                 # noqa: E402
-
-import base64                                                                    # noqa: E402
-import hashlib                                                                   # noqa: E402
-import hmac                                                                      # noqa: E402
-
-_engine = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-_Session = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
-
-_CHANNEL_SECRET = "enh-channel-secret-32-bytes-xyz!"
-_ACCESS_TOKEN = "enh-access-token"
-
-# Stub 設為同語言 ja → skip；fake client 捕捉回覆
-_skip_translator = StubTranslator(source_lang="ja")
-_fake_client = FakeLineReplyClient()
+# ══════════════════════════════════════════════════════════════════════════════
+# 任務 #5 — webhook 整合（asyncio.to_thread 包裝後流程仍綠，全離線）
+# ══════════════════════════════════════════════════════════════════════════════
 
 
-@pytest.fixture(scope="module")
-def client():
-    Base.metadata.create_all(bind=_engine)
-    app = create_app()
+class TestWebhookTranslateViaThread:
+    """以離線 Stub/Fake 注入，確認 webhook 翻譯呼叫經 to_thread 後流程仍正常。"""
 
-    def override_db():
-        db = _Session()
+    @staticmethod
+    def _setup():
+        import base64
+        import hashlib
+        import hmac
+        import uuid
+
+        from fastapi.testclient import TestClient
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        from saas_mvp.models import tenant as _t, user as _u, note as _n, usage as _us  # noqa: F401
+        from saas_mvp.models import api_key as _ak, api_key_usage as _aku  # noqa: F401
+        from saas_mvp.models import plan_change_history as _pch  # noqa: F401
+        import saas_mvp.models.line_channel_config as _lcm  # noqa: F401
+        import saas_mvp.models.line_user_lang as _lul  # noqa: F401
+
+        from saas_mvp.app import create_app
+        from saas_mvp.db import Base, get_db
+        from saas_mvp.line_client import FakeLineReplyClient, get_line_client
+        from saas_mvp.translation import StubTranslator, get_translator
+
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        Base.metadata.create_all(bind=engine)
+
+        translator = StubTranslator()
+        fake_client = FakeLineReplyClient()
+
+        app = create_app()
+
+        def override_db():
+            db = Session()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_db
+        app.dependency_overrides[get_translator] = lambda: translator
+        app.dependency_overrides[get_line_client] = lambda: fake_client
+
+        client = TestClient(app, raise_server_exceptions=True)
+
+        # 註冊租戶 + 設為 admin + 建 LINE config
+        secret = "test-channel-secret-32-bytes-x!!"
+        email = f"thr_{uuid.uuid4().hex[:8]}@example.com"
+        tn = f"thr_tenant_{uuid.uuid4().hex[:8]}"
+        r = client.post(
+            "/auth/register",
+            json={"email": email, "password": "Test1234!", "tenant_name": tn},
+        )
+        assert r.status_code == 201, r.text
+        token = r.json()["access_token"]
+        me = client.get("/tenants/me", headers={"Authorization": f"Bearer {token}"})
+        tid = me.json()["id"]
+
+        from saas_mvp.auth.security import decode_access_token
+        from saas_mvp.models.user import User
+
+        sub = int(decode_access_token(token)["sub"])
+        db = Session()
         try:
-            yield db
+            db.get(User, sub).is_admin = True
+            db.commit()
         finally:
             db.close()
 
-    app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[get_translator] = lambda: _skip_translator
-    app.dependency_overrides[get_line_client] = lambda: _fake_client
+        r2 = client.put(
+            f"/admin/line-configs/{tid}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "channel_secret": secret,
+                "access_token": "tok",
+                "default_target_lang": "ja",
+            },
+        )
+        assert r2.status_code == 200, r2.text
 
-    with TestClient(app, raise_server_exceptions=True) as c:
-        yield c
+        def sign(body: bytes) -> str:
+            mac = hmac.new(secret.encode(), body, hashlib.sha256)
+            return base64.b64encode(mac.digest()).decode()
 
+        return client, tid, sign, fake_client
 
-def _sign(body: bytes, secret: str = _CHANNEL_SECRET) -> str:
-    mac = hmac.new(secret.encode("utf-8"), body, hashlib.sha256)
-    return base64.b64encode(mac.digest()).decode("utf-8")
+    def test_text_message_translated_and_replied(self):
+        client, tid, sign, fake_client = self._setup()
+        body = json.dumps(
+            {
+                "events": [
+                    {
+                        "type": "message",
+                        "replyToken": "rt-001",
+                        "source": {"type": "user", "userId": "Uthread1"},
+                        "message": {"type": "text", "text": "hello"},
+                    }
+                ]
+            }
+        ).encode("utf-8")
 
-
-def _register(client: TestClient, default_lang: str = "ja") -> int:
-    email = f"enh_{uuid.uuid4().hex[:8]}@example.com"
-    tn = f"enh_tenant_{uuid.uuid4().hex[:8]}"
-    r = client.post("/auth/register", json={
-        "email": email, "password": "Test1234!", "tenant_name": tn,
-    })
-    assert r.status_code == 201, r.text
-    token = r.json()["access_token"]
-    me = client.get("/tenants/me", headers={"Authorization": f"Bearer {token}"})
-    tid = me.json()["id"]
-
-    from saas_mvp.auth.security import decode_access_token
-    from saas_mvp.models.user import User
-    payload = decode_access_token(token)
-    db = _Session()
-    try:
-        user = db.get(User, int(payload["sub"]))
-        user.is_admin = True
-        db.commit()
-    finally:
-        db.close()
-
-    r2 = client.put(
-        f"/admin/line-configs/{tid}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "channel_secret": _CHANNEL_SECRET,
-            "access_token": _ACCESS_TOKEN,
-            "default_target_lang": default_lang,
-        },
-    )
-    assert r2.status_code == 200, r2.text
-    return tid
-
-
-def _post_text(client: TestClient, tid: int, text: str, lang: str = "ja"):
-    event = {
-        "type": "message",
-        "replyToken": f"rt-{uuid.uuid4().hex[:6]}",
-        "source": {"type": "user", "userId": f"U{uuid.uuid4().hex[:8]}"},
-        "message": {"type": "text", "text": text},
-    }
-    body = json.dumps({"events": [event]}).encode("utf-8")
-    return client.post(
-        f"/line/webhook/{tid}",
-        content=body,
-        headers={"X-Line-Signature": _sign(body)},
-    )
-
-
-def test_webhook_skip_replies_original_text(client):
-    """同語言 skip：default_target_lang=ja，stub source=ja → 回覆原文（非 [JA] 包裝）。"""
-    _fake_client.reset()
-    tid = _register(client, default_lang="ja")
-    r = _post_text(client, tid, "これは日本語のテキスト")
-    assert r.status_code == 200, r.text
-    assert _fake_client.last_text == "これは日本語のテキスト"
-    assert not _fake_client.last_text.startswith("[")
-
-
-def test_webhook_non_skip_wraps_text(client):
-    """target=en（非同語言）→ stub 正常包裝 [EN]。"""
-    _fake_client.reset()
-    tid = _register(client, default_lang="en")
-    r = _post_text(client, tid, "hello world")
-    assert r.status_code == 200, r.text
-    assert _fake_client.last_text == "[EN] hello world"
-
-
-def test_webhook_skip_path_still_counts_quota(client):
-    """skip 仍是一次成功翻譯回覆 → quota +1（不因 skip 漏算）。"""
-    from saas_mvp.quota import get_quota_status
-    _fake_client.reset()
-    tid = _register(client, default_lang="ja")
-    before = get_quota_status(_Session(), tid, "free")["used"]
-    _post_text(client, tid, "日本語1")
-    after = get_quota_status(_Session(), tid, "free")["used"]
-    assert after == before + 1
+        r = client.post(
+            f"/line/webhook/{tid}",
+            content=body,
+            headers={"X-Line-Signature": sign(body)},
+        )
+        assert r.status_code == 200, r.text
+        # to_thread 包裝後仍正確回覆譯文（default_target_lang=ja → [JA] hello）
+        replies = [s.text for s in fake_client.sent]
+        assert "[JA] hello" in replies

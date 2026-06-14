@@ -11,28 +11,22 @@ from passlib.context import CryptContext
 
 from saas_mvp.config import settings
 
+# bcrypt cost factor。生產維持安全預設 12。測試環境可用 SAAS_BCRYPT_ROUNDS 降到
+# 最低值以大幅加速整批雜湊（不影響演算法本身；verify 由 hash 內嵌的 rounds 決定），
+# 但必須同時設 SAAS_TESTING=1 明確表態，否則低於 10 的值一律拒絕啟動（fail-closed），
+# 防止 CI/CD 環境變數污染把弱雜湊帶進生產。
+_BCRYPT_ROUNDS = max(4, min(31, int(os.getenv("SAAS_BCRYPT_ROUNDS", "12"))))
+if _BCRYPT_ROUNDS < 10 and not os.getenv("SAAS_TESTING"):
+    raise RuntimeError(
+        f"SAAS_BCRYPT_ROUNDS={_BCRYPT_ROUNDS} is unsafe for production "
+        "(minimum secure cost is 10); set SAAS_TESTING=1 to allow a lower value in tests."
+    )
 
-def _build_pwd_ctx() -> CryptContext:
-    """建立 bcrypt CryptContext。
-
-    生產環境使用 passlib 預設 cost（安全強度）。僅當 ``SAAS_BCRYPT_ROUNDS``
-    env 顯式設定時才覆寫 rounds——測試環境可設低值（如 4）大幅加速；env 未設
-    時行為與原本完全一致，不影響生產安全性。bcrypt 合法區間為 4~31，超界則忽略。
-    """
-    raw = os.environ.get("SAAS_BCRYPT_ROUNDS")
-    if raw:
-        try:
-            rounds = int(raw)
-        except ValueError:
-            rounds = 0
-        if 4 <= rounds <= 31:
-            return CryptContext(
-                schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=rounds
-            )
-    return CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-_pwd_ctx = _build_pwd_ctx()
+_pwd_ctx = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=_BCRYPT_ROUNDS,
+)
 
 
 # ──────────────────────────── password helpers ────────────────────────────────
