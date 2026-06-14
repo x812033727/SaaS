@@ -294,3 +294,49 @@ Sources:
 - [Python asyncio.to_thread](https://docs.python.org/3/library/asyncio-tasks.html#asyncio.to_thread)
 - [DeepL Python SDK (GitHub)](https://github.com/DeepLcom/deepl-python)
 
+## 2026-06-14 15:12
+
+現有程式碼已掌握。整理報告如下：
+
+---
+
+## 多租戶管理 — 調研報告
+
+### 現有程式碼狀態（避免重造輪子）
+
+重點: `LineChannelConfig` model、`services/line_config.py`（get/upsert/delete）、Admin 端點 `GET/PUT/DELETE /admin/line-configs/{tenant_id}` **全部已實作完成**。
+重點: Webhook 路由 `/line/webhook/{tenant_id}` 已以 `tenant_id` 查 DB 隔離各租戶；service 層可直接 reuse。
+重點: **本輪任務真正缺口**：只有 Admin 能管理 LINE config，**租戶自助 API 完全不存在**——`routers/tenants.py` 裡只有 `GET /tenants/me`，沒有 LINE config 相關端點。
+
+---
+
+### LINE Messaging API — 多租戶路由機制確認
+
+重點: LINE 每個 channel 在 Console 只能設定**一個 webhook URL**；現有 `/line/webhook/{tenant_id}` 設計完全正確——每租戶去 LINE Console 填自己的專屬 URL（`https://xxx.com/line/webhook/42`）即可，**無需特殊多路由機制**。來源：[LINE Docs — Receiving messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+重點: webhook payload 的 `destination` 欄位是 LINE Bot userId，不是租戶識別碼；租戶隔離已靠 URL path `tenant_id` 完成，**不需依賴 destination 做路由**。
+
+---
+
+### 自助管理 API 設計參考
+
+重點: 最直接做法：在 `routers/tenants.py` 加三個端點，`tenant_id` 從 `current_user.tenant_id` 取（不從 URL），確保租戶只能看/改自己的設定。
+重點: `services/line_config.py` 裡 `get_line_config`、`upsert_line_config`、`delete_line_config` 可**直接 reuse**，介面相容（入參都是 `db, tenant_id, ...`），不需改 service 層。
+重點: 應額外回傳 `webhook_url`（如 `"/line/webhook/{tenant_id}"`）欄位，讓租戶知道要在 LINE Console 填什麼，**否則他們無法完成設定**。
+
+---
+
+### 建議
+
+建議: 在 `routers/tenants.py` 加 `GET/PUT/DELETE /tenants/me/line-config`，`tenant_id = current_user.tenant_id`，**直接呼叫既有 service**，不重複邏輯。
+建議: `GET /tenants/me/line-config` 回應加 `"webhook_url": f"/line/webhook/{tenant_id}"` 欄位，方便前端引導租戶去 LINE Console 設定。
+建議: 不需新增 service 函數——現有三個函數介面已足夠，只需新增 router；`app.py` 不需改（`tenants.router` 已掛載）。
+建議: 安全性：路由層只傳自己的 `tenant_id`，無法越權讀取他人設定；admin 路徑維持原狀（`require_admin` dependency 保護），兩套端點並存互不干擾。
+建議: 測試策略：仿照 `test_line_task4_admin_line_configs.py` 的 in-memory SQLite 模式，增加「租戶 A 無法讀租戶 B 的 config」隔離驗收測試。
+
+---
+
+**Sources:**
+- [LINE Docs — Receiving messages (webhook)](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+- [LINE Messaging API reference](https://developers.line.biz/en/reference/messaging-api/)
+- [LINE Docs — Module channel webhook routing](https://developers.line.biz/en/docs/partner-docs/module-technical-using-messaging-api/)
+

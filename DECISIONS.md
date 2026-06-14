@@ -168,3 +168,41 @@
 ## 新增 `tests/test_translation_enhanced.py`，覆蓋：`_normalize_target_lang` 直接靜態呼叫（`ZH-TW→ZH-HANT`、`ZH-CN→ZH-HANS`、`JA→JA`）、`DeepLTranslator.translate()` 以 `unittest.mock.patch` 替換 urllib 模擬回應（正常翻譯與 skip 兩條路徑）、`StubTranslator` skip 行為；不改任何既有測試檔
 - 時間：2026-06-14 14:24
 
+## 所有新端點加入 `routers/tenants.py`，`app.py` 不動。
+- 時間：2026-06-14 15:15
+
+## `services/line_config.py` 三函數原封不動，router 只做組裝呼叫。
+- 時間：2026-06-14 15:15
+
+## 三端點路徑均為 `/tenants/me/line-config`，無 `{tenant_id}` path param；`tenant_id` 唯一來源是 `current_user.tenant_id`。
+- 時間：2026-06-14 15:15
+
+## 使用現有 `get_current_user` dependency，不需 `require_admin`；admin 端點原狀不動。
+- 時間：2026-06-14 15:15
+
+## 在 `routers/tenants.py` 定義 Pydantic response model `TenantLineConfigResponse`，欄位：`tenant_id / has_channel_secret / has_access_token / default_target_lang / created_at / updated_at / webhook_url`；`created_at / updated_at` 宣告為 `str | None`（service 層已 `.isoformat()` 序列化，非 datetime 物件）。
+- 時間：2026-06-14 15:15
+- 理由：避免 Pydantic 對 str 重複序列化造成語意混淆。
+
+## `GET` 與 `PUT`（upsert 成功）均回傳完整 `TenantLineConfigResponse`（HTTP 200）；`DELETE` 回 **HTTP 204 No Content**。
+- 時間：2026-06-14 15:15
+- 理由：204 對齊 self-service 同層級慣例（`notes.py`、`api_keys.py` 皆 204），非對齊 admin 端點（admin DELETE 實際回 200 + body，兩套契約本來就允許不同）。
+- 否決方案：「DELETE 回 200 + body 以對齊 admin」——admin 是後台契約；self-service 面向租戶，應與同層 REST 慣例一致。
+
+## `webhook_url` 值為相對路徑 `f"/line/webhook/{tenant_id}"`，router 以 `{**svc_dict, "webhook_url": f"/line/webhook/{tenant_id}"}` 組裝後傳入 response model。
+- 時間：2026-06-14 15:15
+- 理由：host 因部署環境不同無法硬編碼，README 說明拼接方式。
+
+## 錯誤處理全部由既有 HTTPException 直傳——`InvalidTargetLangError` 已在 service 層 L70-72 內部轉成 HTTPException(400)，router **不另加 try/except**，寫了是死代碼。
+- 時間：2026-06-14 15:15
+- 否決方案：「router 捕獲 InvalidTargetLangError 回 400」——service 層已處理，此寫法不可達。
+
+## 越權測試語意落地為：租戶 A 的 token 打 `GET /tenants/me/line-config`，若 A 無設定則回 A 的 **404**（而非洩漏 B 的資料）；無法透過此端點表達「A 直接操作 B」，隔離保障由「路徑無 param、token 強綁 tenant_id」結構性保證。
+- 時間：2026-06-14 15:15
+
+## 新增 `tests/test_self_service_line_config.py`，覆蓋：CRUD happy path、`webhook_url` 欄位值、A token → GET/PUT/DELETE 回 A 的 404（非 B 的資料）、未設定時 GET 回 404。
+- 時間：2026-06-14 15:15
+
+## 本輪不改 admin 端點回應格式、不新增 secret/token 明文欄位、不實作 absolute URL 組裝（M2 backlog）。
+- 時間：2026-06-14 15:15
+
