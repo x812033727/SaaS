@@ -62,6 +62,7 @@ tests/test_line_task3_line_client.py
 tests/test_line_task4_admin_line_configs.py
 tests/test_line_task5_webhook.py
 tests/test_qa_task1_billing_deferred.py
+tests/test_qa_task2_skip_normalized.py
 tests/test_qa_task4_admin_line_endpoints.py
 tests/test_ratelimit_enhanced.py
 tests/test_saas_isolation_regression.py

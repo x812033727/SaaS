@@ -224,7 +224,7 @@ async def line_webhook(
         )
 
         # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-        # NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2)
+        # NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)
         line_client.reply(reply_token, translated, access_token=access_token)
 
         # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────

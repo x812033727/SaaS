@@ -17,7 +17,7 @@ from saas_mvp.translation.base import Translator, TranslationError
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 
 # BCP-47 tag → DeepL 接受的 target_lang。DeepL 不接受 ZH-TW/ZH-CN（會回 400），
-# 須映射成 ZH-HANT/ZH-HANS。其餘語言 .upper() 即可。
+# 須映射成 ZH-HANT/ZH-HANS；其餘語言 .upper() 即可。
 _DEEPL_LANG_MAP = {
     "ZH-TW": "ZH-HANT",
     "ZH-CN": "ZH-HANS",
@@ -59,6 +59,7 @@ class DeepLTranslator(Translator):
         """將 BCP-47 tag 正規化為 DeepL 接受的 target_lang。
 
         白名單映射不相容 tag（ZH-TW→ZH-HANT、ZH-CN→ZH-HANS），其餘 ``.upper()``。
+        DeepL 不接受 ZH-TW/ZH-CN，未映射會回 400 Bad Request。
         """
         upper = target_lang.upper()
         return _DEEPL_LANG_MAP.get(upper, upper)
@@ -79,10 +80,14 @@ class DeepLTranslator(Translator):
     def translate(self, text: str, target_lang: str) -> str:
         """Call DeepL API and return translated text.
 
+        若 DeepL 回傳的 ``detected_source_language`` 等同於正規化後的 target，
+        代表來源語言已是目標語言，直接回傳原文（避免把同語言翻譯結果回覆給用戶）。
+
         Raises:
             TranslationError: on network error, HTTP error, or unexpected response.
         """
-        # 單一變數：payload 與 skip 比較均用 norm，消除兩處各自 .upper() 的不一致風險。
+        # 單一變數防呆：API payload 與下方 skip 比較均使用 norm，
+        # 消除兩處各自 .upper() 造成的不一致風險。
         norm = self._normalize_target_lang(target_lang)
 
         payload = urllib.parse.urlencode(
