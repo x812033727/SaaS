@@ -76,8 +76,10 @@ def _migrate_add_line_bot_user_id() -> None:
                 )
             )
         _log.info("migrated: added %s.%s column + unique index", table, column)
-    except Exception:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        # 僅記例外類型，不帶 exc_info traceback：避免 DB 連線錯誤的 DSN
+        # （含密碼）被寫入日誌（資安審查建議）。
         _log.warning(
-            "schema migration for %s.%s skipped due to error", table, column,
-            exc_info=True,
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
         )

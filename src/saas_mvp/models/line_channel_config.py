@@ -98,6 +98,11 @@ class LineChannelConfig(Base):
     channel_secret_enc = Column(LargeBinary, nullable=False)
     access_token_enc = Column(LargeBinary, nullable=False)
 
+    # LINE bot 的 userId（webhook payload.destination 比對用，作租戶識別二次驗證）。
+    # nullable：舊資料/未取得 bot/info 時為 NULL，向後相容；unique 防同一 bot 跨租戶誤配。
+    # 新環境由 create_all 直接建立；既有 DB 由 db._migrate_add_line_bot_user_id() 補欄。
+    line_bot_user_id = Column(String(64), nullable=True, unique=True, index=True)
+
     # 預設翻譯目標語言（BCP-47 tag，如 "zh-TW", "en", "ja"）
     default_target_lang = Column(String(16), nullable=False, default="zh-TW")
 
