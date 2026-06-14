@@ -207,6 +207,21 @@ class TestValidation:
         r = client.put(PATH, headers=_auth(token), json={"channel_secret": "s"})
         assert r.status_code == 422
 
+    def test_oversized_secret_422(self, client, tenant_a):
+        """超過 max_length 的 secret 應在 router 層被攔（防儲存 DoS）。"""
+        token, _ = tenant_a
+        r = client.put(PATH, headers=_auth(token), json={
+            "channel_secret": "x" * 65, "access_token": "t",
+        })
+        assert r.status_code == 422
+
+    def test_oversized_token_422(self, client, tenant_a):
+        token, _ = tenant_a
+        r = client.put(PATH, headers=_auth(token), json={
+            "channel_secret": "s", "access_token": "y" * 1025,
+        })
+        assert r.status_code == 422
+
 
 # ── 隔離 ──────────────────────────────────────────────────────────────────────
 

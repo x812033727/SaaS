@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from saas_mvp.deps import get_current_user, get_db
+from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import line_config as line_config_svc
@@ -37,8 +37,10 @@ class TenantLineConfigResponse(BaseModel):
 
 
 class TenantLineConfigUpsertBody(BaseModel):
-    channel_secret: str = Field(..., min_length=1)
-    access_token: str = Field(..., min_length=1)
+    # LINE channel secret 固定 32 字元、access token 通常 ≤512 字元；
+    # 設上限提早攔截異常輸入，避免認證後租戶塞超大字串造成儲存/加密 DoS。
+    channel_secret: str = Field(..., min_length=1, max_length=64)
+    access_token: str = Field(..., min_length=1, max_length=1024)
     default_target_lang: str = "zh-TW"
 
 
@@ -59,16 +61,25 @@ def get_my_tenant(
 
 # ── 租戶自助 LINE Channel Config 端點 ─────────────────────────────────────────
 # tenant_id 唯一來源為 current_user.tenant_id，無 path/body 參數，結構性保證隔離。
+# 寫端點 + 查端點皆掛 require_rate_limit，對齊 notes.py 等同層 self-service 慣例。
+
+# NOTE: 必須與 line_webhook router 一致（prefix "/line" + "/webhook/{tenant_id}"）。
+#       該路由若變更，此格式須同步更新，否則回傳的 webhook_url 會靜默脫節。
+_WEBHOOK_URL_TEMPLATE = "/line/webhook/{tenant_id}"
 
 
 def _line_config_response(svc_dict: dict, tenant_id: int) -> TenantLineConfigResponse:
     return TenantLineConfigResponse(
         **svc_dict,
-        webhook_url=f"/line/webhook/{tenant_id}",
+        webhook_url=_WEBHOOK_URL_TEMPLATE.format(tenant_id=tenant_id),
     )
 
 
-@router.get("/me/line-config", response_model=TenantLineConfigResponse)
+@router.get(
+    "/me/line-config",
+    response_model=TenantLineConfigResponse,
+    dependencies=[Depends(require_rate_limit)],
+)
 def get_my_line_config(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -79,7 +90,11 @@ def get_my_line_config(
     return _line_config_response(svc_dict, tid)
 
 
-@router.put("/me/line-config", response_model=TenantLineConfigResponse)
+@router.put(
+    "/me/line-config",
+    response_model=TenantLineConfigResponse,
+    dependencies=[Depends(require_rate_limit)],
+)
 def upsert_my_line_config(
     body: TenantLineConfigUpsertBody,
     current_user: User = Depends(get_current_user),
@@ -97,7 +112,11 @@ def upsert_my_line_config(
     return _line_config_response(svc_dict, tid)
 
 
-@router.delete("/me/line-config", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/me/line-config",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_rate_limit)],
+)
 def delete_my_line_config(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
