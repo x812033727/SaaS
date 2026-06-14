@@ -32,14 +32,20 @@ else
     PIP="$PYTHON -m pip"
 fi
 
-# 嘗試安裝 editable + test extra，失敗（唯讀 FS / 權限）時靜默繼續。
+# 依賴已可匯入時跳過 pip（省去在唯讀 FS 下注定失敗、仍耗數秒的解析開銷）。
+# 否則才嘗試安裝 editable + test extra，失敗（唯讀 FS / 權限）時靜默繼續。
 # PYTHONPATH=src 確保不依賴 site-packages 也能 import saas_mvp。
-"$PIP" install --quiet -e ".[test]" 2>/dev/null || true
+if ! PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c \
+        "import sqlalchemy, fastapi, pytest, saas_mvp" 2>/dev/null; then
+    "$PIP" install --quiet -e ".[test]" 2>/dev/null || true
+fi
 
 # ── 3. 設環境變數 ─────────────────────────────────────────────
 # DB 指向 in-memory，避免 init_db() 嘗試建立檔案型 SQLite
 export SAAS_DATABASE_URL="${SAAS_DATABASE_URL:-sqlite:///:memory:}"
 export SAAS_RATE_LIMIT_ENABLED="${SAAS_RATE_LIMIT_ENABLED:-false}"
+# 測試環境用最低 bcrypt cost 加速大量密碼雜湊（生產維持預設 12，見 auth/security.py）
+export SAAS_BCRYPT_ROUNDS="${SAAS_BCRYPT_ROUNDS:-4}"
 
 # ── 4. 執行 pytest ────────────────────────────────────────────
 # PYTHONPATH=src 確保 saas_mvp 從 src/ 載入，不依賴 site-packages

@@ -16,6 +16,13 @@ from saas_mvp.translation.base import Translator, TranslationError
 
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 
+# BCP-47 tag → DeepL 接受的 target_lang。DeepL 不接受 ZH-TW/ZH-CN，繁/簡須映射成
+# ZH-HANT/ZH-HANS，否則 API 回 400。其餘語言（JA/EN/KO…）直接 upper() 即可。
+_DEEPL_LANG_MAP = {
+    "ZH-TW": "ZH-HANT",
+    "ZH-CN": "ZH-HANS",
+}
+
 
 class DeepLTranslator(Translator):
     """Translation backend that calls the DeepL REST API.
@@ -43,17 +50,28 @@ class DeepLTranslator(Translator):
     def is_available(self) -> bool:
         return bool(self._api_key)
 
+    @staticmethod
+    def _normalize_target_lang(target_lang: str) -> str:
+        """將 BCP-47 tag 正規化成 DeepL 接受的 target_lang。
+
+        ZH-TW → ZH-HANT、ZH-CN → ZH-HANS；其餘維持 upper()。
+        """
+        upper = target_lang.upper()
+        return _DEEPL_LANG_MAP.get(upper, upper)
+
     def translate(self, text: str, target_lang: str) -> str:
         """Call DeepL API and return translated text.
 
         Raises:
             TranslationError: on network error, HTTP error, or unexpected response.
         """
+        # 單一變數防呆：payload 與 skip 比較均使用 norm，避免兩處各自 upper() 不一致
+        norm = self._normalize_target_lang(target_lang)
         payload = urllib.parse.urlencode(
             {
                 "auth_key": self._api_key,
                 "text": text,
-                "target_lang": target_lang.upper(),
+                "target_lang": norm,
             }
         ).encode()
 
@@ -78,8 +96,23 @@ class DeepLTranslator(Translator):
             raise TranslationError(f"Unexpected error from DeepL: {exc}") from exc
 
         try:
-            return body["translations"][0]["text"]
+            translation = body["translations"][0]
+            detected = translation.get("detected_source_language", "")
         except (KeyError, IndexError) as exc:
+            raise TranslationError(
+                f"Unexpected DeepL response structure: {body!r}"
+            ) from exc
+
+        # 同語言 skip：偵測到的來源語言 == 正規化後 target 時，回原文避免把
+        # 同語言「翻譯」結果回覆給用戶（UX 正確性）。HTTP 已發出，是否計費由 DeepL 決定。
+        # 註：DeepL 對中文偵測回傳 "ZH"，而正規化後的繁中 target 為 "ZH-HANT"，兩者不等，
+        # 故繁中→繁中不會觸發 skip；此為 DeepL API 行為限制，非 bug。
+        if detected.upper() == norm:
+            return text
+
+        try:
+            return translation["text"]
+        except KeyError as exc:
             raise TranslationError(
                 f"Unexpected DeepL response structure: {body!r}"
             ) from exc

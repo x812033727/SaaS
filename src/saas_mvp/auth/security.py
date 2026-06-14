@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -10,7 +11,15 @@ from passlib.context import CryptContext
 
 from saas_mvp.config import settings
 
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt cost factor。生產維持安全預設 12；測試環境可用 SAAS_BCRYPT_ROUNDS 降到
+# 最低值（4）以大幅加速整批雜湊，且不影響演算法本身（verify 由 hash 內嵌的 rounds 決定）。
+_BCRYPT_ROUNDS = max(4, min(31, int(os.getenv("SAAS_BCRYPT_ROUNDS", "12"))))
+
+_pwd_ctx = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=_BCRYPT_ROUNDS,
+)
 
 
 # ──────────────────────────── password helpers ────────────────────────────────
