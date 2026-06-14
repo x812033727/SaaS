@@ -37,3 +37,27 @@ class LineReplyClient(ABC):
         True：已正確設定、可發送。
         False：缺設定或明確停用（如 FakeLineReplyClient 被設為 unavailable 時）。
         """
+
+
+class LineBotInfoClient(ABC):
+    """LINE `GET /v2/bot/info` client 介面 — 取得 bot 的 userId。
+
+    回傳的 userId 作為租戶識別二次驗證鍵（與 webhook payload.destination 比對）。
+    與 LineReplyClient 一致採 ABC + abstractmethod：未實作方法在實例化時即報錯。
+
+    access_token 以 per-call 傳入，使同一實例可服務不同 tenant。
+    """
+
+    @abstractmethod
+    def get_user_id(self, access_token: str) -> str | None:
+        """以 channel access token 呼叫 bot/info，回傳 bot 的 userId。
+
+        Args:
+            access_token: 該 LINE channel 的 channel access token（Bearer）。
+
+        Returns:
+            成功時回傳 userId（格式 U[0-9a-f]{32}）；回應缺少 userId 時回 None。
+
+        Raises:
+            任何網路/HTTP 失敗一律拋例外，由呼叫端決定是否吞掉（upsert 不阻擋）。
+        """

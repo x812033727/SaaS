@@ -9,15 +9,20 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from saas_mvp.line_client import LineBotInfoClient
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.line_channel_config import (
     LineChannelConfig,
     validate_target_lang,
     InvalidTargetLangError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _to_response(cfg: LineChannelConfig) -> dict:
@@ -53,8 +58,14 @@ def upsert_line_config(
     channel_secret: str,
     access_token: str,
     default_target_lang: str = "zh-TW",
+    bot_info_client: LineBotInfoClient | None = None,
 ) -> dict:
     """新建或覆寫租戶 LINE 設定；回傳遮罩版 response。
+
+    若提供 ``bot_info_client``，在設定 commit 成功後自動呼叫 LINE
+    ``GET /v2/bot/info`` 取 bot userId 並回填 ``line_bot_user_id``。
+    bot/info 失敗（網路/離線）或 userId 已被他租戶佔用（IntegrityError）時，
+    僅記 warning、rollback，不阻擋 upsert——設定仍儲存成功、欄位留原值。
 
     Raises
     ------
@@ -82,6 +93,20 @@ def upsert_line_config(
 
     db.commit()
     db.refresh(cfg)
+
+    # bot/info 自動回填 userId：失敗不阻擋 upsert（離線相容）。
+    # get_user_id 失敗與二次 commit 的 IntegrityError 共用同一 try/except，
+    # rollback 必須顯式呼叫，防止 session 髒狀態污染後續請求。
+    if bot_info_client is not None:
+        try:
+            uid = bot_info_client.get_user_id(cfg.access_token)
+            if uid:
+                cfg.line_bot_user_id = uid
+                db.commit()
+        except Exception:
+            logger.warning("line bot info fetch or uid commit failed, skipping")
+            db.rollback()
+
     return _to_response(cfg)
 
 

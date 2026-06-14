@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_db, get_current_actor, require_admin
 from saas_mvp.auth.dependencies import Actor
+from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import line_config as line_config_svc
 from pydantic import BaseModel, Field
@@ -93,6 +94,7 @@ def upsert_line_config(
     tenant_id: int,
     body: LineConfigUpsertBody,
     db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
 ):
     return line_config_svc.upsert_line_config(
         db,
@@ -100,6 +102,7 @@ def upsert_line_config(
         channel_secret=body.channel_secret,
         access_token=body.access_token,
         default_target_lang=body.default_target_lang,
+        bot_info_client=bot_info_client,
     )
 
 

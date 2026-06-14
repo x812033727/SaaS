@@ -10,9 +10,14 @@ import json
 import urllib.error
 import urllib.request
 
-from saas_mvp.line_client.base import LineReplyClient, LineReplyError
+from saas_mvp.line_client.base import (
+    LineBotInfoClient,
+    LineReplyClient,
+    LineReplyError,
+)
 
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+_LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 
 
 class HttpLineReplyClient(LineReplyClient):
@@ -71,3 +76,35 @@ class HttpLineReplyClient(LineReplyClient):
             raise LineReplyError(f"LINE reply request failed: {exc}") from exc
         except Exception as exc:
             raise LineReplyError(f"Unexpected LINE reply error: {exc}") from exc
+
+
+class HttpLineBotInfoClient(LineBotInfoClient):
+    """呼叫真實 LINE `GET /v2/bot/info` 取得 bot userId 的 client。
+
+    僅用 stdlib urllib。任何失敗直接拋例外（OSError/HTTPError/解析錯誤），
+    由呼叫端（upsert）決定吞掉並記 warning，不阻擋設定儲存。
+
+    Args:
+        api_url: bot/info endpoint（預設官方 URL，測試時可替換）。
+        timeout: HTTP timeout（秒）。
+    """
+
+    def __init__(
+        self,
+        api_url: str = _LINE_BOT_INFO_URL,
+        timeout: int = 10,
+    ) -> None:
+        self._api_url = api_url
+        self._timeout = timeout
+
+    def get_user_id(self, access_token: str) -> str | None:
+        """呼叫 bot/info，回傳 ``userId``；回應缺欄位時回 None。"""
+        req = urllib.request.Request(
+            self._api_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            data = json.loads(resp.read().decode())
+        user_id = data.get("userId")
+        return user_id if user_id else None
