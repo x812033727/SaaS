@@ -11,8 +11,9 @@
 * 計費點後移：先非遞增檢查配額，translate 與 reply 都成功後才 check_and_increment，
   下游失敗不會白扣（消除原「+1 後才翻譯」的白扣 tradeoff）。
 * 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig。
-* 租戶列舉防護：找不到 config 時回 400（與簽章錯誤同狀態碼、同 detail），
-  外部無法藉回應區分「未設定」與「簽章錯」；並做等量 HMAC 計算對齊 timing。
+* 租戶列舉防護：所有驗章失敗——無 config、缺 X-Line-Signature header、簽章錯——
+  一律回相同的 400 + 相同 detail，外部無法藉狀態碼或回應內容區分租戶是否已設定；
+  無 config 路徑並做等量 HMAC 計算對齊 timing。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
 """
 
@@ -112,14 +113,11 @@ async def line_webhook(
         return {"status": "ok"}
 
     # ── 4. 驗章 X-Line-Signature ───────────────────────────────────────────────
+    # 列舉防護：缺 header、簽章錯、無 config 三種失敗一律回相同的 400 + detail，
+    # 任何分支都不可洩漏「該 tenant 是否已設定 LINE」。缺 header 不可單獨給
+    # 「Missing ...」訊息，否則攻擊者送無 header 請求即可逐一列舉已設定租戶。
     signature = request.headers.get("X-Line-Signature", "")
-    if not signature:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing X-Line-Signature header",
-        )
-
-    if not _verify_signature(body, channel_secret, signature):
+    if not signature or not _verify_signature(body, channel_secret, signature):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_INVALID_SIGNATURE_DETAIL,

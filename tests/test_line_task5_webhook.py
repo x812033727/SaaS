@@ -299,29 +299,36 @@ class TestTenantNotFound:
         assert r.status_code == 400
         assert r.status_code != 404
 
-    def test_no_config_indistinguishable_from_bad_signature(self, client, tenant_a):
-        """反向樣本：對『已設定+簽章錯』與『未設定』兩路徑，狀態碼與 detail 必須一致。
+    def test_configured_vs_unconfigured_indistinguishable_all_probes(self, client, tenant_a):
+        """反向樣本（列舉防護核心斷言）：在每一種探針下，『已設定 vs 未設定』租戶
+        的 status_code 與 detail 都必須完全相等，否則攻擊者即可區分租戶是否已設定。
 
-        這是列舉防護的核心斷言——若兩者回應有任何差異，攻擊者即可區分租戶是否已設定。
+        涵蓋兩個探針維度（第 2 輪退回補強——原本只測『錯簽章』漏了『缺 header』旁路）：
+          probe A: 帶錯誤簽章 header
+          probe B: 完全不帶 X-Line-Signature header
         """
         _, configured_tid = tenant_a
         body = _payload(_make_text_event("hello"))
+        BAD_SIG = {"X-Line-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+        unconfigured_tid = 99999
 
-        # 路徑 A：已設定的租戶，但送錯誤簽章
-        r_badsig = client.post(
-            f"/line/webhook/{configured_tid}",
-            content=body,
-            headers={"X-Line-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-        )
-        # 路徑 B：完全未設定的 tenant_id（即使帶上「正確格式」的簽章也無法驗）
-        r_nocfg = client.post(
-            f"/line/webhook/99999",
-            content=body,
-            headers={"X-Line-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-        )
+        probes = {
+            "bad_signature": BAD_SIG,
+            "missing_header": None,  # 不帶簽章 header
+        }
+        for name, headers in probes.items():
+            kw = {"headers": headers} if headers else {}
+            r_cfg = client.post(f"/line/webhook/{configured_tid}", content=body, **kw)
+            r_nocfg = client.post(f"/line/webhook/{unconfigured_tid}", content=body, **kw)
+            assert r_cfg.status_code == r_nocfg.status_code == 400, f"probe={name} 狀態碼可區分"
+            assert r_cfg.json()["detail"] == r_nocfg.json()["detail"], f"probe={name} detail 可區分"
 
-        assert r_badsig.status_code == r_nocfg.status_code == 400
-        assert r_badsig.json()["detail"] == r_nocfg.json()["detail"]
+        # 額外鎖死：所有失敗探針的 detail 為單一字串，未來任何分支若改回獨立訊息即會破測
+        details = set()
+        for tid in (configured_tid, unconfigured_tid):
+            details.add(client.post(f"/line/webhook/{tid}", content=body, headers=BAD_SIG).json()["detail"])
+            details.add(client.post(f"/line/webhook/{tid}", content=body).json()["detail"])
+        assert len(details) == 1, f"驗章失敗 detail 不唯一，存在列舉旁路：{details}"
 
 
 # ── 測試：文字訊息翻譯流程 ────────────────────────────────────────────────────
