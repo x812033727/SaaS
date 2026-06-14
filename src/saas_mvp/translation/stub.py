@@ -1,5 +1,7 @@
 """Deterministic offline stub translator."""
 
+from __future__ import annotations
+
 from saas_mvp.translation.base import Translator
 
 
@@ -12,12 +14,13 @@ class StubTranslator(Translator):
     - Always ``is_available() == True``.
 
     同語言 skip：建構子可選 ``source_lang``。若提供，且
-    ``target_lang.upper() == source_lang.upper()``，translate() 回傳原文，
+    ``target_lang.upper() == source_lang.upper()`` 時 translate() 直接回傳原文，
     用於離線測試 webhook 下游的 skip 流程。
 
-    侷限：此處用單純 ``.upper()`` 相等比較，**不**套用 DeepL 的
-    ``_normalize_target_lang`` 正規化；測試須使用能直接 .upper() 相等的語言碼
-    （如 "JA"/"JA"、"ZH-HANT"/"ZH-HANT"），不要用 "ZH-TW" 對 "ZH-HANT"。
+    侷限：比較採單純 ``.upper()`` 相等，**不**複製 DeepL 的
+    ``_normalize_target_lang`` / ZH-HANT 正規化邏輯；測試須使用能直接
+    ``.upper()`` 相等的語言碼（如 "JA"/"JA"、"ZH-HANT"/"ZH-HANT"），
+    不要用 "ZH-TW" 對 "ZH-HANT"。其餘情境維持 ``[LANG] text``。
 
     This is the default when no real translation backend is configured,
     and the canonical implementation to use in tests.

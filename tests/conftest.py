@@ -40,13 +40,11 @@ import saas_mvp.models.line_channel_config as _lcm  # noqa: F401, E402
 # 確保 LineUserLanguage 進入 SQLAlchemy class registry（/lang 持久化表）。
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401, E402
 
-# ── 測試加速：降低 bcrypt cost ──────────────────────────────────────────────
-# production 預設 bcrypt rounds=12，每次 hash/verify 約 0.1s；數十個註冊/登入測試
-# 累積使整套逼近 60s self-test 逾時。測試環境只需驗證雜湊正確性，不需高 work
-# factor，故將 rounds 降到合法最小值 4（僅影響測試，production 程式碼不變）。
-import saas_mvp.auth.security as _sec  # noqa: E402
-from passlib.context import CryptContext as _CryptContext  # noqa: E402
+# ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login
+# 測試累積使全套逼近 60s self-test 逾時。測試環境把 rounds 降到合法最低值 4，
+# 雜湊行為與格式不變（仍是 bcrypt），僅迭代次數變少 → 全套大幅加速。
+# 只在 test session 生效（conftest 只在測試載入），不影響 production 設定。
+# 用 .update() 原地修改既有 context，保留任何已持有 _pwd_ctx 引用的程式碼正常運作。
+import saas_mvp.auth.security as _security  # noqa: E402
 
-_sec._pwd_ctx = _CryptContext(
-    schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=4
-)
+_security._pwd_ctx.update(bcrypt__rounds=4)

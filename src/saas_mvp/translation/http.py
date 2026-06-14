@@ -16,12 +16,16 @@ from saas_mvp.translation.base import Translator, TranslationError
 
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 
-# BCP-47 tag → DeepL 接受的 target_lang。DeepL 不接受 ZH-TW/ZH-CN（會 400），
-# 須映射為 ZH-HANT/ZH-HANS；其餘語言碼 .upper() 後 DeepL 即接受。
+# BCP-47 tag → DeepL 接受的 target_lang。DeepL 不接受 ZH-TW/ZH-CN（會回 400），
+# 須映射成 ZH-HANT/ZH-HANS；其餘語言 .upper() 即可。
 _DEEPL_LANG_MAP = {
     "ZH-TW": "ZH-HANT",
     "ZH-CN": "ZH-HANS",
 }
+
+# DeepL 對中文偵測只回 "ZH"，不細分繁簡；因此同語言比對時，detected="ZH"
+# 視為等同於任一中文變體 target（ZH-HANT/ZH-HANS）。
+_ZH_NORM_TARGETS = {"ZH-HANT", "ZH-HANS"}
 
 
 class DeepLTranslator(Translator):
@@ -52,18 +56,31 @@ class DeepLTranslator(Translator):
 
     @staticmethod
     def _normalize_target_lang(target_lang: str) -> str:
-        """Map BCP-47 tag → DeepL-accepted target_lang.
+        """將 BCP-47 tag 正規化為 DeepL 接受的 target_lang。
 
-        ZH-TW→ZH-HANT、ZH-CN→ZH-HANS；其餘語言碼維持 ``.upper()``。
+        白名單映射不相容 tag（ZH-TW→ZH-HANT、ZH-CN→ZH-HANS），其餘 ``.upper()``。
         DeepL 不接受 ZH-TW/ZH-CN，未映射會回 400 Bad Request。
         """
-        up = target_lang.upper()
-        return _DEEPL_LANG_MAP.get(up, up)
+        upper = target_lang.upper()
+        return _DEEPL_LANG_MAP.get(upper, upper)
+
+    @staticmethod
+    def _is_same_language(detected: str, norm: str) -> bool:
+        """偵測到的來源語言是否等同於正規化後的 target。
+
+        DeepL 對中文偵測只回 "ZH"（不分繁簡），故 detected="ZH" 時，
+        只要 target 為任一中文變體（ZH-HANT/ZH-HANS）即視為同語言；
+        其餘語言直接做大小寫不敏感的相等比對。
+        """
+        d = detected.upper()
+        if d == "ZH":
+            return norm in _ZH_NORM_TARGETS
+        return d == norm
 
     def translate(self, text: str, target_lang: str) -> str:
         """Call DeepL API and return translated text.
 
-        若 DeepL 回傳的 ``detected_source_language`` 等於正規化後的 target，
+        若 DeepL 回傳的 ``detected_source_language`` 等同於正規化後的 target，
         代表來源語言已是目標語言，直接回傳原文（避免把同語言翻譯結果回覆給用戶）。
 
         Raises:
@@ -101,20 +118,18 @@ class DeepLTranslator(Translator):
         except Exception as exc:
             raise TranslationError(f"Unexpected error from DeepL: {exc}") from exc
 
+        # 同語言 skip：偵測到的來源語言等同於正規化後的 target → 回傳原文，
+        # 避免把同語言翻譯結果回覆給用戶（UX 正確性）。中文場景透過
+        # _is_same_language 處理 DeepL 只回 "ZH" 的限制（繁中→繁中亦會 skip）。
+        # 涵蓋 AttributeError/TypeError：若 translations[0] 非 dict（格式異常），
+        # 一律包成 TranslationError，維持原有錯誤封裝語意。
         try:
             translation = body["translations"][0]
-            translated_text = translation["text"]
-        except (KeyError, IndexError) as exc:
+            detected = translation.get("detected_source_language", "")
+            if self._is_same_language(detected, norm):
+                return text
+            return translation["text"]
+        except (KeyError, IndexError, AttributeError, TypeError) as exc:
             raise TranslationError(
                 f"Unexpected DeepL response structure: {body!r}"
             ) from exc
-
-        # 同語言 skip：若偵測到的來源語言 == 正規化後 target，回傳原文，
-        # 避免把「同語言翻譯結果」回覆給用戶（UX 正確性）。
-        # 註：DeepL 對中文偵測回傳 "ZH"，正規化後的 target 為 "ZH-HANT"，
-        # 兩者不等，故繁中→繁中不觸發 skip；此為 DeepL API 行為限制，非 bug。
-        detected = translation.get("detected_source_language")
-        if detected and detected.upper() == norm:
-            return text
-
-        return translated_text
