@@ -36,3 +36,6 @@ _saas_db.init_db = lambda: None
 # 確保 LineChannelConfig 進入 SQLAlchemy class registry，
 # 使 Tenant.line_channel_config relationship 的字串解析不失敗。
 import saas_mvp.models.line_channel_config as _lcm  # noqa: F401, E402
+
+# 確保 LineUserLanguage 進入 SQLAlchemy class registry（/lang 持久化表）。
+import saas_mvp.models.line_user_lang as _lul  # noqa: F401, E402

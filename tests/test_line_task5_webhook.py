@@ -10,13 +10,16 @@
 4.  找不到 tenant LINE config → 404
 5.  文字訊息 → stub translator → fake client 捕捉到正確譯文
 6.  /lang ja hello → 翻譯成 ja，fake client 捕捉到 [JA] hello
-7.  /lang ja（無後續文字）→ 回覆確認、不計 quota
-8.  非文字訊息（image/sticker/...）→ 略過、不報錯、200
-9.  非 message event（follow/unfollow）→ 略過、200
-10. quota 超量 → 不翻譯、reply 明確訊息（不拋 500）
-11. 跨租戶隔離：用 tenant_B config 打 tenant_A webhook → 因 tenant_A 的 channel_secret 不符，簽章驗章失敗 → 400
-12. 空 events 列表 → 200（不報錯）
-13. body 非 JSON → 400
+7.  /lang ja（無後續文字）→ upsert LineUserLanguage → 回覆確認、不計 quota
+8.  /lang 持久化：設定後下一則訊息使用已存 lang
+9.  /lang 無效 BCP-47 → 回覆錯誤訊息
+10. 非文字訊息（image/sticker/...）→ 略過、不報錯、200
+11. 非 message event（follow/unfollow）→ 略過、200
+12. quota 超量 → 不翻譯、reply 明確訊息（不拋 500）
+13. 跨租戶隔離：用 tenant_B config 打 tenant_A webhook → 因 tenant_A 的 channel_secret 不符，簽章驗章失敗 → 400
+14. 空 events 列表 → 200（不報錯）
+15. body 非 JSON → 400
+16. LineConfigDecryptionError → 200（不讓 LINE retry）
 
 全部離線：StubTranslator + FakeLineReplyClient，不需真實 LINE/翻譯金鑰。
 """
@@ -42,6 +45,7 @@ from saas_mvp.models import tenant as _t, user as _u, note as _n, usage as _us  
 from saas_mvp.models import api_key as _ak, api_key_usage as _aku               # noqa: F401
 from saas_mvp.models import plan_change_history as _pch                          # noqa: F401
 import saas_mvp.models.line_channel_config as _lcm                               # noqa: F401
+import saas_mvp.models.line_user_lang as _lul                                     # noqa: F401
 
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
@@ -95,10 +99,15 @@ def _sign(body: bytes, secret: str = _CHANNEL_SECRET) -> str:
     return base64.b64encode(mac.digest()).decode("utf-8")
 
 
-def _make_text_event(text: str, reply_token: str = "reply-token-001") -> dict:
+def _make_text_event(
+    text: str,
+    reply_token: str = "reply-token-001",
+    line_user_id: str = "Utest001",
+) -> dict:
     return {
         "type": "message",
         "replyToken": reply_token,
+        "source": {"type": "user", "userId": line_user_id},
         "message": {"type": "text", "text": text},
     }
 
@@ -342,9 +351,11 @@ class TestLangCommand:
         assert _fake_line_client.last_text == "[EN] test message"
 
     def test_lang_command_only_no_text_replies_confirmation(self, client, tenant_a):
-        """/lang ja 無後續文字 → 回覆確認訊息，不計 quota。"""
+        """/lang ja 無後續文字 → 回覆確認訊息（含 ja），不計 quota。
+        用獨立 user_id（Ulangcmd001）避免持久化污染後續測試。
+        """
         _, tid = tenant_a
-        body = _payload(_make_text_event("/lang ja", "rt-lang-only"))
+        body = _payload(_make_text_event("/lang ja", "rt-lang-only", line_user_id="Ulangcmd001"))
         r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
         assert r.status_code == 200
         assert _fake_line_client.call_count == 1
@@ -508,3 +519,130 @@ class TestMalformedRequest:
         )
         assert r.status_code == 400
         assert "JSON" in r.json()["detail"]
+
+
+# ── 測試：/lang 持久化 ────────────────────────────────────────────────────────
+
+class TestLangPersistence:
+    def test_lang_command_saved_to_db(self, client, tenant_a):
+        """/lang ja 純指令 → upsert DB + 回覆確認，使用特定 user_id 以隔離測試狀態。"""
+        _, tid = tenant_a
+        body = _payload(_make_text_event("/lang ja", "rt-setlang", line_user_id="Upersist001"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        assert "ja" in _fake_line_client.last_text.lower()
+
+    def test_subsequent_message_uses_persisted_lang(self, client, tenant_a):
+        """設定 /lang ko 後，同一 user 的下一則訊息應使用韓文翻譯。"""
+        _, tid = tenant_a
+        uid = "Upersist002"
+
+        # Step 1: set /lang ko
+        body1 = _payload(_make_text_event("/lang ko", "rt-setko", line_user_id=uid))
+        r1 = client.post(f"/line/webhook/{tid}", content=body1, headers=_headers(body1))
+        assert r1.status_code == 200
+        _fake_line_client.reset()
+
+        # Step 2: plain text — should use ko from DB
+        body2 = _payload(_make_text_event("hello", "rt-useperst", line_user_id=uid))
+        r2 = client.post(f"/line/webhook/{tid}", content=body2, headers=_headers(body2))
+        assert r2.status_code == 200
+        # StubTranslator format: [KO] hello
+        assert _fake_line_client.last_text == "[KO] hello"
+
+    def test_lang_upsert_overrides_previous(self, client, tenant_a):
+        """同一 user 兩次 /lang 指令 → 取最新設定。"""
+        _, tid = tenant_a
+        uid = "Upersist003"
+
+        # 先設 ja
+        body1 = _payload(_make_text_event("/lang ja", "rt-ja", line_user_id=uid))
+        client.post(f"/line/webhook/{tid}", content=body1, headers=_headers(body1))
+        _fake_line_client.reset()
+
+        # 改設 fr
+        body2 = _payload(_make_text_event("/lang fr", "rt-fr", line_user_id=uid))
+        client.post(f"/line/webhook/{tid}", content=body2, headers=_headers(body2))
+        _fake_line_client.reset()
+
+        # 文字訊息應用 fr
+        body3 = _payload(_make_text_event("bonjour", "rt-msg", line_user_id=uid))
+        client.post(f"/line/webhook/{tid}", content=body3, headers=_headers(body3))
+        assert _fake_line_client.last_text == "[FR] bonjour"
+
+    def test_no_user_id_falls_back_to_default_lang(self, client, tenant_a):
+        """沒有 source.userId（event 無 source 欄位）→ 使用 channel default_target_lang。"""
+        _, tid = tenant_a
+        # 手動建構無 source 的 event
+        event_no_source = {
+            "type": "message",
+            "replyToken": "rt-nosource",
+            "message": {"type": "text", "text": "hello"},
+        }
+        body = json.dumps({"events": [event_no_source]}).encode("utf-8")
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        # default_target_lang = zh-TW → [ZH-TW] hello
+        assert _fake_line_client.last_text == "[ZH-TW] hello"
+
+
+# ── 測試：/lang BCP-47 驗證 ──────────────────────────────────────────────────
+
+class TestLangBcp47Validation:
+    def test_invalid_lang_code_replies_error(self, client, tenant_a):
+        """含非法字元的 lang code → 回覆錯誤訊息，不計 quota，HTTP 200。"""
+        _, tid = tenant_a
+        body = _payload(_make_text_event("/lang abc_invalid", "rt-bad-lang", line_user_id="Ubad001"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        reply_text = _fake_line_client.last_text
+        assert "無效" in reply_text or "invalid" in reply_text.lower()
+
+    def test_invalid_lang_code_with_text_still_rejects(self, client, tenant_a):
+        """/lang abc_invalid hello → lang code 無效，回覆錯誤，不翻譯。"""
+        _, tid = tenant_a
+        body = _payload(_make_text_event("/lang abc_x hello", "rt-bad2", line_user_id="Ubad002"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        reply_text = _fake_line_client.last_text
+        # 不應回傳翻譯（不應含 StubTranslator 的 [...]）
+        assert "[" not in reply_text or "無效" in reply_text or "invalid" in reply_text.lower()
+
+    def test_valid_lang_code_passes_through(self, client, tenant_a):
+        """合法 BCP-47 lang code（zh-TW）在 /lang 指令中正常處理。"""
+        _, tid = tenant_a
+        body = _payload(_make_text_event("/lang zh-TW", "rt-zhtw", line_user_id="Uvalid001"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        # 應為確認訊息，含 zh-tw（parse_lang_command 回傳小寫）
+        assert "zh-tw" in _fake_line_client.last_text.lower()
+
+
+# ── 測試：LineConfigDecryptionError 容錯 ──────────────────────────────────────
+
+class TestDecryptionError:
+    def test_decryption_error_returns_200_not_500(self, client, tenant_a):
+        """channel_secret 解密失敗（金鑰輪換模擬）→ 回 200，不讓 LINE retry。"""
+        from unittest.mock import patch
+        from saas_mvp.models.line_channel_config import LineConfigDecryptionError
+
+        _, tid = tenant_a
+        # body 任意（解密失敗前不會驗章）
+        body = _payload(_make_text_event("hello"))
+
+        with patch(
+            "saas_mvp.models.line_channel_config.decrypt_field",
+            side_effect=LineConfigDecryptionError("key rotated for test"),
+        ):
+            r = client.post(
+                f"/line/webhook/{tid}",
+                content=body,
+                headers={"X-Line-Signature": "anything"},
+            )
+
+        assert r.status_code == 200
+        # fake client 不應被呼叫（提前返回）
+        assert _fake_line_client.call_count == 0
