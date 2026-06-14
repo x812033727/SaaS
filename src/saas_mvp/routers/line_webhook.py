@@ -8,8 +8,9 @@
 * 重送去重：deliveryContext.isRedelivery=true 的 event 一律略過（不翻譯、不計量、回 200），
   避免 LINE 重投造成重複翻譯與重複扣 quota。判定採無狀態旗標，缺欄位視為首投。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
-* 計費點後移：先非遞增檢查配額，translate 與 reply 都成功後才 check_and_increment，
-  下游失敗不會白扣（消除原「+1 後才翻譯」的白扣 tradeoff）。
+* quota 計費點後移：先做非遞增檢查放行，待 translate 與 reply 皆成功後才
+  increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。increment_usage
+  傳入 plan 於鎖內重驗 limit，消除 has_quota→increment 的 TOCTOU 超賣。
 * 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig。
 * 租戶列舉防護：所有驗章失敗——無 config、缺 X-Line-Signature header、簽章錯——
   一律回相同的 400 + 相同 detail，外部無法藉狀態碼或回應內容區分租戶是否已設定；
@@ -39,7 +40,7 @@ from saas_mvp.models.line_channel_config import (
 )
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
-from saas_mvp.quota import check_and_increment, has_quota
+from saas_mvp.quota import has_quota, increment_usage
 from saas_mvp.translation import Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 
@@ -205,7 +206,7 @@ async def line_webhook(
 
         translate_text = remaining_text if lang_code else text
 
-        # ── 6a. 配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ──────────
+        # ── 6a. 配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ───────
         # 計費點後移：此處僅「檢查」不「遞增」，避免下游翻譯／回覆失敗時白扣。
         if not has_quota(db, tenant_id, tenant.plan):
             line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
@@ -217,14 +218,8 @@ async def line_webhook(
         # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
         line_client.reply(reply_token, translated, access_token=access_token)
 
-        # ── 6d. 計量（translate 與 reply 都成功後才 +1，原子遞增） ──────────────
-        # 罕見併發下此處可能由 check_and_increment 拋 429（剛好被別的請求用完最後一格），
-        # 但副作用已完成、屬可接受的邊界損耗（最多多回一則譯文、少計一次），不再白扣。
-        try:
-            check_and_increment(db, tenant_id, tenant.plan)
-        except HTTPException as exc:
-            if exc.status_code == 429:
-                continue
-            raise
+        # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────
+        # 傳入 plan 啟用鎖內重驗 limit，消除 has_quota→increment 的 TOCTOU 超賣。
+        increment_usage(db, tenant_id, tenant.plan)
 
     return {"status": "ok"}
