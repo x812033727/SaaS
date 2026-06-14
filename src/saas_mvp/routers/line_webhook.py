@@ -5,17 +5,17 @@
 * raw body 用 Request.body() 取得，再 JSON decode，確保 HMAC 比對用原始 bytes。
 * X-Line-Signature 驗章失敗 → 400（符合 LINE 文件建議）。
 * 非文字事件靜默略過，回 200 OK。
+* 重送去重：deliveryContext.isRedelivery=true 的 event 一律略過（不翻譯、不計量、回 200），
+  避免 LINE 重投造成重複翻譯與重複扣 quota。判定採無狀態旗標，缺欄位視為首投。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
 * quota 計費點後移：先做非遞增檢查放行，待 translate 與 reply 皆成功後才
-  increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。
-* 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig，找不到 → 404。
+  increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。increment_usage
+  傳入 plan 於鎖內重驗 limit，消除 has_quota→increment 的 TOCTOU 超賣。
+* 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig。
+* 租戶列舉防護：所有驗章失敗——無 config、缺 X-Line-Signature header、簽章錯——
+  一律回相同的 400 + 相同 detail，外部無法藉狀態碼或回應內容區分租戶是否已設定；
+  無 config 路徑並做等量 HMAC 計算對齊 timing。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
-
-已知 tradeoff（資安審查確認可接受）
------------------------------------
-* DB 查詢必須早於簽章驗證，因為 channel_secret 存在 DB。
-  副作用：攻擊者可藉 404（無 config）vs 400（簽章錯）區分哪些 tenant_id
-  已設定 LINE config。MVP 已接受此風險，生產前可改為統一回 400。
 """
 
 from __future__ import annotations
@@ -55,6 +55,9 @@ _QUOTA_EXCEEDED_MSG = (
     "翻譯配額已超過今日上限，請明日再試或升級方案。"
 )
 
+# 統一的「驗章失敗」回應 detail。無 config 與簽章錯共用，避免外部藉 detail 區分租戶是否已設定。
+_INVALID_SIGNATURE_DETAIL = "Invalid X-Line-Signature"
+
 
 def _verify_signature(body: bytes, channel_secret: str, signature: str) -> bool:
     """驗證 X-Line-Signature（HMAC-SHA256 + base64）。
@@ -90,9 +93,13 @@ async def line_webhook(
     ).scalar_one_or_none()
 
     if cfg is None:
+        # 消除租戶列舉 oracle：未設定 config 的 tenant_id 與「簽章錯誤」回應一致
+        # （同 400、同 detail），外部無法藉狀態碼或回應內容區分「未設定」與「簽章錯」。
+        # 先做一次等量 HMAC 計算，使兩路徑時間特徵相近，降低 timing side-channel。
+        hmac.new(b"\x00" * 32, body, hashlib.sha256).digest()
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="LINE channel config not found for this tenant",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_INVALID_SIGNATURE_DETAIL,
         )
 
     # ── 3. 解密 channel credentials（金鑰輪換或資料損壞時提前返回 200 以阻止 LINE 重試） ──
@@ -107,17 +114,14 @@ async def line_webhook(
         return {"status": "ok"}
 
     # ── 4. 驗章 X-Line-Signature ───────────────────────────────────────────────
+    # 列舉防護：缺 header、簽章錯、無 config 三種失敗一律回相同的 400 + detail，
+    # 任何分支都不可洩漏「該 tenant 是否已設定 LINE」。缺 header 不可單獨給
+    # 「Missing ...」訊息，否則攻擊者送無 header 請求即可逐一列舉已設定租戶。
     signature = request.headers.get("X-Line-Signature", "")
-    if not signature:
+    if not signature or not _verify_signature(body, channel_secret, signature):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing X-Line-Signature header",
-        )
-
-    if not _verify_signature(body, channel_secret, signature):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid X-Line-Signature",
+            detail=_INVALID_SIGNATURE_DETAIL,
         )
 
     # ── 5. 解析 JSON payload ───────────────────────────────────────────────────
@@ -139,6 +143,15 @@ async def line_webhook(
 
     # ── 6. 處理每個 event ──────────────────────────────────────────────────────
     for event in events:
+        # 重送去重：LINE 重投（redelivery）的 event 一律略過，避免重複翻譯與
+        # 重複計量。判定鍵採無狀態旗標 deliveryContext.isRedelivery（缺欄位視為首投）。
+        if event.get("deliveryContext", {}).get("isRedelivery") is True:
+            _log.info(
+                "skip redelivered LINE event for tenant %d (isRedelivery=true)",
+                tenant_id,
+            )
+            continue
+
         event_type = event.get("type")
 
         # 非 message event → 略過
@@ -194,14 +207,15 @@ async def line_webhook(
         translate_text = remaining_text if lang_code else text
 
         # ── 6a. 配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ───────
+        # 計費點後移：此處僅「檢查」不「遞增」，避免下游翻譯／回覆失敗時白扣。
         if not has_quota(db, tenant_id, tenant.plan):
             line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
             continue
 
-        # ── 6b. 翻譯 ──────────────────────────────────────────────────────────
+        # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
         translated = translator.translate(translate_text, target_lang)
 
-        # ── 6c. 回覆 ──────────────────────────────────────────────────────────
+        # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
         line_client.reply(reply_token, translated, access_token=access_token)
 
         # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────
