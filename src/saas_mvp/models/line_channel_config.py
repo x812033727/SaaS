@@ -101,6 +101,11 @@ class LineChannelConfig(Base):
     # 預設翻譯目標語言（BCP-47 tag，如 "zh-TW", "en", "ja"）
     default_target_lang = Column(String(16), nullable=False, default="zh-TW")
 
+    # LINE bot 的 userId（payload.destination 比對用，格式 U[0-9a-f]{32}）。
+    # nullable：舊資料/尚未經 bot/info 回填的 config 為 NULL，向後相容。
+    # unique：同一 bot 不應對應多租戶；SQLite 允許多個 NULL，遷移前無重複實值疑慮。
+    line_bot_user_id = Column(String(64), nullable=True, unique=True, index=True)
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
