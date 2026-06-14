@@ -951,3 +951,9 @@ UNCONFIGURED no-header: 400 'Invalid X-Line-Signature'
 
 ## 任務 #2 完成：DeepL 回應含 `detected_source_language` 等於正規化後 target 時，`translate()` 回傳原文，不重複包裝/翻譯。
 
+## 任務 #4 完成：任務 #4 有明確落地：either webhook 翻譯呼叫經 `asyncio.to_thread` 包裝且測試仍綠，or 程式碼留有技術債註記並記入 M2。
+
+## 任務 #5 完成：新增測試為獨立檔、不改既有測試檔；全程不呼叫真實 DeepL，`pytest` 全綠。
+
+## 任務 #3 完成：StubTranslator 在同語言情境可返回原文，其餘情境維持 `[LANG] text` 既有行為。
+
