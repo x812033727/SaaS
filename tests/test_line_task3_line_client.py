@@ -97,6 +97,17 @@ class TestFakeLineReplyClient:
         f1.reply("t1", "A", access_token="a")
         assert f2.call_count == 0
 
+    def test_unavailable_flag(self):
+        """available=False 讓 is_available() 回 False，支援測試不可用分支。"""
+        fake = FakeLineReplyClient(available=False)
+        assert fake.is_available() is False
+
+    def test_unavailable_still_captures_reply(self):
+        """即使 available=False，reply() 仍正常捕捉（client 本身不做 guard）。"""
+        fake = FakeLineReplyClient(available=False)
+        fake.reply("tok", "hello", access_token="a")
+        assert fake.call_count == 1
+
 
 # ── HttpLineReplyClient ───────────────────────────────────────────────────────
 
@@ -127,8 +138,7 @@ class TestHttpLineReplyClient:
     def test_raises_line_reply_error_on_http_error(self):
         """HTTP 4xx → LineReplyError（從 HTTPError 包裝）。"""
         import urllib.error
-        import urllib.request
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         mock_exc = urllib.error.HTTPError(
             url="http://x",
@@ -141,6 +151,49 @@ class TestHttpLineReplyClient:
         with patch("urllib.request.urlopen", side_effect=mock_exc):
             with pytest.raises(LineReplyError, match="401"):
                 c.reply("tok", "hello", access_token="bad_token")
+
+    def test_reply_success_does_not_raise(self):
+        """成功路徑：urlopen 正常回應，reply() 不拋任何例外。"""
+        from unittest.mock import MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"{}"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        c = HttpLineReplyClient()
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            # 不應拋出任何例外
+            c.reply("reply_token_abc", "hello", access_token="valid_token")
+
+        mock_resp.read.assert_called_once()
+
+    def test_reply_success_sends_correct_json(self):
+        """成功路徑：驗證送出的 JSON payload 結構正確。"""
+        import json
+        from unittest.mock import MagicMock, patch, call
+
+        captured_requests = []
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"{}"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        def fake_urlopen(req, timeout=None):
+            captured_requests.append(req)
+            return mock_resp
+
+        c = HttpLineReplyClient()
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            c.reply("tok_xyz", "translated text", access_token="abc123")
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        body = json.loads(req.data.decode())
+        assert body["replyToken"] == "tok_xyz"
+        assert body["messages"] == [{"type": "text", "text": "translated text"}]
+        assert req.get_header("Authorization") == "Bearer abc123"
 
 
 # ── get_line_client() factory ─────────────────────────────────────────────────

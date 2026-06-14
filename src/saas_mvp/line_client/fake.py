@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from saas_mvp.line_client.base import LineReplyClient
 
@@ -26,14 +26,17 @@ class FakeLineReplyClient(LineReplyClient):
         client.post("/line/webhook/1", ...)
         assert fake.sent[0].text == "[JA] hello"
 
+    Args:
+        available: 控制 ``is_available()`` 回傳值，預設 True。
+            設為 False 可測試 webhook handler 在 client 不可用時的行為分支。
+
     Attributes:
         sent: 按呼叫順序排列的 :class:`SentReply` 清單。
     """
 
-    sent: list[SentReply] = field(default_factory=list)
-
-    def __init__(self) -> None:
+    def __init__(self, *, available: bool = True) -> None:
         self.sent: list[SentReply] = []
+        self._available = available
 
     def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
         """捕捉回覆（不發網路請求）。"""
@@ -44,7 +47,8 @@ class FakeLineReplyClient(LineReplyClient):
         ))
 
     def is_available(self) -> bool:
-        return True
+        """回傳建構時指定的 available 值（預設 True）。"""
+        return self._available
 
     def reset(self) -> None:
         """清空捕捉記錄（跨測試複用同一 instance 時使用）。"""
