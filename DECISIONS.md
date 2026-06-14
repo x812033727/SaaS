@@ -140,3 +140,31 @@
 ## `conftest.py` 新增 `admin_user` fixture（`is_admin=True`）與 `admin_token` fixture；`test_api_key`、`test_tenant` 等既有 fixture 不動。
 - 時間：2026-06-14 02:51
 
+## `DeepLTranslator.translate()` 開頭一行 `norm = self._normalize_target_lang(target_lang)`，後續 API payload 與 skip 比較**均使用 `norm`**，消除兩處各自 `.upper()` 造成的不一致風險
+- 時間：2026-06-14 14:24
+- 理由：工程師指出若漏改一處，繁中 400 或 skip 比較結果會靜默錯誤；單一變數是最低成本的防呆
+
+## `_normalize_target_lang()` 為 `DeepLTranslator` 的 `@staticmethod`，白名單映射 `{"ZH-TW": "ZH-HANT", "ZH-CN": "ZH-HANS"}`，其餘 `.upper()` 不變；不污染 `Translator` ABC 介面
+- 時間：2026-06-14 14:24
+
+## 同語言 skip 判斷點維持「API 回應後讀 `detected_source_language`」；設計依據調整為「避免把同語言翻譯結果回覆給用戶（UX 正確性）」，**移除「省 DeepL 字符 quota」的主張**
+- 時間：2026-06-14 14:24
+- 理由：高工疑慮 1 成立——HTTP 已發出、DeepL 是否計費未確認；功能本身仍合理，只是依據需更正，避免日後誤導
+- 否決方案：「skip 前不送 API 以省 quota」——需要額外語言偵測 API call，複雜度增加且不在本輪範圍
+
+## 在 skip 比較邏輯旁加程式碼註記：「DeepL 對中文偵測回傳 `ZH`，正規化後的 target 為 `ZH-HANT`，兩者不等，繁中→繁中不觸發 skip；此為 DeepL API 行為限制，非 bug」
+- 時間：2026-06-14 14:24
+- 理由：工程師指出此限制若不記錄，日後排查會誤判 skip 無效
+
+## `StubTranslator(source_lang: str | None = None)` 建構子；skip 比較用單純 `target_lang.upper() == source_lang.upper()`，**不引入 `_normalize_target_lang`**；測試碼須使用能 `.upper()` 相等的語言碼（如 `"JA"/"JA"` 或 `"ZH-HANT"/"ZH-HANT"`），不用 `ZH-TW` 對 `ZH-HANT`
+- 時間：2026-06-14 14:24
+- 理由：Stub 只驗 webhook 下游流程，不需複製 DeepL 特定正規化邏輯；在 PR 描述備注此侷限即可
+- 否決方案：Stub 內引入正規化映射表——過度複製 DeepL 實作細節至測試替身
+
+## Webhook handler（`async def line_webhook`）內翻譯呼叫改為 `translated = await asyncio.to_thread(translator.translate, text, lang)`；`line_client.reply()` 同為阻塞但本輪不動，加 `# NOTE: blocking — wrap in asyncio.to_thread for high-traffic (M2)` 技術債標記
+- 時間：2026-06-14 14:24
+- 理由：工程師確認 handler 為 `async def`，一行修改低風險；TestClient 下 thread pool 可正常運作
+
+## 新增 `tests/test_translation_enhanced.py`，覆蓋：`_normalize_target_lang` 直接靜態呼叫（`ZH-TW→ZH-HANT`、`ZH-CN→ZH-HANS`、`JA→JA`）、`DeepLTranslator.translate()` 以 `unittest.mock.patch` 替換 urllib 模擬回應（正常翻譯與 skip 兩條路徑）、`StubTranslator` skip 行為；不改任何既有測試檔
+- 時間：2026-06-14 14:24
+

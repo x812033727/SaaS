@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -10,7 +11,22 @@ from passlib.context import CryptContext
 
 from saas_mvp.config import settings
 
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt cost factor。生產維持安全預設 12。測試環境可用 SAAS_BCRYPT_ROUNDS 降到
+# 最低值以大幅加速整批雜湊（不影響演算法本身；verify 由 hash 內嵌的 rounds 決定），
+# 但必須同時設 SAAS_TESTING=1 明確表態，否則低於 10 的值一律拒絕啟動（fail-closed），
+# 防止 CI/CD 環境變數污染把弱雜湊帶進生產。
+_BCRYPT_ROUNDS = max(4, min(31, int(os.getenv("SAAS_BCRYPT_ROUNDS", "12"))))
+if _BCRYPT_ROUNDS < 10 and not os.getenv("SAAS_TESTING"):
+    raise RuntimeError(
+        f"SAAS_BCRYPT_ROUNDS={_BCRYPT_ROUNDS} is unsafe for production "
+        "(minimum secure cost is 10); set SAAS_TESTING=1 to allow a lower value in tests."
+    )
+
+_pwd_ctx = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=_BCRYPT_ROUNDS,
+)
 
 
 # ──────────────────────────── password helpers ────────────────────────────────

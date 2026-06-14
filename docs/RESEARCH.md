@@ -224,3 +224,73 @@ Sources:
 - [PyPI line-bot-sdk](https://pypi.org/project/line-bot-sdk/)
 - [LINE Messaging API reference](https://developers.line.biz/en/reference/messaging-api/)
 
+## 2026-06-14 14:17
+
+先讀現有程式碼，同步搜尋翻譯 API。
+再快速看翻譯層其他檔案，補查語言偵測與 DeepL 自動偵測細節。
+再確認 LINE client HTTP 實作與 config，看看是否有 async 問題。
+已掌握足夠資訊，整理報告。
+
+---
+
+## 調研：訊息翻譯
+
+### 現有程式碼確認（重要：避免重複開發）
+
+重點: 翻譯核心層**已完整實作**——`Translator` ABC、`DeepLTranslator`（stdlib urllib）、`StubTranslator`、`get_translator()` factory 全部存在；webhook router 已呼叫 `translator.translate(text, target_lang)` → `line_client.reply()` 完整流程。本輪任務**不需從零建立**，應找缺口補強。
+
+---
+
+### DeepL API — 同語言偵測（P1 缺口）
+
+重點: DeepL `/v2/translate` 回應結構：`{"translations": [{"detected_source_language": "JA", "text": "..."}]}`，`detected_source_language` **已在回應中**，但現有 `DeepLTranslator.translate()` 丟棄此欄位。來源：[DeepL API Docs](https://developers.deepl.com/docs)
+
+重點: 若 source == target（如 target=`JA` 而用戶本來就用日文），DeepL 仍執行翻譯並消耗 quota；回傳的是原文或接近原文的結果，但**白白扣量**。
+
+重點: 修法：在 `DeepLTranslator.translate()` 讀 `detected_source_language`，若 `.upper() == target_lang.upper()` 則直接返回原文（skip API 或回傳 body 已有結果），不需修改 `Translator` 介面。`StubTranslator` 同理可加簡易 skip 邏輯（`target_lang` 等於某 prefix 就不包 tag）。
+
+---
+
+### DeepL 語言碼 — 常見坑
+
+重點: 繁體中文在 DeepL v2（REST）用 `ZH`（舊）或 `ZH-HANT`（新），**不是** `ZH-TW`。現有程式碼把 BCP-47 `zh-TW` `.upper()` → `ZH-TW` 傳給 DeepL，**會收到 400 Bad Request**。DeepL 官方支援碼：`ZH-HANT`（繁體）、`ZH-HANS`（簡體）。來源：[DeepL API 語言清單](https://developers.deepl.com/docs/api-reference/languages/openapi-spec-for-retrieving-languages)
+
+重點: 修法：在 `DeepLTranslator.translate()` 加語言碼映射表 `{"ZH-TW": "ZH-HANT", "ZH-CN": "ZH-HANS", ...}`，套用後再送 API。其他語言（`JA`、`EN`、`KO` 等）直接 upper 即可。
+
+---
+
+### Sync I/O 在 async FastAPI 的問題
+
+重點: `DeepLTranslator.translate()` 和 `HttpLineReplyClient.reply()` 均用 `urllib`（**阻塞**），但 webhook handler 是 `async def`。低流量 MVP 下影響有限，但**高並發時會阻塞 event loop**（其他請求被卡住）。
+
+重點: 最小成本修法：`asyncio.to_thread(translator.translate, text, lang)` 把 blocking call 移到 thread pool，**無需修改 Translator 介面**，向後兼容。來源：[Python asyncio.to_thread](https://docs.python.org/3/library/asyncio-tasks.html#asyncio.to_thread)
+
+---
+
+### DeepL Free vs Pro API URL
+
+重點: Free tier key 以 `:free` 結尾，**必須**用 `api-free.deepl.com`；Pro key 用 `api.deepl.com`。混用會得 403。現有 config 預設是 free URL，`SAAS_DEEPL_API_URL` 可覆蓋，**這已正確**，但需要在文件中明示。
+
+---
+
+### 建議
+
+建議: **本輪任務核心**是補兩個缺口：① `ZH-TW → ZH-HANT` 語言碼映射（**必修，否則繁中翻譯必 400**）；② `detected_source_language == target` 時 skip 翻譯（節省 quota，P1）。
+
+建議: 語言碼映射放在 `translation/http.py` 的 `DeepLTranslator._normalize_target_lang(lang)` 私有方法，不污染 `Translator` 介面；映射表只需覆蓋 DeepL 不接受的 BCP-47 tag（`ZH-TW`、`ZH-CN`）。
+
+建議: 同語言 skip 邏輯：`body["translations"][0]["detected_source_language"].upper()` 若 == normalized target → 直接 `return text`（原文），不計 quota（因為不呼叫翻譯或翻譯結果就是原文）。
+
+建議: Async 問題 MVP 階段可暫不處理，在 webhook handler 中加 `# NOTE: blocking call — wrap in asyncio.to_thread for high-traffic production` 標記，列入 M2 技術債即可。
+
+建議: `StubTranslator` 加對應 skip 行為：target_lang == `"same"` 時返回原文（方便測試 skip 邏輯）。
+
+---
+
+**Sources:**
+- [DeepL API Documentation](https://developers.deepl.com/docs)
+- [DeepL Language Detection Best Practices](https://developers.deepl.com/docs/best-practices/language-detection)
+- [DeepL Languages OpenAPI Spec](https://developers.deepl.com/docs/api-reference/languages/openapi-spec-for-retrieving-languages)
+- [Python asyncio.to_thread](https://docs.python.org/3/library/asyncio-tasks.html#asyncio.to_thread)
+- [DeepL Python SDK (GitHub)](https://github.com/DeepLcom/deepl-python)
+
