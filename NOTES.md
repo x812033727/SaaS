@@ -947,3 +947,7 @@ UNCONFIGURED no-header: 400 'Invalid X-Line-Signature'
 
 ## 任務 #3 完成：**租戶列舉 oracle**：找不到 config 回 404、簽章錯回 400，可被探測哪些 tenant 已設定（docstring 自承的待辦）。
 
+## 任務 #1 完成：target=`zh-TW` 時，DeepL 實際送出的 `target_lang` 為 `ZH-HANT`（`zh-CN`→`ZH-HANS`）；`ja`/`en`/`ko` 等維持 upper()。
+
+## 任務 #2 完成：DeepL 回應含 `detected_source_language` 等於正規化後 target 時，`translate()` 回傳原文，不重複包裝/翻譯。
+
