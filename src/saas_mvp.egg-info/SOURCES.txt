@@ -55,6 +55,7 @@ src/saas_mvp/translation/stub.py
 tests/test_admin.py
 tests/test_billing.py
 tests/test_line_channel_config_qa.py
+tests/test_line_task2_redelivery.py
 tests/test_line_task2_translator.py
 tests/test_line_task3_line_client.py
 tests/test_line_task4_admin_line_configs.py
