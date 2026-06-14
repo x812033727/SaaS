@@ -39,3 +39,14 @@ import saas_mvp.models.line_channel_config as _lcm  # noqa: F401, E402
 
 # 確保 LineUserLanguage 進入 SQLAlchemy class registry（/lang 持久化表）。
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401, E402
+
+# ── 測試加速：降低 bcrypt cost ──────────────────────────────────────────────
+# production 預設 bcrypt rounds=12，每次 hash/verify 約 0.1s；數十個註冊/登入測試
+# 累積使整套逼近 60s self-test 逾時。測試環境只需驗證雜湊正確性，不需高 work
+# factor，故將 rounds 降到合法最小值 4（僅影響測試，production 程式碼不變）。
+import saas_mvp.auth.security as _sec  # noqa: E402
+from passlib.context import CryptContext as _CryptContext  # noqa: E402
+
+_sec._pwd_ctx = _CryptContext(
+    schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=4
+)

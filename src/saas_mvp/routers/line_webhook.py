@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -216,9 +217,14 @@ async def line_webhook(
             continue
 
         # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-        translated = translator.translate(translate_text, target_lang)
+        # translator.translate 為阻塞 I/O（urllib），用 to_thread 移出 event loop，
+        # 避免高並發時阻塞其他請求。
+        translated = await asyncio.to_thread(
+            translator.translate, translate_text, target_lang
+        )
 
         # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
+        # NOTE: blocking — wrap in asyncio.to_thread for high-traffic (M2 技術債)
         line_client.reply(reply_token, translated, access_token=access_token)
 
         # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────
