@@ -225,6 +225,22 @@ def require_quota(
 
         @router.post("/notes", dependencies=[Depends(require_quota)])
         def create_note(...): ...
+
+    技術債 — 前扣 vs 後扣語意並存（M2 待統一，勿誤判為 bug）
+    --------------------------------------------------------------
+    ① require_quota（一般 API：Notes / Billing 等）採「**前扣**」語意：
+       進入 handler 前就 check_and_increment(+1)，即使後續業務邏輯失敗，
+       該次也已計量。與 LINE webhook 的「**後扣**」（has_quota 放行 →
+       翻譯/回覆成功 → increment_usage(+1)）並存，兩套路徑互不干擾。
+
+    ② webhook 後扣存在「**單次溢出**」邊界：has_quota 通過後，若
+       increment_usage 在 FOR UPDATE 鎖內重驗發現已達上限（並發 TOCTOU），
+       該次翻譯/回覆**已送出但不計量**——屬設計可接受的一次性溢出
+       （寧可偶爾免費一次，也不超賣計費）。
+
+    M2 若要將一般 API 統一為後扣，須：(a) 為各端點定義明確的「成功副作用」
+    邊界；(b) 重新評估上述單次溢出是否仍可接受。在此之前，兩種語意刻意並存，
+    **非缺陷**。
     """
     # 1. tenant-level 配額檢查（超量拋 429）
     check_and_increment(db, actor.user.tenant_id, actor.user.tenant.plan)
