@@ -177,3 +177,90 @@ pip install -e ".[test]"
 所有測試使用 in-memory SQLite，無需外部網路。
 
 > **注意**：此環境無 `python` 命令（只有 `python3`），請使用 `bash run_tests.sh` 或明確指定 `python3` / venv 路徑。
+
+---
+
+## LINE Messaging API 整合
+
+### 環境變數
+
+| 變數 | 說明 | 必填 |
+|------|------|------|
+| `SAAS_LINE_CHANNEL_ENCRYPT_KEY` | 加密 channel secret/token 用的 Fernet key（44 字元 URL-safe base64）<br>開發/測試有預設值，**生產環境必填** | 生產環境必填 |
+
+產生 Fernet key：
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### 設定租戶 LINE Channel（Admin 端點）
+
+以 admin 帳號設定或更新租戶的 LINE channel secret 與 access token：
+
+```bash
+# PUT（冪等 upsert）：建立或覆寫設定
+curl -X PUT http://localhost:8000/admin/line-configs/{tenant_id} \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_secret": "你的 channel secret",
+    "access_token": "你的 channel access token",
+    "default_target_lang": "zh-TW"
+  }'
+
+# GET：查詢設定（secret/token 以遮罩形式回傳，不含明文）
+curl http://localhost:8000/admin/line-configs/{tenant_id} \
+  -H "Authorization: Bearer <admin_token>"
+
+# DELETE：刪除設定
+curl -X DELETE http://localhost:8000/admin/line-configs/{tenant_id} \
+  -H "Authorization: Bearer <admin_token>"
+```
+
+**回應範例**（secret/token 不含明文）：
+```json
+{
+  "tenant_id": 1,
+  "has_channel_secret": true,
+  "has_access_token": true,
+  "default_target_lang": "zh-TW",
+  "created_at": "2026-06-14T10:00:00+00:00",
+  "updated_at": "2026-06-14T10:00:00+00:00"
+}
+```
+
+### Webhook 端點
+
+```
+POST /line/webhook/{tenant_id}
+```
+
+**必要標頭**：`X-Line-Signature`（由 LINE Platform 自動附加）
+
+**LINE Developer Console 設定**：
+1. Webhook URL：`https://your-domain.com/line/webhook/{tenant_id}`
+2. Use webhook：啟用
+3. Auto-reply messages：停用（由此服務處理回覆）
+
+**事件處理邏輯**：
+
+| 條件 | 行為 |
+|------|------|
+| 文字訊息 | 翻譯為 `default_target_lang`，透過 reply API 回覆 |
+| `/lang ja 你好` | 翻譯為指定語言（`ja`），回覆譯文 |
+| `/lang ja`（無後續文字） | 回覆語言切換確認，不計 quota |
+| 圖片/貼圖/其他非文字訊息 | 略過（回 200，不回覆） |
+| follow/unfollow/其他 event | 略過（回 200） |
+| X-Line-Signature 缺漏或不符 | 400 Bad Request |
+| quota 超量 | 回覆明確超量訊息（不拋 5xx） |
+
+**支援的目標語言**（BCP-47 格式）：`zh-TW`、`en`、`ja`、`ko` 等（後端需支援對應語言）。
+
+### 翻譯後端
+
+| 設定 | 行為 |
+|------|------|
+| 未設定 `SAAS_DEEPL_API_KEY` | 使用 StubTranslator（離線，格式：`[LANG] 原文`） |
+| 設定 `SAAS_DEEPL_API_KEY` | 使用真實 DeepL API |
+
+StubTranslator 輸出範例：`[ZH-TW] Hello` → 供開發測試用，不需外部 API。

@@ -12,6 +12,7 @@ from saas_mvp.routers import api_keys as api_keys_router
 from saas_mvp.routers import usage as usage_router
 from saas_mvp.routers import billing as billing_router
 from saas_mvp.routers import admin as admin_router
+from saas_mvp.routers import line_webhook as line_webhook_router
 
 
 @asynccontextmanager
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(usage_router.router)
     app.include_router(billing_router.router)
     app.include_router(admin_router.router)
+    app.include_router(line_webhook_router.router)
 
     @app.get("/", tags=["root"])
     def root():
