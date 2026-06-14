@@ -4,6 +4,7 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 _INSECURE_DEFAULT = "change-me-in-production-use-32-chars-min"
+_LINE_KEY_DEV_DEFAULT = "ZGV2LWxpbmUtc2VjcmV0LWtleS0zMmJ5dGVzLWxvbmc="
 
 
 class Settings(BaseSettings):
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     # LINE channel config encryption key (Fernet, URL-safe base64, decodes to 32 bytes)
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     # MUST override in production via SAAS_LINE_CHANNEL_ENCRYPT_KEY env var.
-    line_channel_encrypt_key: str = "ZGV2LWxpbmUtc2VjcmV0LWtleS0zMmJ5dGVzLWxvbmc="
+    line_channel_encrypt_key: str = _LINE_KEY_DEV_DEFAULT
 
     # Rate limiting — set SAAS_RATE_LIMIT_ENABLED=false to bypass (e.g. in tests)
     rate_limit_enabled: bool = True
@@ -35,6 +36,21 @@ class Settings(BaseSettings):
     # SAAS_TENANT_RATE_LIMIT: per-tenant limit  (default 1000 calls/60s)
     key_rate_limit: str = "100/60"
     tenant_rate_limit: str = "1000/60"
+
+    @field_validator("line_channel_encrypt_key")
+    @classmethod
+    def line_key_must_be_changed(cls, v: str) -> str:
+        """在非 dev/test 環境拒絕使用公開 dev 預設金鑰，強制部署者顯式設定。"""
+        if v == _LINE_KEY_DEV_DEFAULT:
+            import os
+            if os.getenv("SAAS_ENV", "dev").lower() not in ("dev", "test"):
+                raise ValueError(
+                    "SAAS_LINE_CHANNEL_ENCRYPT_KEY must be set to a unique Fernet key "
+                    "in non-dev environments. "
+                    "Generate one with: python -c \"from cryptography.fernet import Fernet; "
+                    "print(Fernet.generate_key().decode())\""
+                )
+        return v
 
     @field_validator("secret_key")
     @classmethod

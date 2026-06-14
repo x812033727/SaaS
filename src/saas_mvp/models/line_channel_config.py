@@ -10,12 +10,25 @@ channel_secret 與 access_token 以 Fernet 對稱加密存 DB（可逆還原，
 from __future__ import annotations
 
 import datetime
+import re
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.orm import relationship
 
 from saas_mvp.db import Base
+
+# BCP-47 tag 基本格式（language[-script][-region][-variant...]），
+# 僅允許合法字元，防止下游 API 注入。
+_BCP47_RE = re.compile(r"^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8})*$")
+
+
+class LineConfigDecryptionError(RuntimeError):
+    """金鑰輪換或資料損壞導致 Fernet 解密失敗。"""
+
+
+class InvalidTargetLangError(ValueError):
+    """`default_target_lang` 不符合 BCP-47 格式。"""
 
 
 # ── 加密工具 ────────────────────────────────────────────────────────────────
@@ -32,8 +45,32 @@ def encrypt_field(value: str) -> bytes:
 
 
 def decrypt_field(data: bytes) -> str:
-    """將 Fernet 加密 bytes 解密後回傳明文字串。"""
-    return _get_fernet().decrypt(data).decode()
+    """將 Fernet 加密 bytes 解密後回傳明文字串。
+
+    捕捉 InvalidToken（金鑰輪換或資料損壞），轉為 LineConfigDecryptionError
+    方便上層診斷，而非直接拋 500。
+    """
+    try:
+        return _get_fernet().decrypt(data).decode()
+    except InvalidToken as exc:
+        raise LineConfigDecryptionError(
+            "Failed to decrypt LINE channel config field. "
+            "The encryption key may have been rotated or the data is corrupted."
+        ) from exc
+
+
+def validate_target_lang(lang: str) -> str:
+    """驗證 BCP-47 格式並回傳原字串；格式不合拋 InvalidTargetLangError。
+
+    允許: "en", "zh-TW", "zh-Hant-TW", "ja"
+    拒絕: 空字串、含空格、注入字元
+    """
+    if not _BCP47_RE.match(lang):
+        raise InvalidTargetLangError(
+            f"Invalid target language tag: {lang!r}. "
+            "Must match BCP-47 format, e.g. 'en', 'zh-TW', 'ja'."
+        )
+    return lang
 
 
 # ── ORM Model ───────────────────────────────────────────────────────────────

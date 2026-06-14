@@ -42,6 +42,7 @@ src/saas_mvp/services/notes.py
 src/saas_mvp/services/tenants.py
 tests/test_admin.py
 tests/test_billing.py
+tests/test_line_channel_config_qa.py
 tests/test_ratelimit_enhanced.py
 tests/test_saas_isolation_regression.py
 tests/test_task1_structure.py
