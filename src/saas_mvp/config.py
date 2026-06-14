@@ -1,9 +1,10 @@
 """Application settings (env-overridable via SAAS_* variables or .env)."""
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 _INSECURE_DEFAULT = "change-me-in-production-use-32-chars-min"
+_LINE_KEY_DEV_DEFAULT = "ZGV2LWxpbmUtc2VjcmV0LWtleS0zMmJ5dGVzLWxvbmc="
 
 
 class Settings(BaseSettings):
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
     # "dev" skips the secret_key guard so tests/local runs still work
     env: str = "dev"
 
+    # LINE channel config encryption key (Fernet, URL-safe base64, decodes to 32 bytes)
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # MUST override in production via SAAS_LINE_CHANNEL_ENCRYPT_KEY env var.
+    line_channel_encrypt_key: str = _LINE_KEY_DEV_DEFAULT
+
     # Rate limiting — set SAAS_RATE_LIMIT_ENABLED=false to bypass (e.g. in tests)
     rate_limit_enabled: bool = True
 
@@ -37,6 +43,23 @@ class Settings(BaseSettings):
     # SAAS_DEEPL_API_URL: override the DeepL API endpoint (useful for paid tier or testing).
     deepl_api_key: str = ""
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
+
+    @model_validator(mode="after")
+    def line_key_must_be_changed_in_prod(self) -> "Settings":
+        """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。
+
+        使用 model_validator 而非 field_validator，確保 self.env 已載入
+        （field_validator 只能用 os.getenv，會漏看 .env 檔案中設定的 SAAS_ENV）。
+        """
+        if (self.line_channel_encrypt_key == _LINE_KEY_DEV_DEFAULT
+                and self.env.lower() not in ("dev", "test")):
+            raise ValueError(
+                "SAAS_LINE_CHANNEL_ENCRYPT_KEY must be set to a unique Fernet key "
+                "in non-dev environments. "
+                "Generate one with: python -c \"from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())\""
+            )
+        return self
 
     @field_validator("secret_key")
     @classmethod

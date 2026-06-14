@@ -20,6 +20,7 @@ src/saas_mvp/auth/security.py
 src/saas_mvp/models/__init__.py
 src/saas_mvp/models/api_key.py
 src/saas_mvp/models/api_key_usage.py
+src/saas_mvp/models/line_channel_config.py
 src/saas_mvp/models/note.py
 src/saas_mvp/models/plan_change_history.py
 src/saas_mvp/models/tenant.py
@@ -46,6 +47,7 @@ src/saas_mvp/translation/http.py
 src/saas_mvp/translation/stub.py
 tests/test_admin.py
 tests/test_billing.py
+tests/test_line_channel_config_qa.py
 tests/test_line_task2_translator.py
 tests/test_ratelimit_enhanced.py
 tests/test_saas_isolation_regression.py
