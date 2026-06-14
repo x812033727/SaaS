@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import get_db, get_current_actor, require_admin
 from saas_mvp.auth.dependencies import Actor
 from saas_mvp.services import admin as admin_svc
-from pydantic import BaseModel
+from saas_mvp.services import line_config as line_config_svc
+from pydantic import BaseModel, Field
 
 
 router = APIRouter(
@@ -69,3 +70,42 @@ def list_api_keys(
     db: Session = Depends(get_db),
 ):
     return admin_svc.list_api_keys(db, skip=skip, limit=limit)
+
+
+# ── LINE Channel Config 管理端點 ──────────────────────────────────────────────
+
+class LineConfigUpsertBody(BaseModel):
+    channel_secret: str = Field(..., min_length=1)
+    access_token: str = Field(..., min_length=1)
+    default_target_lang: str = "zh-TW"
+
+
+@router.get("/line-configs/{tenant_id}", summary="查詢租戶 LINE 設定（遮罩版）")
+def get_line_config(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+):
+    return line_config_svc.get_line_config(db, tenant_id)
+
+
+@router.put("/line-configs/{tenant_id}", summary="建立或更新租戶 LINE 設定")
+def upsert_line_config(
+    tenant_id: int,
+    body: LineConfigUpsertBody,
+    db: Session = Depends(get_db),
+):
+    return line_config_svc.upsert_line_config(
+        db,
+        tenant_id,
+        channel_secret=body.channel_secret,
+        access_token=body.access_token,
+        default_target_lang=body.default_target_lang,
+    )
+
+
+@router.delete("/line-configs/{tenant_id}", summary="刪除租戶 LINE 設定")
+def delete_line_config(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+):
+    return line_config_svc.delete_line_config(db, tenant_id)

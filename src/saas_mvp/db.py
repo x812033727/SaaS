@@ -33,4 +33,5 @@ def init_db() -> None:
     from saas_mvp.models import tenant, user, note  # noqa: F401
     from saas_mvp.models import api_key, api_key_usage, usage  # noqa: F401
     from saas_mvp.models import plan_change_history  # noqa: F401
+    from saas_mvp.models import line_channel_config  # noqa: F401
     Base.metadata.create_all(bind=engine)
