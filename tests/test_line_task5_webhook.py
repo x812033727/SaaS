@@ -7,7 +7,7 @@
 1.  有效 X-Line-Signature → 200 OK
 2.  無 X-Line-Signature 標頭 → 400
 3.  簽章不符 → 400
-4.  找不到 tenant LINE config → 404
+4.  找不到 tenant LINE config → 400（與簽章錯一致，消除租戶列舉 oracle）
 5.  文字訊息 → stub translator → fake client 捕捉到正確譯文
 6.  /lang ja hello → 翻譯成 ja，fake client 捕捉到 [JA] hello
 7.  /lang ja（無後續文字）→ upsert LineUserLanguage → 回覆確認、不計 quota
@@ -269,8 +269,14 @@ class TestSignatureVerification:
 # ── 測試：租戶設定不存在 ───────────────────────────────────────────────────────
 
 class TestTenantNotFound:
-    def test_no_config_404(self, client):
-        """存在租戶但未設定 LINE config → 404"""
+    """租戶列舉防護（#3）：無 config 的回應必須與「簽章錯」不可區分。
+
+    驗收：未設定 config 的 tenant_id 一律回 400（非 404），且回應 detail 與
+    簽章錯誤完全一致，外部無法藉狀態碼或回應內容探測哪些 tenant 已設定 LINE。
+    """
+
+    def test_no_config_returns_400_not_404(self, client):
+        """存在租戶但未設定 LINE config → 400（非 404，消除列舉 oracle）"""
         import uuid
         email = f"nc_{uuid.uuid4().hex[:8]}@example.com"
         tn = f"nc_tenant_{uuid.uuid4().hex[:8]}"
@@ -284,12 +290,38 @@ class TestTenantNotFound:
 
         body = _payload(_make_text_event("hello"))
         r2 = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
-        assert r2.status_code == 404
+        assert r2.status_code == 400
+        assert r2.status_code != 404
 
-    def test_nonexistent_tenant_id_404(self, client):
+    def test_nonexistent_tenant_id_returns_400_not_404(self, client):
         body = _payload(_make_text_event("hello"))
         r = client.post("/line/webhook/99999", content=body, headers=_headers(body))
-        assert r.status_code == 404
+        assert r.status_code == 400
+        assert r.status_code != 404
+
+    def test_no_config_indistinguishable_from_bad_signature(self, client, tenant_a):
+        """反向樣本：對『已設定+簽章錯』與『未設定』兩路徑，狀態碼與 detail 必須一致。
+
+        這是列舉防護的核心斷言——若兩者回應有任何差異，攻擊者即可區分租戶是否已設定。
+        """
+        _, configured_tid = tenant_a
+        body = _payload(_make_text_event("hello"))
+
+        # 路徑 A：已設定的租戶，但送錯誤簽章
+        r_badsig = client.post(
+            f"/line/webhook/{configured_tid}",
+            content=body,
+            headers={"X-Line-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+        )
+        # 路徑 B：完全未設定的 tenant_id（即使帶上「正確格式」的簽章也無法驗）
+        r_nocfg = client.post(
+            f"/line/webhook/99999",
+            content=body,
+            headers={"X-Line-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+        )
+
+        assert r_badsig.status_code == r_nocfg.status_code == 400
+        assert r_badsig.json()["detail"] == r_nocfg.json()["detail"]
 
 
 # ── 測試：文字訊息翻譯流程 ────────────────────────────────────────────────────

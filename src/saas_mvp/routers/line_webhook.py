@@ -10,14 +10,10 @@
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
 * 計費點後移：先非遞增檢查配額，translate 與 reply 都成功後才 check_and_increment，
   下游失敗不會白扣（消除原「+1 後才翻譯」的白扣 tradeoff）。
-* 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig，找不到 → 404。
+* 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig。
+* 租戶列舉防護：找不到 config 時回 400（與簽章錯誤同狀態碼、同 detail），
+  外部無法藉回應區分「未設定」與「簽章錯」；並做等量 HMAC 計算對齊 timing。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
-
-已知 tradeoff（資安審查確認可接受）
------------------------------------
-* DB 查詢必須早於簽章驗證，因為 channel_secret 存在 DB。
-  副作用：攻擊者可藉 404（無 config）vs 400（簽章錯）區分哪些 tenant_id
-  已設定 LINE config。MVP 已接受此風險，生產前可改為統一回 400。
 """
 
 from __future__ import annotations
@@ -57,6 +53,9 @@ _QUOTA_EXCEEDED_MSG = (
     "翻譯配額已超過今日上限，請明日再試或升級方案。"
 )
 
+# 統一的「驗章失敗」回應 detail。無 config 與簽章錯共用，避免外部藉 detail 區分租戶是否已設定。
+_INVALID_SIGNATURE_DETAIL = "Invalid X-Line-Signature"
+
 
 def _verify_signature(body: bytes, channel_secret: str, signature: str) -> bool:
     """驗證 X-Line-Signature（HMAC-SHA256 + base64）。
@@ -92,9 +91,13 @@ async def line_webhook(
     ).scalar_one_or_none()
 
     if cfg is None:
+        # 消除租戶列舉 oracle：未設定 config 的 tenant_id 與「簽章錯誤」回應一致
+        # （同 400、同 detail），外部無法藉狀態碼或回應內容區分「未設定」與「簽章錯」。
+        # 先做一次等量 HMAC 計算，使兩路徑時間特徵相近，降低 timing side-channel。
+        hmac.new(b"\x00" * 32, body, hashlib.sha256).digest()
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="LINE channel config not found for this tenant",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_INVALID_SIGNATURE_DETAIL,
         )
 
     # ── 3. 解密 channel credentials（金鑰輪換或資料損壞時提前返回 200 以阻止 LINE 重試） ──
@@ -119,7 +122,7 @@ async def line_webhook(
     if not _verify_signature(body, channel_secret, signature):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid X-Line-Signature",
+            detail=_INVALID_SIGNATURE_DETAIL,
         )
 
     # ── 5. 解析 JSON payload ───────────────────────────────────────────────────
