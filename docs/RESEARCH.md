@@ -340,3 +340,50 @@ Sources:
 - [LINE Messaging API reference](https://developers.line.biz/en/reference/messaging-api/)
 - [LINE Docs — Module channel webhook routing](https://developers.line.biz/en/docs/partner-docs/module-technical-using-messaging-api/)
 
+## 2026-06-14 15:45
+
+先快速看關鍵檔案，同時查 LINE 官方文件。
+現有程式碼已讀清楚。整理報告如下：
+
+---
+
+## 租戶路由 — 調研報告
+
+### 現有程式碼狀態（本輪任務真正缺口）
+
+重點: URL-path 路由 `/line/webhook/{tenant_id}` 已完整實作，簽章驗證、quota、去重、多事件全部到位，**不需重做**。
+重點: `LineChannelConfig` 只存 `channel_secret_enc`、`access_token_enc`、`default_target_lang`——**沒有 `line_bot_user_id` 欄位**，無法比對 `payload.destination`。
+重點: webhook handler 目前**完全不讀 `payload.destination`**，即使 LINE Console 錯誤配置（租戶 A 的 bot 打到租戶 B 的 URL），簽章失敗才攔住，缺少二次語意驗證層。
+
+---
+
+### LINE `destination` 欄位語意確認
+
+重點: `destination` = **bot 的 userId**（格式 `U[0-9a-f]{32}`），不是 channel numeric ID，每個 LINE Official Account 一個，**可作為租戶識別鍵**。來源：[Receive messages (webhook)](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+重點: LINE 提供 `GET https://api.line.me/v2/bot/info`，回傳 `{"userId": "Uxxxx...", "basicId": "@xxx", "displayName": "..."}` — **憑 channel access_token 即可取得 bot 的 userId**，不需租戶手動填寫。來源：[Messaging API reference — Get bot info](https://developers.line.biz/en/reference/messaging-api/#get-bot-info)
+
+---
+
+### 路由策略比較
+
+重點: **策略一（現行 URL-based）**：每租戶 URL 含 tenant_id，`LineChannelConfig` 直接 lookup → 已完整實作，測試 #13 已驗跨租戶隔離。
+重點: **策略二（destination-based 單一 URL）**：`POST /line/webhook`，解析 payload 取 `destination` → DB lookup `line_bot_user_id` → 取 channel_secret → 驗簽章。好處是租戶設定更簡單（LINE Console 只填一個 URL），壞處是必須在驗簽前信任 `destination`（但後續仍驗簽，風險可接受）。
+
+---
+
+### 建議
+
+建議: **本輪最小可行實作**：在 `line_channel_config.py` 加 `line_bot_user_id = Column(String(64), unique=True, nullable=True, index=True)`（nullable 向後相容，`create_all` 自動建欄）。
+建議: `upsert_line_config` 完成後，**自動呼叫 `GET https://api.line.me/v2/bot/info`**（傳入 `access_token`），把回傳 `userId` 存入 `line_bot_user_id`；失敗記 warning 但不阻擋 upsert（離線環境不應爆）。
+建議: webhook handler 在步驟 4（驗簽後）加二次 check：若 `cfg.line_bot_user_id` 已設定，且 `payload.get("destination") != cfg.line_bot_user_id` → log warning + 回 400（同簽章錯誤的 detail，維持列舉防護）。
+建議: **不需改路由策略**——URL-based routing 保留，`line_bot_user_id` 兼作「正確性防護層」與未來 destination-based 路由的資料基礎；兩者不互斥。
+建議: 因無 Alembic，舊 DB 的 `line_channel_config` 表需手動 `ALTER TABLE line_channel_configs ADD COLUMN line_bot_user_id VARCHAR(64) UNIQUE`；新環境 `create_all` 自動包含。建議在啟動時加 try-ALTER 或改用 Alembic（M2 技術債）。
+建議: 測試面：加「destination 不符」→ 400 案例；「destination 為 None（舊 config 未設）」→ 略過二次 check 仍 200 OK 的向後相容案例。
+
+---
+
+**Sources:**
+- [Receive messages (webhook) — LINE Developers](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+- [Get LINE Official Account (bot) info — Messaging API reference](https://developers.line.biz/en/reference/messaging-api/#get-bot-info)
+- [Using the Messaging API from a module channel](https://developers.line.biz/en/docs/partner-docs/module-technical-using-messaging-api/)
+
