@@ -159,3 +159,68 @@ Sources:
 - [Indie Hackers - SaaS plan limits](https://www.indiehackers.com/post/how-do-you-handle-limits-in-your-saas-plans-3c4f7c692c)
 - [SQLAlchemy audit log - Medium](https://medium.com/@singh.surbhicse/creating-audit-table-to-log-insert-update-and-delete-changes-in-flask-sqlalchemy-f2ca53f7b02f)
 
+## 2026-06-14 13:17
+
+整理完畢，以下是彙整結果：
+
+---
+
+## 調研：LINE Webhook 接收
+
+### 現有程式碼確認
+
+重點: 專案已有 `Tenant` 模型（含 `is_active`）、`User.is_admin`、`deps.py` 統一依賴入口、Router 架構（`/notes` 為範本）。**無 LINE 相關程式碼**，本任務從零加入。
+
+---
+
+### LINE Messaging API — Webhook 機制
+
+重點: 簽章驗證演算法 = **HMAC-SHA256(channel_secret, raw_body)**，結果 Base64 編碼後放 `x-line-signature` header，與 LINE 傳入值比對。來源：[LINE Developers — Verify webhook signature](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/)
+
+重點: 必須用**原始 bytes**（`await request.body()`）驗簽，**絕不能先 JSON parse 再序列化**，任何空白/順序變動都會讓簽章失效。來源：[LINE Developers](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/)
+
+重點: Webhook payload 結構：`{"destination": "<bot_user_id>", "events": [...]}`，`destination` 是 **bot 的 user ID**（非 channel ID）；`deliveryContext.isRedelivery` 可判斷是否為重試投遞。來源：[LINE Developers — Receiving messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+
+重點: LINE Platform 若持續收到 non-2xx 會暫停發送 webhook；預設**不重試**，需在 Console 手動開啟 redelivery。**必須快速回 200**（建議 async 處理，避免逾時）。來源：[LINE Developers — Receiving messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+
+---
+
+### 套件選擇
+
+重點: **`line-bot-sdk`** (PyPI) 目前最新 **v3.23.0**（2026-04）；`from linebot.v3 import WebhookParser`；v2 與 v3 API 不相容，本次直接用 v3。來源：[GitHub line/line-bot-sdk-python](https://github.com/line/line-bot-sdk-python)
+
+重點: `WebhookParser.parse(body, signature)` — `body` 接受 `bytes` 或 `str`，回傳 `list[Event]`；簽章錯誤拋 `linebot.v3.exceptions.InvalidSignatureError`。需 Python ≥ 3.10（本專案 3.11 ✅）。來源：[GitHub line/line-bot-sdk-python](https://github.com/line/line-bot-sdk-python)
+
+重點: 多租戶場景：每個 tenant 有獨立 channel_secret，**不能用全域單一 WebhookParser**；需在 request 時動態 `WebhookParser(tenant.channel_secret)` 實例化。每次實例化成本低（只是存 secret），沒有效能問題。
+
+---
+
+### 坑
+
+重點: FastAPI 的 `Request.body()` 需 **`await`**（async endpoint 才有），且呼叫後 body stream 已被消費，若後面還需重讀（如 debug logging），需暫存到變數。
+
+重點: 多租戶路由：LINE 的 `destination`（bot user ID）**不等於** tenant ID，需要另一個查詢鍵（如 URL path 含 `tenant_id` 或 channel_id → tenant 映射表）。`/webhook/{tenant_id}` 是最簡單且安全的做法。
+
+重點: 安全：LINE 官方**不建議**以 IP 白名單取代簽章驗證；簽章驗證失敗應回 **400**，不是 401/403。
+
+---
+
+### 建議
+
+建議: 在 `pyproject.toml` 加 `"line-bot-sdk>=3.23"` 依賴；不需引入其他套件。
+
+建議: 新增 `src/saas_mvp/routers/webhook.py`，endpoint 為 `POST /webhook/{tenant_id}`；從 DB 依 `tenant_id` 查出 `channel_secret`，動態建 `WebhookParser`，`await request.body()` 取 raw bytes 驗簽，驗失敗回 400，成功立即回 200，事件丟背景處理（或暫存 list 後同步處理）。
+
+建議: Tenant 模型需新增欄位 `line_channel_secret: str`、`line_channel_access_token: str`、`line_target_language: str`（可先 nullable，等租戶設定）；用 Alembic migration 加欄位。
+
+建議: 簽章驗證邏輯抽成獨立函數（`services/line_webhook.py`），方便單元測試；測試可直接呼叫函數傳 bytes + 正確/錯誤 secret，不需 mock HTTP。
+
+---
+
+**Sources:**
+- [LINE Developers — Verify webhook signature](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/)
+- [LINE Developers — Receiving messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+- [GitHub line/line-bot-sdk-python](https://github.com/line/line-bot-sdk-python)
+- [PyPI line-bot-sdk](https://pypi.org/project/line-bot-sdk/)
+- [LINE Messaging API reference](https://developers.line.biz/en/reference/messaging-api/)
+
