@@ -7,7 +7,7 @@
 1.  有效 X-Line-Signature → 200 OK
 2.  無 X-Line-Signature 標頭 → 400
 3.  簽章不符 → 400
-4.  找不到 tenant LINE config → 404
+4.  找不到 tenant LINE config → 400（與簽章錯一致，消除租戶列舉 oracle）
 5.  文字訊息 → stub translator → fake client 捕捉到正確譯文
 6.  /lang ja hello → 翻譯成 ja，fake client 捕捉到 [JA] hello
 7.  /lang ja（無後續文字）→ upsert LineUserLanguage → 回覆確認、不計 quota
@@ -269,8 +269,14 @@ class TestSignatureVerification:
 # ── 測試：租戶設定不存在 ───────────────────────────────────────────────────────
 
 class TestTenantNotFound:
-    def test_no_config_404(self, client):
-        """存在租戶但未設定 LINE config → 404"""
+    """租戶列舉防護（#3）：無 config 的回應必須與「簽章錯」不可區分。
+
+    驗收：未設定 config 的 tenant_id 一律回 400（非 404），且回應 detail 與
+    簽章錯誤完全一致，外部無法藉狀態碼或回應內容探測哪些 tenant 已設定 LINE。
+    """
+
+    def test_no_config_returns_400_not_404(self, client):
+        """存在租戶但未設定 LINE config → 400（非 404，消除列舉 oracle）"""
         import uuid
         email = f"nc_{uuid.uuid4().hex[:8]}@example.com"
         tn = f"nc_tenant_{uuid.uuid4().hex[:8]}"
@@ -284,12 +290,45 @@ class TestTenantNotFound:
 
         body = _payload(_make_text_event("hello"))
         r2 = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
-        assert r2.status_code == 404
+        assert r2.status_code == 400
+        assert r2.status_code != 404
 
-    def test_nonexistent_tenant_id_404(self, client):
+    def test_nonexistent_tenant_id_returns_400_not_404(self, client):
         body = _payload(_make_text_event("hello"))
         r = client.post("/line/webhook/99999", content=body, headers=_headers(body))
-        assert r.status_code == 404
+        assert r.status_code == 400
+        assert r.status_code != 404
+
+    def test_configured_vs_unconfigured_indistinguishable_all_probes(self, client, tenant_a):
+        """反向樣本（列舉防護核心斷言）：在每一種探針下，『已設定 vs 未設定』租戶
+        的 status_code 與 detail 都必須完全相等，否則攻擊者即可區分租戶是否已設定。
+
+        涵蓋兩個探針維度（第 2 輪退回補強——原本只測『錯簽章』漏了『缺 header』旁路）：
+          probe A: 帶錯誤簽章 header
+          probe B: 完全不帶 X-Line-Signature header
+        """
+        _, configured_tid = tenant_a
+        body = _payload(_make_text_event("hello"))
+        BAD_SIG = {"X-Line-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+        unconfigured_tid = 99999
+
+        probes = {
+            "bad_signature": BAD_SIG,
+            "missing_header": None,  # 不帶簽章 header
+        }
+        for name, headers in probes.items():
+            kw = {"headers": headers} if headers else {}
+            r_cfg = client.post(f"/line/webhook/{configured_tid}", content=body, **kw)
+            r_nocfg = client.post(f"/line/webhook/{unconfigured_tid}", content=body, **kw)
+            assert r_cfg.status_code == r_nocfg.status_code == 400, f"probe={name} 狀態碼可區分"
+            assert r_cfg.json()["detail"] == r_nocfg.json()["detail"], f"probe={name} detail 可區分"
+
+        # 額外鎖死：所有失敗探針的 detail 為單一字串，未來任何分支若改回獨立訊息即會破測
+        details = set()
+        for tid in (configured_tid, unconfigured_tid):
+            details.add(client.post(f"/line/webhook/{tid}", content=body, headers=BAD_SIG).json()["detail"])
+            details.add(client.post(f"/line/webhook/{tid}", content=body).json()["detail"])
+        assert len(details) == 1, f"驗章失敗 detail 不唯一，存在列舉旁路：{details}"
 
 
 # ── 測試：文字訊息翻譯流程 ────────────────────────────────────────────────────
@@ -681,6 +720,24 @@ def _read_usage_count(tid: int) -> int:
         db.close()
 
 
+# ── 測試：計費點後移（Task #1 — 消除下游失敗白扣） ────────────────────────────
+
+def _usage_count(tid: int) -> int:
+    """讀取指定租戶今日 quota used（無列回 0）。"""
+    import datetime
+    from saas_mvp.models.usage import ApiUsage
+    db = _Session()
+    try:
+        row = db.execute(
+            ApiUsage.__table__.select().where(
+                (ApiUsage.tenant_id == tid) & (ApiUsage.period == datetime.date.today())
+            )
+        ).first()
+        return row.count if row else 0
+    finally:
+        db.close()
+
+
 class TestRedeliveryDedup:
     def test_redelivery_true_skips_reply_and_quota(self, client, tenant_a):
         """isRedelivery=true → 不回覆、quota 不變、回 200。"""
@@ -742,3 +799,87 @@ class TestRedeliveryDedup:
         assert _fake_line_client.call_count == 1
         assert _fake_line_client.last_text == "[ZH-TW] fresh"
         assert _read_usage_count(tid) == before + 1
+
+
+class _BoomTranslator(StubTranslator):
+    """translate 一律拋例外，模擬下游翻譯失敗。"""
+
+    def translate(self, text: str, target_lang: str) -> str:
+        raise RuntimeError("translate backend down")
+
+
+class _BoomReplyClient(FakeLineReplyClient):
+    """reply 一律拋例外，模擬下游回覆失敗。"""
+
+    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
+        raise RuntimeError("LINE reply API down")
+
+
+class TestBillingPointDeferred:
+    """計費點後移：副作用成功才 +1；下游失敗不白扣；超量不 +1。"""
+
+    def test_success_path_increments_exactly_one(self, client, tenant_a):
+        """正向：translate + reply 都成功 → quota used 恰 +1。"""
+        _, tid = tenant_a
+        _fake_line_client.reset()
+        before = _usage_count(tid)
+
+        body = _payload(_make_text_event("count me", "rt-bill-ok", line_user_id="Ubill001"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        assert _usage_count(tid) == before + 1
+
+    def test_translate_failure_does_not_charge(self, client, tenant_a):
+        """反向：translate 拋例外 → quota used 不變（不白扣），且未回覆。"""
+        _, tid = tenant_a
+        before = _usage_count(tid)
+        app = client.app
+        app.dependency_overrides[get_translator] = lambda: _BoomTranslator()
+        try:
+            body = _payload(_make_text_event("boom", "rt-bill-tx", line_user_id="Ubill002"))
+            with pytest.raises(RuntimeError):
+                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        finally:
+            app.dependency_overrides[get_translator] = lambda: _stub_translator
+        # 計費點在 translate 之後 → 失敗不增加
+        assert _usage_count(tid) == before
+
+    def test_reply_failure_does_not_charge(self, client, tenant_a):
+        """反向：reply 拋例外 → quota used 不變（翻譯成功但回覆失敗也不白扣）。"""
+        _, tid = tenant_a
+        before = _usage_count(tid)
+        app = client.app
+        app.dependency_overrides[get_line_client] = lambda: _BoomReplyClient()
+        try:
+            body = _payload(_make_text_event("boom2", "rt-bill-rp", line_user_id="Ubill003"))
+            with pytest.raises(RuntimeError):
+                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        finally:
+            app.dependency_overrides[get_line_client] = lambda: _fake_line_client
+        # 計費點在 reply 之後 → 失敗不增加
+        assert _usage_count(tid) == before
+
+    def test_over_quota_does_not_increment(self, client):
+        """反向：已達上限 → 回覆超量訊息、quota used 不再 +1（非遞增檢查）。"""
+        import datetime
+        from saas_mvp.models.usage import ApiUsage
+        from saas_mvp.quota import PLAN_DAILY_LIMITS
+
+        token, tid = _register(client)
+        # 直接把今日 usage 寫到上限
+        db = _Session()
+        try:
+            db.add(ApiUsage(tenant_id=tid, period=datetime.date.today(),
+                            count=PLAN_DAILY_LIMITS["free"]))
+            db.commit()
+        finally:
+            db.close()
+
+        _fake_line_client.reset()
+        body = _payload(_make_text_event("over limit", "rt-bill-over", line_user_id="Ubill004"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        # 回覆配額訊息、且 used 仍為上限值（沒有再 +1）
+        assert "配額" in _fake_line_client.last_text or "quota" in _fake_line_client.last_text.lower()
+        assert _usage_count(tid) == PLAN_DAILY_LIMITS["free"]
