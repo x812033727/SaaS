@@ -6,6 +6,8 @@
 * X-Line-Signature 驗章失敗 → 400（符合 LINE 文件建議）。
 * 非文字事件靜默略過，回 200 OK。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
+* quota 計費點後移：先做非遞增檢查放行，待 translate 與 reply 皆成功後才
+  increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。
 * 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig，找不到 → 404。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
 
@@ -14,8 +16,6 @@
 * DB 查詢必須早於簽章驗證，因為 channel_secret 存在 DB。
   副作用：攻擊者可藉 404（無 config）vs 400（簽章錯）區分哪些 tenant_id
   已設定 LINE config。MVP 已接受此風險，生產前可改為統一回 400。
-* translate/reply 失敗後 quota 已扣（+1 commit 後才翻譯/回覆），無法 rollback。
-  MVP 設計接受此損耗；高流量時可改為翻譯後再扣 quota。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from saas_mvp.models.line_channel_config import (
 )
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
-from saas_mvp.quota import check_and_increment
+from saas_mvp.quota import has_quota, increment_usage
 from saas_mvp.translation import Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 
@@ -193,19 +193,18 @@ async def line_webhook(
 
         translate_text = remaining_text if lang_code else text
 
-        # ── 6a. 配額檢查（超量 → 回覆明確訊息，不翻譯） ───────────────────────
-        try:
-            check_and_increment(db, tenant_id, tenant.plan)
-        except HTTPException as exc:
-            if exc.status_code == 429:
-                line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
-                continue
-            raise
+        # ── 6a. 配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ───────
+        if not has_quota(db, tenant_id, tenant.plan):
+            line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
+            continue
 
         # ── 6b. 翻譯 ──────────────────────────────────────────────────────────
         translated = translator.translate(translate_text, target_lang)
 
         # ── 6c. 回覆 ──────────────────────────────────────────────────────────
         line_client.reply(reply_token, translated, access_token=access_token)
+
+        # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────
+        increment_usage(db, tenant_id)
 
     return {"status": "ok"}

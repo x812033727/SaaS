@@ -99,6 +99,41 @@ def check_and_increment(db: Session, tenant_id: int, plan: str) -> int:
     return row.count
 
 
+def has_quota(db: Session, tenant_id: int, plan: str) -> bool:
+    """非遞增檢查：今日是否仍有配額（不寫入、不 commit）。
+
+    用於「副作用成功後才計量」流程：先以本函式判斷是否放行，
+    待下游副作用（翻譯、回覆）皆成功後，再呼叫 :func:`increment_usage`。
+    回傳 True 代表仍有額度，False 代表已達上限。
+    """
+    limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
+    today = datetime.date.today()
+    row = db.execute(
+        select(ApiUsage).where(
+            ApiUsage.tenant_id == tenant_id,
+            ApiUsage.period == today,
+        )
+    ).scalar_one_or_none()
+    used = row.count if row else 0
+    validate_count(used)   # 防衛性：DB 異常值（含 bool）一律攔截
+    return used < limit
+
+
+def increment_usage(db: Session, tenant_id: int) -> int:
+    """副作用成功後才計量 +1（SELECT FOR UPDATE 序列化）並 commit。
+
+    與 :func:`has_quota` 搭配使用：呼叫端應先以 has_quota 判斷是否放行，
+    待下游副作用全部成功後才呼叫本函式，避免下游失敗造成「白扣」。
+    回傳更新後的 count。
+    """
+    today = datetime.date.today()
+    row = _get_or_create_usage_locked(db, tenant_id, today)
+    validate_count(row.count)
+    row.count += 1
+    db.commit()
+    return row.count
+
+
 def _get_or_create_key_usage_locked(
     db: Session, api_key_id: int, tenant_id: int, today: datetime.date
 ):
