@@ -47,8 +47,23 @@ from saas_mvp.translation.commands import parse_lang_command
 
 _log = logging.getLogger(__name__)
 
+# ── Webhook 路徑單一真相來源 ──────────────────────────────────────────────────
+# router 掛載路徑與「對外公告的 webhook_url」共用同一組常數，避免兩處各自硬碼、
+# 路由改名後靜默脫節。tenants router 的自助端點 import webhook_url_for() 組裝回應，
+# 並有測試斷言「webhook_url 與 app 實際註冊的 route 一致」作保底。
+LINE_WEBHOOK_PREFIX = "/line"
+_WEBHOOK_ROUTE = "/webhook/{tenant_id}"
+# 完整對外路徑模板，例：/line/webhook/{tenant_id}
+LINE_WEBHOOK_PATH_TEMPLATE = LINE_WEBHOOK_PREFIX + _WEBHOOK_ROUTE
+
+
+def webhook_url_for(tenant_id: int) -> str:
+    """組裝租戶專屬 webhook 相對路徑（host 由部署端拼接）。"""
+    return LINE_WEBHOOK_PATH_TEMPLATE.format(tenant_id=tenant_id)
+
+
 router = APIRouter(
-    prefix="/line",
+    prefix=LINE_WEBHOOK_PREFIX,
     tags=["line-webhook"],
 )
 
@@ -75,7 +90,7 @@ def _verify_signature(body: bytes, channel_secret: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-@router.post("/webhook/{tenant_id}", summary="LINE Webhook — 接收事件、翻譯並回覆")
+@router.post(_WEBHOOK_ROUTE, summary="LINE Webhook — 接收事件、翻譯並回覆")
 async def line_webhook(
     tenant_id: int,
     request: Request,

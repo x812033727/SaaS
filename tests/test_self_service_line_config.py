@@ -149,6 +149,28 @@ class TestCrud:
         assert "my-secret" not in r.text
         assert "my-token" not in r.text
 
+    def test_webhook_url_matches_actual_route(self, client, tenant_a):
+        """保底：GET 回應的 webhook_url 必須與 app 實際註冊的 webhook route 一致。
+
+        防止 webhook router 改名後，自助端點公告的 URL 靜默脫節
+        （單一真相來源 = line_webhook.LINE_WEBHOOK_PATH_TEMPLATE）。
+        """
+        token, tid = tenant_a
+        client.put(PATH, headers=_auth(token), json={
+            "channel_secret": "s", "access_token": "t",
+        })
+        webhook_url = client.get(PATH, headers=_auth(token)).json()["webhook_url"]
+
+        # app 實際註冊的 webhook route path 模板
+        from saas_mvp.routers.line_webhook import line_webhook as _wh_handler
+        route_paths = {
+            r.path for r in client.app.routes
+            if getattr(r, "endpoint", None) is _wh_handler
+        }
+        assert route_paths, "找不到 line_webhook route"
+        expected = next(iter(route_paths)).format(tenant_id=tid)
+        assert webhook_url == expected
+
     def test_get_returns_config(self, client, tenant_a):
         token, tid = tenant_a
         client.put(PATH, headers=_auth(token), json={

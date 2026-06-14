@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
+from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import line_config as line_config_svc
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
@@ -62,16 +63,14 @@ def get_my_tenant(
 # ── 租戶自助 LINE Channel Config 端點 ─────────────────────────────────────────
 # tenant_id 唯一來源為 current_user.tenant_id，無 path/body 參數，結構性保證隔離。
 # 寫端點 + 查端點皆掛 require_rate_limit，對齊 notes.py 等同層 self-service 慣例。
-
-# NOTE: 必須與 line_webhook router 一致（prefix "/line" + "/webhook/{tenant_id}"）。
-#       該路由若變更，此格式須同步更新，否則回傳的 webhook_url 會靜默脫節。
-_WEBHOOK_URL_TEMPLATE = "/line/webhook/{tenant_id}"
+# webhook_url 由 line_webhook.webhook_url_for() 組裝——與 webhook router 的實際掛載
+# 路徑共用同一組常數，路由改名不會靜默脫節（有測試斷言一致性作保底）。
 
 
 def _line_config_response(svc_dict: dict, tenant_id: int) -> TenantLineConfigResponse:
     return TenantLineConfigResponse(
         **svc_dict,
-        webhook_url=_WEBHOOK_URL_TEMPLATE.format(tenant_id=tenant_id),
+        webhook_url=webhook_url_for(tenant_id),
     )
 
 
