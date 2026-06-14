@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
+from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.routers.line_webhook import webhook_url_for
@@ -98,6 +99,7 @@ def upsert_my_line_config(
     body: TenantLineConfigUpsertBody,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
 ) -> TenantLineConfigResponse:
     """建立或更新當前租戶 LINE 設定；無效 default_target_lang 回 400。"""
     tid = current_user.tenant_id
@@ -107,6 +109,7 @@ def upsert_my_line_config(
         channel_secret=body.channel_secret,
         access_token=body.access_token,
         default_target_lang=body.default_target_lang,
+        bot_info_client=bot_info_client,
     )
     return _line_config_response(svc_dict, tid)
 

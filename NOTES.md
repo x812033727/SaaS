@@ -1052,3 +1052,13 @@ UNCONFIGURED no-header: 400 'Invalid X-Line-Signature'
 
 ## 任務 #4 完成：更新 docs/README 說明租戶自助端點與 webhook_url 用途（引導租戶去 LINE Console 填專屬 URL）
 
+## 任務 #1 完成：在 LineChannelConfig model 新增 line_bot_user_id 欄位（String(64), nullable=True, unique=True, index=True），向後相容
+
+## 任務 #4 完成：處理舊 DB 相容：啟動時 try-ALTER 補欄位（新環境 create_all 自動包含），無 Alembic 場景不爆
+
+## 任務 #2 完成：在 line_config service 的 upsert 完成後自動呼叫 GET https://api.line.me/v2/bot/info 取 bot userId 並存入 line_bot_user_id，失敗記 warning 不阻擋 upsert
+
+## 任務 #3 完成：在 webhook handler 驗簽後加 destination 二次驗證：cfg.line_bot_user_id 已設定且 payload.destination 不符時回 400（共用 _INVALID_SIGNATURE_DETAIL）
+
+## 任務 #5 完成：補測試：destination 不符→400、destination 為 None(舊config)→略過二次check 仍 200、upsert 自動填 userId（mock bot/info）
+

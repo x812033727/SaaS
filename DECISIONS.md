@@ -206,3 +206,46 @@
 ## 本輪不改 admin 端點回應格式、不新增 secret/token 明文欄位、不實作 absolute URL 組裝（M2 backlog）。
 - 時間：2026-06-14 15:15
 
+## **`line_bot_user_id` 欄位**：`models/line_channel_config.py` 加 `line_bot_user_id = Column(String(64), nullable=True, unique=True, index=True)`；`unique=True` 由 SQLAlchemy 產生獨立 index，非 inline constraint。
+- 時間：2026-06-14 15:50
+- 理由：nullable 保向後相容；分離 index 利於 ALTER 拆步執行。
+
+## **Schema 遷移（無 Alembic）**：`db.py` 的 `init_db()` 尾端加 `_migrate_add_line_bot_user_id()`；邏輯為「`sqlalchemy.inspect` 先查欄位存在性 → 缺則 `ALTER TABLE line_channel_configs ADD COLUMN line_bot_user_id VARCHAR(64)` → 再 `CREATE UNIQUE INDEX IF NOT EXISTS ix_lcfg_lbuid ON line_channel_configs(line_bot_user_id)`」；兩條 SQL 分開執行；整段 `try/except` 包住，失敗僅 `logger.warning`，不阻啟動。
+- 時間：2026-06-14 15:50
+- 理由：拆成 ADD COLUMN + 獨立 CREATE INDEX，規避 SQLite 老版本 ALTER 不支援 inline UNIQUE 的問題；新欄位初始全為 NULL，SQLite unique index 允許多 NULL，migration 前無重複實值疑慮，工程師已確認安全。
+- 否決方案：直接 ALTER TABLE ADD COLUMN line_bot_user_id VARCHAR(64) UNIQUE —— SQLite 老版本 inline UNIQUE 支援不穩定，拆步更可移植。
+
+## **`LineBotInfoClient` 介面用 `ABC` + `@abstractmethod`**，不用 `Protocol`；與既有 `LineReplyClient`（`ABC`）統一。
+- 時間：2026-06-14 15:50
+- 理由：Protocol subclass 不實作方法在 runtime 才炸；ABC 在實例化時即報錯，保護更早。
+- 否決方案：Protocol —— 與既有慣例不一致，且少了 abstractmethod 的靜態保護。
+
+## **`LineBotInfoClient` 實作放在既有 `line_client.py`**：新增 `HttpLineBotInfoClient`（stdlib `urllib`，`get_user_id(access_token) -> str | None`）與 `StubLineBotInfoClient(user_id: str | None)`（測試用）。
+- 時間：2026-06-14 15:50
+- 理由：不引入新模組，與 `HttpLineReplyClient` / `FakeLineReplyClient` 同檔，維持現有「client 模組集中」慣例。
+
+## **`get_bot_info_client` FastAPI dependency**：定義於 `line_client.py`，回傳 `HttpLineBotInfoClient()`；測試透過 `app.dependency_overrides[get_bot_info_client] = lambda: StubLineBotInfoClient(...)` 注入，不用 monkeypatch。
+- 時間：2026-06-14 15:50
+
+## **upsert router 確認為 `def`（sync）**，服務內直接呼叫 `client.get_user_id()` 無需 `asyncio.to_thread()`；設計文件移除此 TODO。
+- 時間：2026-06-14 15:50
+
+## **`upsert_line_config()` 新增尾參數 `bot_info_client: LineBotInfoClient | None = None`**；在第一次 `db.commit()` + `db.refresh()` 成功後，執行下列固定模式：
+- 時間：2026-06-14 15:50
+- 理由：IntegrityError 後若不 rollback，SQLAlchemy session 進入不可用狀態，會污染 connection pool 中的後續請求。
+- 否決方案：分開 try/except（先包 get_user_id，再單獨包 commit）—— 多一層結構複雜度，語意等價，統一包更清晰。
+
+## **Webhook destination 二次驗證**：位置在「HMAC 驗簽通過後、quota check 前」；條件 `if cfg.line_bot_user_id and payload.get("destination") != cfg.line_bot_user_id`；失敗回 `JSONResponse(400, {"detail": _INVALID_SIGNATURE_DETAIL})`（共用同一常數）；log 訊息**不含 destination 值與 tenant_id**，僅中性描述如 `"destination mismatch, rejecting webhook"`。
+- 時間：2026-06-14 15:50
+- 理由：共用常數防租戶列舉；log 不帶值防 log 側資訊洩漏，為高級工程師補充審查項。
+- 否決方案：自訂 detail 字串 —— 會形成可區分的 oracle，讓攻擊者能列舉租戶存在性。
+
+## **測試案例 ①（upsert 後驗 `line_bot_user_id` 被寫入）**：不靠 API response（`_to_response()` 未暴露此欄位），改為 `PUT` 後直接用 `_Session()` 查 ORM 物件，斷言 `cfg.line_bot_user_id == expected_user_id`；寫法對齊 `TestQuotaExceeded` 的 ORM 直查模式。
+- 時間：2026-06-14 15:50
+
+## **測試覆蓋四邊界**（跨兩個測試檔擴充）：① upsert + bot/info 成功 → ORM 直查 `line_bot_user_id` 有值；② upsert + bot/info 拋例外 → upsert 仍回 200、`line_bot_user_id` 為 None、session 無髒狀態；③ webhook destination 不符（`line_bot_user_id` 已設）→ 400 且 detail 與簽章失敗字串完全相同；④ `line_bot_user_id` 為 None（舊 config）→ destination 任意值仍 200 OK。
+- 時間：2026-06-14 15:50
+
+## **本輪不改 `_to_response()` 暴露 `line_bot_user_id`**；該欄位為內部識別鍵，不需出現在租戶 API response，M2 視需求評估。
+- 時間：2026-06-14 15:50
+

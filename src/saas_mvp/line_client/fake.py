@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from saas_mvp.line_client.base import LineReplyClient
+from saas_mvp.line_client.base import LineBotInfoClient, LineReplyClient
 
 
 @dataclass
@@ -70,3 +70,33 @@ class FakeLineReplyClient(LineReplyClient):
     def texts(self) -> list[str]:
         """所有回覆文字（按呼叫順序）。"""
         return [r.text for r in self.sent]
+
+
+class StubLineBotInfoClient(LineBotInfoClient):
+    """測試用 bot/info client，回傳預設 userId，無網路呼叫。
+
+    使用方式（pytest + FastAPI dependency_overrides）::
+
+        stub = StubLineBotInfoClient("U" + "a" * 32)
+        app.dependency_overrides[get_bot_info_client] = lambda: stub
+
+    Args:
+        user_id: ``get_user_id()`` 的固定回傳值；傳 None 模擬「回應缺 userId」。
+        raises: 設為 True 時 ``get_user_id()`` 拋例外，模擬 bot/info 不可達；
+            用來驗證 upsert 在失敗時仍成功、line_bot_user_id 留 None。
+
+    Attributes:
+        calls: 收到的 access_token 清單（按呼叫順序），供斷言。
+    """
+
+    def __init__(self, user_id: str | None = None, *, raises: bool = False) -> None:
+        self._user_id = user_id
+        self._raises = raises
+        self.calls: list[str] = []
+
+    def get_user_id(self, access_token: str) -> str | None:
+        """回傳建構時指定的 user_id；raises=True 時拋例外。"""
+        self.calls.append(access_token)
+        if self._raises:
+            raise RuntimeError("stub bot/info unavailable")
+        return self._user_id
