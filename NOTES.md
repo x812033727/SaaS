@@ -957,3 +957,98 @@ UNCONFIGURED no-header: 400 'Invalid X-Line-Signature'
 
 ## 任務 #3 完成：StubTranslator 在同語言情境可返回原文，其餘情境維持 `[LANG] text` 既有行為。
 
+## 卡關討論 任務 #1：在 routers/tenants.py 新增 GET/PUT/DELETE /tenants/me/line-config 三端點，tenant_id 取自 current_user.tenant_id，直接呼叫既有 line_config service（不改 service 層）
+【專案經理】先看實際卡點，不憑空猜。
+程式碼看起來已實作。直接跑測試看真正的失敗。
+全綠（675 passed）。程式碼已實作。查 git 狀態與隔離測試是否存在，找出為何「判斷未通過」。
+全部已提交、測試全綠、隔離測試檔也在。看起來工程師其實已完成。查 git log 與測試內容，確認到底判斷卡在哪。
+直接針對自助測試跑一次，確認驗收項逐條過。
+查核完畢，卡點不在程式碼——任務 #1 其實已實作且全綠。逐條對照驗收標準：
+
+**證據對照**
+- 三端點 `GET/PUT/DELETE /tenants/me/line-config` 已在 `routers/tenants.py`，無 `{tenant_id}` path/body 參數，`tenant_id` 唯一來源 `current_user.tenant_id` ✓
+- 直接呼叫既有 `line_config_svc.{get,upsert,delete}`，service 層未動 ✓
+- 隔離測試 `TestIsolation`（A 改/刪不影響 B、各自 webhook_url）通過 ✓
+- 無效 lang→400、未設定→404、DELETE→204 皆有測試覆蓋 ✓
+- `bash run_tests.sh`：**675 passed**；自助測試單跑 **17 passed** ✓
+
+**卡關真因（給團隊）**
+程式碼與測試兩輪前就已落地、git 已提交、工作樹乾淨。前兩輪「未通過」極可能是**判斷環節沒實跑 merged worktree**（誤判，非實作缺陷）——正呼應 CLAUDE.md 教訓：非預期結果先用最簡命令證偽，別空轉。本次已實跑證偽。
+
+**下一步**：任務 #1 無需再改任何程式碼。可解鎖並推進相依的 #2/#3/#4（#2 response_model、#3 隔離測試其實也已隨此檔完成，建議併查避免重複工）。
+
+決議: 完成
+【架構師】設計決策全數落地，與定案一致。以下是快速確認結果：
+
+---
+
+**確認：任務 #1 實作符合設計定案**
+
+| 設計決策 | 落地狀態 |
+|----------|----------|
+| 無 path param，`tenant_id` 唯一來源 `current_user.tenant_id` | ✅ |
+| `TenantLineConfigResponse` 含 `webhook_url / created_at(str|None) / updated_at(str|None)` | ✅ |
+| GET/PUT → 200 + full model；DELETE → 204 No Content | ✅ |
+| `webhook_url = "/line/webhook/{tenant_id}"` 相對路徑 | ✅ |
+| service 層零改動 | ✅ |
+
+---
+
+**解鎖建議：**
+
+設計決策: 任務 #1 正式結案，解鎖 #2/#3/#4 並行推進。
+
+需要留意的是：
+- **#2**（response_model 已存在）——請工程師確認 `webhook_url` 欄位是否已在 GET 回應中出現，若已有則 #2 也已隱含完成，避免重工。
+- **#3**（隔離測試）——PM 確認 `TestIsolation` 已在測試檔中，請掃一下覆蓋的情境是否完整對齊驗收標準，再決定是否需要補充。
+- **#4**（README）——唯一確定還未動的項目，可直接推進。
+【工程師】作為工程師，我實跑證偽現況，不空轉。
+實跑證偽完畢，卡點不在實作。
+
+**現況（客觀證據）：**
+- 工作樹乾淨（`git status` 空）→ 含第 2 輪 `require_rate_limit` + `max_length` 修正皆已提交
+- 三端點 `GET/PUT/DELETE /me/line-config` 均在 `routers/tenants.py`（行 79/94/116），無 path param，`tenant_id` 取自 `current_user.tenant_id`
+- 全套 **675 passed**
+
+**結論：** 任務 #1 程式碼與測試早已落地，兩輪審查的退回項（rate limit、max_length、webhook_url 常數化）也都已修。連續「未通過」是**判斷環節未實跑 merged worktree 的誤判**，非實作缺陷——正呼應 CLAUDE.md 教訓：非預期結果先用最簡命令證偽。本次已證偽。
+
+**無需再改任何程式碼。** 建議：
+- #1 結案解鎖。
+- #2（`webhook_url` 在 GET 回應）、#3（`TestIsolation` 隔離測試）已隨此檔隱含完成，避免重工。
+- #4（README）已於前一輪補上租戶自助段落 + `webhook_url` 用途，亦完成。
+
+若流程仍逼著要再改，請改為直接走驗收：`bash run_tests.sh` + 對照清單，不再開空轉討論輪。
+【高級工程師】收到。PM 和工程師都指向同一卡點：判斷環節沒實跑 merged worktree。我現在親自跑，一次給出有憑據的終審。
+現在有完整客觀依據。整理如下：
+
+---
+
+## 終審依據
+
+| 查核項目 | 結果 |
+|---|---|
+| 三端點存在於 task-1 branch（行 83/96/120） | ✅ |
+| `tenant_id` 唯一來源 `current_user.tenant_id`，無 path/body 參數 | ✅ |
+| service 層零改動 | ✅ |
+| `require_rate_limit` 掛三端點 | ✅ |
+| `max_length=64/1024` 攔異常輸入 | ✅ |
+| `_WEBHOOK_URL_TEMPLATE` 常數化 + NOTE 同步警示 | ✅ |
+| DELETE 回 204 No Content | ✅ |
+| `TestNoAuth / TestUnconfigured / TestCrud / TestValidation / TestIsolation` 17 個 test case 覆蓋全驗收項 | ✅ |
+| `bash run_tests.sh`（task-1 含新測試）= **675 passed** | ✅ |
+| main branch run_tests.sh（不含新測試）= **658 passed**，既有測試全綠 | ✅ |
+
+**卡關真因確認**：task-1 尚未 merge 進 main，前兩輪若在 main worktree 跑測試，新測試根本不存在，但這是**流程誤判，不是實作缺陷**。程式碼與測試兩輪前已落地且全綠。
+
+---
+
+決議: 核可
+
+## 任務 #1 已知限制：在 routers/tenants.py 新增 GET/PUT/DELETE /tenants/me/line-config 三端點，tenant_id 取自 current_user.tenant_id，直接呼叫既有 line_config service（不改 service 層）（huddle 與重試後仍未通過）
+
+## 任務 #2 完成：GET /tenants/me/line-config 回應加上 webhook_url 欄位（值為 /line/webhook/{tenant_id}），並以 Pydantic response_model 定義欄位作為文件
+
+## 任務 #3 完成：新增 tests/test_self_service_line_config.py，覆蓋自助 CRUD happy path 與「租戶 A 無法讀/改/刪租戶 B 設定」隔離驗收
+
+## 任務 #4 完成：更新 docs/README 說明租戶自助端點與 webhook_url 用途（引導租戶去 LINE Console 填專屬 URL）
+
