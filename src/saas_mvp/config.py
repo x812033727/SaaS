@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     key_rate_limit: str = "100/60"
     tenant_rate_limit: str = "1000/60"
 
+    # Translation backend
+    # SAAS_DEEPL_API_KEY: set to your DeepL auth key to enable real HTTP translation.
+    #   If empty (default), get_translator() returns StubTranslator (offline, deterministic).
+    # SAAS_DEEPL_API_URL: override the DeepL API endpoint (useful for paid tier or testing).
+    deepl_api_key: str = ""
+    deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。
