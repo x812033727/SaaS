@@ -335,6 +335,83 @@
       "rejected": "",
       "session_id": "pjc9b4ab0b44",
       "created_at": 1781418287.5562832
+    },
+    {
+      "decision": "所有新端點加入 `routers/tenants.py`，`app.py` 不動。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988295
+    },
+    {
+      "decision": "`services/line_config.py` 三函數原封不動，router 只做組裝呼叫。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.598835
+    },
+    {
+      "decision": "三端點路徑均為 `/tenants/me/line-config`，無 `{tenant_id}` path param；`tenant_id` 唯一來源是 `current_user.tenant_id`。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.598838
+    },
+    {
+      "decision": "使用現有 `get_current_user` dependency，不需 `require_admin`；admin 端點原狀不動。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988393
+    },
+    {
+      "decision": "在 `routers/tenants.py` 定義 Pydantic response model `TenantLineConfigResponse`，欄位：`tenant_id / has_channel_secret / has_access_token / default_target_lang / created_at / updated_at / webhook_url`；`created_at / updated_at` 宣告為 `str | None`（service 層已 `.isoformat()` 序列化，非 datetime 物件）。",
+      "rationale": "避免 Pydantic 對 str 重複序列化造成語意混淆。",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988438
+    },
+    {
+      "decision": "`GET` 與 `PUT`（upsert 成功）均回傳完整 `TenantLineConfigResponse`（HTTP 200）；`DELETE` 回 **HTTP 204 No Content**。",
+      "rationale": "204 對齊 self-service 同層級慣例（`notes.py`、`api_keys.py` 皆 204），非對齊 admin 端點（admin DELETE 實際回 200 + body，兩套契約本來就允許不同）。",
+      "rejected": "「DELETE 回 200 + body 以對齊 admin」——admin 是後台契約；self-service 面向租戶，應與同層 REST 慣例一致。",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988457
+    },
+    {
+      "decision": "`webhook_url` 值為相對路徑 `f\"/line/webhook/{tenant_id}\"`，router 以 `{**svc_dict, \"webhook_url\": f\"/line/webhook/{tenant_id}\"}` 組裝後傳入 response model。",
+      "rationale": "host 因部署環境不同無法硬編碼，README 說明拼接方式。",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988472
+    },
+    {
+      "decision": "錯誤處理全部由既有 HTTPException 直傳——`InvalidTargetLangError` 已在 service 層 L70-72 內部轉成 HTTPException(400)，router **不另加 try/except**，寫了是死代碼。",
+      "rationale": "",
+      "rejected": "「router 捕獲 InvalidTargetLangError 回 400」——service 層已處理，此寫法不可達。",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.598872
+    },
+    {
+      "decision": "越權測試語意落地為：租戶 A 的 token 打 `GET /tenants/me/line-config`，若 A 無設定則回 A 的 **404**（而非洩漏 B 的資料）；無法透過此端點表達「A 直接操作 B」，隔離保障由「路徑無 param、token 強綁 tenant_id」結構性保證。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988734
+    },
+    {
+      "decision": "新增 `tests/test_self_service_line_config.py`，覆蓋：CRUD happy path、`webhook_url` 欄位值、A token → GET/PUT/DELETE 回 A 的 404（非 B 的資料）、未設定時 GET 回 404。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.598875
+    },
+    {
+      "decision": "本輪不改 admin 端點回應格式、不新增 secret/token 明文欄位、不實作 absolute URL 組裝（M2 backlog）。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj45e6462dcc",
+      "created_at": 1781421359.5988762
     }
   ]
 }
