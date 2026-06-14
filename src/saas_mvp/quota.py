@@ -48,6 +48,25 @@ def validate_count(value: object) -> int:
     return value
 
 
+def has_quota(db: Session, tenant_id: int, plan: str) -> bool:
+    """非遞增檢查：今日是否仍有配額可用（True=未超量）。
+
+    僅讀取、不寫入、不 commit，供「先確認可用、副作用成功後才計量」的
+    流程使用，避免下游（翻譯／回覆）失敗時白扣配額。
+    """
+    limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
+    today = datetime.date.today()
+    row = db.execute(
+        select(ApiUsage).where(
+            ApiUsage.tenant_id == tenant_id,
+            ApiUsage.period == today,
+        )
+    ).scalar_one_or_none()
+    used = row.count if row else 0
+    validate_count(used)  # 防衛性：DB 異常值（含 bool）一律攔截
+    return used < limit
+
+
 def _get_or_create_usage_locked(db: Session, tenant_id: int, today: datetime.date) -> ApiUsage:
     """取得今日計量列（帶 FOR UPDATE 鎖定），不存在則先 INSERT count=0。"""
     row = db.execute(

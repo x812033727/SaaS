@@ -646,3 +646,105 @@ class TestDecryptionError:
         assert r.status_code == 200
         # fake client 不應被呼叫（提前返回）
         assert _fake_line_client.call_count == 0
+
+
+# ── 測試：計費點後移（Task #1 — 消除下游失敗白扣） ────────────────────────────
+
+def _usage_count(tid: int) -> int:
+    """讀取指定租戶今日 quota used（無列回 0）。"""
+    import datetime
+    from saas_mvp.models.usage import ApiUsage
+    db = _Session()
+    try:
+        row = db.execute(
+            ApiUsage.__table__.select().where(
+                (ApiUsage.tenant_id == tid) & (ApiUsage.period == datetime.date.today())
+            )
+        ).first()
+        return row.count if row else 0
+    finally:
+        db.close()
+
+
+class _BoomTranslator(StubTranslator):
+    """translate 一律拋例外，模擬下游翻譯失敗。"""
+
+    def translate(self, text: str, target_lang: str) -> str:
+        raise RuntimeError("translate backend down")
+
+
+class _BoomReplyClient(FakeLineReplyClient):
+    """reply 一律拋例外，模擬下游回覆失敗。"""
+
+    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
+        raise RuntimeError("LINE reply API down")
+
+
+class TestBillingPointDeferred:
+    """計費點後移：副作用成功才 +1；下游失敗不白扣；超量不 +1。"""
+
+    def test_success_path_increments_exactly_one(self, client, tenant_a):
+        """正向：translate + reply 都成功 → quota used 恰 +1。"""
+        _, tid = tenant_a
+        _fake_line_client.reset()
+        before = _usage_count(tid)
+
+        body = _payload(_make_text_event("count me", "rt-bill-ok", line_user_id="Ubill001"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        assert _usage_count(tid) == before + 1
+
+    def test_translate_failure_does_not_charge(self, client, tenant_a):
+        """反向：translate 拋例外 → quota used 不變（不白扣），且未回覆。"""
+        _, tid = tenant_a
+        before = _usage_count(tid)
+        app = client.app
+        app.dependency_overrides[get_translator] = lambda: _BoomTranslator()
+        try:
+            body = _payload(_make_text_event("boom", "rt-bill-tx", line_user_id="Ubill002"))
+            with pytest.raises(RuntimeError):
+                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        finally:
+            app.dependency_overrides[get_translator] = lambda: _stub_translator
+        # 計費點在 translate 之後 → 失敗不增加
+        assert _usage_count(tid) == before
+
+    def test_reply_failure_does_not_charge(self, client, tenant_a):
+        """反向：reply 拋例外 → quota used 不變（翻譯成功但回覆失敗也不白扣）。"""
+        _, tid = tenant_a
+        before = _usage_count(tid)
+        app = client.app
+        app.dependency_overrides[get_line_client] = lambda: _BoomReplyClient()
+        try:
+            body = _payload(_make_text_event("boom2", "rt-bill-rp", line_user_id="Ubill003"))
+            with pytest.raises(RuntimeError):
+                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        finally:
+            app.dependency_overrides[get_line_client] = lambda: _fake_line_client
+        # 計費點在 reply 之後 → 失敗不增加
+        assert _usage_count(tid) == before
+
+    def test_over_quota_does_not_increment(self, client):
+        """反向：已達上限 → 回覆超量訊息、quota used 不再 +1（非遞增檢查）。"""
+        import datetime
+        from saas_mvp.models.usage import ApiUsage
+        from saas_mvp.quota import PLAN_DAILY_LIMITS
+
+        token, tid = _register(client)
+        # 直接把今日 usage 寫到上限
+        db = _Session()
+        try:
+            db.add(ApiUsage(tenant_id=tid, period=datetime.date.today(),
+                            count=PLAN_DAILY_LIMITS["free"]))
+            db.commit()
+        finally:
+            db.close()
+
+        _fake_line_client.reset()
+        body = _payload(_make_text_event("over limit", "rt-bill-over", line_user_id="Ubill004"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        # 回覆配額訊息、且 used 仍為上限值（沒有再 +1）
+        assert "配額" in _fake_line_client.last_text or "quota" in _fake_line_client.last_text.lower()
+        assert _usage_count(tid) == PLAN_DAILY_LIMITS["free"]
