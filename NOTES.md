@@ -1062,3 +1062,11 @@ UNCONFIGURED no-header: 400 'Invalid X-Line-Signature'
 
 ## 任務 #5 完成：補測試：destination 不符→400、destination 為 None(舊config)→略過二次check 仍 200、upsert 自動填 userId（mock bot/info）
 
+## 任務 #1 完成：驗證 webhook 後扣流程：translate 或 reply 失敗時當日 used 不增加
+
+## 任務 #2 完成：驗證正常路徑（翻譯+回覆皆成功）恰好計量 +1、超量回配額訊息且不 +1
+
+## 任務 #3 完成：驗證 `increment_usage` 鎖內重驗 limit，併發 TOCTOU 下永不超賣
+
+## 任務 #4 完成：盤點 `require_quota`（一般 API）仍為前扣、與 webhook 後扣的語意差異，記入文件並明確標記 M2 移交（本輪不強改）
+
