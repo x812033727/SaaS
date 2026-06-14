@@ -12,9 +12,17 @@ Public API::
     )
 """
 
-from saas_mvp.line_client.base import LineReplyClient, LineReplyError
-from saas_mvp.line_client.fake import FakeLineReplyClient, SentReply
-from saas_mvp.line_client.http import HttpLineReplyClient
+from saas_mvp.line_client.base import (
+    LineBotInfoClient,
+    LineReplyClient,
+    LineReplyError,
+)
+from saas_mvp.line_client.fake import (
+    FakeLineReplyClient,
+    SentReply,
+    StubLineBotInfoClient,
+)
+from saas_mvp.line_client.http import HttpLineBotInfoClient, HttpLineReplyClient
 
 
 def get_line_client() -> LineReplyClient:
@@ -34,6 +42,16 @@ def get_line_client() -> LineReplyClient:
     return HttpLineReplyClient()
 
 
+def get_bot_info_client() -> LineBotInfoClient:
+    """FastAPI dependency：回傳可注入的 LINE bot/info client。
+
+    預設回傳 :class:`HttpLineBotInfoClient`（真實 HTTP）。
+    測試中透過 ``app.dependency_overrides[get_bot_info_client]`` 替換成
+    :class:`StubLineBotInfoClient`，不需任何 monkeypatch。
+    """
+    return HttpLineBotInfoClient()
+
+
 __all__ = [
     "LineReplyClient",
     "LineReplyError",
@@ -41,4 +59,8 @@ __all__ = [
     "FakeLineReplyClient",
     "SentReply",
     "get_line_client",
+    "LineBotInfoClient",
+    "HttpLineBotInfoClient",
+    "StubLineBotInfoClient",
+    "get_bot_info_client",
 ]
