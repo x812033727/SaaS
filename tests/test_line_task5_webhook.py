@@ -687,6 +687,39 @@ class TestDecryptionError:
         assert _fake_line_client.call_count == 0
 
 
+# ── 測試：重送去重（deliveryContext.isRedelivery）─────────────────────────────
+
+
+def _make_text_event_redelivery(
+    text: str,
+    is_redelivery: bool,
+    reply_token: str = "rt-redeliv",
+    line_user_id: str = "Uredeliv001",
+) -> dict:
+    """文字 event，附帶 deliveryContext.isRedelivery 旗標。"""
+    ev = _make_text_event(text, reply_token=reply_token, line_user_id=line_user_id)
+    ev["deliveryContext"] = {"isRedelivery": is_redelivery}
+    return ev
+
+
+def _read_usage_count(tid: int) -> int:
+    """讀取該租戶今日 quota used；無列視為 0。"""
+    import datetime
+    from saas_mvp.models.usage import ApiUsage
+
+    db = _Session()
+    try:
+        today = datetime.date.today()
+        row = db.execute(
+            ApiUsage.__table__.select().where(
+                (ApiUsage.tenant_id == tid) & (ApiUsage.period == today)
+            )
+        ).first()
+        return 0 if row is None else row.count
+    finally:
+        db.close()
+
+
 # ── 測試：計費點後移（Task #1 — 消除下游失敗白扣） ────────────────────────────
 
 def _usage_count(tid: int) -> int:
@@ -703,6 +736,69 @@ def _usage_count(tid: int) -> int:
         return row.count if row else 0
     finally:
         db.close()
+
+
+class TestRedeliveryDedup:
+    def test_redelivery_true_skips_reply_and_quota(self, client, tenant_a):
+        """isRedelivery=true → 不回覆、quota 不變、回 200。"""
+        _, tid = tenant_a
+        before = _read_usage_count(tid)
+
+        body = _payload(
+            _make_text_event_redelivery("hello again", is_redelivery=True, reply_token="rt-r1")
+        )
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+
+        assert r.status_code == 200
+        # fake client 未被呼叫
+        assert _fake_line_client.call_count == 0
+        # quota 不增加
+        assert _read_usage_count(tid) == before
+
+    def test_redelivery_false_behaves_as_normal(self, client, tenant_a):
+        """反向樣本：isRedelivery=false → 正常翻譯回覆、quota +1。"""
+        _, tid = tenant_a
+        before = _read_usage_count(tid)
+
+        body = _payload(
+            _make_text_event_redelivery("hello", is_redelivery=False, reply_token="rt-r2")
+        )
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        assert _fake_line_client.last_text == "[ZH-TW] hello"
+        assert _read_usage_count(tid) == before + 1
+
+    def test_missing_delivery_context_behaves_as_normal(self, client, tenant_a):
+        """反向樣本：完全無 deliveryContext → 視為首投，正常處理、quota +1。"""
+        _, tid = tenant_a
+        before = _read_usage_count(tid)
+
+        body = _payload(_make_text_event("world", reply_token="rt-r3"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        assert _fake_line_client.last_text == "[ZH-TW] world"
+        assert _read_usage_count(tid) == before + 1
+
+    def test_redelivery_mixed_with_fresh_event(self, client, tenant_a):
+        """混合 batch：重送 event 略過、首投 event 正常處理，quota 僅 +1。"""
+        _, tid = tenant_a
+        before = _read_usage_count(tid)
+
+        body = _payload(
+            _make_text_event_redelivery("dup", is_redelivery=True, reply_token="rt-mix-dup"),
+            _make_text_event("fresh", reply_token="rt-mix-fresh", line_user_id="Umix001"),
+        )
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+
+        assert r.status_code == 200
+        # 只有 fresh event 被回覆
+        assert _fake_line_client.call_count == 1
+        assert _fake_line_client.last_text == "[ZH-TW] fresh"
+        assert _read_usage_count(tid) == before + 1
 
 
 class _BoomTranslator(StubTranslator):
