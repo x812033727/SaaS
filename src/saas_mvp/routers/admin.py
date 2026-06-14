@@ -76,8 +76,8 @@ def list_api_keys(
 # ── LINE Channel Config 管理端點 ──────────────────────────────────────────────
 
 class LineConfigUpsertBody(BaseModel):
-    channel_secret: str = Field(..., min_length=1)
-    access_token: str = Field(..., min_length=1)
+    channel_secret: str = Field(..., min_length=1, max_length=64)
+    access_token: str = Field(..., min_length=1, max_length=1024)
     default_target_lang: str = "zh-TW"
 
 

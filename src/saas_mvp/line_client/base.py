@@ -1,5 +1,7 @@
 """LINE Reply Client — 抽象基底類別與共用例外。"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 

@@ -104,8 +104,16 @@ def upsert_line_config(
                 cfg.line_bot_user_id = uid
                 db.commit()
         except Exception:
-            logger.warning("line bot info fetch or uid commit failed, skipping")
+            # exc_info 保留類型/stack，tenant_id 利於線上排查；不洩漏 token/uid 值
+            logger.warning(
+                "bot/info uid fetch failed for tenant %s, skipping",
+                tenant_id,
+                exc_info=True,
+            )
             db.rollback()
+            # rollback 後 cfg 記憶體值已過期，refresh 與 DB 對齊（line_bot_user_id 回 NULL），
+            # 防後續擴充 _to_response 暴露此欄位時吃到 stale 值
+            db.refresh(cfg)
 
     return _to_response(cfg)
 

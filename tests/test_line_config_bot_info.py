@@ -115,6 +115,32 @@ def test_no_client_is_backward_compatible(db):
     assert _orm_cfg(db, t.id).line_bot_user_id is None
 
 
+def test_http_client_rejects_malformed_user_id():
+    """HttpLineBotInfoClient：不符 U+32hex 規格的 userId 一律回 None。"""
+    import json
+    from unittest import mock
+    from saas_mvp.line_client import HttpLineBotInfoClient
+
+    def _resp(body: dict):
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = json.dumps(body).encode()
+        return cm
+
+    client = HttpLineBotInfoClient()
+    with mock.patch("urllib.request.urlopen") as m:
+        m.return_value = _resp({"userId": _BOT_USER_ID})
+        assert client.get_user_id("tok") == _BOT_USER_ID  # 合法
+
+        m.return_value = _resp({"userId": "not-a-line-id"})
+        assert client.get_user_id("tok") is None  # 非法格式
+
+        m.return_value = _resp({"userId": "U" + "A" * 32})  # 大寫 hex 不符規格
+        assert client.get_user_id("tok") is None
+
+        m.return_value = _resp({})  # 缺欄位
+        assert client.get_user_id("tok") is None
+
+
 def test_duplicate_user_id_does_not_break_upsert(db):
     """同一 bot userId 被他租戶佔用（IntegrityError）→ rollback，upsert 不爆。"""
     t1 = _tenant(db, name="t1")

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 
@@ -18,6 +19,9 @@ from saas_mvp.line_client.base import (
 
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 _LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
+
+# LINE userId 規格：U 後接 32 個 hex 字元。防禦性驗證，非法值當 None 處理。
+_LINE_USER_ID_RE = re.compile(r"^U[0-9a-f]{32}$")
 
 
 class HttpLineReplyClient(LineReplyClient):
@@ -107,4 +111,7 @@ class HttpLineBotInfoClient(LineBotInfoClient):
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             data = json.loads(resp.read().decode())
         user_id = data.get("userId")
-        return user_id if user_id else None
+        # 缺欄位或不符 LINE 規格（U + 32 hex）一律當 None，不存入 DB
+        if not user_id or not _LINE_USER_ID_RE.match(user_id):
+            return None
+        return user_id
