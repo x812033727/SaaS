@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -10,7 +11,28 @@ from passlib.context import CryptContext
 
 from saas_mvp.config import settings
 
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _build_pwd_ctx() -> CryptContext:
+    """建立 bcrypt CryptContext。
+
+    生產環境使用 passlib 預設 cost（安全強度）。僅當 ``SAAS_BCRYPT_ROUNDS``
+    env 顯式設定時才覆寫 rounds——測試環境可設低值（如 4）大幅加速；env 未設
+    時行為與原本完全一致，不影響生產安全性。bcrypt 合法區間為 4~31，超界則忽略。
+    """
+    raw = os.environ.get("SAAS_BCRYPT_ROUNDS")
+    if raw:
+        try:
+            rounds = int(raw)
+        except ValueError:
+            rounds = 0
+        if 4 <= rounds <= 31:
+            return CryptContext(
+                schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=rounds
+            )
+    return CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+_pwd_ctx = _build_pwd_ctx()
 
 
 # ──────────────────────────── password helpers ────────────────────────────────

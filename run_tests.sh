@@ -40,6 +40,9 @@ fi
 # DB 指向 in-memory，避免 init_db() 嘗試建立檔案型 SQLite
 export SAAS_DATABASE_URL="${SAAS_DATABASE_URL:-sqlite:///:memory:}"
 export SAAS_RATE_LIMIT_ENABLED="${SAAS_RATE_LIMIT_ENABLED:-false}"
+# 測試加速：bcrypt 降到最低 cost（僅測試；生產不設此 env 維持預設安全強度）。
+# 大量 register/login 測試走 bcrypt 雜湊，預設 12 rounds 使整套接近逾時邊界。
+export SAAS_BCRYPT_ROUNDS="${SAAS_BCRYPT_ROUNDS:-4}"
 
 # ── 4. 執行 pytest ────────────────────────────────────────────
 # PYTHONPATH=src 確保 saas_mvp 從 src/ 載入，不依賴 site-packages
