@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
+from saas_mvp.services import line_config as line_config_svc
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -19,6 +20,26 @@ class TenantInfo(BaseModel):
     plan: str
 
     model_config = {"from_attributes": True}
+
+
+class TenantLineConfigResponse(BaseModel):
+    """租戶自助 LINE 設定回應（遮罩 secret/token）。"""
+
+    tenant_id: int
+    has_channel_secret: bool
+    has_access_token: bool
+    default_target_lang: str
+    # service 層已 .isoformat() 序列化，宣告為 str | None 避免重複序列化
+    created_at: str | None = None
+    updated_at: str | None = None
+    # 相對路徑；租戶需自行拼接 host 後填入 LINE Console
+    webhook_url: str
+
+
+class TenantLineConfigUpsertBody(BaseModel):
+    channel_secret: str = Field(..., min_length=1)
+    access_token: str = Field(..., min_length=1)
+    default_target_lang: str = "zh-TW"
 
 
 @router.get("/me", response_model=TenantInfo)
@@ -34,3 +55,53 @@ def get_my_tenant(
             detail="Tenant not found",
         )
     return TenantInfo.model_validate(tenant)
+
+
+# ── 租戶自助 LINE Channel Config 端點 ─────────────────────────────────────────
+# tenant_id 唯一來源為 current_user.tenant_id，無 path/body 參數，結構性保證隔離。
+
+
+def _line_config_response(svc_dict: dict, tenant_id: int) -> TenantLineConfigResponse:
+    return TenantLineConfigResponse(
+        **svc_dict,
+        webhook_url=f"/line/webhook/{tenant_id}",
+    )
+
+
+@router.get("/me/line-config", response_model=TenantLineConfigResponse)
+def get_my_line_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TenantLineConfigResponse:
+    """取得當前租戶 LINE 設定（遮罩版）；未設定回 404。"""
+    tid = current_user.tenant_id
+    svc_dict = line_config_svc.get_line_config(db, tid)
+    return _line_config_response(svc_dict, tid)
+
+
+@router.put("/me/line-config", response_model=TenantLineConfigResponse)
+def upsert_my_line_config(
+    body: TenantLineConfigUpsertBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TenantLineConfigResponse:
+    """建立或更新當前租戶 LINE 設定；無效 default_target_lang 回 400。"""
+    tid = current_user.tenant_id
+    svc_dict = line_config_svc.upsert_line_config(
+        db,
+        tid,
+        channel_secret=body.channel_secret,
+        access_token=body.access_token,
+        default_target_lang=body.default_target_lang,
+    )
+    return _line_config_response(svc_dict, tid)
+
+
+@router.delete("/me/line-config", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_line_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """刪除當前租戶 LINE 設定；不存在回 404。"""
+    line_config_svc.delete_line_config(db, current_user.tenant_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -229,6 +229,49 @@ curl -X DELETE http://localhost:8000/admin/line-configs/{tenant_id} \
 }
 ```
 
+### 租戶自助設定 LINE Channel（租戶端點）
+
+租戶可用自己的登入 token 管理**自己**的 LINE 設定，無需 admin。`tenant_id` 一律取自登入身分，
+端點路徑無 `{tenant_id}` 參數，租戶**無法**讀取或修改其他租戶的設定。
+
+```bash
+# PUT（冪等 upsert）：建立或更新自己的設定
+curl -X PUT http://localhost:8000/tenants/me/line-config \
+  -H "Authorization: Bearer <tenant_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_secret": "你的 channel secret",
+    "access_token": "你的 channel access token",
+    "default_target_lang": "zh-TW"
+  }'
+
+# GET：查詢自己的設定（含 webhook_url 引導欄位）
+curl http://localhost:8000/tenants/me/line-config \
+  -H "Authorization: Bearer <tenant_token>"
+
+# DELETE：刪除自己的設定（成功回 204 No Content）
+curl -X DELETE http://localhost:8000/tenants/me/line-config \
+  -H "Authorization: Bearer <tenant_token>"
+```
+
+**GET 回應範例**（含 `webhook_url`，secret/token 不含明文）：
+```json
+{
+  "tenant_id": 1,
+  "has_channel_secret": true,
+  "has_access_token": true,
+  "default_target_lang": "zh-TW",
+  "created_at": "2026-06-14T10:00:00+00:00",
+  "updated_at": "2026-06-14T10:00:00+00:00",
+  "webhook_url": "/line/webhook/1"
+}
+```
+
+> **`webhook_url` 用途**：此為**相對路徑**。請自行拼接你的服務 host
+> （例如 `https://your-domain.com` + `/line/webhook/1`），填入 LINE Developer Console
+> 的 Webhook URL 欄位，即可讓該租戶的 LINE channel 將訊息投遞到本服務。
+> host 因部署環境而異，故不硬編碼於回應中。
+
 ### Webhook 端點
 
 ```
