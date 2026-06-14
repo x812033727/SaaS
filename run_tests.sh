@@ -44,7 +44,9 @@ fi
 # DB 指向 in-memory，避免 init_db() 嘗試建立檔案型 SQLite
 export SAAS_DATABASE_URL="${SAAS_DATABASE_URL:-sqlite:///:memory:}"
 export SAAS_RATE_LIMIT_ENABLED="${SAAS_RATE_LIMIT_ENABLED:-false}"
-# 測試環境用最低 bcrypt cost 加速大量密碼雜湊（生產維持預設 12，見 auth/security.py）
+# 測試環境用最低 bcrypt cost 加速大量密碼雜湊（生產維持預設 12，見 auth/security.py）。
+# SAAS_TESTING=1 是低成本值的明確放行旗標；缺它時 security.py 對 <10 的值會 fail-closed。
+export SAAS_TESTING="${SAAS_TESTING:-1}"
 export SAAS_BCRYPT_ROUNDS="${SAAS_BCRYPT_ROUNDS:-4}"
 
 # ── 4. 執行 pytest ────────────────────────────────────────────
