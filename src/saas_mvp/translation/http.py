@@ -17,7 +17,7 @@ from saas_mvp.translation.base import Translator, TranslationError
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 
 # BCP-47 tag → DeepL 接受的 target_lang。DeepL 不接受 ZH-TW/ZH-CN（會回 400），
-# 須映射成 ZH-HANT/ZH-HANS；其餘語言 .upper() 即可。
+# 繁/簡須映射成 ZH-HANT/ZH-HANS；其餘語言（JA/EN/KO…）直接 .upper() 即可。
 _DEEPL_LANG_MAP = {
     "ZH-TW": "ZH-HANT",
     "ZH-CN": "ZH-HANS",
