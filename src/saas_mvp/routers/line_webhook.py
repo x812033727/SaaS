@@ -12,6 +12,9 @@
   increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。increment_usage
   傳入 plan 於鎖內重驗 limit，消除 has_quota→increment 的 TOCTOU 超賣。
 * 跨租戶隔離：用 path `tenant_id` 查 DB LineChannelConfig。
+* destination 二次驗證：驗簽通過後，若 cfg.line_bot_user_id 已設定且
+  payload.destination 不符 → 回 400（共用 _INVALID_SIGNATURE_DETAIL，不洩漏租戶存在性）；
+  舊 config（line_bot_user_id=NULL）略過此 check，向後相容。
 * 租戶列舉防護：所有驗章失敗——無 config、缺 X-Line-Signature header、簽章錯——
   一律回相同的 400 + 相同 detail，外部無法藉狀態碼或回應內容區分租戶是否已設定；
   無 config 路徑並做等量 HMAC 計算對齊 timing。
@@ -147,6 +150,18 @@ async def line_webhook(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Request body is not valid JSON",
+        )
+
+    # ── 5a. destination 二次驗證（驗簽通過後才信任 payload 內容） ──────────────
+    # 防 LINE Console 錯配：租戶 A 的 bot 事件被打到租戶 B 的 webhook URL。
+    # 僅當 cfg.line_bot_user_id 已回填（經 bot/info）才比對；舊 config（NULL）略過，
+    # 行為與現況一致（向後相容）。失敗回應與簽章錯誤「完全一致」（同 400、同 detail），
+    # 不洩漏租戶存在性；log 不含 destination 值與 tenant_id，避免 log 側資訊洩漏。
+    if cfg.line_bot_user_id and payload.get("destination") != cfg.line_bot_user_id:
+        _log.warning("destination mismatch, rejecting webhook")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_INVALID_SIGNATURE_DETAIL,
         )
 
     events = payload.get("events", [])
