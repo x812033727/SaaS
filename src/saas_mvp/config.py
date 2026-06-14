@@ -1,6 +1,6 @@
 """Application settings (env-overridable via SAAS_* variables or .env)."""
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 _INSECURE_DEFAULT = "change-me-in-production-use-32-chars-min"
@@ -37,20 +37,22 @@ class Settings(BaseSettings):
     key_rate_limit: str = "100/60"
     tenant_rate_limit: str = "1000/60"
 
-    @field_validator("line_channel_encrypt_key")
-    @classmethod
-    def line_key_must_be_changed(cls, v: str) -> str:
-        """在非 dev/test 環境拒絕使用公開 dev 預設金鑰，強制部署者顯式設定。"""
-        if v == _LINE_KEY_DEV_DEFAULT:
-            import os
-            if os.getenv("SAAS_ENV", "dev").lower() not in ("dev", "test"):
-                raise ValueError(
-                    "SAAS_LINE_CHANNEL_ENCRYPT_KEY must be set to a unique Fernet key "
-                    "in non-dev environments. "
-                    "Generate one with: python -c \"from cryptography.fernet import Fernet; "
-                    "print(Fernet.generate_key().decode())\""
-                )
-        return v
+    @model_validator(mode="after")
+    def line_key_must_be_changed_in_prod(self) -> "Settings":
+        """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。
+
+        使用 model_validator 而非 field_validator，確保 self.env 已載入
+        （field_validator 只能用 os.getenv，會漏看 .env 檔案中設定的 SAAS_ENV）。
+        """
+        if (self.line_channel_encrypt_key == _LINE_KEY_DEV_DEFAULT
+                and self.env.lower() not in ("dev", "test")):
+            raise ValueError(
+                "SAAS_LINE_CHANNEL_ENCRYPT_KEY must be set to a unique Fernet key "
+                "in non-dev environments. "
+                "Generate one with: python -c \"from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())\""
+            )
+        return self
 
     @field_validator("secret_key")
     @classmethod

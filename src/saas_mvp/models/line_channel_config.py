@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import datetime
 import re
+from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 
 from saas_mvp.db import Base
 
@@ -33,10 +34,16 @@ class InvalidTargetLangError(ValueError):
 
 # ── 加密工具 ────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=None)
+def _get_fernet_cached(key_bytes: bytes) -> Fernet:
+    """依 key bytes 快取 Fernet 實例；key 輪換時不同 bytes → 自動建新實例。"""
+    return Fernet(key_bytes)
+
+
 def _get_fernet() -> Fernet:
-    """每次取用時重新建立（允許測試修改 settings 後立即生效）。"""
+    """取得（快取）Fernet 實例。key 改變時 lru_cache 自動建新實例。"""
     from saas_mvp.config import settings
-    return Fernet(settings.line_channel_encrypt_key.encode())
+    return _get_fernet_cached(settings.line_channel_encrypt_key.encode())
 
 
 def encrypt_field(value: str) -> bytes:
@@ -81,7 +88,7 @@ class LineChannelConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(
         Integer,
-        ForeignKey("tenants.id"),
+        ForeignKey("tenants.id", ondelete="CASCADE"),  # 裸 SQL 刪 tenant 也清孤兒行
         nullable=False,
         unique=True,   # 一對一
         index=True,
@@ -107,6 +114,13 @@ class LineChannelConfig(Base):
     )
 
     tenant = relationship("Tenant", back_populates="line_channel_config")
+
+    # ── ORM 層驗證：直接賦值也會觸發 ────────────────────────────────────────
+
+    @validates("default_target_lang")
+    def _validate_lang(self, key: str, value: str) -> str:
+        """BCP-47 格式強制——setter/constructor 賦值皆觸發。"""
+        return validate_target_lang(value)
 
     # ── 便利屬性：透明加解密 ────────────────────────────────────────────────
 

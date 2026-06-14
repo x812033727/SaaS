@@ -37,7 +37,13 @@ from saas_mvp.models import user as _u, note as _n  # noqa: F401
 from saas_mvp.models import api_key as _ak, api_key_usage as _aku  # noqa: F401
 from saas_mvp.models import usage as _us, plan_change_history as _pch  # noqa: F401
 from saas_mvp.models.tenant import Tenant
-from saas_mvp.models.line_channel_config import LineChannelConfig, encrypt_field, decrypt_field
+from saas_mvp.models.line_channel_config import (
+    LineChannelConfig,
+    LineConfigDecryptionError,
+    InvalidTargetLangError,
+    encrypt_field,
+    decrypt_field,
+)
 
 
 # ─────────────────────────── 共用 fixture ─────────────────────────────────────
@@ -466,9 +472,8 @@ class TestEncryptDecryptUtils:
         assert enc1 != enc2
 
     def test_wrong_bytes_raises(self):
-        """非 Fernet ciphertext 應引發解密錯誤。"""
-        from cryptography.fernet import InvalidToken
-        with pytest.raises((InvalidToken, Exception)):
+        """非 Fernet ciphertext 應引發 LineConfigDecryptionError（包裝 InvalidToken）。"""
+        with pytest.raises(LineConfigDecryptionError):
             decrypt_field(b"not-fernet-ciphertext")
 
     def test_offline_default_key_works(self):
@@ -479,3 +484,78 @@ class TestEncryptDecryptUtils:
         # 實際加解密驗證
         msg = "offline-test-no-env-needed"
         assert decrypt_field(encrypt_field(msg)) == msg
+
+
+# ─────────────────────────── 11. @validates BCP-47 強制（ORM 層）──────────────
+
+class TestOrmValidatesLang:
+    """@validates('default_target_lang') 確保直接賦值也觸發 BCP-47 驗證。
+
+    防護不是孤立工具函式，而是掛在 ORM 屬性上——任何賦值路徑都無法繞過。
+    """
+
+    def test_invalid_lang_direct_assignment_raises(self):
+        """直接賦值壞值（含注入字元）應拋 InvalidTargetLangError。"""
+        cfg = LineChannelConfig(tenant_id=999)
+        with pytest.raises(InvalidTargetLangError):
+            cfg.default_target_lang = "en; rm -rf"
+
+    def test_invalid_lang_in_constructor_raises(self):
+        """在 constructor 中傳入壞值也應拋錯。"""
+        with pytest.raises(InvalidTargetLangError):
+            LineChannelConfig(tenant_id=999, default_target_lang="not valid!")
+
+    def test_valid_langs_not_rejected(self):
+        """合法 BCP-47 tag 不拋錯。"""
+        cfg = LineChannelConfig(tenant_id=999)
+        for lang in ["en", "zh-TW", "zh-Hant-TW", "ja", "ko", "fr"]:
+            cfg.default_target_lang = lang  # 不應拋錯
+
+    def test_injection_attempt_rejected(self):
+        """注入嘗試（含空格/分號/斜線）被拒。"""
+        bad_values = ["en; rm -rf", "zh TW", "ja/en", "../etc/passwd", ""]
+        cfg = LineChannelConfig(tenant_id=999)
+        for bad in bad_values:
+            with pytest.raises(InvalidTargetLangError):
+                cfg.default_target_lang = bad
+
+    def test_orm_validates_on_db_round_trip(self, fresh_db):
+        """DB round-trip 後 update 也觸發驗證。"""
+        t = _make_tenant(fresh_db, "validates-rt")
+        cfg = _make_config(fresh_db, t, lang="en")
+        with pytest.raises(InvalidTargetLangError):
+            cfg.default_target_lang = "bad value!"
+
+
+# ─────────────────────────── 12. model_validator 讀 self.env ──────────────────
+
+class TestConfigModelValidator:
+    """line_channel_encrypt_key guard 用 model_validator 讀 self.env，
+    確保 .env 部署場景下也能正確拒絕 dev 預設金鑰。"""
+
+    def test_dev_env_allows_default_key(self):
+        """env='dev' 時允許使用 dev 預設金鑰（不拋錯）。"""
+        from saas_mvp.config import Settings, _LINE_KEY_DEV_DEFAULT
+        s = Settings(env="dev", line_channel_encrypt_key=_LINE_KEY_DEV_DEFAULT)
+        assert s.line_channel_encrypt_key == _LINE_KEY_DEV_DEFAULT
+
+    def test_test_env_allows_default_key(self):
+        """env='test' 時也允許使用 dev 預設金鑰。"""
+        from saas_mvp.config import Settings, _LINE_KEY_DEV_DEFAULT
+        s = Settings(env="test", line_channel_encrypt_key=_LINE_KEY_DEV_DEFAULT)
+        assert s.line_channel_encrypt_key == _LINE_KEY_DEV_DEFAULT
+
+    def test_production_env_rejects_default_key(self):
+        """env='production' 時拒絕 dev 預設金鑰（讀 self.env，不靠 os.getenv）。"""
+        from pydantic import ValidationError
+        from saas_mvp.config import Settings, _LINE_KEY_DEV_DEFAULT
+        with pytest.raises(ValidationError):
+            Settings(env="production", line_channel_encrypt_key=_LINE_KEY_DEV_DEFAULT)
+
+    def test_production_env_accepts_custom_key(self):
+        """env='production' 時提供非預設金鑰可正常啟動。"""
+        from cryptography.fernet import Fernet
+        from saas_mvp.config import Settings
+        custom_key = Fernet.generate_key().decode()
+        s = Settings(env="production", line_channel_encrypt_key=custom_key)
+        assert s.line_channel_encrypt_key == custom_key
