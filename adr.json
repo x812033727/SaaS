@@ -489,6 +489,69 @@
       "rejected": "",
       "session_id": "pjb57dcf61e7",
       "created_at": 1781423436.5511546
+    },
+    {
+      "decision": "模組結構 — LineBotInfoClient 系列放在 line_client/ 套件，與 HttpLineReplyClient / FakeLineReplyClient 同層，維持「client 集中」慣例。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.1467009
+    },
+    {
+      "decision": "Webhook 驗證順序固定為 raw body → DB query → 解密 → HMAC 驗簽 → JSON decode → destination 二次驗證 → quota 檢查 → 翻譯 → 回覆 → 計量。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.1467059
+    },
+    {
+      "decision": "Quota 計費點在「翻譯+回覆皆成功後」（6d increment_usage）；失敗路徑不計量，消除白扣。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.146707
+    },
+    {
+      "decision": "increment_usage 在 SELECT FOR UPDATE 鎖內重驗 count < limit，消除 has_quota → increment 的 TOCTOU 超賣窗口。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.14671
+    },
+    {
+      "decision": "destination 二次驗證失敗與 HMAC 失敗共用同一 _INVALID_SIGNATURE_DETAIL 常數，防租戶列舉。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.1467133
+    },
+    {
+      "decision": "HttpLineBotInfoClient.get_user_id() 讓例外向上傳播；由 upsert_line_config 的 try/except 統一吞掉並 rollback+refresh，不在 get_user_id 層 catch。",
+      "rationale": "責任分離更清晰——client 只負責呼叫，例外語意由呼叫端決定；原設計文件描述「catch→return None」有誤，以此行更正。",
+      "rejected": "在 get_user_id 內 catch 所有例外回傳 None——會讓 client 靜默吞掉不同類型例外（網路逾時 vs HTTP 4xx vs JSON 格式錯），呼叫端失去判斷能力。",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.1467147
+    },
+    {
+      "decision": "技術債注釋寫在 quota.py，緊貼 require_quota 函式定義處（非 ARCHITECTURE.md，因該檔不存在）。",
+      "rationale": "讀 code 的人需要在現場看到語意差異；散落文件檔的注釋實際上不會被讀到。",
+      "rejected": "寫入 ARCHITECTURE.md——該檔不存在且須另建，溝通成本高；寫入 DECISIONS.md——只給決策閱讀者看，不在程式碼現場。",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.1467185
+    },
+    {
+      "decision": "注釋內容須同時點明兩件事：① require_quota 採前扣語意（與 webhook 後扣並存）；② webhook 後扣存在「單次溢出」語意——has_quota 通過後若 increment_usage 鎖內重驗發現已達上限，該次翻譯/回覆已送出但不計量，屬設計可接受的一次性溢出，M2 統一後扣時須重新評估此邊界。",
+      "rationale": "工程師指出若不寫明，M2 接手時容易誤判為 bug 或超賣。",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.146723
+    },
+    {
+      "decision": "reply() 同步阻塞、to_thread 包裝、line_bot_user_id 是否出 API，均標記 M2，本輪不處理。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjb7bb61c982",
+      "created_at": 1781426180.146724
     }
   ]
 }
