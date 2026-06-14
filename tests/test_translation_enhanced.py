@@ -158,18 +158,44 @@ class TestDeepLSameLanguageSkip:
             result = t.translate("原文text", "JA")
         assert result == "原文text"
 
-    def test_zh_detect_does_not_skip_zh_hant(self):
-        """DeepL 對中文回 ZH，正規化後 target 為 ZH-HANT，兩者不等 → 不 skip（記錄的限制）。"""
+    def test_zh_detect_skips_zh_hant(self):
+        """DeepL 對中文回 ZH，target=zh-TW（正規化 ZH-HANT）→ 視為同語言 skip，回原文。"""
         t = DeepLTranslator(api_key="k")
 
         def _fake(req, timeout=None):
             return _fake_urlopen(
-                {"translations": [{"detected_source_language": "ZH", "text": "譯文"}]}
+                {"translations": [{"detected_source_language": "ZH", "text": "別的譯文"}]}
             )
 
         with mock.patch("urllib.request.urlopen", _fake):
             result = t.translate("中文原文", "zh-TW")
-        assert result == "譯文"  # 未 skip
+        assert result == "中文原文"  # skip → 回原文
+
+    def test_zh_detect_skips_zh_hans(self):
+        """DeepL 回 ZH，target=zh-CN（正規化 ZH-HANS）→ 同語言 skip，回原文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "x"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("简体原文", "zh-CN")
+        assert result == "简体原文"
+
+    def test_zh_detect_does_not_skip_non_zh_target(self):
+        """DeepL 回 ZH 但 target=ja → 非同語言，回 API 譯文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "翻訳"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("中文原文", "ja")
+        assert result == "翻訳"  # 未 skip
 
     def test_missing_detected_field_returns_api_text(self):
         """缺 detected_source_language → 視為不同語言，回 API 譯文。"""
@@ -187,6 +213,17 @@ class TestDeepLSameLanguageSkip:
 
         def _fake(req, timeout=None):
             return _fake_urlopen({"unexpected": True})
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            with pytest.raises(TranslationError):
+                t.translate("hello", "ja")
+
+    def test_translation_not_dict_wrapped_as_translation_error(self):
+        """translations[0] 非 dict（格式異常）→ AttributeError 須包成 TranslationError。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen({"translations": [12345]})
 
         with mock.patch("urllib.request.urlopen", _fake):
             with pytest.raises(TranslationError):
