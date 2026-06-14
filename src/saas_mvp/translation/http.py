@@ -58,7 +58,8 @@ class DeepLTranslator(Translator):
     def _normalize_target_lang(target_lang: str) -> str:
         """將 BCP-47 tag 正規化為 DeepL 接受的 target_lang。
 
-        白名單映射不相容 tag（ZH-TW→ZH-HANT、ZH-CN→ZH-HANS），其餘 ``.upper()``。
+        白名單映射不相容 tag（ZH-TW→ZH-HANT、ZH-CN→ZH-HANS），其餘 ``.upper()``
+        不變（JA→JA、en→EN、ko→KO …）。
         DeepL 不接受 ZH-TW/ZH-CN，未映射會回 400 Bad Request。
         """
         upper = target_lang.upper()
@@ -86,8 +87,8 @@ class DeepLTranslator(Translator):
         Raises:
             TranslationError: on network error, HTTP error, or unexpected response.
         """
-        # 單一變數防呆：API payload 與下方 skip 比較均使用 norm，
-        # 消除兩處各自 .upper() 造成的不一致風險。
+        # 單一變數防呆：API payload 與下方 skip 比較均使用 norm，避免兩處各自
+        # .upper() 造成靜默不一致（漏改一處會繁中 400 或 skip 誤判）。
         norm = self._normalize_target_lang(target_lang)
 
         payload = urllib.parse.urlencode(

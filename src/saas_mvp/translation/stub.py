@@ -13,9 +13,11 @@ class StubTranslator(Translator):
     - No network, no API key.
     - Always ``is_available() == True``.
 
-    同語言 skip：建構子可選 ``source_lang``。若提供，且
-    ``target_lang.upper() == source_lang.upper()`` 時 translate() 直接回傳原文，
-    用於離線測試 webhook 下游的 skip 流程。
+    同語言 skip（測試用）
+    --------------------
+    建構子可選 ``source_lang``。若提供，且 ``target_lang.upper() ==
+    source_lang.upper()`` 時 ``translate()`` 直接回傳原文（不包 ``[LANG]`` tag），
+    用於離線測試 webhook 下游的同語言 skip 流程。
 
     侷限：比較採單純 ``.upper()`` 相等，**不**複製 DeepL 的
     ``_normalize_target_lang`` / ZH-HANT 正規化邏輯；測試須使用能直接

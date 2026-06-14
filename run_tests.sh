@@ -45,6 +45,7 @@ fi
 export SAAS_DATABASE_URL="${SAAS_DATABASE_URL:-sqlite:///:memory:}"
 export SAAS_RATE_LIMIT_ENABLED="${SAAS_RATE_LIMIT_ENABLED:-false}"
 # 測試環境用最低 bcrypt cost 加速大量密碼雜湊（生產維持預設 12，見 auth/security.py）。
+# 大量 register/login 測試走 bcrypt 雜湊，預設 12 rounds 使整套接近逾時邊界。
 # SAAS_TESTING=1 是低成本值的明確放行旗標；缺它時 security.py 對 <10 的值會 fail-closed。
 export SAAS_TESTING="${SAAS_TESTING:-1}"
 export SAAS_BCRYPT_ROUNDS="${SAAS_BCRYPT_ROUNDS:-4}"
