@@ -15,9 +15,14 @@
 * destination 二次驗證：驗簽通過後，若 cfg.line_bot_user_id 已設定且
   payload.destination 不符 → 回 400（共用 _INVALID_SIGNATURE_DETAIL，不洩漏租戶存在性）；
   舊 config（line_bot_user_id=NULL）略過此 check，向後相容。
-* 租戶列舉防護：所有驗章失敗——無 config、缺 X-Line-Signature header、簽章錯——
-  一律回相同的 400 + 相同 detail，外部無法藉狀態碼或回應內容區分租戶是否已設定；
-  無 config 路徑並做等量 HMAC 計算對齊 timing。
+* 租戶列舉防護：所有驗章失敗——無 config、缺 X-Line-Signature header、簽章錯、
+  destination 不符——一律回相同的 400 + 相同 detail，外部無法藉狀態碼或回應內容
+  區分租戶是否已設定。
+  * 四條拒絕路徑皆收斂到同一等量時間驗簽 helper `_constant_time_verify`（含完整
+    `hmac.new → digest → b64encode → hmac.compare_digest`），使「無 config」「缺
+    header」「簽章錯」三條路徑的 CPU 開銷強制對等，消除 timing side-channel。
+  * 對外回應字串完全相同；伺服器端 log 仍以 `reason=no_config / missing_header /
+    bad_signature / bad_destination` 區分，僅供監控/告警，不對外暴露。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
 """
 
@@ -74,21 +79,27 @@ _QUOTA_EXCEEDED_MSG = (
     "翻譯配額已超過今日上限，請明日再試或升級方案。"
 )
 
-# 統一的「驗章失敗」回應 detail。無 config 與簽章錯共用，避免外部藉 detail 區分租戶是否已設定。
+# 統一的「驗章失敗」回應 detail。四條拒絕路徑（無 config / 缺 header / 簽章錯 /
+# destination 不符）共用，避免外部藉 detail 區分租戶是否已設定。
 _INVALID_SIGNATURE_DETAIL = "Invalid X-Line-Signature"
 
+# 等量時間驗簽用的固定 dummy secret（32 bytes 對應 SHA-256 block size）。
+# cfg 缺失路徑會把這個 dummy 餵進 helper，確保與「簽章錯」分支跑完全相同的
+# HMAC + b64encode + compare_digest 鏈，消除 timing side-channel。
+_DUMMY_SECRET: bytes = b"\x00" * 32
 
-def _verify_signature(body: bytes, channel_secret: str, signature: str) -> bool:
-    """驗證 X-Line-Signature（HMAC-SHA256 + base64）。
+
+def _constant_time_verify(body: bytes, signature: str, secret: bytes) -> bool:
+    """等量時間驗證 X-Line-Signature（HMAC-SHA256 + base64 + compare_digest）。
+
+    介面刻意收 `secret: bytes`：cfg 缺失路徑可傳 `_DUMMY_SECRET`，與正常路徑
+    跑完全相同的計算鏈，保證分支間的 CPU 開銷對等。helper 是單一實作點——
+    未來若換 signature scheme 或加 nonce，只需改這一處。
 
     LINE 文件：
-      signature = base64( HMAC-SHA256(channel_secret, body) )
+        signature = base64( HMAC-SHA256(channel_secret, body) )
     """
-    mac = hmac.new(
-        channel_secret.encode("utf-8"),
-        body,
-        hashlib.sha256,
-    )
+    mac = hmac.new(secret, body, hashlib.sha256)
     expected = base64.b64encode(mac.digest()).decode("utf-8")
     return hmac.compare_digest(expected, signature)
 
@@ -114,8 +125,15 @@ async def line_webhook(
     if cfg is None:
         # 消除租戶列舉 oracle：未設定 config 的 tenant_id 與「簽章錯誤」回應一致
         # （同 400、同 detail），外部無法藉狀態碼或回應內容區分「未設定」與「簽章錯」。
-        # 先做一次等量 HMAC 計算，使兩路徑時間特徵相近，降低 timing side-channel。
-        hmac.new(b"\x00" * 32, body, hashlib.sha256).digest()
+        # 走完整等量驗簽鏈（new → digest → b64encode → compare_digest）對齊 timing，
+        # 不再 short-circuit：secret 用 _DUMMY_SECRET，結果必 False。
+        header_signature = request.headers.get("X-Line-Signature", "")
+        _log.warning(
+            "webhook rejected reason=%s tenant=%d",
+            "no_config",
+            tenant_id,
+        )
+        _constant_time_verify(body, header_signature, _DUMMY_SECRET)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_INVALID_SIGNATURE_DETAIL,
@@ -136,8 +154,19 @@ async def line_webhook(
     # 列舉防護：缺 header、簽章錯、無 config 三種失敗一律回相同的 400 + detail，
     # 任何分支都不可洩漏「該 tenant 是否已設定 LINE」。缺 header 不可單獨給
     # 「Missing ...」訊息，否則攻擊者送無 header 請求即可逐一列舉已設定租戶。
-    signature = request.headers.get("X-Line-Signature", "")
-    if not signature or not _verify_signature(body, channel_secret, signature):
+    # 三條路徑皆走同一 helper（_constant_time_verify），缺 header 也不再
+    # short-circuit——把空字串餵進 helper 讓 compare_digest 自然回 False，
+    # 與「簽章錯」分支的 CPU 開銷完全對等。
+    header_signature = request.headers.get("X-Line-Signature", "")
+    if not _constant_time_verify(
+        body, header_signature, channel_secret.encode("utf-8")
+    ):
+        reason = "missing_header" if not header_signature else "bad_signature"
+        _log.warning(
+            "webhook rejected reason=%s tenant=%d",
+            reason,
+            tenant_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_INVALID_SIGNATURE_DETAIL,
@@ -158,7 +187,13 @@ async def line_webhook(
     # 行為與現況一致（向後相容）。失敗回應與簽章錯誤「完全一致」（同 400、同 detail），
     # 不洩漏租戶存在性；log 不含 destination 值與 tenant_id，避免 log 側資訊洩漏。
     if cfg.line_bot_user_id and payload.get("destination") != cfg.line_bot_user_id:
-        _log.warning("destination mismatch, rejecting webhook")
+        # 對外回應與簽章失敗完全一致（同 400、同 detail）；log 區分 reason 供監控。
+        # log 不含 destination 值，避免側通道；tenant_id 在 log 端用於定位，無列舉風險。
+        _log.warning(
+            "webhook rejected reason=%s tenant=%d",
+            "bad_destination",
+            tenant_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_INVALID_SIGNATURE_DETAIL,
