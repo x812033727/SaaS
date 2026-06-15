@@ -417,3 +417,88 @@ Sources:
 - [Time-of-check to time-of-use — Wikipedia](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use)
 - [What Is TOCTOU? — DeepStrike](https://deepstrike.io/blog/what-is-time-of-check-time-of-use-toctou)
 
+## 2026-06-16 06:58
+
+<think>
+我已蒐集到足夠的 OWASP 與 RFC 資料。讓我整理調研報告。
+
+關鍵發現：
+1. **OWASP Authentication Cheat Sheet 明確建議**：登入失敗的回應要避免區分「帳號不存在」與「密碼錯誤」——同一回應碼、同一訊息字串。原因是攻擊者可用不同回應列舉出有效帳號。
+2. **本任務情境**：LINE webhook 是公開端點（無登入），`tenant_id` 暴露在 URL。攻擊者用任意 `tenant_id` 撞 webhook，觀察「未設定 config」vs「簽章錯誤」vs「正常」的差異 → 就能列舉出哪些 `tenant_id` 有綁 LINE channel。
+3. **統一回應碼的選擇**：
+   - **400 Bad Request**：語意較弱（請求格式不對），但 webhook 場景下，LINE 平台送來的就是這個請求，回 400 不會被 LINE 重試（避免放大攻擊）——事實上 LINE 重試策略對 4xx 都會停止。
+   - **401 Unauthorized**：語意最貼「認證失敗」，但 LINE 不會送 WWW-Authenticate，且 webhook 場景不適合 WWW-Authenticate flow。
+   - **403 Forbidden**：可選，但語意偏向「你沒權限」，本情境是「請求不存在/格式不對」。
+   - **404 Not Found**：會讓攻擊者以為「URL 不存在」而嘗試別的，無助於資安。
+4. **LINE 平台對 webhook 失敗回應的行為**：[Webhook retries](https://developers.line.biz/en/docs/messaging-api/retrying-api-calls/) —— 4xx 不重試、5xx 重試。所以用 4xx 既保護用戶隱私又不會被放大流量。
+5. **OWASP 的「相同回應」原則**：status code **和** response body 都要一致，否則攻擊者從 body 也能區分。
+6. **timing attack 防護**：驗簽章用 `hmac.compare_digest`（常數時間），未設定 config 不應進入 `hmac.compare_digest`（避免從時間差列舉）。可以先 `hmac.compare_digest` 對一個 dummy 值，再去查 config——但 webhook 邏輯裡 config 缺失在簽章檢查**之前**就要決定，因為簽章需要 secret。實務做法：先查 cfg → 若 cfg 缺失 → 用 dummy secret 跑常數時間驗簽 → 失敗 → 一致回 400。這樣 timing 一致。
+7. **logging 仍應記錄具體原因**：對外一致回應，server-side log 仍可記 "no config for tenant X" / "signature mismatch"，供監控與除錯。
+
+我已經有足夠資料寫報告。不需要再讀本地源碼（user 已給出過去文檔摘要），重點是業界最佳實踐 + 統一回應的具體策略。
+
+讓我直接寫報告。
+</think>
+查得差不多了，整理給你看。
+
+---
+
+## 調研報告：webhook 未設定 config 與簽章錯誤回應碼統一化
+
+### 核心發現：**OWASP 對「列舉防護」的明確指引**
+
+重點: **OWASP Authentication Cheat Sheet — Authentication and Error Messages 章節明確要求**：登入或認證失敗的回應，不可區分「帳號/資源不存在」與「密碼/簽章錯誤」——status code、body 字串、Content-Length 都應一致，否則攻擊者可由差異列舉出有效資源。來源：[OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#authentication-and-error-messages)
+重點: 同章節具體推薦用同一段 generic error message（如 `"Login failed; Invalid userID or password"`），並建議在伺服器端 log 區分具體原因（供監控），但**對外不洩漏**。來源同上。
+重點: OWASP Error Handling Cheat Sheet：4xx/5xx 對外不應夾帶實作細節、stack trace、內部判斷邏輯；對外回應的「區分度」就是攻擊面的資訊洩漏點。來源：[OWASP Error Handling Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html)
+
+### 核心發現：**LINE webhook 平台行為**
+
+重點: LINE 平台對 webhook 失敗回應的處理：**收到 4xx 視為客戶端錯誤、不重試；收到 5xx 視為伺服器錯誤、會自動重試**。來源：[Retrying API calls — LINE Developers](https://developers.line.biz/en/docs/messaging-api/retrying-api-calls/)
+重點: 結論：4xx 是「友善拒絕」的正確選擇——既不洩漏資訊給攻擊者，也避免 LINE 反覆重試放大攻擊面；5xx 反而會觸發重試把問題擴大。
+
+### 核心發現：**HTTP status code 語意（RFC 9110）**
+
+重點: **400 Bad Request** = 伺服器無法/不處理此請求（請求格式、簽章、payload 任一問題皆適用），是最貼 webhook 拒絕場景的代碼。來源：[RFC 9110 §15.5.1](https://datatracker.ietf.org/doc/html/rfc9110#name-400-bad-request)
+重點: **401 Unauthorized** = 缺少/錯誤認證、用戶端可重試補上；但 webhook 場景下 LINE 不會送 `Authorization` 標頭、也不會處理 `WWW-Authenticate` challenge，401 會誤導監控語意。
+重點: **403 Forbidden** = 伺服器理解請求但拒絕執行（權限不足）；適合「資源存在但 tenant 被停用」語意，不適合「未設定 config」（資源尚未綁定）。
+重點: **404 Not Found** = URL 對應資源不存在——會鼓勵攻擊者換 URL 嘗試（撞 path traversal），且會混淆 web server access log 的解讀。
+重點: **結論**：400 是最不洩漏資訊、且符合 RFC 語意（包含「請求的資源無法用此請求處理」涵義）的選擇。原文："The 400 (Bad Request) status code indicates that the server cannot or will not process the request due to something that is perceived to be a client error"。
+
+### 核心發現：**Timing attack 防護（不可忽略的列舉向量）**
+
+重點: 即使 status code 統一，**回應時間差**也會成為列舉通道——例如「未設定 config」分支直接 return，「簽章錯誤」分支跑 `hmac.compare_digest`（常數時間）後再 return，兩者時間差異即可被攻擊者統計區分。
+重點: 業界標準防護：對所有「拒絕路徑」執行**常數時間的 dummy 運算**（例如 `hmac.compare_digest(real_sig, b"\x00"*256)`），再統一回應。Python 用 `hmac.compare_digest` 即具常數時間保證。來源：[Python hmac.compare_digest docs](https://docs.python.org/3/library/hmac.html#hmac.compare_digest)
+重點: 對應到本專案：`cfg is None` 時仍以 `cfg.channel_secret` 的「替代值」（如固定 dummy bytes）跑一次 `hmac.compare_digest`，再 return 400——這樣兩條拒絕路徑的時間成本對齊。
+
+### 對齊既有架構的觀察
+
+重點: 既有 `line_webhook.py` 步驟（依過去研究文檔）：先 `lookup LineChannelConfig` → 拿 secret → `hmac.verify` → 處理 events。當前設計即已把「cfg 不存在」與「簽章錯誤」視為**不同的失敗原因**（可能不同 status code 或不同 body）——這正是本輪要修的列舉漏洞。
+重點: 既有 `test_line_task1_quota_billing.py` 已是完整的測試骨架（每個「不扣」案例附反向對照組防假綠），本輪的「統一 400」測試應沿用相同模式：對「未設定 config」「簽章錯誤」各加案例，斷言 status code + body 內容**逐字節相等**，並附**正向對照組**（有效簽章且 config 存在 → 200/200 OK），防測試本身假綠。
+
+---
+
+## 建議
+
+建議: **回應碼統一為 400 Bad Request**，body 固定為 `{"detail": "Bad Request"}`（或同等的固定字串），**兩條拒絕路徑共用同一 helper**（如 `_reject_webhook(reason_for_log: str)`），對外只回固定 body 與 400，內部 log 區分 `reason_for_log`。LINE 平台對 4xx 不重試，不會放大攻擊面（見 LINE retrying 規範）。
+建議: **timing 對齊**：在 `cfg is None` 與「簽章錯誤」兩條拒絕路徑，**都執行一次 `hmac.compare_digest` 常數時間比對**再 return。實作：抽出一個 `_verify_signature_or_dummy(body, sig_header, secret_or_dummy)`，未設定 config 時傳入固定 dummy secret（如 `b"\x00"*32`），保證兩條路徑的 CPU 開銷落在同一量級。這是業界標準做法，OWASP 與 Python 官方文件都支持。
+建議: **保留伺服器端 log 區分**：對外一致，log 仍可記 `INFO webhook rejected reason=no_config tenant_id=X` / `reason=bad_signature tenant_id=X`——這是 OWASP 推薦模式，**日誌用於監控，外部回應用於列舉防護**，兩者不衝突。
+建議: **測試案例三件套**（沿用既有對照組風格）：
+1. `cfg is None` → 400 + 固定 body（不可含 "config" / "not found" / "tenant" 等洩漏字眼）
+2. `簽章錯誤` → 400 + **逐字節**相同 body
+3. **正向對照**：合法簽章 + 存在 config → 200 / 200 OK（防測試本身假綠）
+4. 額外加 `assert response.content_length == ...` 或 `response.text == other_response.text` 的逐字節等價斷言。
+建議: **不要同時改其他 status code**（如把 200 改成 4xx、或加 WWW-Authenticate 標頭）——LINE 平台對 webhook 端點的契約是「成功回 200」；改壞契約會讓正常訊息失效。範圍鎖定在「兩條拒絕路徑」的統一。
+建議: **不需改路由策略**：URL-based 路由（`/line/webhook/{tenant_id}`）保留；本輪純粹是「對外不可區分」加固，與既有 M1/M2 規劃的 `destination` 防護層互補（本輪是 status code 層級，下輪是 destination 內容層級）。兩者可疊加。
+建議: **M2 技術債提醒**：本輪做「timing 對齊」會在 cfg 缺失路徑多做一次 `hmac.compare_digest` 計算；該成本可忽略（sub-microsecond），不影響效能預算。若日後 `compare_digest` 路徑被 hot-path profiler 標紅再回頭優化。
+
+---
+
+**Sources:**
+- [OWASP Authentication Cheat Sheet — Authentication and Error Messages](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#authentication-and-error-messages)
+- [OWASP Error Handling Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html)
+- [RFC 9110 §15.5.1 — 400 Bad Request](https://datatracker.ietf.org/doc/html/rfc9110#name-400-bad-request)
+- [LINE Developers — Retrying API calls](https://developers.line.biz/en/docs/messaging-api/retrying-api-calls/)
+- [Python hmac.compare_digest — 常數時間比對保證](https://docs.python.org/3/library/hmac.html#hmac.compare_digest)
+
+總結一句話：**統一回 400 + 固定 body + 常數時間 dummy 驗簽 + log 內部區分**，這是 OWASP/RFC/Python 文件三邊一致的最乾淨解。
+
