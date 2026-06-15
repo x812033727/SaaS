@@ -281,3 +281,45 @@
 ## reply() 同步阻塞、to_thread 包裝、line_bot_user_id 是否出 API，均標記 M2，本輪不處理。
 - 時間：2026-06-14 16:36
 
+## 抽出一個內部 helper `_constant_time_verify(body, signature: str, secret: str) -> bool`，把 `hmac.new + base64.b64encode + hmac.compare_digest` 三步驟封裝為單一實作點
+- 時間：2026-06-16 07:03
+- 理由：三條拒絕路徑（cfg None / 缺 header / 簽章錯）共用此 helper 後，CPU 開銷強制對等；單一實作點也讓「未來換 signature scheme / 加 nonce」只需改一處
+- 否決方案：① 在三條路徑各別複製 b64encode+compare_digest——可被未來改動悄悄破壞對等性；② 把驗簽抽到獨立 module——過度設計，只在 router 內用一次
+
+## cfg None 路徑改為呼叫 helper，傳入 `secret=b"\x00"*32`（固定 dummy）與 `signature=request.headers.get("X-Line-Signature", "")`（真實 header 值或空字串），再 `raise HTTPException(400, _INVALID_SIGNATURE_DETAIL)`
+- 時間：2026-06-16 07:03
+- 理由：helper 內部固定跑完整 HMAC 鏈（new→digest→b64encode→compare_digest），dummy secret 讓結果必為 False，與簽章錯分支成本完全對等；放棄「cfg 缺失就只做最小運算」是刻意選擇——分析證明 sub-microsecond 成本可忽略
+- 否決方案：保留現狀「只跑 digest」——研究報告明確指出此差異構成可被遠端統計的 timing oracle
+
+## 缺 header 路徑不再 short-circuit，改為「固定傳空字串進 helper」——`signature=""` 走完整 HMAC 鏈，helper 自然回傳 False，再統一拋 400
+- 時間：2026-06-16 07:03
+- 理由：把「缺 header」與「錯 header」合併為同一條 helper 呼叫，三條路徑的指令序列完全一致；這是 OWASP timing 對齊的最低成本實作
+- 否決方案：維持 `if not signature: raise` 短路——會在 timing 側留下明顯可觀測的 gap（短少整段 HMAC 計算）
+
+## 簽章錯路徑也改走同一 helper（行為等價，但實作統一）；cfg None / 缺 header / 簽章錯三條路徑的最後一行都是 `raise HTTPException(400, _INVALID_SIGNATURE_DETAIL)`
+- 時間：2026-06-16 07:03
+- 理由：「helper → raise」這個序列統一後，未來若有人想新增第四條路徑（如 destination 之外的二次驗證），compiler/type hint 會自然引導他走 helper；可逆性最大化
+
+## 三條拒絕路徑（含 destination 不符，總四條）內部各加一條 `_log.warning("webhook rejected reason=%s tenant=%d", reason, tenant_id)`，reason 列舉 `no_config / missing_header / bad_signature / bad_destination`
+- 時間：2026-06-16 07:03
+- 理由：OWASP 推薦模式——對外一致、對內區分（log 不對外暴露）；既不洩漏 detail 給攻擊者，也給監控/告警一個可靠的失敗原因欄位
+- 否決方案：① log 內容含 destination 值或完整 user_id——log 側資訊洩漏仍是洩漏；② 不分層只用 INFO 級——warning 級才能在 SIEM 觸發告警
+
+## 新增測試 `test_all_rejection_paths_go_through_constant_time_helper`——用 `unittest.mock.patch` 監看 helper 呼叫次數與引數，斷言三條拒絕路徑**都呼叫 helper 一次**且引數形態對稱
+- 時間：2026-06-16 07:03
+- 理由：wall-clock 計時在 CI 抖動過大不實用；改用「是否走同一 helper」當契約——比 timing 對齊更強的保證（成本對等是 helper 單一實作點的自然結果）；沿用既有「先 mock spy 再斷言」風格
+- 否決方案：① wall-clock timing 基準測試——CI 抖動讓測試不穩；② 純粹比較 response time 的鬆散斷言——會隨環境飄移
+
+## 既有的 `test_configured_vs_unconfigured_indistinguishable_all_probes` 與 `test_mismatch_detail_identical_to_signature_failure` 全綠即視為「status code + body 統一」驗收；本輪不在這兩個斷言上做修改
+- 時間：2026-06-16 07:03
+- 理由：既有測試已逐字節等價鎖死 status code 與 detail；本輪重點是 timing 對齊與 log 區分，兩者不相交
+- 否決方案：重寫或擴大既有等價斷言——風險高且無新合約覆蓋
+
+## 不改既有契約——路由 `/line/webhook/{tenant_id}`、成功回應 `200 {"status":"ok"}`、`_INVALID_SIGNATURE_DETAIL = "Invalid X-Line-Signature"`、LineConfigDecryptionError→200、destination 二次驗證時機、計費點時機——皆保持現狀
+- 時間：2026-06-16 07:03
+- 理由：PM 與研究員均確認這些契約已達標；本輪「只補缺口」，不擴大變更面
+
+## 既有架構決策中關於 `app/services/quota.py` 與 `app/api/line_bot_info.py` 的路徑記載與實際不符（實際為 `src/saas_mvp/quota.py`）——本輪沿用實際路徑，不翻案亦不發 PR 改既有架構決策文字
+- 時間：2026-06-16 07:03
+- 理由：程式碼真相是檔案實際位置；翻案既有決策文件超出本輪 scope，且既有注釋已正確落在 `src/saas_mvp/quota.py` 函式定義處，符合「緊貼 require_quota」的語意
+
