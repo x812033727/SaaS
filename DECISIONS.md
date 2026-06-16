@@ -376,3 +376,40 @@
 ## 既有架構決策（簽章驗證鏈、四條拒絕路徑收斂、`_INVALID_SIGNATURE_DETAIL`、destination 二次驗證、LineConfigDecryptionError→200、後扣語意、計費點時機、router 路徑、成功回應格式）**全部沿用，本輪不翻案**。
 - 時間：2026-06-16 08:00
 
+## 技術選型 — 本輪拒做 asyncio.to_thread 包裝與 async HTTP client 改寫
+- 時間：2026-06-16 13:57
+- 理由：BackgroundTasks 對 sync 函式自動 run_in_threadpool（Starlette 源碼事實），等同 asyncio.to_thread 效果；再加為冗餘雙重包裝（anyio 反模式）。async 化需整套介面破壞性重構（LineReplyClient async 化 + AsyncSession + httpx lifespan + 全 spy mock 重寫），M1 流量下 ROI 為負，屬 M2 範疇。
+- 否決方案：(a) _process_events 改 async def + asyncio.to_thread 包 line_client.reply：自造輪子、淨效果 = 原地踏步；(b) httpx.AsyncClient / AsyncMessagingApi 整套 async 化：介面破壞面過大、屬獨立 M2 重構。
+
+## 模組切分 — 本輪只動 saas_mvp/routers/line_webhook.py（文件）與 tests/test_qa_task4_to_thread.py（測試收斂），零邏輯改動
+- 時間：2026-06-16 13:57
+- 否決方案：順手修 _process_events / HttpLineReplyClient / 計費點 / 簽章鏈——守住「只補缺口」原則，避免變更面擴大。
+
+## 測試輔助擴展 — FakeLineReplyClient 新增可選 delay 屬性（reply 內 time.sleep），預設 0 維持既有行為
+- 時間：2026-06-16 13:57
+- 理由：不變量測試需可注入阻塞；既有測試不需改、零契約破壞；M2 async 化可重用此機制。
+
+## 測試收斂 — TestToThreadWrapping 三個 test 改寫：移除 to_thread 攔截斷言、改以 thread ident 斷言「translate 跑在背景 threadpool」；test_result_correct_through_to_end 保留；test_non_text_event 改寫為「非文字事件不觸發翻譯」斷言
+- 時間：2026-06-16 13:57
+- 否決方案：保留舊名 test_translate_called_via_to_thread——名稱已誤導、與新語意不符。
+
+## 測試檔 import 清理 — 移除測試檔的 `import asyncio` 與所有 `mock.patch.object(webhook_mod.asyncio, "to_thread", ...)` 呼叫
+- 時間：2026-06-16 13:57
+- 理由：拒做 to_thread 後 line_webhook 模組不應 import asyncio，webhook_mod.asyncio 屬性查找會 AttributeError，整個 test 模組連 pytest collection 都過不了。
+
+## 架構不變量測試 — 新增 test_blocking_reply_does_not_block_handler：override SlowLineReplyClient（reply 內 time.sleep(0.5)），斷言 client.post(/line/webhook/...) 在 <0.3s 內回 200
+- 時間：2026-06-16 13:57
+- 理由：把「BackgroundTasks 不阻塞 handler」升級為可被測試守住的不變量；守的是架構契約（handler 不等 reply）、不是「某 function 被呼叫」的實作細節。
+- 否決方案：0.2s——CI 容器 load 高時 threadpool dispatch 可能吃掉 50-100ms，margin 偏緊、flakiness 風險高。
+
+## 文件化語意 — line_webhook.py 步驟 6c 註解改述「reply 阻塞 I/O 在 BackgroundTasks 機制下已自動被 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；threadpool 線程佔用（高 RPS × 多 worker）見 M2 async 化技術債」；模組 docstring M2 段落更新為「HttpLineReplyClient 改用 httpx.AsyncClient（lifespan 管理單一 instance）+ _process_events 改 async def + AsyncSession 整套重構；asyncio.to_thread 包裝為錯誤方向、不再列入技術債」
+- 時間：2026-06-16 13:57
+
+## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #XXX") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
+- 時間：2026-06-16 13:57
+- 理由：直接合進 master 會讓 CI baseline 永久 7 紅，未來提 PR 的人分不清「已知缺口」vs「本次 regression」；xfail 讓 CI 綠、缺口可被追蹤、reviewer 一眼看清狀態。
+- 否決方案：(a) 留紅直接合——CI 噪音永久化；(b) 本輪順手修——超出本輪 scope、PR 失焦。
+
+## 可逆性 — 本輪所有改動皆為文件 + 測試 + Fake 測試輔助屬性，無邏輯變更；M2 async 化若啟動，測試方法改名（to_thread→background threadpool 斷言）但 delay 機制與不變量測試可重用；M2 方向被否決時 revert 成本 = 改兩段 docstring + 幾個 test method + 移除 xfail marker。
+- 時間：2026-06-16 13:57
+
