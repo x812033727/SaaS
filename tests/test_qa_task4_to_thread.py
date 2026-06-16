@@ -1,13 +1,29 @@
-"""QA 驗證 — 任務 #4：webhook 阻塞翻譯呼叫經 asyncio.to_thread 包裝。
+"""QA 驗證 — 任務 #4 / 任務 #5：webhook 阻塞翻譯呼叫移出 handler 同步段。
 
-驗收標準（任務 #4）：
-  webhook 翻譯呼叫經 ``asyncio.to_thread`` 包裝且測試仍綠。
+驗收標準（任務 #4 / #5）：
+  webhook 翻譯呼叫不在 handler 同步段內執行（避免卡 event loop），
+  測試仍綠。
 
 本檔以「行為斷言」直接證明落地，而非僅靠既有測試間接通過：
-  1. 對 webhook 發一則合法文字訊息時，handler 確實呼叫 asyncio.to_thread，
-     且其第一個位置參數正是注入的 translator.translate（不是其他阻塞呼叫）。
-  2. 經 to_thread 包裝後，端到端翻譯結果仍正確（StubTranslator → [LANG] text）。
-  3. 反向樣本：非文字事件不會觸發 to_thread 翻譯呼叫。
+  1. 對 webhook 發一則合法文字訊息時，handler 同步段不直接執行
+     translate——translate 跑在背景 threadpool（thread ident != 主請求
+     thread），這是 BackgroundTasks 對 sync 函式走 ``run_in_threadpool``
+     的源碼事實（starlette/background.py）。
+  2. 端到端翻譯結果仍正確（StubTranslator → [LANG] text）。
+  3. 反向樣本：非文字事件不會觸發 translate。
+
+【背景化後的語意改變說明】
+  背景化前：本檔測 handler 把 translate 包進 ``asyncio.to_thread`` 執行，
+  以證明「不卡 event loop」。
+  背景化後（任務 #2）：handler 把整段 ``for event in events`` 鏈丟進
+  ``BackgroundTasks``，背景任務 ``_process_events`` 是 sync 函式，
+  BackgroundTasks 自動 ``run_in_threadpool``——translate 與 reply 的
+  阻塞 I/O 自然跑在背景 threadpool、不再需要 handler 顯式
+  ``asyncio.to_thread`` 包裝。line_webhook.py 模組已無
+  ``asyncio.to_thread`` import（AttributeError），本檔測的目標已
+  轉移為「translate 跑在背景 threadpool」——直接用 thread 身分斷言
+  比 to_thread 攔截更貼切（to_thread 本身只是「移出 event loop」的手段，
+  背景化後手段變了但目的不變）。
 
 全程離線：StubTranslator + FakeLineReplyClient，不呼叫真實 DeepL / LINE。
 獨立檔，不修改任何既有測試。

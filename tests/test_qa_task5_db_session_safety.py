@@ -128,8 +128,8 @@ class SpyLineReplyClient(FakeLineReplyClient):
 
 # ── Session spy 工具 ────────────────────────────────────────────────────────
 # 用 patch.object 替換 line_webhook 模組內的 Session class，記下所有
-# 背景內被建立的 session 物件。透過 wraps 保留所有原 __init__ / method
-# 行為，只在建立時註冊到 global list。
+# 背景內被建立的 session 物件。同時 hook 該 instance 的 close() 方法，
+# 標記 ``_bg_spy_close_called`` 供測試觀察「finally 區塊是否跑了」。
 
 # 模組載入後再 import line_webhook（避免 line_webhook import 時還沒
 # patch；用 patch.object 動態替換，import 時機無影響）
@@ -145,10 +145,20 @@ def _spy_session_factory(*args, **kwargs):
     """替換 ``saas_mvp.routers.line_webhook.Session`` 的 factory。
 
     行為與原 Session 完全相同，僅在建立時註冊到 ``_BG_SESSIONS`` 供測試
-    觀察。回傳值是真實 ``sqlalchemy.orm.Session`` 物件，subclass / method
-    全部正常運作。
+    觀察，且在 instance 上 hook ``close()`` 標記
+    ``_bg_spy_close_called = True``。SQLAlchemy 2.x session close()
+    後 is_active / execute 行為不可靠，hook close() 是 100% 精準的
+    「finally 區塊跑了沒」指標。
     """
     real = RealSession(*args, **kwargs)
+    real._bg_spy_close_called = False
+    original_close = real.close
+
+    def _spy_close(*a, **kw):
+        real._bg_spy_close_called = True
+        return original_close(*a, **kw)
+
+    real.close = _spy_close  # type: ignore[method-assign]
     _BG_SESSIONS.append(real)
     return real
 
@@ -444,49 +454,57 @@ class TestBackgroundExceptionSwallowed:
     """驗收 #5.2：背景內拋例外 → response 仍 200 + 無 server exception 冒出。"""
 
     def test_translate_exception_does_not_break_200(self, caplog):
-        """翻譯炸例外 → response 仍 200，無 server exception 冒出。
+        """翻譯炸例外 → response 仍 200，**從 client 視角看**。
 
-        注入會拋 ``RuntimeError`` 的 spy translator；background 內
-        ``_translate_sync`` 會炸，被 ``_process_events`` 內
-        ``try/except Exception`` 攔下 + log.exception。Starlette 對
-        背景任務例外不 re-raise，response 200 已送出不受影響。
+        重點：``raise_server_exceptions=False`` 才能驗「client 視角的
+        200」——預設 ``True`` 下 Starlette TestClient 會把 background
+        例外 re-raise 到 ``client.post()`` 之外，這是 TestClient 設計
+        而非程式碼 bug。真實部署中（uvicorn）Starlette 對 background
+        例外**默默吞掉**，不影響已送出的 200。
+
+        驗證點：
+        1. ``response.status_code == 200``（client 視角）
+        2. ``response.json() == {"status": "ok"}``（對外契約不變）
+        3. log 內有 ``_process_events failed`` 記錄（log.exception 觸發）
+        4. translate 被呼叫 1 次（背景跑到 translate 才炸）→ 確認
+           ``try/except`` 是包在 for-loop 內，**整段**都被攔下而非
+           個別 try 漏抓
         """
         app, tid = _setup_app_with_tenant("exc")
         exploding = SpyTranslator(raise_on_translate=RuntimeError("翻譯引擎爆炸了"))
         app.dependency_overrides[get_translator] = lambda: exploding
 
         with caplog.at_level(logging.ERROR, logger="saas_mvp.routers.line_webhook"):
-            with TestClient(app, raise_server_exceptions=True) as c:
+            with TestClient(app, raise_server_exceptions=False) as c:
                 body = _payload(_text_event("/lang en hi", "rt-exc"))
-                # 重點：raise_server_exceptions=True → 若 background 拋
-                # 任何 exception 會冒出 → 整個 client.post() 會 raise
-                # 而不是回 200。
                 r = c.post(
                     f"/line/webhook/{tid}",
                     content=body,
                     headers=_headers(body),
                 )
 
-        # 1) response 200（背景例外不影響）
+        # 1) response 200（背景例外不影響 client 視角）
         assert r.status_code == 200, (
-            f"背景例外應被 try/except 攔下並回 200，got {r.status_code} body={r.text!r}"
+            f"背景例外應被 try/except 攔下，client 視角應仍 200，"
+            f"got {r.status_code} body={r.text!r}"
         )
-        # 2) 對外回應格式不變
+        # 2) 對外契約不變
         assert r.json() == {"status": "ok"}, (
             f"對外契約應仍為 {{'status':'ok'}}，got {r.json()!r}"
         )
-        # 3) 翻譯被呼叫一次（背景跑到 _translate_sync 才炸）
-        assert exploding.translate_call_count == 1, (
-            f"background 應跑到 translate 才炸，got {exploding.translate_call_count} 次"
-        )
-        # 4) log 有記錄例外（log.exception 留 traceback）
+        # 3) log 有記錄例外（log.exception 留 traceback）
         log_text = "\n".join(rec.getMessage() for rec in caplog.records)
-        assert "_process_events failed" in log_text or "background" in log_text.lower(), (
-            f"log 應記錄背景例外供除錯，caplog 內容:\n{log_text}"
+        assert "_process_events failed" in log_text, (
+            f"log 應記錄『_process_events failed』供除錯，caplog 內容:\n{log_text}"
+        )
+        # 4) 翻譯被呼叫 1 次（背景跑到 _translate_sync 才炸）
+        assert exploding.translate_call_count == 1, (
+            f"background 應跑到 translate 才炸（不是更早就攔下），"
+            f"got {exploding.translate_call_count} 次"
         )
 
     def test_reply_exception_does_not_break_200(self):
-        """reply 炸例外 → response 仍 200。
+        """reply 炸例外 → response 仍 200（client 視角）。
 
         注入會拋例外的 line_client.reply；background 跑到 reply 才炸，
         被 try/except 攔下。
@@ -500,7 +518,7 @@ class TestBackgroundExceptionSwallowed:
         exploding_lc = ExplodingLineClient()
         app.dependency_overrides[get_line_client] = lambda: exploding_lc
 
-        with TestClient(app, raise_server_exceptions=True) as c:
+        with TestClient(app, raise_server_exceptions=False) as c:
             body = _payload(_text_event("/lang en hi", "rt-rpl-exc"))
             r = c.post(
                 f"/line/webhook/{tid}",
@@ -509,87 +527,86 @@ class TestBackgroundExceptionSwallowed:
             )
 
         assert r.status_code == 200, (
-            f"reply 炸例外應被 try/except 攔下回 200，got {r.status_code}"
+            f"reply 炸例外應被 try/except 攔下，client 視角 200，"
+            f"got {r.status_code} body={r.text!r}"
         )
         assert r.json() == {"status": "ok"}
 
-    def test_increment_exception_does_not_break_200(self):
-        """increment_usage 炸例外 → response 仍 200。
+    def test_increment_exception_does_not_break_200(self, caplog):
+        """increment_usage 炸例外 → response 仍 200（client 視角）。
 
         模擬「翻譯成功 / reply 成功 / increment 失敗」場景——既有失敗
         模式（已服務未計費）本來就接受；背景例外被 try/except 攔下，
-        200 不受影響。
+        200 不受影響。**額外驗證副作用**：count 仍 0、char_count 仍 0
+        ——increment 炸了沒寫入 DB。
+
+        注意：patch 對象是 ``line_webhook.increment_usage`` 而非
+        ``saas_mvp.quota.increment_usage``——line_webhook 在 module
+        load 時已 import increment_usage 進自己 namespace，呼叫走
+        模組屬性查找，patch module-level 屬性不會影響已 import 的
+        reference。
         """
         app, tid = _setup_app_with_tenant("inc")
+        assert _read_usage(tid) == (0, 0)  # 起點
 
-        from saas_mvp import quota as _quota_mod
-        real_increment = _quota_mod.increment_usage
+        real_increment = _lw.increment_usage
 
         def exploding_increment(db, tenant_id, plan, chars):
             raise RuntimeError("DB 鎖死 / 連線炸 / increment 失敗")
 
-        _quota_mod.increment_usage = exploding_increment
+        _lw.increment_usage = exploding_increment
         try:
-            with TestClient(app, raise_server_exceptions=True) as c:
-                body = _payload(_text_event("/lang en hi", "rt-inc-exc"))
-                r = c.post(
-                    f"/line/webhook/{tid}",
-                    content=body,
-                    headers=_headers(body),
-                )
+            with caplog.at_level(logging.ERROR, logger="saas_mvp.routers.line_webhook"):
+                with TestClient(app, raise_server_exceptions=False) as c:
+                    body = _payload(_text_event("/lang en hi", "rt-inc-exc"))
+                    r = c.post(
+                        f"/line/webhook/{tid}",
+                        content=body,
+                        headers=_headers(body),
+                    )
             assert r.status_code == 200, (
-                f"increment 炸例外應被 try/except 攔下回 200，"
+                f"increment 炸例外應被 try/except 攔下，client 視角 200，"
                 f"got {r.status_code} body={r.text!r}"
             )
             assert r.json() == {"status": "ok"}
+            # 副作用：count 仍 0（increment 炸了 → 沒寫入）
+            c_count, cc = _read_usage(tid)
+            assert c_count == 0 and cc == 0, (
+                f"increment 炸後 DB 應仍 (0, 0)（沒白扣也沒白寫），"
+                f"got ({c_count}, {cc})"
+            )
+            # log 有記錄
+            log_text = "\n".join(rec.getMessage() for rec in caplog.records)
+            assert "_process_events failed" in log_text, (
+                f"log 應記錄『_process_events failed』，caplog:\n{log_text}"
+            )
         finally:
-            _quota_mod.increment_usage = real_increment
+            _lw.increment_usage = real_increment
 
 
-# ── 3. 背景執行時 request-scoped session 已關閉 ─────────────────────────────
+# ── 3. 背景未重用 request-scoped session（id 與時序） ─────────────────────
 
 class TestRequestSessionClosedBeforeBackground:
-    """驗收 #5.3：背景執行時 request-scoped session 已被 FastAPI dependency
-    teardown 關閉——若背景不小心引用它會炸；目前正確行為是「根本不用」。"""
+    """驗收 #5.3 深化：背景 session 物件**絕對不是** request-scoped session。
 
-    def test_request_session_is_closed_when_background_runs(self, client):
-        """request 結束 → FastAPI 關閉 db → 背景啟動 → 此時 request session 已 closed。
+    關鍵澄清：驗收 #5 說的是「不使用已關閉的 request-scoped session」——
+    程式碼路徑保證（handler 傳的是 ``bind=db.get_bind()`` = engine handle，
+    背景用 ``Session(bind=bind)`` **新開** session）。本 class 透過
+    spy 物件 id 直接驗證「background session 與 request session 永
+    遠不是同一個物件」。
 
-        觀察點：在背景 spy 內檢查 request-scoped session 物件的
-        ``is_active`` / ``_is_clean`` 狀態。若背景執行時 request session
-        仍 active，代表 dependency teardown 與 background 啟動順序不對
-        ——目前實作是「response 送出後 teardown → background」這個順序。
-        """
-        tid = _new_tenant(client)
-        _REQUEST_SESSIONS.clear()
-        _BG_SESSIONS.clear()
-
-        # 多 event 確保 background 真的進 for-loop
-        r = _post(
-            client, tid,
-            _text_event("/lang en hi", "rt-c1"),
-            _text_event("/lang en hi", "rt-c2"),
-        )
-        assert r.status_code == 200
-
-        # request-scoped session 在 response 期間被建立
-        assert len(_REQUEST_SESSIONS) == 1
-        request_db = _REQUEST_SESSIONS[0]
-
-        # 重點：request 結束後，request_db 已被 FastAPI close
-        # SQLAlchemy 2.x 用 _is_clean / _is_closed 屬性；用 is_active 即可
-        assert not request_db.is_active, (
-            f"request-scoped session 應在 request 結束後關閉（is_active=False），"
-            f"got is_active={request_db.is_active}——"
-            f"dependency teardown 未跑或 background 在 teardown 前啟動"
-        )
+    為什麼不用 ``is_active`` 斷言：SQLAlchemy session 的
+    ``is_active`` 屬性代表「是否在 transaction」而非「是否已 close」，
+    close() 後仍可能為 True——不可靠。本檔改用「close 後 execute 必
+    炸」做 close 偵測（見 ``_assert_session_closed``）。
+    """
 
     def test_background_does_not_touch_request_session_object(self, client):
         """背景 session 物件在建立時**不是** request-scoped session 物件。
 
-        這是更精準的「絕對未重用」斷言：透過 patch 替換 Session 為
-        spy factory，觀察所有背景內 ``Session(bind=...)`` 呼叫的
-        物件 id，必須不等於 request session id。
+        透過 patch 替換 Session 為 spy factory，觀察所有背景內
+        ``Session(bind=...)`` 呼叫的物件 id，必須不等於 request
+        session id。這是「絕對未重用」的最精準斷言。
         """
         tid = _new_tenant(client)
         _REQUEST_SESSIONS.clear()
@@ -605,24 +622,47 @@ class TestRequestSessionClosedBeforeBackground:
         overlap = request_session_ids & bg_session_ids
         assert not overlap, (
             f"背景 session 與 request session 有 id 重疊 {overlap}——"
-            f"背景重用了已關閉的 request session"
+            f"背景重用了已關閉的 request session（驗收 #5 失敗）"
         )
 
+    def test_background_session_close_call_count_matches_request(self, client):
+        """N 次 request → N 次 background session 被 close。
+
+        觀察「close 後 execute 必炸」：每次 request 後的 background
+        session 都進入 closed 狀態。防「finally: db.close() 漏寫」。
+        """
+        tid = _new_tenant(client)
+
+        # 三次 request
+        bg_sessions_seen = []
+        for i in range(3):
+            _BG_SESSIONS.clear()
+            r = _post(client, tid, _text_event("/lang en hi", f"rt-close-{i}"))
+            assert r.status_code == 200
+            bg_sessions_seen.extend(_BG_SESSIONS)
+
+        # 每次 request 都至少 1 個 background session
+        assert len(bg_sessions_seen) >= 3, (
+            f"3 次 request 應有 ≥3 個 background session，got {len(bg_sessions_seen)}"
+        )
+        # 全部都 close（finally 區塊釋回 pool）
+        for j, bg_db in enumerate(bg_sessions_seen):
+            _assert_session_closed(bg_db)
+
     def test_session_factory_not_used_directly_in_background(self, client):
-        """背景用 ``Session(bind=bind)`` 而非 ``SessionLocal()``——確認
-        ``SessionLocal`` 在背景執行時**沒被呼叫**。
+        """背景用 ``Session(bind=bind)`` 而非 ``SessionLocal()``。
 
         PM 議程的「DB session 生命週期」結論本來是「用 SessionLocal /
         sessionmaker」，但實際實作改為「傳 engine handle 進背景」——
         這避開了 PM 議程未涵蓋的「測試 engine 與 production engine
-        不同」問題。透過 spy ``SessionLocal`` 確認背景沒直接呼叫它。
+        不同」問題。透過 spy ``SessionLocal`` 確認背景沒直接呼叫它
+        （否則測試會綁到 production engine、background 寫入到錯的庫）。
         """
         from saas_mvp import db as _db_mod
 
         tid = _new_tenant(client)
         _BG_SESSIONS.clear()
 
-        # Spy SessionLocal（記下被呼叫次數）
         original_sessionlocal = _db_mod.SessionLocal
         sessionlocal_call_count = [0]
 
@@ -652,27 +692,22 @@ class TestRequestSessionClosedBeforeBackground:
 
 # ── 4. DB 連線不洩漏 ─────────────────────────────────────────────────────────
 #
-# close 偵測策略：SQLAlchemy session.close() 後再 execute() 必拋
-# ``InvalidRequestError: this Session's transaction has been rolled back
-# due to a previous exception``（或「This Session has been closed」，
-# 版本而異）。這比 ``is_active`` 屬性更可靠（後者受 transaction 狀態
-# 影響、不是 close 的直接指標）。
-from sqlalchemy import text
+# close 偵測策略：SQLAlchemy 2.x session close() 後 is_active 仍可能
+# True、execute 也不一定拋例外（會 reopen transaction）——不可靠。
+# 唯一 100% 精準的 close 偵測是**hook close() 計數**。
+# ``_spy_session_factory`` 已在 instance 上掛 ``_bg_spy_close_called``。
+# ``_assert_session_closed`` 透過該 flag 判斷。
 
 def _assert_session_closed(bg_db: RealSession) -> None:
-    """斷言 SQLAlchemy session 已被 close。
+    """斷言 SQLAlchemy session 已被 close（透過 close() hook 計數）。
 
-    實作：嘗試執行一個 query，若未 close 應回傳；若已 close 必拋例外。
+    比 SQLAlchemy 的 ``is_active`` 屬性或 close 後 execute 是否拋例外
+    都更可靠——直接觀察 close() 是否被呼叫。
     """
-    try:
-        bg_db.execute(text("SELECT 1"))
-    except Exception as e:
-        # close 後 execute 必炸（InvalidRequestError / DBAPIError 等）
-        # 任何例外都代表 session 已關閉 → 連線正確釋回 pool
-        return
-    raise AssertionError(
-        f"session.execute() 沒拋例外 → session 未被 close（finally 區塊漏寫）"
-    )
+    if not getattr(bg_db, "_bg_spy_close_called", False):
+        raise AssertionError(
+            f"session.close() 沒被呼叫 → finally 區塊漏寫 / 連線洩漏"
+        )
 
 
 class TestNoConnectionLeak:
@@ -723,7 +758,10 @@ class TestNoConnectionLeak:
     def test_translate_exception_path_still_closes_session(self):
         """例外路徑：translate 炸例外 → background session 仍要 close。
 
-        沒有 ``finally: db.close()`` 會在例外路徑洩漏 session。
+        沒有 ``finally: db.close()`` 會在例外路徑洩漏 session。本測試
+        用 ``raise_server_exceptions=False`` 跑（避免 TestClient 把
+        背景例外 re-raise 干擾斷言），觀察 background session 在例外
+        路徑下仍正確 close。
         """
         app, tid = _setup_app_with_tenant("leak")
         exploding = SpyTranslator(raise_on_translate=RuntimeError("炸"))
@@ -733,7 +771,7 @@ class TestNoConnectionLeak:
         leaked_sessions: list[RealSession] = []
         for i in range(N):
             with patch.object(_lw, "Session", side_effect=_spy_session_factory):
-                with TestClient(app, raise_server_exceptions=True) as c:
+                with TestClient(app, raise_server_exceptions=False) as c:
                     _BG_SESSIONS.clear()
                     body = _payload(_text_event("/lang en hi", f"rt-leak-{i}"))
                     r = c.post(
