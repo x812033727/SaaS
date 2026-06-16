@@ -28,10 +28,17 @@ from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("SAAS_RATE_LIMIT_ENABLED", "false")
 
-# 載入 model metadata（建立 table 需要）
-from saas_mvp.models import tenant as _t  # noqa: F401
-from saas_mvp.models import user as _u  # noqa: F401
-from saas_mvp.models import usage as _us  # noqa: F401
+# 載入 model metadata（建立 table + class registry 需要）。
+# 缺 Note / ApiKey / ApiKeyUsage / PlanChangeHistory / LineChannelConfig /
+# LineUserLanguage 任一 import，Tenant mapper 初始化時 relationship 解析
+# 都會炸（"expression 'Note' failed to locate a name"）——既有測試的
+# import 順序是踩過這個坑後的最小集合，照抄。
+from saas_mvp.models import tenant as _t, user as _u, note as _n, usage as _us  # noqa: F401
+from saas_mvp.models import api_key as _ak, api_key_usage as _aku               # noqa: F401
+from saas_mvp.models import plan_change_history as _pch                          # noqa: F401
+import saas_mvp.models.line_channel_config as _lcm                               # noqa: F401
+import saas_mvp.models.line_user_lang as _lul                                    # noqa: F401
+
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import (
     PLAN_DAILY_CHAR_LIMITS,
@@ -102,6 +109,37 @@ def _read(tid: int) -> tuple[int, int]:
 def _create_tables():
     Base.metadata.create_all(bind=_engine)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_api_usage():
+    """每個 test 前清掉 api_usage 全表。
+
+    所有 test 共用同一個 in-memory engine 與 table；用 tenant_id=1 為主
+    seed key 會被前面的 test 留下 row，撞 UNIQUE(tenant_id, period)。
+    簡單粗暴 DELETE FROM 比搞 per-test tenant 編號或 savepoint 都乾淨——
+    測試重點是函式契約，不是多租戶並存（後者已在既有 test_saas_isolation_*
+    涵蓋）。
+    """
+    db = _Session()
+    try:
+        db.execute(_us_api_usage_delete())
+        db.commit()
+    finally:
+        db.close()
+    yield
+    db = _Session()
+    try:
+        db.execute(_us_api_usage_delete())
+        db.commit()
+    finally:
+        db.close()
+
+
+def _us_api_usage_delete():
+    """Lazy import 以避免 module load 順序問題。"""
+    from sqlalchemy import text
+    return text("DELETE FROM api_usage")
 
 
 # ── 1. PLAN_DAILY_CHAR_LIMITS 常數結構 ──────────────────────────────────────
@@ -188,16 +226,16 @@ class TestHasCharQuota:
         for db in _make_db():
             assert has_char_quota(db, 1, "free", needed=limit + 1) is False
 
-    def test_unknown_plan_falls_back_to_free(self):
-        """未知 plan → fallback 到 free 上限。"""
-        limit_free = PLAN_DAILY_CHAR_LIMITS["free"]
+    def test_unknown_plan_at_free_limit_returns_false(self):
+        """未知 plan 在 char_count == free 上限時 → False（fallback 與常數一致）。"""
         char_limit_free = PLAN_DAILY_CHAR_LIMITS["free"]
         _seed(1, char_count=char_limit_free)
         for db in _make_db():
-            # 剛好 free 上限 → 未知 plan 視同 free → False
             assert has_char_quota(db, 1, "enterprise") is False
-            # 反向對照：少一字 → True
-            assert _used_after := (char_limit_free - 1)
+
+    def test_unknown_plan_just_below_free_limit_returns_true(self):
+        """未知 plan 在 char_count == free 上限 - 1 時 → True（反向對照，防假綠）。"""
+        char_limit_free = PLAN_DAILY_CHAR_LIMITS["free"]
         _seed(1, char_count=char_limit_free - 1)
         for db in _make_db():
             assert has_char_quota(db, 1, "enterprise") is True
@@ -237,9 +275,12 @@ class TestHasCharQuota:
 
 class TestIncrementCharUsage:
     def test_first_call_creates_row_and_adds_n(self):
-        """無 row → 自動 INSERT 並 +N，row.char_count == N。"""
+        """無 row → 自動 INSERT 並 +N，row.char_count == N。
+
+        簽名 increment_char_usage(db, tenant_id, chars, plan=None)——
+        位置參數依序 tenant_id、chars。"""
         for db in _make_db():
-            result = increment_char_usage(db, 10, 100, plan="free")
+            result = increment_char_usage(db, 1, 100, plan="free")
         assert result == 100
         _, cc = _read(1)
         assert cc == 100
