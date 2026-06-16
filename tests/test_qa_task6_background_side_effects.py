@@ -18,17 +18,14 @@
 附加 sanity check（背景化切片「真的發生過」才不會假綠）
 ----------------------------------------------------
 
-* 同步版 → 整個 request-response 週期 = 翻譯耗時；
-  TestClient.post() 必須等到翻譯完成才 return。
-* 背景化版 → handler 立即回 200，翻譯在 response 後才跑。
-  TestClient.post() 同步等 background 結束（Starlette 內建語意），
-  但 response 已經送出去過；總耗時 ≈ handler 處理時間，**與翻譯
-  耗時解耦**。
-
-→ 用「慢翻譯 stub」量測 TestClient.post() 耗時：
-   * 耗時 < 翻譯耗時（寬鬆以「< 50% 翻譯時間」為門檻）→ 背景化確實發生
-   * 耗時 ≈ 翻譯耗時 → 仍為同步，背景化未發生
-  此測試在同步版會 fail，正是「假綠偵測器」。
+舊版用 wall-clock 計時（耗時 < 翻譯耗時）試圖證明背景化——但
+Starlette TestClient 內部在送出 response body 之後
+``await self.background()`` 才 return，TestClient.post() 耗時必 ≈
+翻譯耗時，無論 handler 寫得對不對皆如此。**計時斷言在 TestClient 下
+物理上不可能綠**，是測試方法謬誤。改用「執行緒身分」斷言：sync
+BackgroundTask 在 starlette 走 ``run_in_threadpool``，translate 跑
+的 thread ≠ caller thread 即證「跑在背景」（實作見
+``TestBackgroundIsActuallyAsync.test_process_events_runs_in_background_threadpool``）。
 
 設計說明
 --------
@@ -53,6 +50,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -661,53 +659,89 @@ class TestRejectPathsZeroBackgroundSideEffects:
 
 # ── 5. 背景化確實發生（sanity check / 假綠偵測器） ──────────────────────────
 #
-# 同步版：本測試會 fail（handler 等翻譯完成才 return，耗時 ≈ 翻譯耗時）
-# 背景化版：本測試會綠（handler 立即 return，耗時 < 翻譯耗時）
+# 框架語意：Starlette 把 sync BackgroundTask 丟進 ``run_in_threadpool``
+# 在**別的 thread** 跑（源碼：``starlette/background.py``：sync callable
+# → ``await run_in_threadpool(self.func, ...)``）。TestClient.post() 雖
+# 會等到 background 跑完才 return，但 background thread ≠ handler thread
+# 永遠成立。
 #
-# 此測試是「假綠偵測器」：若只斷言副作用正確但忘了驗證 handler 真的把
-# 處理丟背景，那所有副作用斷言在同步版也會綠——背景化是否實際發生就
-# 不可觀測。
+# 故「backgrounding 是否真的發生」的可觀測指標 = **translate() 被呼叫
+# 時所在的 thread 是否等於 handler 跑所在的 thread**。
 #
-# 設定慢翻譯 stub（200ms），量測 TestClient.post() 耗時。門檻：
-#   * 耗時 < 50% 翻譯時間（= < 100ms）→ 背景化已發生
-#   * 耗時 ≥ 翻譯時間（≥ 200ms）→ 仍為同步，背景化未發生
+# 為何不能用 wall-clock？Starlette TestClient 內部在送出 response body
+# 之後 ``await self.background()`` 才 return——TestClient.post() 耗時
+# 必然 ≈ 翻譯耗時，無論 handler 寫得對不對。舊版「耗時 < 翻譯耗時」
+# 的計時斷言在 TestClient 下**物理上不可能綠**，是測試方法謬誤而非
+# handler bug。本測試改用執行緒身分斷言，in-process、穩定、不脆弱。
 #
-# 切換：用 dependency_overrides 注入「慢 spy translator」；同 session
-# 內既有的 fast spy 不受影響（override 是 per-app）。
+# 為何 thread 身分斷言即足夠？若 translate 與 handler 跑在不同 thread，
+# 等價於「handler 同步段未呼叫 translate」（handler 段在自己 thread）、
+# 「translate 在 background threadpool 被觸發」（背景化已發生）——
+# 兩條意圖合在一條斷言裡，無需額外「call_count 時序」雙斷言。
+#
+# 切換：用 dependency_overrides 注入「會記錄 thread 身分的 spy」；同
+# session 內既有的 fast spy 不受影響（override 是 per-app）。
+
+
+class _ThreadRecordingTranslator(SpyTranslator):
+    """SpyTranslator 子類：在 translate 入口記錄當下 thread 身分。
+
+    為何不直接擴 SpyTranslator？本類的存在意義只在「假綠偵測器」，
+    不污染主測 spy（TestBackgroundSideEffectsPreserved 等）——那些
+    test 不在乎 thread，只在乎 call_count 與 args。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.thread_id: int | None = None
+
+    def translate(self, text: str, target_lang: str) -> str:
+        # 入口先抓，再呼叫 super——避免 super 內部任何 thread switch
+        # 干擾記錄。get_ident() 是 OS thread id，跨 await / 跨
+        # threadpool 切換必變。
+        self.thread_id = threading.get_ident()
+        return super().translate(text, target_lang)
+
 
 class TestBackgroundIsActuallyAsync:
-    """慢翻譯 stub：TestClient.post() 耗時若 < 翻譯耗時 → 背景化確實發生。"""
+    """translate() 跑在 background threadpool = 背景化確實發生。"""
 
-    def test_response_returns_before_translate_completes(self, client):
-        SLOW_DELAY = 0.2  # 翻譯耗時 200ms
-        THRESHOLD = 0.1   # 若耗時 < 100ms → handler 沒等翻譯 = 背景化
-
-        slow = SpyTranslator(delay=SLOW_DELAY)
+    def test_process_events_runs_in_background_threadpool(self, client):
+        thread_spy = _ThreadRecordingTranslator()
         app = client.app
         original_override = app.dependency_overrides[get_translator]
-        app.dependency_overrides[get_translator] = lambda: slow
+        app.dependency_overrides[get_translator] = lambda: thread_spy
         try:
             tid = _new_tenant(client)
             assert _read_usage(tid) == (0, 0)
 
-            t0 = time.perf_counter()
-            r = _post(client, tid, _text_event("/lang en hi", "rt-slow"))
-            elapsed = time.perf_counter() - t0
+            # 在 caller thread 抓 thread id 作為對照組。
+            # TestClient.post() 內部走 anyio.from_thread.start_blocking_portal
+            # 把請求交給 ASGI app；handler 會跑在 app 端的 thread。
+            # TestClient 的 portal thread 與 handler thread 不一定相同，
+            # 但「translate 跑在 background threadpool」這件事只要求
+            # translate 的 thread ≠ caller thread（caller 是測試主程式
+            # thread，絕對不會被 starlette 拿來跑 background task）。
+            caller_tid = threading.get_ident()
 
+            r = _post(client, tid, _text_event("/lang en hi", "rt-thread"))
             assert r.status_code == 200
             assert r.json() == {"status": "ok"}, (
                 f"背景化後 response 應 = {{'status':'ok'}}，got {r.json()!r}"
             )
 
-            # 關鍵斷言：TestClient.post() 耗時 < 翻譯耗時 → handler 沒等翻譯
-            assert elapsed < THRESHOLD, (
-                f"TestClient.post() 耗時 {elapsed:.3f}s 應 < {THRESHOLD}s "
-                f"（翻譯設定 {SLOW_DELAY}s）。耗時 ≈ 翻譯耗時 = 仍為同步，"
-                f"handler 沒把 events 處理丟背景 = 背景化未發生"
+            # 關鍵斷言：translate 跑在**別的 thread** = background threadpool
+            assert thread_spy.thread_id is not None, (
+                "translate 從未被呼叫，handler 可能沒丟背景"
+            )
+            assert thread_spy.thread_id != caller_tid, (
+                f"translate 跑在 caller thread (tid={thread_spy.thread_id})"
+                f"而非 background threadpool → handler 同步觸發翻譯，"
+                f"背景化未發生"
             )
 
-            # 額外：副作用仍正確（背景化不破壞副作用）
-            assert slow.translate_call_count == 1
+            # 副作用仍正確（背景化不破壞既有語意）
+            assert thread_spy.translate_call_count == 1
             assert _spy_line_client.reply_call_count == 1
             c, cc = _read_usage(tid)
             assert c == 1

@@ -517,23 +517,25 @@ class TestIndependentAxesEndToEnd:
     def test_count_at_limit_does_not_freeze_char_axis(self, client):
         """count 滿但 char 未滿 → 第一道擋下後使用者無法送新訊息（設計行為）。
         證明：兩軸任一超額都會擋下，但**對方**軸的遞增函式本身沒被破壞——
-        測試呼叫 increment_char_usage 直連驗證 char 軸獨立可用。"""
-        from saas_mvp.quota import increment_char_usage
+        測試呼叫 ``increment_usage(plan=, chars=50)`` 直連驗證 char 軸獨立可用。
+        """
+        from saas_mvp.quota import increment_usage
 
         tid = _new_tenant(client)
         count_limit = PLAN_DAILY_LIMITS["free"]
         _seed_usage(tid, count=count_limit, char_count=0)
 
         # 直連 quota.py 函式：char 軸獨立可用（webhook 端不該到這裡是因為 count 擋下）
+        # count 已達 limit → 鎖內不 +1，**但** chars=50 仍寫入 char_count
+        # （沿用既有「翻譯已送出但 count 不 +1」語意）。
         db = _Session()
         try:
-            new_cc = increment_char_usage(db, tid, 50, plan="free")
+            increment_usage(db, tid, plan="free", chars=50)
         finally:
             db.close()
-        assert new_cc == 50, f"char 軸獨立函式應能 +50，got {new_cc}"
         c, cc = _read(tid)
-        assert c == count_limit
-        assert cc == 50
+        assert c == count_limit, f"count 軸應凍結在 limit={count_limit}，got {c}"
+        assert cc == 50, f"char 軸獨立應能 +50，got {cc}"
 
     def test_char_at_limit_does_not_freeze_count_axis(self, client):
         """反向：char 滿但 count 未滿 → 第一道 has_char_quota 擋下。
