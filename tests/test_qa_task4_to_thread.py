@@ -1,29 +1,32 @@
-"""QA 驗證 — 任務 #4 / 任務 #5：webhook 阻塞翻譯呼叫移出 handler 同步段。
+"""QA 驗證 — webhook 背景化後的架構契約。
 
-驗收標準（任務 #4 / #5）：
-  webhook 翻譯呼叫不在 handler 同步段內執行（避免卡 event loop），
-  測試仍綠。
+架構契約
+--------
+handler 在「驗章 / 解密 / JSON parse / destination 二次驗證」全部通過
+後，把「處理 events 鏈」丟進 FastAPI ``BackgroundTasks``，自身立即回
+``{"status": "ok"}`` 200，**不再同步**執行 translate / reply /
+increment_usage。``BackgroundTasks`` 對 sync 函式自動以
+``run_in_threadpool`` 執行（Starlette 源碼事實），等同 ``asyncio.to_thread``
+效果——``line_client.reply`` 內的 ``urllib.request.urlopen`` 阻塞 I/O
+不卡 event loop。
 
-本檔以「行為斷言」直接證明落地，而非僅靠既有測試間接通過：
-  1. 對 webhook 發一則合法文字訊息時，handler 同步段不直接執行
-     translate——translate 跑在背景 threadpool（thread ident != 主請求
-     thread），這是 BackgroundTasks 對 sync 函式走 ``run_in_threadpool``
-     的源碼事實（starlette/background.py）。
-  2. 端到端翻譯結果仍正確（StubTranslator → [LANG] text）。
-  3. 反向樣本：非文字事件不會觸發 translate。
+本檔以「契約面 spy」守住「handler 必丟 ``_process_events`` 到
+``BackgroundTasks``、不 inline 執行 reply」這條不變量。
 
-【背景化後的語意改變說明】
-  背景化前：本檔測 handler 把 translate 包進 ``asyncio.to_thread`` 執行，
-  以證明「不卡 event loop」。
-  背景化後（任務 #2）：handler 把整段 ``for event in events`` 鏈丟進
-  ``BackgroundTasks``，背景任務 ``_process_events`` 是 sync 函式，
-  BackgroundTasks 自動 ``run_in_threadpool``——translate 與 reply 的
-  阻塞 I/O 自然跑在背景 threadpool、不再需要 handler 顯式
-  ``asyncio.to_thread`` 包裝。line_webhook.py 模組已無
-  ``asyncio.to_thread`` import（AttributeError），本檔測的目標已
-  轉移為「translate 跑在背景 threadpool」——直接用 thread 身分斷言
-  比 to_thread 攔截更貼切（to_thread 本身只是「移出 event loop」的手段，
-  背景化後手段變了但目的不變）。
+  * monkey-patch ``fastapi.BackgroundTasks.add_task``，斷言被以
+    ``_process_events`` 與正確 events 呼叫；同時斷言
+    ``response.status_code == 200``。
+  * 為什麼不用 wall time：Starlette ``TestClient`` 同步模式下
+    ``client.post()`` 會 block 等背景任務完成，wall time 必含 reply
+    阻塞，任何門檻在 TestClient 下物理上不可能過。契約面 spy 不依賴
+    threadpool dispatch 時間、不需 sleep、測試瞬間完成。
+
+回歸涵蓋：
+  * 既有 ``test_line_task1_quota_billing.py`` 與所有 line webhook 相關
+    測試皆綠，端到端語意由它們守（reply 結果、quota 計費、redelivery
+    去重、雙閘配額…）。
+  * 本檔只補一個「handler 必丟背景」契約——是 line_webhook.py docstring
+    「背景任務語意」段的測試落地，不是既有測試的替代。
 
 全程離線：StubTranslator + FakeLineReplyClient，不呼叫真實 DeepL / LINE。
 獨立檔，不修改任何既有測試。
@@ -37,9 +40,9 @@ import hmac
 import json
 import os
 import uuid
-from unittest import mock
 
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -58,7 +61,6 @@ from saas_mvp.app import create_app                       # noqa: E402
 from saas_mvp.db import Base, get_db                       # noqa: E402
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client  # noqa: E402
 from saas_mvp.translation import StubTranslator, get_translator        # noqa: E402
-import saas_mvp.routers.line_webhook as webhook_mod        # noqa: E402
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 _engine = create_engine(
@@ -119,10 +121,6 @@ def _text_event(text: str, reply_token: str = "rt-qa4", uid: str = "Uqa4001") ->
     }
 
 
-def _image_event() -> dict:
-    return {"type": "message", "replyToken": "rt-img", "message": {"type": "image"}}
-
-
 def _payload(*events) -> bytes:
     return json.dumps({"events": list(events)}).encode("utf-8")
 
@@ -163,98 +161,42 @@ def tenant(client):
     return tid
 
 
-class TestToThreadWrapping:
-    def test_translate_called_via_to_thread(self, client, tenant):
-        """核心驗收：翻譯呼叫確實透過 asyncio.to_thread，且首參為 translator.translate。"""
-        tid = tenant
-        body = _payload(_text_event("hello", reply_token="rt-spy"))
+class TestBackgroundDispatchContract:
+    """架構不變量 — handler 必丟 ``_process_events`` 到 ``BackgroundTasks``。
 
-        real_to_thread = webhook_mod.asyncio.to_thread
-        captured = {}
+    守的是「handler 不 inline 跑 reply、reply 與 handler 200 解耦」
+    這條架構契約，而非「某 function 被呼叫」的實作細節。
 
-        async def spy_to_thread(func, *args, **kwargs):
-            captured["func"] = func
-            captured["args"] = args
-            return await real_to_thread(func, *args, **kwargs)
-
-        with mock.patch.object(
-            webhook_mod.asyncio, "to_thread", side_effect=spy_to_thread
-        ) as spy:
-            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
-
-        assert r.status_code == 200
-        # to_thread 必須被呼叫
-        assert spy.called, "翻譯呼叫未經 asyncio.to_thread 包裝"
-        # 首參必須是注入的 translator.translate（綁定方法）
-        assert captured["func"] == _stub_translator.translate, (
-            f"to_thread 包裝的不是 translator.translate，而是 {captured.get('func')!r}"
-        )
-        # 翻譯參數正確傳遞（text, target_lang）
-        assert captured["args"] == ("hello", "zh-TW")
-
-    def test_result_correct_through_to_thread(self, client, tenant):
-        """經 to_thread 包裝後端到端結果仍正確。"""
-        tid = tenant
-        body = _payload(_text_event("world", reply_token="rt-e2e"))
-        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
-        assert r.status_code == 200
-        assert _fake_line_client.call_count == 1
-        assert _fake_line_client.last_text == "[ZH-TW] world"
-
-    def test_non_text_event_does_not_call_to_thread(self, client, tenant):
-        """反向樣本：非文字事件不觸發翻譯，to_thread 不應被呼叫。"""
-        tid = tenant
-        body = _payload(_image_event())
-        with mock.patch.object(
-            webhook_mod.asyncio, "to_thread", wraps=webhook_mod.asyncio.to_thread
-        ) as spy:
-            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
-        assert r.status_code == 200
-        assert _fake_line_client.call_count == 0
-        assert not spy.called, "非文字事件不應觸發 to_thread 翻譯呼叫"
-
-
-class TestToThreadDoesNotBlockEventLoop:
-    """阻塞翻譯被移到 thread pool，不卡 event loop。
-
-    用一個會「等待 main thread 設定 flag」的 translator：若翻譯在 event loop
-    內同步執行（未經 to_thread），main thread 無機會設 flag → 永遠死等。
-    能完成即證明翻譯跑在獨立 thread。
+    為何不用 wall time：Starlette ``TestClient`` 同步模式下
+    ``client.post()`` 會 block 等背景任務完成，wall time 必包含 reply
+    阻塞 I/O 耗時，任何門檻在 TestClient 下物理上不可能綠（見模組
+    docstring「背景任務語意」段）。本測試走契約面 spy——比 wall time
+    強、不依賴 threadpool dispatch 時間、不需 sleep、測試瞬間完成。
     """
 
-    def test_blocking_translate_runs_off_event_loop(self, client, tenant):
-        import threading
+    def test_handler_dispatches_process_events_to_background(
+        self, client, tenant, monkeypatch
+    ):
+        """契約面：handler 把 ``_process_events`` 丟進 ``BackgroundTasks.add_task``；
+        response 仍回 200（背景已跑完）。"""
+        captured: list[dict] = []
+        real_add_task = BackgroundTasks.add_task
 
-        released = threading.Event()
-        ran_in_other_thread = {}
+        def spy_add_task(self, func, *args, **kwargs):
+            captured.append({"name": func.__name__, "args": args, "kwargs": kwargs})
+            return real_add_task(self, func, *args, **kwargs)
 
-        class _GatedTranslator(StubTranslator):
-            def translate(self, text: str, target_lang: str) -> str:
-                # 記錄執行緒，並等待主執行緒釋放（驗證確實在另一條 thread）
-                ran_in_other_thread["tid"] = threading.get_ident()
-                released.wait(timeout=5)
-                return f"[{target_lang.upper()}] {text}"
+        monkeypatch.setattr(BackgroundTasks, "add_task", spy_add_task)
 
         tid = tenant
-        app = client.app
-        app.dependency_overrides[get_translator] = lambda: _GatedTranslator()
-        main_tid = threading.get_ident()
-        try:
-            # 在背景送請求；主執行緒稍後釋放 gate
-            import concurrent.futures
-
-            def _do_post():
-                body = _payload(_text_event("gate", reply_token="rt-gate", uid="Ugate001"))
-                return client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_do_post)
-                # 釋放 gate，讓翻譯完成
-                released.set()
-                r = fut.result(timeout=10)
-        finally:
-            app.dependency_overrides[get_translator] = lambda: _stub_translator
+        body = _payload(_text_event("contract", reply_token="rt-ct", uid="Uct001"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
 
         assert r.status_code == 200
-        # 翻譯執行緒不等於主測試執行緒（證明跑在 thread pool）
-        assert ran_in_other_thread["tid"] != main_tid
+        assert any(c["name"] == "_process_events" for c in captured), (
+            "handler 必須把 _process_events 丟到 BackgroundTasks，"
+            f"實際 add_task 呼叫 = {captured!r}"
+        )
+        # 端到端仍正確：背景跑完、reply 收到翻譯結果
+        assert _fake_line_client.call_count == 1
+        assert _fake_line_client.last_text == "[ZH-TW] contract"

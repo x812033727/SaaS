@@ -61,9 +61,23 @@
   跨 worker process **不**傳遞任務。``uvicorn --workers N`` 部署時，
   handler 收到的 task 只在接收當下的 worker 跑；該 worker crash / restart
   時任務丟失，由 LINE redelivery 補救。M1 單 worker 部署無此問題。
-* M2 技術債（明示不修）：升級到 ARQ / Celery task queue、換
-  ``AsyncMessagingApi`` SDK 移除 ``asyncio.to_thread``、失敗重試與
-  dead-letter queue、背景任務監控指標（inflight count、p99 latency）。
+* M2 技術債（明示不修 — 詳見 issue #L2-async-migration / 2026-Q2 規劃）：
+  - 真正的 threadpool 線程佔用改善路徑：``HttpLineReplyClient`` 底層換成
+    ``httpx.AsyncClient``（lifespan 管理單一 ``AsyncClient`` instance，
+    避免 hot-loop 重複建連線失去池化效益）+ ``LineReplyClient.reply`` 改
+    async 方法 + ``_process_events`` 改 ``async def`` + SQLAlchemy 改
+    ``AsyncSession`` + ``async with async_engine.begin()`` 整套重寫
+    + ``increment_usage`` 等所有 DB 操作 async 化 + ``FakeLineReplyClient.reply``
+    改 async + 既有 spy 測試介面重寫。**整套規模 = 1 個獨立 M2 重構任務**，
+    不混入本 PR。
+  - 換 ARQ / Celery task queue 支援跨 worker process、加入失敗重試與
+    dead-letter queue、補背景任務監控指標（inflight count、p99 latency）。
+  - ``asyncio.to_thread`` 包裝**不再列入技術債**——對「已在 threadpool 中
+    的 sync 函式」再包一層是冗餘雙重包裝（anyio 反模式），淨效果為零、
+    反而多佔一條 thread。BackgroundTasks 隱式 threadpool 是 Starlette
+    契約面，本 docstring 把契約顯式化：handler 把 ``_process_events`` 丟
+    進 ``BackgroundTasks`` 後即可立即回 200，``urllib.request.urlopen``
+    阻塞 I/O 在 threadpool 內執行、**不**回頭卡 event loop。
 """
 
 from __future__ import annotations
@@ -406,18 +420,10 @@ def _process_events(
             translated = _translate_sync(translator, translate_text, target_lang)
 
             # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-            # ``line_client.reply`` 內部 ``urllib.request.urlopen`` 是阻塞 I/O，
-            # 但 ``_process_events`` 是 sync 函式、由 ``BackgroundTasks`` 自動
-            # ``run_in_threadpool`` 執行——主 event loop 不會被這個 I/O 阻塞，
-            # 效果等價於 ``asyncio.to_thread``（Starlette 底層皆走
-            # ``loop.run_in_executor`` + 同一個 anyio thread pool）。
-            # 因此**不**需要再 ``await asyncio.to_thread(line_client.reply, ...)``：
-            # 對「已在 threadpool 中的 sync 函式」再包一層屬冗餘雙重包裝，會把任務
-            # 遞迴丟回 threadpool、多佔一條 thread、零改善（anyio 反模式）。
-            # 真正的 threadpool 線程佔用問題（高 RPS × 多 worker）需要把 reply 改為
-            # async HTTP（``httpx.AsyncClient`` 或 ``AsyncMessagingApi``）+ 整個
-            # ``_process_events`` async 化 + ``AsyncSession`` 改寫，屬獨立 M2 重構，
-            # 見模組 docstring「M2 技術債」段落。
+            # reply 為阻塞 I/O，但 _process_events 是 sync 函式、由 BackgroundTasks
+            # 自動 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；
+            # 再包一層 asyncio.to_thread 屬冗餘雙重包裝（sync 函式內亦無法 await）。
+            # threadpool 線程佔用（高 RPS × 多 worker）見模組 docstring M2 async 化技術債。
             line_client.reply(reply_token, translated, access_token=access_token)
 
             # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
