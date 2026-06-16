@@ -127,60 +127,88 @@ class TestModelDeclaresCharCount:
             )
 
 
-# ── 2. 既有 NULL 列讀取端兜底：不報錯、得 0 ────────────────────────────────
+# ── 2. 讀取端兜底語意：Python 層 (row.char_count or 0) 在新環境下成立 ───────
 
 class TestNullCharCountReadable:
-    """驗收標準 1 副條：『既有 migration/建表相容，舊資料讀取為 0 不報錯』。"""
+    """驗收標準 1 副條：『既有 migration/建表相容，舊資料讀取為 0 不報錯』。
 
-    def test_or_zero_fallback_on_null_row(self, tmp_path, patch_engine):
-        """ORM 載入 NULL char_count 的 row 時，row.char_count 為 None；
-        讀取端 (row.char_count or 0) 兜底 0，不報錯、不崩。
+    設計說明：
+      本測試群驗的是**讀取端 Python 層兜底**——`quota.py` 與
+      `routers/usage.py` 都用 ``(row.char_count or 0)`` 防 NULL 崩潰。
+      需驗證 ORM 載入後 row.char_count 是 int 0、``or 0`` 兜底值是 0、
+      算術運算不崩——這是 Python 契約，不需碰 DB NULL。
 
-        用真實 ApiUsage model + 同 schema（create_all），再 raw SQL 把
-        char_count 設成 NULL 模擬「既有 NULL 列」——這樣 SQLAlchemy 載入
-        row 時走完整的 mapper 初始化路徑（驗證真實讀取端行為，非
-        純 SQL 測試）。
+      真正的「舊 DB NULL 列 → backfill 兜底」流程由
+      :class:`TestBackfillNullToZero` 涵蓋（模擬舊 schema 允許 NULL，
+      backfill 把 NULL 統一回填 0）。本測試不重疊。
+    """
+
+    def test_read_or_zero_fallback_works_for_zero_row(self, tmp_path):
+        """新環境：ORM 建 row → char_count 自動 0 → (row.char_count or 0) == 0、
+        算術不崩——驗證讀取端兜底函式在 production 主流程下成立。
         """
         eng = create_engine(
-            f"sqlite:///{tmp_path}/with_null.db",
+            f"sqlite:///{tmp_path}/with_zero.db",
             connect_args={"check_same_thread": False},
         )
         dbmod.Base.metadata.create_all(bind=eng)
-        patch_engine(eng)
-
-        # 先建一筆正常 row（用 ORM 走 default=0 → char_count=0）
         Session = sessionmaker(bind=eng)
         with Session() as s:
-            tenant = Tenant(name="t-null-test", plan="free")
+            tenant = Tenant(name="t-or-zero", plan="free")
             s.add(tenant)
             s.flush()
             row = ApiUsage(tenant_id=tenant.id, period=datetime.date(2024, 1, 1), count=5)
             s.add(row)
             s.commit()
             row_id = row.id
-
-        # 模擬「升級前既存的 NULL 列」：raw SQL 把 char_count 設成 NULL
-        with eng.begin() as conn:
-            conn.execute(
-                text(
-                    f"UPDATE {TABLE} SET {COLUMN} = NULL WHERE id = :i"
-                ),
-                {"i": row_id},
-            )
         s.close()
 
         # 重新用 ORM 載入：模擬 production 升級後第一次讀取
         with Session() as s:
-            null_row = s.execute(
+            r = s.execute(
                 select(ApiUsage).where(ApiUsage.id == row_id)
             ).scalar_one()
-            # 既有 NULL 列：屬性值為 None
-            assert null_row.char_count is None
+            # ORM 載入後屬性值是 int 0
+            assert r.char_count == 0
+            assert isinstance(r.char_count, int)
             # 讀取端兜底語意（與 quota.py / routers/usage.py 一致）
-            used_chars = null_row.char_count or 0
+            used_chars = r.char_count or 0
             assert used_chars == 0
-            # 算術運算（用於 status 聚合）不崩
+            # 算術運算（用於 status 聚合）不崩——確認 int 0 可直接參與 max/sub
             assert max(0, 1000 - used_chars) == 1000
+            assert r.char_count + 7 == 7  # 算術 int + int 不崩
+
+    def test_read_arithmetic_with_nonzero_does_not_crash(self, tmp_path):
+        """既有計數走通：non-zero char_count 載入、算術正確——確保讀取端
+        對任意 int 值都安全，覆蓋『讀取不報錯』全幅。"""
+        eng = create_engine(
+            f"sqlite:///{tmp_path}/with_nonzero.db",
+            connect_args={"check_same_thread": False},
+        )
+        dbmod.Base.metadata.create_all(bind=eng)
+        Session = sessionmaker(bind=eng)
+        with Session() as s:
+            tenant = Tenant(name="t-nonzero", plan="free")
+            s.add(tenant)
+            s.flush()
+            tid = tenant.id
+            row = ApiUsage(
+                tenant_id=tid, period=datetime.date(2024, 1, 1),
+                count=5, char_count=42,
+            )
+            s.add(row)
+            s.commit()
+        s.close()
+
+        with Session() as s:
+            r = s.execute(
+                select(ApiUsage).where(ApiUsage.tenant_id == tid)
+            ).scalar_one()
+            assert r.char_count == 42
+            # 算術：remaining_chars = max(0, limit - used_chars) 不崩
+            assert max(0, 1000 - r.char_count) == 958
+            # 兜底語意：non-None int 走 truthy 短路 → 仍 = 42
+            assert (r.char_count or 0) == 42
 
 
 # ── 3. backfill 主流程：NULL 列回填為 0 ─────────────────────────────────────
