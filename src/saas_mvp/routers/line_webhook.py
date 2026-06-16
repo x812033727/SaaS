@@ -49,7 +49,7 @@ from saas_mvp.models.line_channel_config import (
 )
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
-from saas_mvp.quota import has_quota, increment_usage
+from saas_mvp.quota import has_char_quota, has_quota, increment_char_usage, increment_usage
 from saas_mvp.translation import Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 
@@ -275,9 +275,17 @@ async def line_webhook(
 
         translate_text = remaining_text if lang_code else text
 
-        # ── 6a. 配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ───────
+        # ── 6a-1. 次數配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ─
         # 計費點後移：此處僅「檢查」不「遞增」，避免下游翻譯／回覆失敗時白扣。
         if not has_quota(db, tenant_id, tenant.plan):
+            line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
+            continue
+
+        # ── 6a-2. 字數配額檢查（譯文字數，與次數軸並列；任一不通即擋下） ─────
+        # 採譯文字數（len(translated)），理由：譯文是後端可控、語意單一的字串點，
+        # 與後扣骨架自然對齊，源文多語混雜與表情字元歧義可避開。
+        # 兩道閘各自獨立查詢、獨立擋下，沿用既有「單次溢出可接受」語意。
+        if not has_char_quota(db, tenant_id, tenant.plan):
             line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
             continue
 
@@ -292,8 +300,13 @@ async def line_webhook(
         # NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)
         line_client.reply(reply_token, translated, access_token=access_token)
 
-        # ── 6d. 翻譯與回覆皆成功後才計量 +1（消除下游失敗白扣） ────────────────
-        # 傳入 plan 啟用鎖內重驗 limit，消除 has_quota→increment 的 TOCTOU 超賣。
+        # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
+        # 次數軸 +1（傳入 plan 啟用鎖內重驗 limit，消除 has_quota→increment
+        # 的 TOCTOU 超賣）。字數軸 +N chars（譯文字元數，N = len(translated)；
+        # 同樣傳入 plan 啟用鎖內重驗 char_limit，TOCTOU 不超賣）。
+        # 兩函式並列呼叫、各自一次 SELECT FOR UPDATE，不合併——介面對稱、
+        # 可獨立測試、兩鎖間窗口 < 1ms 可接受。
         increment_usage(db, tenant_id, tenant.plan)
+        increment_char_usage(db, tenant_id, len(translated), tenant.plan)
 
     return {"status": "ok"}

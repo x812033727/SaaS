@@ -5,15 +5,22 @@
 
 回應欄位說明：
   tenant.plan          : 目前方案（free / pro）
-  tenant.daily_limit   : 當日上限
-  tenant.used_today    : 今日已用量（全部認證方式合計）
-  tenant.remaining     : 剩餘量（max 0）
+  tenant.daily_limit   : 當日 API 呼叫次數上限
+  tenant.used_today    : 今日已用 API 呼叫次數（全部認證方式合計）
+  tenant.remaining     : 剩餘 API 呼叫次數（max 0）
+  tenant.char_limit    : 當日翻譯字元上限
+  tenant.used_chars    : 今日已翻譯字元數
+  tenant.remaining_chars: 剩餘可翻譯字元數（max 0）
   tenant.period        : 計量日期（ISO 8601，UTC）
   api_keys[].api_key_id: API key ID
   api_keys[].name      : key 名稱
   api_keys[].key_prefix: key 隨機部分前 8 字元
   api_keys[].used_today: 今日透過該 key 的呼叫次數
   api_keys[].period    : 計量日期（ISO 8601，UTC）
+  （per-key 層不計字數——既有契約「per-key 共享租戶配額」只到次數軸）
+
+字數軸與次數軸獨立計量、獨立超額擋下；欄位命名沿用既有 API 契約，
+不重命名既有欄位以避免破壞前端整合。
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from saas_mvp.models.api_key import ApiKey
 from saas_mvp.models.api_key_usage import ApiKeyUsage
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.models.user import User
-from saas_mvp.quota import PLAN_DAILY_LIMITS
+from saas_mvp.quota import PLAN_DAILY_CHAR_LIMITS, PLAN_DAILY_LIMITS
 
 router = APIRouter(prefix="/usage", tags=["usage"])
 
@@ -42,6 +49,9 @@ class TenantUsageSchema(BaseModel):
     daily_limit: int
     used_today: int
     remaining: int
+    char_limit: int           # 當日翻譯字元上限
+    used_chars: int           # 今日已翻譯字元數
+    remaining_chars: int      # 剩餘可翻譯字元數（max 0）
     period: str   # ISO date string
 
 
@@ -70,6 +80,7 @@ def get_usage(
     today = datetime.date.today()
     plan = current_user.tenant.plan
     daily_limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
+    char_limit = PLAN_DAILY_CHAR_LIMITS.get(plan, PLAN_DAILY_CHAR_LIMITS["free"])
 
     # ── tenant-level 用量 ──────────────────────────────────────
     tenant_row = db.execute(
@@ -79,6 +90,8 @@ def get_usage(
         )
     ).scalar_one_or_none()
     used_today = tenant_row.count if tenant_row else 0
+    # 既有 NULL 列由讀取端兜底 0（model default=0 僅對新 INSERT 生效）
+    used_chars = (tenant_row.char_count or 0) if tenant_row else 0
 
     # ── per-key 明細（join ApiKeyUsage + ApiKey）──────────────
     key_rows = db.execute(
@@ -108,6 +121,9 @@ def get_usage(
             daily_limit=daily_limit,
             used_today=used_today,
             remaining=max(0, daily_limit - used_today),
+            char_limit=char_limit,
+            used_chars=used_chars,
+            remaining_chars=max(0, char_limit - used_chars),
             period=today.isoformat(),
         ),
         api_keys=api_key_items,

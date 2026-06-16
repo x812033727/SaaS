@@ -323,3 +323,56 @@
 - 時間：2026-06-16 07:03
 - 理由：程式碼真相是檔案實際位置；翻案既有決策文件超出本輪 scope，且既有注釋已正確落在 `src/saas_mvp/quota.py` 函式定義處，符合「緊貼 require_quota」的語意
 
+## 字數計量模組邊界沿用 `quota.py`——`has_char_quota` 新增、`_get_or_create_usage_locked` 不動、SQLAlchemy `default=0` 自動補新 row 的 `char_count=0`；介面對稱、可逆性最大化。
+- 時間：2026-06-16 08:00
+
+## 字數累計點採**譯文字數**（`len(translated)`），源文多語/表情歧義的鍋不該架構背；與既有後扣骨架自然對齊。
+- 時間：2026-06-16 08:00
+
+## 字數計算採 Python `len(str)`（Unicode code point），與中文「字」語意對齊、手算可核對。
+- 時間：2026-06-16 08:00
+
+## 字數上限常數新增 `PLAN_DAILY_CHAR_LIMITS: dict[str, int]`，**未知 plan 一律 fallback 到 `PLAN_DAILY_CHAR_LIMITS["free"]`**，與既有 `PLAN_DAILY_LIMITS` 的 fallback 語意對齊——這是策略明文化，非細節。
+- 時間：2026-06-16 08:00
+- 理由：對齊既有契約比「未知 plan 拒絕 vs 放行」的爭論更值錢；PM 之後若要 enterprise plan，加一條 dict 條目即可。
+
+## webhook 後扣路徑並列兩道 read 閘——`has_quota` 通過後才進 `has_char_quota`，任一不通都回 `_QUOTA_EXCEEDED_MSG` 並 `continue`；兩閘獨立查詢、獨立擋下，沿用「單次溢出可接受」語意。
+- 時間：2026-06-16 08:00
+- 理由：兩次 read-only 查詢成本可忽略；合併原子讀取會破壞既有 `has_quota` 契約。
+
+## **翻案**——放棄「`increment_char_usage` 與 `increment_usage` 並列、各自 SELECT FOR UPDATE + 各自 commit」的初版設計，改為**單一 `increment_usage(db, tenant_id, plan=None, chars=0)`**，同 row 一次 `SELECT FOR UPDATE`、同 transaction 內 `count += 1; char_count += chars`、單一 commit。
+- 時間：2026-06-16 08:00
+- 理由：既有 `increment_usage` 是內部函式無對外契約、破壞介面成本為零；合併後每次 webhook 少一輪 DB 往返 + 少一次 commit，鎖窗口由兩次壓成一次，TOCTOU 與 commit 失敗率同向下降。
+- 否決方案：初版「兩個獨立 increment 函式各自鎖」——介面對稱的視覺收益換不來一輪 round-trip + 一次 commit 的實質成本。
+
+## `ApiUsage` model 加 `char_count = Column(Integer, nullable=False, default=0)`；新 row 走 SQLAlchemy default，既有 NULL 列**雙重保險**——讀取端 `(row.char_count or 0)` 兜底 + 一次性 backfill 腳本 `UPDATE api_usage SET char_count = 0 WHERE char_count IS NULL`（SQLite/PG 通用 SQL，不擴大 schema 變更面，屬於資料修正）。
+- 時間：2026-06-16 08:00
+- 理由：讀取端兜底保「API 對外不報錯」，backfill 腳本保「DB 內部對 BI/監控/聚合查詢也一致」；二者並行，後者才是根治，前者是保險。
+
+## `/quota/status` 與 `/usage/` 兩端點**新增** `used_chars` / `char_limit` / `remaining_chars` 三個平行的字數欄位；既有 `used` / `limit` / `remaining` / `used_today` / `daily_limit` 欄位名與次數語意不變，欄位說明寫入對應 router docstring，不靠測試碼當文件。
+- 時間：2026-06-16 08:00
+
+## per-key 層（`ApiKeyUsage`）不補字數欄位——議程未要求、既有「per-key 共享租戶配額」契約只需次數軸；擴大變更面不符「只補缺口」原則。
+- 時間：2026-06-16 08:00
+
+## 既有 webhook 計費點時機不變——字數閘**插入在 `has_quota` 通過之後、翻譯之前**，`increment_usage(plan, chars=N)` **取代**舊的 `increment_usage(plan)`，單一呼叫完成次數+字數兩軸遞增；下游翻譯/回覆失敗拋出時 `increment` 不會被執行，雙軸皆無白扣。
+- 時間：2026-06-16 08:00
+
+## `increment_usage` 內加 `chars <= 0` 早退（直接 return row.char_count）——與既有 `validate_count` 守衛同形，避免空字串或異常輸入造成無意義鎖操作。
+- 時間：2026-06-16 08:00
+- 否決方案：不在路由層 / webhook 層守衛——守衛該集中在計費原語內，呼叫端無需各自重複。
+
+## 字數超額語意與則數完全對等——**不翻譯、不計量、回 200 + `_QUOTA_EXCEEDED_MSG`**；不拋 500、不拋 429，行為與 PM 議程結論一致。
+- 時間：2026-06-16 08:00
+
+## 測試對齊既有 `tests/test_quota.py` 與 `tests/test_line_webhook.py` 風格；每個「擋下/不計」案例附**反向對照組**（未超額→正常翻譯且 `char_count` 恰增 N）；**必涵「兩道閘都超額」的 case**——calls 先超額時，第一道閘擋下後第二道 `has_char_quota` 不得誤觸 char 計量；既有則數測試零修改。
+- 時間：2026-06-16 08:00
+- 理由：高級工程師點出「第一道擋下後第二道不應誤觸」是測試覆蓋盲點，必須補。
+
+## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 開 issue tracker 留待 M2**。
+- 時間：2026-06-16 08:00
+- 理由：修這個需先定義「成功副作用邊界」（何時算服務完成、何時算未完成），跨整個 webhook 設計面，超出本輪 scope；明文化是當前最值錢的處置。
+
+## 既有架構決策（簽章驗證鏈、四條拒絕路徑收斂、`_INVALID_SIGNATURE_DETAIL`、destination 二次驗證、LineConfigDecryptionError→200、後扣語意、計費點時機、router 路徑、成功回應格式）**全部沿用，本輪不翻案**。
+- 時間：2026-06-16 08:00
+

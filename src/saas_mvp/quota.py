@@ -2,10 +2,17 @@
 
 配額規則
 --------
-* free : 每日 100 次 API 呼叫
-* pro  : 每日 10 000 次 API 呼叫
+* free : 每日 100 次 API 呼叫、1 000 字翻譯
+* pro  : 每日 10 000 次 API 呼叫、100 000 字翻譯
 
 超量時拋出 HTTP 429 並附說明訊息。
+
+字數軸（char_count）與次數軸（count）獨立計量、獨立超額擋下：
+* has_quota / has_char_quota 任一不通 → LINE webhook 不翻譯、回配額訊息
+* increment_usage / increment_char_usage 並列呼叫、各自 SELECT FOR UPDATE
+* 兩軸均採「後扣」語意：副作用成功後才計量，下游失敗拋出時不白扣
+* 「單次溢出可接受」：has_* 與 increment_* 之間存在 TOCTOU 窗口，鎖內
+  重驗確保永不超賣計費（恢復舊版 check_and_increment 的原子保證）
 """
 
 from __future__ import annotations
@@ -29,6 +36,14 @@ from saas_mvp.models.user import User
 PLAN_DAILY_LIMITS: dict[str, int] = {
     "free": 100,
     "pro": 10_000,
+}
+
+# 字數上限（每日）。與次數軸同形 dict：plan → 上限字元數。
+# PM 議程拍板：free=1000、pro=100000。值若需調整改本常數即可，呼叫端
+# 一律透過 PLAN_DAILY_CHAR_LIMITS.get(plan, ...) 取用，無硬碼。
+PLAN_DAILY_CHAR_LIMITS: dict[str, int] = {
+    "free": 1_000,
+    "pro": 100_000,
 }
 
 _429 = HTTPException(
@@ -194,23 +209,104 @@ def check_and_increment_key(db: Session, api_key_id: int, tenant_id: int) -> int
 
 
 def get_quota_status(db: Session, tenant_id: int, plan: str) -> dict:
-    """回傳今日用量狀態（供 API 查詢）。"""
+    """回傳今日用量狀態（供 API 查詢）。
+
+    回傳欄位：
+      plan             : 目前方案
+      period           : 計量日期（ISO 8601，UTC）
+      used             : 今日已用 API 呼叫次數
+      limit            : 每日 API 呼叫次數上限
+      remaining        : 剩餘 API 呼叫次數（max 0）
+      used_chars       : 今日已翻譯字元數
+      char_limit       : 每日翻譯字元上限
+      remaining_chars  : 剩餘可翻譯字元數（max 0）
+    """
     today = datetime.date.today()
     limit = PLAN_DAILY_LIMITS.get(plan, PLAN_DAILY_LIMITS["free"])
+    char_limit = PLAN_DAILY_CHAR_LIMITS.get(plan, PLAN_DAILY_CHAR_LIMITS["free"])
     row = db.execute(
         select(ApiUsage).where(
             ApiUsage.tenant_id == tenant_id,
             ApiUsage.period == today,
         )
     ).scalar_one_or_none()
+    # 既有 NULL 列由讀取端兜底 0（model default=0 僅對新 INSERT 生效；
+    # 既有 row 的 char_count 為 NULL，需在此避免 ArithmeticError / None 比較）。
     used = row.count if row else 0
+    used_chars = (row.char_count or 0) if row else 0
     return {
         "plan": plan,
         "period": today.isoformat(),
         "used": used,
         "limit": limit,
         "remaining": max(0, limit - used),
+        "used_chars": used_chars,
+        "char_limit": char_limit,
+        "remaining_chars": max(0, char_limit - used_chars),
     }
+
+
+# ── 字數軸：與次數軸同形並列 ────────────────────────────────────────────────
+
+def has_char_quota(db: Session, tenant_id: int, plan: str, needed: int = 0) -> bool:
+    """非遞增檢查：今日是否仍有字數配額（不寫入、不 commit）。
+
+    與 :func:`has_quota` 同形並列，獨立查詢、獨立擋下。呼叫端可傳入
+    ``needed`` 表示本次翻譯預估字數；若 ``row.char_count + needed >= limit``
+    視為超額，False。
+
+    回傳 True 代表仍有字數額度，False 代表已達上限。
+    """
+    char_limit = PLAN_DAILY_CHAR_LIMITS.get(plan, PLAN_DAILY_CHAR_LIMITS["free"])
+    today = datetime.date.today()
+    row = db.execute(
+        select(ApiUsage).where(
+            ApiUsage.tenant_id == tenant_id,
+            ApiUsage.period == today,
+        )
+    ).scalar_one_or_none()
+    # 讀取端兜底 0：既有 NULL 列在 (or 0) 後安全可比
+    used_chars = (row.char_count or 0) if row else 0
+    validate_count(used_chars)
+    if needed < 0:
+        raise ValueError(f"needed must be >= 0, got {needed}")
+    return (used_chars + needed) < char_limit
+
+
+def increment_char_usage(
+    db: Session, tenant_id: int, chars: int, plan: str | None = None
+) -> int:
+    """副作用成功後才計量 +N 字（SELECT FOR UPDATE 序列化）並 commit。
+
+    與 :func:`increment_usage` 同形並列：介面對稱、各自一次鎖，不合併。
+    呼叫端應先以 has_char_quota 判斷是否放行，待下游副作用全部成功後才呼叫
+    本函式，避免下游失敗造成「白扣字數」。
+
+    若提供 ``plan``，會在鎖內**重驗** ``char_count + chars < char_limit``：
+    has_char_quota 與 increment_char_usage 之間存在 TOCTOU 窗口，並發請求
+    可能都通過 has_char_quota；鎖內重驗確保 char_count 永不超過 char_limit
+    （永不超賣計費）。已達上限時不遞增、回傳現值。
+
+    回傳更新後的 char_count。
+    """
+    if chars < 0:
+        raise ValueError(f"chars must be >= 0, got {chars}")
+    today = datetime.date.today()
+    row = _get_or_create_usage_locked(db, tenant_id, today)
+    # 既有 NULL 列兜底 0
+    current = row.char_count or 0
+    validate_count(current)
+
+    if plan is not None:
+        char_limit = PLAN_DAILY_CHAR_LIMITS.get(plan, PLAN_DAILY_CHAR_LIMITS["free"])
+        if current + chars >= char_limit:
+            # TOCTOU：has_char_quota 放行後、本函式取得鎖前，配額已被並發請求用盡。
+            db.commit()  # 釋放 FOR UPDATE 鎖，不遞增
+            return current
+
+    row.char_count = current + chars
+    db.commit()
+    return row.char_count
 
 
 # ── FastAPI dependency ────────────────────────────────────────
