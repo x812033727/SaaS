@@ -502,3 +502,287 @@ Sources:
 
 總結一句話：**統一回 400 + 固定 body + 常數時間 dummy 驗簽 + log 內部區分**，這是 OWASP/RFC/Python 文件三邊一致的最乾淨解。
 
+## 2026-06-16 12:06
+
+<think>
+看到關鍵的 starlette background.py 源碼：
+
+```python
+class BackgroundTask:
+    def __init__(self, func, *args, **kwargs):
+        ...
+        self.is_async = is_async_callable(func)
+
+    async def __call__(self) -> None:
+        if self.is_async:
+            await self.func(*self.args, **self.kwargs)
+        else:
+            await run_in_threadpool(self.func, *self.args, **self.kwargs)
+```
+
+關鍵發現：
+- `BackgroundTask` 接受**任何 callable**——`async def` 走 native await，sync 函式走 `run_in_threadpool`（等同於 `asyncio.to_thread`）
+- 多個 BackgroundTask 用 `BackgroundTasks` 包，**依序執行**（for loop in `__call__`）：「In case one of the tasks raises an exception, the following tasks will not get the opportunity to be executed」
+
+這對 webhook 場景影響：
+- handler 內的 `for event in events` 應**整段**包成一個 background task（不是每個 event 一個）——這樣 reply 順序保證、quota 計數對齊單一 event
+- 若 task 拋 exception，Starlette 預設會**默默吃掉**（不 re-raise）——這對 webhook 場景是好是壞？壞處是 bug 看不到，但好處是 LINE 不會因此重試失敗任務
+
+我已蒐集到足夠資料，現在來整理調研報告。
+
+**本輪任務的核心決策點**：
+1. 用 FastAPI `BackgroundTasks`（Starlette 內建）還是 `asyncio.create_task`？
+2. 是否需要換成 task queue（Celery/ARQ）？
+3. 既有測試怎麼改？背景任務在 TestClient 下的可測試性？
+4. 既有後扣 quota 邏輯是否需要調整？
+5. redelivery 去重是否仍然有效？
+
+**我的答案**：
+- **用 FastAPI BackgroundTasks**：最簡單、最對齊既有架構；任務丟失風險在 M1 階段可接受（LINE 重投 redelivery 機制可緩衝；任務在丟失時最壞情況是「使用者訊息未翻譯」——可由 redelivery 補上）
+- **不換 task queue**：M2 之後若需要 retry / 持久化再升級；MVP 過度設計
+- **既有測試改為**：注入 spy translator / line_client 記錄 call；test 內於 response 後**等待 background 完成**（Starlette TestClient 確實會在 response 後執行 background task，所以 spy 會被填到）
+- **後扣 quota 邏輯不變**：background 內仍跑 `has_quota` + `translate` + `reply` + `increment_usage` 整段
+- **redelivery 去重仍有效**：仍由 handler 在 background task 內檢查 `isRedelivery`
+
+**時間軸**：
+- handler: 1. 收 raw body → 2. 查 cfg → 3. 驗章 → 4. parse payload → 5. destination check → 6. **add_task(_process_events, events, ...) → 7. return {"status": "ok"}**（馬上回 200）
+- background task `_process_events(events, ...)`: 原本 handler 內的 for-loop 整段
+
+**測試注意事項**：
+- 既有測試依賴 response 後 spy 已被呼叫（reply 副作用、quota 副作用）
+- Starlette TestClient 行為：`client.post(...)` 會**同步**等到 background 完成才 return——這是關鍵，可以直接斷言
+- 若用 `asyncio.create_task` 就要保留 reference + `add_done_callback`，較複雜；用 `BackgroundTasks` 較乾淨
+- **不需引入 asgi-lifespan 也不需 `async with TestClient`**——`client.post()` 即可完成 background
+
+**風險**：
+- Worker crash / restart 任務丟失 → LINE redelivery 補
+- SlowAPI 等限流器在 background 後無法擋下（fast-fail）→ 不影響本任務（quota 已在 background 內）
+- 大量 webhooks 同時觸發 → Starlette thread pool 預設 40 thread，background task 預設跑在 threadpool（sync 函式）或 event loop（async 函式）；同步 line_client.reply 會佔用 threadpool
+
+**M2 技術債**：
+- 若要 retry / 持久化 → 升級到 ARQ（asyncio-native 的 task queue，Redis backend）
+- 若 background task 數量爆增 → 改用 asyncio.create_task + queue consumer
+
+我已蒐集到完整資料，現在寫報告。
+</think>
+
+資料已齊，整理給你看。
+
+---
+
+## 調研報告：LINE webhook 背景化處理
+
+### 既有程式碼確認
+
+重點: `line_webhook.py` 完整實作：HMAC 驗章、列舉防護、後扣 quota、destination 二次驗證、redelivery 去重、`asyncio.to_thread` 處理 DeepL/line_client 阻塞 I/O。**沒有背景任務**，handler 內 `for event in events: ...` 同步走完整個翻譯+回覆鏈。
+重點: 處理瓶頸：DeepL API 100-500ms、`increment_usage` 內 `SELECT FOR UPDATE` 持鎖時間、多 events 累加。雖然單一訊息 < 1s，但**無法保證**低流量時永遠 < LINE 隱形 timeout。
+
+---
+
+### 核心發現：**LINE 官方明確建議 async 處理**
+
+重點: LINE 官方文件：「We recommend processing events asynchronously. This is to prevent subsequent requests to wait until the current request is processed.」來源：[LINE Developers — Receiving messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+重點: LINE 平台暫停推送條件：「The LINE Platform may suspend sending webhooks to your bot server if your bot server fails to receive webhooks for a long time」——沒公布具體秒數（社群流傳約 1-3s），但**明確不公開** timeout。**重點是「fail to receive」= 沒回 2xx**而非「slow response」；只要回 200 就不會被暫停。來源同上。
+重點: 對應本任務：把內部處理移到 background、handler 立即回 200——這是 LINE 官方明確推薦的 webhook 模式。**不需擔心「LINE 何時 timeout」**，只要回 200 就安全。
+
+---
+
+### 核心發現：**LINE Bot SDK v3 已原生支援 async**
+
+重點: `linebot.v3.messaging.AsyncMessagingApi` + `AsyncApiClient` 是官方 async client（httpx 底層），**不需要 `asyncio.to_thread` 包裝**。來源：[line-bot-sdk-python README](https://github.com/line/line-bot-sdk-python)
+重點: 官方 fastapi-echo 範例**用 `await line_bot_api.reply_message(...)`** 直接呼叫——證明 async 是 SDK 一級支援。來源：[examples/fastapi-echo/main.py](https://github.com/line/line-bot-sdk-python/blob/master/examples/fastapi-echo/main.py)
+重點: **既有專案目前用自製 `HttpLineReplyClient`**（`urllib` 阻塞），不是 SDK 的 `MessagingApi`。本輪任務是改背景，**不必順便換成 SDK async client**——`asyncio.to_thread` 包住即可，介面不變。換 SDK 屬獨立 M2 任務。
+
+---
+
+### 核心發現：**FastAPI BackgroundTasks 機制**
+
+重點: `BackgroundTask(func, *args, **kwargs)`：**async 函式走 native await、sync 函式自動 `run_in_threadpool`**（= `asyncio.to_thread`）。因此 webhook 內 sync 阻塞函式（DeepL、urllib reply）丟進 background 也安全——會在 threadpool 跑，不阻塞 event loop。來源：[starlette/background.py](https://github.com/Kludex/starlette/blob/main/starlette/background.py)
+重點: `BackgroundTasks`（複數）依序執行 task；**某個 task 拋 exception，後續 task 不會執行**。對 webhook 影響：把整個 `for event in events` 包成**單一** background task——event 之間的 reply 順序、quota 計數、redelivery 去重都保持單一 task 內的同步語意。來源同上。
+重點: 背景 task 在 **HTTP response 送出後**才跑（Starlette 文件明文：「A background task should be attached to a response, and will run only once the response has been sent」）。來源：[Starlette Background Tasks](https://www.starlette.io/background/)
+重點: FastAPI 官方 Caveat：「**If you have a heavy background task, you may need a different approach**」——暗示 BackgroundTasks 適合 fire-and-forget、不可恢復任務；若需 retry/持久化，應升級到 task queue。來源：[FastAPI Background Tasks - Caveat](https://fastapi.tiangolo.com/tutorial/background-tasks/#caveat)
+
+---
+
+### 核心發現：**TestClient 對背景任務的行為（測試關鍵）**
+
+重點: Starlette `TestClient` 對 `background` 屬性的處理：`response(...)` 內部在送出 HTTP body **之後**會 `await self.background()`。`TestClient.post()` 是**同步介面但底層 anyio 跑 async**——會**等到 background 完成**才 return response。來源：[Starlette Testclient](https://www.starlette.io/testclient/) + 源碼 `[starlette/responses.py](https://github.com/Kludex/starlette/blob/main/starlette/responses.py)`
+重點: 實務結論：既有測試（如 `test_line_task1_quota_billing.py`）注入 spy translator / line_client 後**可直接斷言副作用**——`client.post(...)` 返回時 background 已跑完，spy 已被填到。**不需 `await asyncio.sleep(...)` 也不需 `async with TestClient`**。
+重點: 既有測試模式（沿用即可）：
+- Spy translator 記錄 `translate_call_count`、`translate_args`
+- Spy line_client 記錄 `reply_call_count`、`reply_args`
+- 斷言 `spy.translate_call_count == 1`、`spy.reply_call_count == 1`、`increment_usage(plan, chars=N)` 寫入 DB——這些都在 background 內執行，response 200 後即可驗
+
+---
+
+### 核心發現：**BackgroundTasks vs asyncio.create_task vs task queue 取捨**
+
+重點: **`BackgroundTasks`（推薦用）**：response 後跑、in-process、依序、簡單。代價：worker crash 任務丟失、無 retry、無跨 process。
+重點: **`asyncio.create_task`**：彈性高、可並行多 task、可用 `add_done_callback` 自動 cleanup。代價：**必須保留 strong reference**（事件迴圈只保留 weak ref，否則可能被 GC），仍 in-process。來源：[Python asyncio.create_task](https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task)——原文：「Save a reference to the result of this function, to avoid a task disappearing mid-execution」。
+重點: **Task queue（Celery / ARQ / RQ）**：跨 worker、持久化、retry、monitoring。代價：需 broker（Redis）、運維複雜度提升、序列化開銷。**M1 階段不建議**——LINE redelivery 機制已能覆蓋任務丟失場景。
+重點: **本任務最佳選擇：FastAPI `BackgroundTasks`**。理由：與既有 async 架構一致（Starlette 內建、無新依賴）、測試友善、滿足「快速回 200」目標；M2 升級到 ARQ（asyncio-native）只換實作不換介面，無痛遷移。
+
+---
+
+### 核心發現：**既有架構的語意保留**
+
+重點: **後扣 quota 不受影響**——`has_quota` → `translate` → `reply` → `increment_usage(+1)` 整段移入 background，**仍是單一 task 內同步執行**，`SELECT FOR UPDATE` 鎖仍單一 commit。
+重點: **redelivery 去重仍有效**——`isRedelivery=true` 的 event 在 background task 內被 `continue` 略過，不翻譯、不計量、不 reply。LINE redelivery 機制 + 既有去重是任務丟失的**雙重保險**。
+重點: **錯誤處理語意**：現有 `LineConfigDecryptionError` 回 200（不解密也回 200 阻止 LINE 重試）——這個決策**在 background 化後仍正確**，因為 handler 在 background 化前已完成 cfg 查詢與解密，handler 主體對 LINE 一律回 200。
+重點: **destination 二次驗證、簽章驗證、列舉防護**：全在 handler 主體（背景化**之前**）——這些是「是否要處理這個 webhook」的判斷，**絕不能**丟到 background，否則攻擊者可趁背景延遲注入攻擊。
+
+---
+
+### ⚠️ 常見坑
+
+重點: **不要把「驗章 / cfg 查詢 / destination 二次驗證」丟背景**——這些都是「要不要回 200」的判斷，丟背景就等於對所有請求都回 200，列舉防護失效。**只有「處理 events」（翻譯 + reply + quota）丟背景**。
+重點: **不要把 raw body 序列化後丟 background**——`request.body()` 在 response 送出後可能已被回收（Starlette 文件明文「`Request.body()` consumed once」）。必須**在 handler 主體先 `body = await request.body()` 存到變數，再丟 background**。不過本任務是「把已 parse 完的 events 物件丟 background」——但 events 內含 reply_token、line_user_id、user_id 等敏感資料，序列化到 task 沒問題（task 同一進程）。
+重點: **不要每個 event 開一個 background task**——會破壞 reply 順序保證、quota 計數語意。**整個 `for event in events` 包成單一 task**。
+重點: **TestClient 雖然會跑完 background，但 background 內若 raise 例外，Starlette 預設會**默默吃掉**（不 re-raise）——測試若想驗「background 內某 spy 被呼叫」要靠 spy 本身，不能靠 exception 傳出。建議：背景 task 內部 `try/except` 包整段、log 錯誤，避免測試難除錯。LINE redelivery 會處理真正的失敗。
+重點: **跨 worker 部署的任務丟失**：BackgroundTasks 是 in-process——若 uvicorn 用 `--workers 4`，每個 worker 是獨立 process，handler 收到的 task 只在該 worker 跑；worker 重啟任務丟失。**M1 單 worker 部署無此問題**；多 worker 部署時依賴 LINE redelivery 補。
+重點: **threadpool 容量**：Starlette 預設 40 thread 給 `run_in_threadpool`。若 webhook 量大且每個 task 都用 `asyncio.to_thread`（DeepL + reply = 2 個），40 / 2 = 20 並發任務。**M1 流量下遠超需求**；高流量時可調 `anyioCapacity` 或改 async client。
+
+---
+
+## 建議
+
+建議: **本輪採用 FastAPI `BackgroundTasks`**，在 `line_webhook.py` 抽出 `_process_events(tenant_id, events, tenant, cfg, ...)` 純函式，handler 在「完成 cfg 查詢 + 驗章 + destination 二次驗證 + parse payload」**之後** `background_tasks.add_task(_process_events, ...)` 丟背景，handler 主體**直接 return `{"status": "ok"}`** 馬上回 200。
+建議: **`_process_events` 接收不可變的輸入**：`tenant_id` (int)、`events` (list[dict])、`target_lang_for_user` 等解析後的純資料；不要傳 `request`、`db session`——DB session 在 background 內另開。理由：避免 response 送出後 `request` 物件被回收的邊界情況（雖然同進程不會被回收，但語意更乾淨）。
+建議: **既有 handler 邏輯切片**：
+- 留在 handler：cfg 查詢、HMAC 驗章、payload parse、destination 二次驗證、redelivery flag 解析、log warning
+- 移到 `_process_events`：每個 event 的 `/lang` 指令解析、target_lang 決定、`has_quota`/`has_char_quota`、`translate`、`reply`、`increment_usage`
+- handler 內的 `increment_usage` DB 操作連同 `db` session 一起丟 background——SQLAlchemy session 與 task 同一進程，安全
+建議: **BackgroundTasks 注入方式**：endpoint 加 `background_tasks: BackgroundTasks` 參數（FastAPI 自動注入）；`background_tasks.add_task(_process_events, tenant_id, events, tenant.plan, cfg, access_token, db)`。`db` session 跨 await 邊界在 FastAPI 是慣用模式（既有 `require_quota` dependency 也如此），測試可用 `dependency_overrides` 注入 mock session。
+建議: **測試策略三件套**（沿用既有 `test_line_task1_quota_billing.py` 風格）：
+1. **同步路徑（response 已 200，但 background 尚未跑）**：`response = client.post(...)` 後立即斷言 `response.status_code == 200` 與 `response.json() == {"status": "ok"}`
+2. **背景副作用（TestClient 等到 background 結束）**：`response` 返回後直接斷言 `spy.translate_call_count == 1`、`spy.reply_call_count == 1`、DB 內 `ApiUsage` 寫入成功——這些都在 TestClient 返回前已執行
+3. **附正向對照組**（無 cfg / 簽章錯 → 400，**無** background 副作用）：斷言 `spy.translate_call_count == 0`、`ApiUsage` 未新增——防 background 在拒絕路徑誤觸發
+建議: **不引入 task queue**（M1 階段）：LINE redelivery 機制 + 既有 `isRedelivery` 去重已覆蓋任務丟失場景；Celery/ARQ 引入 broker、運維成本不符合 M1 價值。
+建議: **不換成 SDK async client**：M2 獨立任務；既有 `HttpLineReplyClient` + `asyncio.to_thread` 在 background 內跑得動，介面不變。
+建議: **錯誤處理**：`_process_events` 內部用 `try/except Exception` 包整段，`log.exception` 後 swallow——理由：背景 task 例外**不影響** 200 response（Starlette 已送出 response），但 log 必須保留供除錯；LINE redelivery 會補上失敗的 event。
+建議: **M2 技術債登記**：
+1. 多 worker 部署時的任務丟失（升級 ARQ 或 Celery）
+2. `HttpLineReplyClient` 改用 `AsyncMessagingApi`（移除 `asyncio.to_thread`）
+3. 重試與 dead-letter 機制（若任務失敗需重試 N 次）
+4. background task 監控指標（inflight count、平均耗時、p99 latency）——加 Prometheus / OpenTelemetry
+
+---
+
+**Sources:**
+- [LINE Developers — Receiving messages (webhook) — We recommend processing events asynchronously](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+- [line-bot-sdk-python README](https://github.com/line/line-bot-sdk-python)
+- [line-bot-sdk-python fastapi-echo 範例](https://github.com/line/line-bot-sdk-python/blob/master/examples/fastapi-echo/main.py)
+- [FastAPI Background Tasks 官方教學](https://fastapi.tiangolo.com/tutorial/background-tasks/)
+- [FastAPI Background Tasks - Caveat 章節](https://fastapi.tiangolo.com/tutorial/background-tasks/#caveat)
+- [Starlette Background Tasks 官方文檔](https://www.starlette.io/background/)
+- [starlette/background.py 源碼](https://github.com/Kludex/starlette/blob/main/starlette/background.py)
+- [Starlette Testclient 官方文檔](https://www.starlette.io/testclient/)
+- [Python asyncio.create_task — Save a reference 警告](https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task)
+- [Python asyncio.TaskGroup 結構化並行](https://docs.python.org/3/library/asyncio-task.html#asyncio-task.html#asyncio-task.html)
+
+總結一句話：**用 FastAPI `BackgroundTasks`、handler 切片「驗章/查 cfg/parse/destination」留主體、「處理 events」丟背景、既有 spy-based 測試幾乎不用改**——LINE redelivery 機制是任務丟失的最後保險，M2 再升級 task queue。
+
+## 2026-06-16 13:48
+
+<think>
+我已蒐集到關鍵事實。現在我可以精準判斷本輪任務。
+
+**核心發現**：
+1. **`_process_events` 是 sync 函式**，被 FastAPI `BackgroundTasks` 自動以 `run_in_threadpool` 跑——等同於 `asyncio.to_thread`（底層都是 `loop.run_in_executor` + thread pool）
+2. **`line_client.reply` 內 `urllib.request.urlopen()` 是阻塞 I/O**，但在 threadpool 中執行，所以**不阻塞 event loop**
+3. **`asyncio.to_thread` 只在 async 函式內 `await` 才有效果**——對 sync 函式無法用，且對「已在 threadpool 中的 sync 函式」是冗餘雙重包裝
+4. **真正能改善的是換 async HTTP client**——`httpx.AsyncClient` 或 LINE Bot SDK v3 的 `AsyncMessagingApi`，釋放 threadpool 線程
+
+**方案分析**：
+
+| 方案 | 變更範圍 | 對現有架構影響 | 實際效果 |
+|---|---|---|---|
+| A. `await asyncio.to_thread(line_client.reply, ...)` 在 async 包裝內 | 需把 `_process_events` 改 async、FakeLineReplyClient 改 async、SQLAlchemy sync session 衝突 | 高 | 零（已等同 run_in_threadpool） |
+| B. 換 `httpx.AsyncClient` | `LineReplyClient` 介面改 async、FakeLineReplyClient 改 async、SQLAlchemy 衝突、httpx 連線管理 | 高 | 釋放 threadpool 線程 |
+| C. **保留現狀**——文件說明 `_process_events` 在 threadpool 跑、blocking call 已移出 event loop | 0 行程式碼 | 0 | 對 event loop 阻塞問題 0（已解決） |
+| D. 換 LINE Bot SDK v3 `AsyncMessagingApi` | 同 B，但換底層實作 | 高 | 同 B |
+
+**最佳方案**：本輪「用 asyncio.to_thread 包裝」對**當前 BackgroundTasks 架構**而言是**自造輪子**——既有的 `run_in_threadpool` 已達成相同目的。`asyncio.to_thread` 的合理使用場景是「async handler 直接呼叫 sync 阻塞函式時包一層」，**而非「已在 threadpool 中的 sync 函式再包一層」**。
+
+**真正的 M2 改進方向**是：換 `httpx.AsyncClient` 或 `AsyncMessagingApi`，把 sync HTTP 換成 async HTTP，釋放 threadpool 線程。但這不是本輪「`asyncio.to_thread`」選項的範疇。
+
+**我的建議**：
+1. **本輪拒絕做「`asyncio.to_thread` 包裝」**——理由：背景化後的 sync 函式已在 threadpool，再包一層是冗餘。
+2. **改做對等補救**：在 `line_client/http.py` docstring 與 `_process_events` 的註解，明確標示「在 BackgroundTasks 機制下，`reply()` 的阻塞 I/O 已被 threadpool 移出 event loop，無需另行包裝」——這比「為了做而做」更對得起架構。
+3. **若真要消除 threadpool 佔用**：升級到 `httpx.AsyncClient` 或 LINE Bot SDK v3 `AsyncMessagingApi`，但需要：
+   - `LineReplyClient.reply` 改 async 方法（介面破壞性變更）
+   - `_process_events` 改 async def（連帶 `Session(bind=bind)` 改 `AsyncSession`）
+   - SQLAlchemy 2.0 async session 整套改寫
+   - 既有測試 spy 介面要改
+   - 屬 M2 範疇，不在本輪
+4. **M2 技術債登記**：換 `httpx.AsyncClient`、把 `LineReplyClient` 介面改 async、`_process_events` 改 async def + `AsyncSession` 改寫
+
+讓我整理一份精簡的調研報告。
+</think>
+
+資料已齊，本輪任務的「`asyncio.to_thread` 包裝」**在當前 BackgroundTasks 架構下是個偽命題**——我必須明說這一點再給方向。
+
+---
+
+## 調研報告：line_client.reply 的 blocking 呼叫處理
+
+### 關鍵現況（必須先看再談方案）
+
+重點: **`_process_events` 是 `def`（同步函式）**，由 FastAPI `BackgroundTasks.add_task()` 加入；Starlette/FastAPI 對 sync 函式自動 `run_in_threadpool` 跑（源碼 `[starlette/background.py:39–42](https://github.com/Kludex/starlette/blob/main/starlette/background.py)`）。`run_in_threadpool` 底層就是 `loop.run_in_executor(None, ...)`，**語意等同於 `asyncio.to_thread`**。來源：[Starlette Background Tasks 源碼](https://github.com/Kludex/starlette/blob/main/starlette/background.py)
+重點: `urllib.request.urlopen()` 在 `_process_events` 內呼叫時，**執行緒已在 threadpool 中**——主 event loop 不會被這個 I/O 阻塞。`line_webhook.py` 第 6c 步的 `# NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)` 註解**語意已過時**——它寫於背景化之前，當時 handler 同步執行，現在 handler 已丟背景。
+重點: `asyncio.to_thread` 是 `anyio.to_thread.run_sync` 的薄包裝（FastAPI 透過 Starlette 也用 anyio），**底層同一個 thread pool**。在「sync 函式已在 threadpool」上再 `await asyncio.to_thread(sync_func, ...)` 會把任務**遞迴丟回 threadpool**——多佔一個 thread、零效能改善。來源：[anyio Working with threads](https://anyio.readthedocs.io/en/stable/threads.html)
+重點: LINE Bot SDK v3 有原生 async client `AsyncMessagingApi` + `AsyncApiClient`（httpx 底層），官方 fastapi-echo 範例用 `await line_bot_api.reply_message(...)` 直接呼叫——這才是**真正**消除 threadpool 佔用的路徑。來源：[line-bot-sdk-python fastapi-echo/main.py](https://github.com/line/line-bot-sdk-python/blob/master/examples/fastapi-echo/main.py)
+重點: 既有 `pyproject.toml` 沒有 `httpx` 為 runtime 依賴（只在 test optional）；改用 async HTTP client 需把 `httpx>=0.27` 提到 runtime deps，或裝 `line-bot-sdk` 換掉自製 `HttpLineReplyClient`。
+
+### 方案 A：在 `_process_events` 內 `await asyncio.to_thread(line_client.reply, ...)`  ❌
+
+重點: **不可行也不該做**。`_process_events` 是 `def`，**不能 `await`**。要這樣做得先把 `_process_events` 改 `async def`：
+  - 改 async 後，BackgroundTasks 對 async 函式走 native await，**不再**走 threadpool——反而**回退**到「reply 阻塞 I/O 直接打到 event loop」
+  - 為此在 async 內 `await asyncio.to_thread(line_client.reply, ...)` 才有意義——但這等於「先升級 async、再用 to_thread 把 sync 拉回 threadpool」，**淨效果 = 原地踏步**，且動了一堆介面
+  - 結論：這條路是「為做而做」，自造輪子、偽進步
+
+### 方案 B：把 `_process_events` 改 `async def` + 換 `httpx.AsyncClient` / `AsyncMessagingApi`  ✅（但屬 M2 範疇）
+
+重點: 真正的 threadpool 釋放需要「I/O 真的變非同步」。改 async 後每個 reply 不再佔 threadpool 線程、Starlette 預設 40 thread 不再成為瓶頸。
+重點: **介面破壞性變更鏈**：`LineReplyClient.reply` async 化 → `FakeLineReplyClient.reply` async 化（測試 spy 介面）→ `HttpLineReplyClient` 改 httpx（連線池管理：單一 `AsyncClient` instance + lifespan 或 module-level singleton，否則失去連線池效益）→ `_process_events` 改 async def → SQLAlchemy `Session(bind=bind)` 改 `AsyncSession` + `async with async_engine.begin()` → `increment_usage` 等所有 DB 操作 async 化。
+重點: 連線池警示：httpx 文件明文警告「Do not instantiate multiple client instances in a hot loop」——必須用 lifespan / singleton 管理 `AsyncClient`，否則比目前 `urllib` 還糟。來源：[httpx Async Support](https://www.python-httpx.org/async/)
+重點: SDK 路徑選項：直接 `pip install line-bot-sdk`，把 `HttpLineReplyClient` 整個換成 `AsyncMessagingApi + AsyncApiClient`——程式碼最短、官方維護。但**介面破壞一樣大**（reply 變 async），且引入新依賴。
+
+### 方案 C：保留現狀 + 釐正註解（建議本輪）  ✅
+
+重點: 當前 `BackgroundTasks` 機制已正確處理 blocking I/O 不阻塞 event loop 的問題。**語意上** `_process_events` 跑在 threadpool，**等同**於「整段包了 `asyncio.to_thread`」。
+重點: `line_webhook.py` 第 6c 步的 `# NOTE: ... 應 wrap in asyncio.to_thread (M2 技術債)` 註解**已誤導**——語意上不存在「未包裝」問題；存在的是「sync 阻塞佔 threadpool 線程」問題，這需要 async 化才能解，不是 `asyncio.to_thread` 能解。
+重點: **真正該做的**只有 1–2 行程式碼改註解 + 一段 docstring 更新，**0 行程式碼邏輯改動**——這才是「與既有架構一致、不砍掉重練」的應對。
+重點: Starlette 40 thread 預設值對 M1 流量足夠（每個 webhook 鏈佔 1 thread，主要時間花在等 DeepL/line_client I/O，thread 是閒置不是 CPU 耗用）；只在**多 worker × 高 RPS** 場景才需要 async 化——M1 不在這個場景。
+
+### ⚠️ 常見坑
+
+重點: **`asyncio.to_thread` 不是萬靈丹**：在「async handler 內呼叫 sync 阻塞函式」場景才有意義；對「sync 函式已在 threadpool」場景是**冗餘雙重包裝**——會遞迴把任務丟回 threadpool、多佔一個 thread、零改善。來源：[anyio Working with threads — Limitations 章節](https://anyio.readthedocs.io/en/stable/threads.html)
+重點: 改 async 化的最大坑是 **SQLAlchemy session**：目前 `Session(bind=bind)` 是同步 session，在 `async def` 內直接呼叫會阻塞 event loop 然後炸。改 `AsyncSession` 是另一個獨立改動（`async_engine` 取代 `engine`、所有 ORM 操作 `await` 化、commit 改 `await session.commit()`）。**這是 M2 整套重寫，不是本輪**。
+重點: 若堅持走 async 化、但 SQLAlchemy 沒改，會落入「async def 內呼叫 sync session」陷阱——這比目前 sync 模式更糟（warning + 偶發 deadlock）。
+重點: 既有測試 `FakeLineReplyClient`（`fake.py`）的 `reply` 是 sync def、`sent` 是 list append——若介面改 async，`test_line_task1_quota_billing.py` 等所有 spy 斷言要重寫。**改動面比方案 A 還大**——再次印證「改 async 是大改、不是小改」。
+
+---
+
+## 建議
+
+建議: **本輪拒絕做「`asyncio.to_thread` 包裝」**——`_process_events` 已在 threadpool 中執行（`BackgroundTasks` 自動 `run_in_threadpool`），`reply()` 的 urllib 阻塞呼叫**已經**不阻塞 event loop；再加 `asyncio.to_thread` 是冗餘雙重包裝，純粹自造輪子，與既有架構（BackgroundTasks 切片）抵觸。建議把這個決策寫進 `line_webhook.py` docstring 與 `_process_events` 註解，避免下次重複討論。
+建議: **本輪唯一要改的程式碼**：把 `line_webhook.py` 步驟 6c 的 `# NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)` 註解改為「`reply()` 阻塞 I/O 在 BackgroundTasks 機制下已自動被 `run_in_threadpool` 移出 event loop，等同於 `asyncio.to_thread` 效果；threadpool 線程佔用見 M2 async 化技術債」；模組 docstring「M2 技術債」段落把「`HttpLineReplyClient` 改用 `AsyncMessagingApi`（移除 `asyncio.to_thread`）」更新為「`HttpLineReplyClient` 改用 `httpx.AsyncClient` 或 `AsyncMessagingApi`、`_process_events` 改 `async def` + `AsyncSession` 整套 async 化」，**明確標示 `asyncio.to_thread` 改寫是錯誤方向、不再列入技術債**。
+建議: **不引入 `line-bot-sdk` 套件**（除非另有需求）：現有自製 `HttpLineReplyClient` 用 stdlib urllib、零依賴、介面乾淨（ABC + per-call access_token + FakeLineReplyClient 離線測試），換 SDK 是大規模介面破壞換微幅功能增加。M2 真的要改，建議**直接用 `httpx.AsyncClient`** 而非拉整個 line-bot-sdk——只換底層 HTTP、介面維持 ABC。
+建議: **M2 技術債登記**（更新版）：① `HttpLineReplyClient` 改用 `httpx.AsyncClient`（lifespan 管理單一 instance）；② `LineReplyClient.reply` 改 async 方法；③ `_process_events` 改 `async def`；④ SQLAlchemy 改 `AsyncSession` + `async with async_engine.begin()` 整套重寫；⑤ `increment_usage` 等所有 DB 操作 async 化；⑥ `FakeLineReplyClient.reply` 改 async、`sent` 改非同步累積；⑦ 既有 spy 測試介面重寫。**整套規模 = 1 個獨立 M2 重構任務**，不混入當前 PR。
+建議: **本輪零邏輯改動**——測試全部不動（`test_line_task1_quota_billing.py` 與所有相關測試仍綠）。可選加一個 inline 註解測試（`tests/test_line_webhook_concurrency.py`）斷言「`BackgroundTasks` 機制下 blocking reply 不阻塞 handler 200 回應」：mock `urllib.request.urlopen` 內 `time.sleep(0.5)`、斷言 `client.post(...)` 在 < 100ms 內 return 200——這是把現有架構契約「背景化後 handler 立即回 200」**升級為可被測試守住的不變量**，比「`asyncio.to_thread` 包裝」更有價值。
+
+---
+
+**Sources:**
+- [Starlette Background Tasks 源碼](https://github.com/Kludex/starlette/blob/main/starlette/background.py)
+- [Starlette Background Tasks 官方文檔](https://www.starlette.io/background/)
+- [anyio — Working with threads](https://anyio.readthedocs.io/en/stable/threads.html)
+- [Python `asyncio.to_thread` 官方文檔](https://docs.python.org/3/library/asyncio-task.html#asyncio.to_thread)
+- [httpx Async Support](https://www.python-httpx.org/async/)
+- [line-bot-sdk-python README](https://github.com/line/line-bot-sdk-python)
+- [line-bot-sdk-python fastapi-echo 範例](https://github.com/line/line-bot-sdk-python/blob/master/examples/fastapi-echo/main.py)
+- [FastAPI Background Tasks 官方教學](https://fastapi.tiangolo.com/tutorial/background-tasks/)
+
+總結一句話：**本輪「`asyncio.to_thread` 包裝」在當前 BackgroundTasks 架構下是自造輪子**——`run_in_threadpool` 已達成相同目的，**真正的改進是換 async HTTP client，但那需要整個 async 化重構、屬 M2 範疇**。建議本輪只更新誤導性註解、不動邏輯。
+

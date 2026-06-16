@@ -197,30 +197,43 @@ class TestTask1BillingDeferred:
         assert _used(tid) == before + 2
 
     def test_reverse_translate_failure_no_charge(self, client):
-        """反向：translate 拋例外 → used 不變（計費點在 translate 之後）。"""
+        """反向：translate 拋例外 → handler 仍回 200、used 不變（task #5 契約）。
+
+        背景化前：handler 同步拋例外 → 500、測試用 ``pytest.raises`` 收。
+        背景化後：handler 立即回 200，翻譯在 background 內炸被
+        ``_process_events`` 的 ``try/except`` 攔下只 log。語意保留
+        （used 不白扣）+ 新契約（response 仍 200）。
+        """
         tid = _register(client)
         before = _used(tid)
         app = client.app
         app.dependency_overrides[get_translator] = lambda: _BoomTranslator()
         try:
             body = _payload(_text_event("boom", "rt-tx"))
-            with pytest.raises(RuntimeError):
-                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            assert r.status_code == 200
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_translator] = lambda: _stub_translator
         assert _used(tid) == before
         assert _fake_client.call_count == 0  # 未送出任何 reply
 
     def test_reverse_reply_failure_no_charge(self, client):
-        """反向：translate 成功但 reply 拋例外 → used 不變（計費點排在 reply 之後）。"""
+        """反向：translate 成功但 reply 拋例外 → handler 仍回 200、used 不變（task #5 契約）。
+
+        reply 在 background 內炸、handler 已送出 200、背景 try/except
+        攔下只 log。line_client.reply 失敗前 increment 還沒跑（後扣
+        骨架）→ used 維持原值。
+        """
         tid = _register(client)
         before = _used(tid)
         app = client.app
         app.dependency_overrides[get_line_client] = lambda: _BoomReply()
         try:
             body = _payload(_text_event("boom2", "rt-rp"))
-            with pytest.raises(RuntimeError):
-                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            assert r.status_code == 200
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_line_client] = lambda: _fake_client
         assert _used(tid) == before

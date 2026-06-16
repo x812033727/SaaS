@@ -21,6 +21,26 @@ class Base(DeclarativeBase):
     pass
 
 
+def get_session_factory():
+    """FastAPI dependency: 回傳可呼叫的 session factory（無引數，回傳 ``Session``）。
+
+    預設回傳 :data:`SessionLocal`（production module-level singleton）。
+    測試透過 ``app.dependency_overrides[get_session_factory] = lambda: _Session``
+    替換成測試自己的 ``sessionmaker(bind=_engine)``——背景任務內
+    ``db = session_factory()`` 即可沿用測試的 ``StaticPool`` 共連 in-memory
+    SQLite，看得到所有 ``Base.metadata.create_all`` 建出的表。
+
+    用途：背景任務（line_webhook ``_process_events`` 等）需要「離開 request
+    生命週期」自管 session，又不能硬編 ``SessionLocal()``——硬編會綁死
+    production engine，測試無法 override。
+
+    與 :func:`get_db` 的差異：``get_db`` 為 request-scoped yield session
+    （FastAPI 依賴收尾關閉）；本函式回傳**可重複呼叫**的 factory，適合跨
+    await 邊界、需獨立交易的任務。
+    """
+    return SessionLocal
+
+
 def get_db():
     """FastAPI dependency: yield a DB session then close it."""
     db = SessionLocal()
@@ -43,6 +63,7 @@ def init_db() -> None:
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
     # 新環境由 create_all 自動建立，此處 inspect 後即略過。
     _migrate_add_line_bot_user_id()
+    _migrate_backfill_char_count()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -81,5 +102,47 @@ def _migrate_add_line_bot_user_id() -> None:
         # （含密碼）被寫入日誌（資安審查建議）。
         _log.warning(
             "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_backfill_char_count() -> None:
+    """為既有 api_usage 表回填 NULL 的 char_count 為 0（一次性資料修正）。
+
+    背景：
+      ApiUsage 在 schema 演進中新增 ``char_count`` 欄位（nullable=False,
+      default=0）。SQLAlchemy 的 ``default=0`` 僅對新 INSERT 生效；既有
+      列（特別是 ALTER TABLE ADD COLUMN 階段未被回填的）可能仍為 NULL。
+      讀取端雖以 ``(row.char_count or 0)`` 兜底，DB 層級仍可能因 NULL
+      違反 NOT NULL 約束而對部分操作（例如 PostgreSQL strict 模式下的
+      聚合查詢）報錯。本函式以 idempotent UPDATE 把 NULL 統一回填 0。
+
+    設計：
+      - 用原生 SQL ``UPDATE api_usage SET char_count = 0 WHERE
+        char_count IS NULL``，SQLite/PostgreSQL 通用、零 ORM 開銷。
+      - 冪等：第二次起無 NULL 列，UPDATE 影響 0 列 → no-op。
+      - 表不存在（理論上不會：create_all 已建）→ 略過不爆。
+      - 失敗僅 warning、不阻擋啟動：與 _migrate_add_line_bot_user_id 同形。
+    """
+    table = "api_usage"
+    column = "char_count"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column not in existing:
+            return  # 舊 DB 完全缺 char_count 欄位——不在本 backfill 範圍
+        with engine.begin() as conn:
+            result = conn.execute(
+                text(f"UPDATE {table} SET {column} = 0 WHERE {column} IS NULL")
+            )
+            if result.rowcount:
+                _log.info(
+                    "backfilled %s.%s: %d rows set to 0", table, column, result.rowcount
+                )
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "backfill for %s.%s skipped due to error: %s",
             table, column, type(exc).__name__,
         )

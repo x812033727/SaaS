@@ -236,14 +236,25 @@ class TestNormalPathIncrements:
 
 class TestTranslateFailureNoCharge:
     def test_translate_failure_does_not_increment(self, client):
+        """翻譯拋例外 → handler 仍回 200、quota 不被白扣（task #5 契約）。
+
+        背景化前：handler 同步拋例外 → 500、測試用 ``pytest.raises`` 收。
+        背景化後：handler 立即回 200，翻譯在 background 內炸被
+        ``_process_events`` 的 ``try/except`` 攔下只 log。語意保留
+        （quota 不被白扣）+ 新契約（response 仍 200）需在此同時斷言。
+        """
         tid = _new_tenant(client)
         assert _used(tid) == 0
         _active["translator"] = _failing_translator  # 失敗 stub
 
         body = _payload(_text_event("hello"))
-        # translate 失敗會冒泡成 500（webhook 不吞翻譯例外）
-        with pytest.raises(Exception):
-            client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        # task #5：背景化後 handler 立即回 200，例外被吞
+        assert r.status_code == 200, (
+            f"翻譯炸時 handler 應回 200（背景例外只 log），"
+            f"got {r.status_code} body={r.text!r}"
+        )
+        assert r.json() == {"status": "ok"}
 
         # 關鍵斷言：quota 未被白扣
         assert _used(tid) == 0
@@ -258,13 +269,21 @@ class TestTranslateFailureNoCharge:
 
 class TestReplyFailureNoCharge:
     def test_reply_failure_does_not_increment(self, client):
+        """回覆拋例外 → handler 仍回 200、quota 不被白扣（task #5 契約）。
+
+        reply 在 background 內炸、handler 已送出 200、背景 try/except
+        攔下只 log。翻譯已成功 → translator 紀錄會留 trace（attempts），
+        但 line_client.reply 失敗前 increment 還沒跑（後扣骨架保證）→
+        quota 維持 0。
+        """
         tid = _new_tenant(client)
         assert _used(tid) == 0
         _active["client"] = _failing_line_client  # 失敗 client
 
         body = _payload(_text_event("hello"))
-        with pytest.raises(Exception):
-            client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
 
         # reply 真的被嘗試過（翻譯已成功），但因 reply 失敗 → 不計量
         assert _failing_line_client.attempts == ["[ZH-TW] hello"]

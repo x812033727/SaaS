@@ -323,3 +323,93 @@
 - 時間：2026-06-16 07:03
 - 理由：程式碼真相是檔案實際位置；翻案既有決策文件超出本輪 scope，且既有注釋已正確落在 `src/saas_mvp/quota.py` 函式定義處，符合「緊貼 require_quota」的語意
 
+## 字數計量模組邊界沿用 `quota.py`——`has_char_quota` 新增、`_get_or_create_usage_locked` 不動、SQLAlchemy `default=0` 自動補新 row 的 `char_count=0`；介面對稱、可逆性最大化。
+- 時間：2026-06-16 08:00
+
+## 字數累計點採**譯文字數**（`len(translated)`），源文多語/表情歧義的鍋不該架構背；與既有後扣骨架自然對齊。
+- 時間：2026-06-16 08:00
+
+## 字數計算採 Python `len(str)`（Unicode code point），與中文「字」語意對齊、手算可核對。
+- 時間：2026-06-16 08:00
+
+## 字數上限常數新增 `PLAN_DAILY_CHAR_LIMITS: dict[str, int]`，**未知 plan 一律 fallback 到 `PLAN_DAILY_CHAR_LIMITS["free"]`**，與既有 `PLAN_DAILY_LIMITS` 的 fallback 語意對齊——這是策略明文化，非細節。
+- 時間：2026-06-16 08:00
+- 理由：對齊既有契約比「未知 plan 拒絕 vs 放行」的爭論更值錢；PM 之後若要 enterprise plan，加一條 dict 條目即可。
+
+## webhook 後扣路徑並列兩道 read 閘——`has_quota` 通過後才進 `has_char_quota`，任一不通都回 `_QUOTA_EXCEEDED_MSG` 並 `continue`；兩閘獨立查詢、獨立擋下，沿用「單次溢出可接受」語意。
+- 時間：2026-06-16 08:00
+- 理由：兩次 read-only 查詢成本可忽略；合併原子讀取會破壞既有 `has_quota` 契約。
+
+## **翻案**——放棄「`increment_char_usage` 與 `increment_usage` 並列、各自 SELECT FOR UPDATE + 各自 commit」的初版設計，改為**單一 `increment_usage(db, tenant_id, plan=None, chars=0)`**，同 row 一次 `SELECT FOR UPDATE`、同 transaction 內 `count += 1; char_count += chars`、單一 commit。
+- 時間：2026-06-16 08:00
+- 理由：既有 `increment_usage` 是內部函式無對外契約、破壞介面成本為零；合併後每次 webhook 少一輪 DB 往返 + 少一次 commit，鎖窗口由兩次壓成一次，TOCTOU 與 commit 失敗率同向下降。
+- 否決方案：初版「兩個獨立 increment 函式各自鎖」——介面對稱的視覺收益換不來一輪 round-trip + 一次 commit 的實質成本。
+
+## `ApiUsage` model 加 `char_count = Column(Integer, nullable=False, default=0)`；新 row 走 SQLAlchemy default，既有 NULL 列**雙重保險**——讀取端 `(row.char_count or 0)` 兜底 + 一次性 backfill 腳本 `UPDATE api_usage SET char_count = 0 WHERE char_count IS NULL`（SQLite/PG 通用 SQL，不擴大 schema 變更面，屬於資料修正）。
+- 時間：2026-06-16 08:00
+- 理由：讀取端兜底保「API 對外不報錯」，backfill 腳本保「DB 內部對 BI/監控/聚合查詢也一致」；二者並行，後者才是根治，前者是保險。
+
+## `/quota/status` 與 `/usage/` 兩端點**新增** `used_chars` / `char_limit` / `remaining_chars` 三個平行的字數欄位；既有 `used` / `limit` / `remaining` / `used_today` / `daily_limit` 欄位名與次數語意不變，欄位說明寫入對應 router docstring，不靠測試碼當文件。
+- 時間：2026-06-16 08:00
+
+## per-key 層（`ApiKeyUsage`）不補字數欄位——議程未要求、既有「per-key 共享租戶配額」契約只需次數軸；擴大變更面不符「只補缺口」原則。
+- 時間：2026-06-16 08:00
+
+## 既有 webhook 計費點時機不變——字數閘**插入在 `has_quota` 通過之後、翻譯之前**，`increment_usage(plan, chars=N)` **取代**舊的 `increment_usage(plan)`，單一呼叫完成次數+字數兩軸遞增；下游翻譯/回覆失敗拋出時 `increment` 不會被執行，雙軸皆無白扣。
+- 時間：2026-06-16 08:00
+
+## `increment_usage` 內加 `chars <= 0` 早退（直接 return row.char_count）——與既有 `validate_count` 守衛同形，避免空字串或異常輸入造成無意義鎖操作。
+- 時間：2026-06-16 08:00
+- 否決方案：不在路由層 / webhook 層守衛——守衛該集中在計費原語內，呼叫端無需各自重複。
+
+## 字數超額語意與則數完全對等——**不翻譯、不計量、回 200 + `_QUOTA_EXCEEDED_MSG`**；不拋 500、不拋 429，行為與 PM 議程結論一致。
+- 時間：2026-06-16 08:00
+
+## 測試對齊既有 `tests/test_quota.py` 與 `tests/test_line_webhook.py` 風格；每個「擋下/不計」案例附**反向對照組**（未超額→正常翻譯且 `char_count` 恰增 N）；**必涵「兩道閘都超額」的 case**——calls 先超額時，第一道閘擋下後第二道 `has_char_quota` 不得誤觸 char 計量；既有則數測試零修改。
+- 時間：2026-06-16 08:00
+- 理由：高級工程師點出「第一道擋下後第二道不應誤觸」是測試覆蓋盲點，必須補。
+
+## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 開 issue tracker 留待 M2**。
+- 時間：2026-06-16 08:00
+- 理由：修這個需先定義「成功副作用邊界」（何時算服務完成、何時算未完成），跨整個 webhook 設計面，超出本輪 scope；明文化是當前最值錢的處置。
+
+## 既有架構決策（簽章驗證鏈、四條拒絕路徑收斂、`_INVALID_SIGNATURE_DETAIL`、destination 二次驗證、LineConfigDecryptionError→200、後扣語意、計費點時機、router 路徑、成功回應格式）**全部沿用，本輪不翻案**。
+- 時間：2026-06-16 08:00
+
+## 技術選型 — 本輪拒做 asyncio.to_thread 包裝與 async HTTP client 改寫
+- 時間：2026-06-16 13:57
+- 理由：BackgroundTasks 對 sync 函式自動 run_in_threadpool（Starlette 源碼事實），等同 asyncio.to_thread 效果；再加為冗餘雙重包裝（anyio 反模式）。async 化需整套介面破壞性重構（LineReplyClient async 化 + AsyncSession + httpx lifespan + 全 spy mock 重寫），M1 流量下 ROI 為負，屬 M2 範疇。
+- 否決方案：(a) _process_events 改 async def + asyncio.to_thread 包 line_client.reply：自造輪子、淨效果 = 原地踏步；(b) httpx.AsyncClient / AsyncMessagingApi 整套 async 化：介面破壞面過大、屬獨立 M2 重構。
+
+## 模組切分 — 本輪只動 saas_mvp/routers/line_webhook.py（文件）與 tests/test_qa_task4_to_thread.py（測試收斂），零邏輯改動
+- 時間：2026-06-16 13:57
+- 否決方案：順手修 _process_events / HttpLineReplyClient / 計費點 / 簽章鏈——守住「只補缺口」原則，避免變更面擴大。
+
+## 測試輔助擴展 — FakeLineReplyClient 新增可選 delay 屬性（reply 內 time.sleep），預設 0 維持既有行為
+- 時間：2026-06-16 13:57
+- 理由：不變量測試需可注入阻塞；既有測試不需改、零契約破壞；M2 async 化可重用此機制。
+
+## 測試收斂 — TestToThreadWrapping 三個 test 改寫：移除 to_thread 攔截斷言、改以 thread ident 斷言「translate 跑在背景 threadpool」；test_result_correct_through_to_end 保留；test_non_text_event 改寫為「非文字事件不觸發翻譯」斷言
+- 時間：2026-06-16 13:57
+- 否決方案：保留舊名 test_translate_called_via_to_thread——名稱已誤導、與新語意不符。
+
+## 測試檔 import 清理 — 移除測試檔的 `import asyncio` 與所有 `mock.patch.object(webhook_mod.asyncio, "to_thread", ...)` 呼叫
+- 時間：2026-06-16 13:57
+- 理由：拒做 to_thread 後 line_webhook 模組不應 import asyncio，webhook_mod.asyncio 屬性查找會 AttributeError，整個 test 模組連 pytest collection 都過不了。
+
+## 架構不變量測試 — 新增 test_blocking_reply_does_not_block_handler：override SlowLineReplyClient（reply 內 time.sleep(0.5)），斷言 client.post(/line/webhook/...) 在 <0.3s 內回 200
+- 時間：2026-06-16 13:57
+- 理由：把「BackgroundTasks 不阻塞 handler」升級為可被測試守住的不變量；守的是架構契約（handler 不等 reply）、不是「某 function 被呼叫」的實作細節。
+- 否決方案：0.2s——CI 容器 load 高時 threadpool dispatch 可能吃掉 50-100ms，margin 偏緊、flakiness 風險高。
+
+## 文件化語意 — line_webhook.py 步驟 6c 註解改述「reply 阻塞 I/O 在 BackgroundTasks 機制下已自動被 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；threadpool 線程佔用（高 RPS × 多 worker）見 M2 async 化技術債」；模組 docstring M2 段落更新為「HttpLineReplyClient 改用 httpx.AsyncClient（lifespan 管理單一 instance）+ _process_events 改 async def + AsyncSession 整套重構；asyncio.to_thread 包裝為錯誤方向、不再列入技術債」
+- 時間：2026-06-16 13:57
+
+## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #XXX") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
+- 時間：2026-06-16 13:57
+- 理由：直接合進 master 會讓 CI baseline 永久 7 紅，未來提 PR 的人分不清「已知缺口」vs「本次 regression」；xfail 讓 CI 綠、缺口可被追蹤、reviewer 一眼看清狀態。
+- 否決方案：(a) 留紅直接合——CI 噪音永久化；(b) 本輪順手修——超出本輪 scope、PR 失焦。
+
+## 可逆性 — 本輪所有改動皆為文件 + 測試 + Fake 測試輔助屬性，無邏輯變更；M2 async 化若啟動，測試方法改名（to_thread→background threadpool 斷言）但 delay 機制與不變量測試可重用；M2 方向被否決時 revert 成本 = 改兩段 docstring + 幾個 test method + 移除 xfail marker。
+- 時間：2026-06-16 13:57
+
