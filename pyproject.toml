@@ -38,3 +38,8 @@ where = ["src"]
 # 確保 task-5 的程式碼優先於 .pth 指向的舊版 /tmp/test_clean/src 被 import。
 pythonpath = ["src"]
 testpaths = ["tests"]
+# 註冊自訂 marker：消掉每次跑 pytest 看到的
+# "PytestUnknownMarkWarning" 雜訊。
+markers = [
+    "integration: 需外部服務（DB / LINE API）的整合測試，預設不在 unit 套件跑",
+]
