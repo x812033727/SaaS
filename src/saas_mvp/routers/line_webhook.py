@@ -49,7 +49,7 @@ from saas_mvp.models.line_channel_config import (
 )
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
-from saas_mvp.quota import has_char_quota, has_quota, increment_char_usage, increment_usage
+from saas_mvp.quota import has_char_quota, has_quota, increment_usage
 from saas_mvp.translation import Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 
@@ -301,12 +301,18 @@ async def line_webhook(
         line_client.reply(reply_token, translated, access_token=access_token)
 
         # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
-        # 次數軸 +1（傳入 plan 啟用鎖內重驗 limit，消除 has_quota→increment
-        # 的 TOCTOU 超賣）。字數軸 +N chars（譯文字元數，N = len(translated)；
-        # 同樣傳入 plan 啟用鎖內重驗 char_limit，TOCTOU 不超賣）。
-        # 兩函式並列呼叫、各自一次 SELECT FOR UPDATE，不合併——介面對稱、
-        # 可獨立測試、兩鎖間窗口 < 1ms 可接受。
-        increment_usage(db, tenant_id, tenant.plan)
-        increment_char_usage(db, tenant_id, len(translated), tenant.plan)
+        # 單一 ``increment_usage(plan, chars=N)`` 一次 SELECT FOR UPDATE、
+        # 一次 commit 完成 ``count += 1; char_count += len(translated)``——
+        # 翻案自舊版「兩並列函式各自鎖 + 各自 commit」：少一輪 DB 往返 +
+        # 少一次 commit，鎖窗口由兩次壓成一次。
+        #
+        # 重驗語意（翻案重點）：count 達 limit 不 +1（沿用舊邏輯，極罕見
+        # TOCTOU）；char_count 達/超 char_limit 時**真實累計**寫入
+        # ``current + chars``（不 saturate、停在原值）——避免舊版
+        # ``saturate + 嚴格 <`` 造成的結構性死閘：下次 has_char_quota
+        # 在「達/超 limit」時正確擋下，閘真實有效。代價是「單次溢出」
+        # ——同次數軸「單次溢出可接受」語意對齊，舊版「永不超賣計費」
+        # 期待被明確捨棄（PR 描述點名）。
+        increment_usage(db, tenant_id, tenant.plan, chars=len(translated))
 
     return {"status": "ok"}
