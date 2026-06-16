@@ -61,23 +61,16 @@
   跨 worker process **不**傳遞任務。``uvicorn --workers N`` 部署時，
   handler 收到的 task 只在接收當下的 worker 跑；該 worker crash / restart
   時任務丟失，由 LINE redelivery 補救。M1 單 worker 部署無此問題。
-* M2 技術債（明示不修 — 詳見 issue #L2-async-migration / 2026-Q2 規劃）：
-  - 真正的 threadpool 線程佔用改善路徑：``HttpLineReplyClient`` 底層換成
-    ``httpx.AsyncClient``（lifespan 管理單一 ``AsyncClient`` instance，
-    避免 hot-loop 重複建連線失去池化效益）+ ``LineReplyClient.reply`` 改
-    async 方法 + ``_process_events`` 改 ``async def`` + SQLAlchemy 改
-    ``AsyncSession`` + ``async with async_engine.begin()`` 整套重寫
-    + ``increment_usage`` 等所有 DB 操作 async 化 + ``FakeLineReplyClient.reply``
-    改 async + 既有 spy 測試介面重寫。**整套規模 = 1 個獨立 M2 重構任務**，
-    不混入本 PR。
-  - 換 ARQ / Celery task queue 支援跨 worker process、加入失敗重試與
-    dead-letter queue、補背景任務監控指標（inflight count、p99 latency）。
-  - ``asyncio.to_thread`` 包裝**不再列入技術債**——對「已在 threadpool 中
-    的 sync 函式」再包一層是冗餘雙重包裝（anyio 反模式），淨效果為零、
-    反而多佔一條 thread。BackgroundTasks 隱式 threadpool 是 Starlette
-    契約面，本 docstring 把契約顯式化：handler 把 ``_process_events`` 丟
-    進 ``BackgroundTasks`` 後即可立即回 200，``urllib.request.urlopen``
-    阻塞 I/O 在 threadpool 內執行、**不**回頭卡 event loop。
+* M2 技術債（不修 — 詳見 TODO: open async-migration ticket before M2 啟動）：
+  - async 化：handler / reply client / DB session 整套改 async，介面破壞
+    性鏈變更（client 介面、AsyncSession、fake、spy mock 全要動），**1 個
+    獨立 PR 的工作量**。M1 流量下 Starlette 預設 40 thread 的 threadpool
+    不是瓶頸，提早開工 ROI 為負。
+  - task queue 化：換 ARQ / Celery 支援跨 worker process、加入重試與
+    dead-letter queue、補背景任務監控指標——與 async 化**無因果**的
+    獨立子任務，可分開排程。
+  - ``asyncio.to_thread`` 包裝**不再列入技術債**；理由見步驟 6c 註解
+    （canonical 說明位置）。
 """
 
 from __future__ import annotations
@@ -411,19 +404,19 @@ def _process_events(
                 continue
 
             # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-            # BackgroundTasks 對 sync 函式自動 ``run_in_threadpool``，所以
-            # ``_process_events`` 本身是 sync 函式，這裡直接呼叫
-            # ``translator.translate`` 即可——等同於背景化前
-            # ``await asyncio.to_thread(translator.translate, ...)`` 的
-            # 移出 event loop 效果。封裝在 _translate_sync helper 內
-            # 是為了維持單一翻譯呼叫點，未來換 async SDK 只改這裡。
+            # 為何 sync 直呼：見步驟 6c 註解（BackgroundTasks 自動
+            # run_in_threadpool 已將 I/O 移出 event loop，無需 to_thread）。
             translated = _translate_sync(translator, translate_text, target_lang)
 
             # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-            # reply 為阻塞 I/O，但 _process_events 是 sync 函式、由 BackgroundTasks
-            # 自動 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；
-            # 再包一層 asyncio.to_thread 屬冗餘雙重包裝（sync 函式內亦無法 await）。
-            # threadpool 線程佔用（高 RPS × 多 worker）見模組 docstring M2 async 化技術債。
+            # 為何 sync 直呼：reply 為阻塞 I/O（urllib.request.urlopen），但
+            # _process_events 是 sync 函式、由 BackgroundTasks 自動
+            # run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果。
+            # sync 函式內亦無法 await，再包一層 asyncio.to_thread 屬冗餘雙重
+            # 包裝（anyio 反模式，淨效果為零、反而多佔一條 thread）。本註解
+            # 是「sync 函式無需 to_thread 包裝」的 canonical 說明位置——模組
+            # docstring M2 段、_translate_sync helper 與 6b 步驟都指向這裡。
+            # threadpool 線程佔用改善路徑見模組 docstring M2 段。
             line_client.reply(reply_token, translated, access_token=access_token)
 
             # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
@@ -455,10 +448,7 @@ def _process_events(
 def _translate_sync(translator: Translator, text: str, target_lang: str) -> str:
     """同步呼叫翻譯介面（背景任務內執行）。
 
-    BackgroundTasks 對 sync 函式自動 ``run_in_threadpool``，所以 ``_process_events``
-    本身是 sync 函式，這裡直接呼叫 ``translator.translate`` 即可（等同於
-    ``asyncio.to_thread`` 移出 event loop 效果）。保留為獨立 helper 是為了
-    維持與背景化前 handler 內 ``await asyncio.to_thread(...)`` 的單一翻譯呼叫點，
-    未來換 async SDK 只改這裡。
+    helper 封裝是為了維持單一翻譯呼叫點，未來換 async SDK 只改這裡。
+    為何可 sync 直呼：見步驟 6c 註解（canonical 說明位置）。
     """
     return translator.translate(text, target_lang)
