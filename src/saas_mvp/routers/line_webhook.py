@@ -61,16 +61,22 @@
   跨 worker process **不**傳遞任務。``uvicorn --workers N`` 部署時，
   handler 收到的 task 只在接收當下的 worker 跑；該 worker crash / restart
   時任務丟失，由 LINE redelivery 補救。M1 單 worker 部署無此問題。
-* M2 技術債（不修 — 詳見 TODO: open async-migration ticket before M2 啟動）：
-  - async 化：handler / reply client / DB session 整套改 async，介面破壞
-    性鏈變更（client 介面、AsyncSession、fake、spy mock 全要動），**1 個
-    獨立 PR 的工作量**。M1 流量下 Starlette 預設 40 thread 的 threadpool
-    不是瓶頸，提早開工 ROI 為負。
+* M2 技術債（不修 — 詳見下方錨點）：
+  - async 化（真方向）：``HttpLineReplyClient`` 改用 ``httpx.AsyncClient``
+    （lifespan 管理單一 instance）或 LINE Bot SDK v3 ``AsyncMessagingApi``；
+    ``LineReplyClient.reply`` 改為 async 方法；``_process_events`` 改
+    ``async def``；``Session(bind=bind)`` 改 ``AsyncSession`` +
+    ``async with async_engine.begin()`` 整套重寫；fake / spy mock 全要動。
+    **1 個獨立 PR 的工作量**。M1 流量下 Starlette 預設 40 thread 的
+    threadpool 不是瓶頸，提早開工 ROI 為負。
   - task queue 化：換 ARQ / Celery 支援跨 worker process、加入重試與
     dead-letter queue、補背景任務監控指標——與 async 化**無因果**的
     獨立子任務，可分開排程。
-  - ``asyncio.to_thread`` 包裝**不再列入技術債**；理由見步驟 6c 註解
-    （canonical 說明位置）。
+  - ``asyncio.to_thread`` 包裝**不再列入技術債**——理由見步驟 6c 註解
+    （canonical 說明位置）：「sync 函式已在 threadpool」再包一層屬冗餘
+    雙重包裝（anyio 反模式，淨效果為零、反而多佔一條 thread）。
+
+  詳見 issue #XXX / 2026-Q2 async 化重構追蹤（TODO: 開 issue、替換 #XXX）。
 """
 
 from __future__ import annotations
