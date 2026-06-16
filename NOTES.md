@@ -2531,3 +2531,5 @@ FAILED tests/test_translation_enhanced.py
 
 ## 任務 #2 已知限制：**背景副作用保留**：TestClient 回傳後（背景已跑完），spy 斷言 `translate_call_count == 1`、`reply_call_count == 1`、`ApiUsage.char_count` 恰增 `len(translated)`、`count` 恰 +1 —— 與背景化前完全一致。（huddle 與重試後仍未通過）
 
+## 任務 #4 完成：**語意不變**：redelivery (`isRedelivery=true`) 仍略過、非文字事件略過、雙閘 quota 超額仍回 `_QUOTA_EXCEEDED_MSG`、後扣計量點不變、多 event 仍依序處理。
+
