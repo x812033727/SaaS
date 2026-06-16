@@ -2186,3 +2186,348 @@ increment_usage(db, tenant_id, tenant.plan, chars=len(translated))
 
 ## 任務 #3 已知限制：line_webhook 後扣路徑接字數計量：放行前檢查字數餘額，譯文成功後累計字數，超額不翻譯並以訊息回覆（huddle 與重試後仍未通過）
 
+## 異議退回 任務 #1：**快速回 200**：合法簽章請求 `response.status_code == 200` 且 `response.json() == {"status": "ok"}`，handler 主體不含 translate/reply 呼叫。
+我需要看實際程式碼狀態，而不是只看設計文件。先定位檔案與測試。
+目前 task-1 lane 的 `line_webhook.py` 還是**背景化前的基線**——handler 主體 211-318 行整段 `for event in events` 仍同步執行 translate/reply/increment_usage，沒有 `BackgroundTasks`、沒有 `_process_events`。讓我確認不是我看錯 lane。
+確認完畢。事實很清楚：**本任務尚無任何實作，只有設計與調研文件。**
+
+## 異議理由（針對驗收標準逐條對照）
+
+**核心事實**：task-1 lane 的 `line_webhook.py` 仍是背景化前基線，git status 乾淨、近期 commit 全是任務 #3/#4 的內容，`grep BackgroundTasks|_process_events|add_task` 零命中。設計定案與調研報告再完整，**都還沒落地成程式碼**。
+
+對照標的「handler 主體不含 translate/reply 呼叫」：
+
+- **未達標**：handler 主體（211–318 行）整段 `for event in events` 仍同步執行，內含 `line_client.reply`（247、258、281、289、301 行）與 `translator.translate`（295–297 行）、`increment_usage`（316 行）。驗收標準 #1 明文要求「handler 主體不含 translate/reply 呼叫」——目前**直接違反**。
+- 驗收標準 #1 的另一半「合法簽章回 200 + `{"status":"ok"}`」雖然成立，但那是**基線本來就有**的行為（318 行同步跑完才回），不是「快速回 200／背景化」的成果。用既有行為冒充任務完成，正是異議檢查要擋的假共識。
+- 驗收標準 #5（DB session 安全）、#2（背景副作用保留）皆以「存在背景任務」為前提，目前無背景任務，無從談起。
+
+**結論**：這是把「設計階段」誤判為「交付完成」。設計品質我不否定，但標的問的是「這還算不算完成」，答案是否定的——核心切片（抽 `_process_events` + `add_task` + handler 移除 translate/reply）一行都還沒寫。
+
+還缺什麼：實作背景化切片（任務 #1–#3 的程式碼）、補三件套測試、跑 `./run_tests.sh` 綠燈。
+
+異議: 成立
+
+## 異議退回 任務 #1：**快速回 200**：合法簽章請求 `response.status_code == 200` 且 `response.json() == {"status": "ok"}`，handler 主體不含 translate/reply 呼叫。
+我重新檢查現況，看實作是否已落地（避免拿上一輪舊狀態下結論）。
+現況與上一輪完全相同——**程式碼一行未動，只有設計與調研文件。**
+
+## 異議理由
+
+**事實核對**（非臆測，逐項實查）：
+- `grep BackgroundTasks|_process_events|add_task` → **零命中**：背景任務根本還沒寫。
+- git status 乾淨、近 3 個 commit 全是任務 #3/#4 與調研文件，**無任何背景化 commit**。
+- handler 主體 211–318 行 `for event in events` 整段仍同步執行，內含 `line_client.reply`（247、258、281、289、301 行）、`translator.translate`（296 行）、`increment_usage`（316 行）。
+
+**對照驗收標準 #1**（標的）：「handler 主體不含 translate/reply 呼叫」——目前主體有 6 處 reply、1 處 translate **直接違反**。
+
+**判定**：這次提交的是「設計定案 + 研究報告」，不是「實作成果」。設計本身完備且方向正確（BackgroundTasks 切片、session 自管、三件套測試都對），但標的問的是「這還算不算完成」，而：
+- 核心切片（抽 `_process_events`、`add_task`、handler 移除 translate/reply）**零行落地**；
+- 驗收標準 #2/#3/#5 都以「背景任務存在」為前提，目前無從驗證；
+- 「合法簽章回 200」雖成立，但那是**基線同步跑完才回**的既有行為，不是「快速回 200／背景化」的成果——用既有行為冒充交付正是要擋的假共識。
+
+把設計階段當成完成，是團隊正要形成的錯誤共識。
+
+還缺什麼：實作背景化（任務 #1–#4 程式碼）、補三件套測試（#5）、更新 docstring/KNOWN_LIMITATIONS（#6），最後 `./run_tests.sh` 全綠。
+
+異議: 成立
+
+## 卡關討論 任務 #1：**快速回 200**：合法簽章請求 `response.status_code == 200` 且 `response.json() == {"status": "ok"}`，handler 主體不含 translate/reply 呼叫。
+【專案經理】先看實際卡點，再給拆解。讓我快速確認現況。
+確認了關鍵事實：**這輪的程式碼根本沒落地**。`_process_events`、`BackgroundTasks`、`background_tasks` 在 handler 裡完全不存在，translate/reply 仍同步留在 for-loop（247–316 行），200 在跑完才回。設計沒問題，是實作沒進到這個 lane。
+
+連卡 2 輪不是設計難，是改動沒生效。PM 裁示如下——**砍範圍、先單點驗收 #1**：
+
+**根因判斷**
+- 不是 DB session、不是測試策略——是「背景切片」這個機械動作沒完成。再用同一套全功能設計重試第 3 輪，大概率再失敗。
+
+**突破做法：把 #1 跟其它驗收解耦，先過最小切片**
+
+任務: #1a 純機械抽函式——把 handler 內整段 for-loop（約 210–316 行，redelivery→quota→translate→reply→increment）原封剪下，貼成模組級 `_process_events(tenant_id, plan, default_target_lang, access_token, events, translator, line_client)`，一行邏輯都不改、不優化
+
+任務: #1b handler 加 `background_tasks: BackgroundTasks` 參數，在 destination 二次驗證通過後寫 `background_tasks.add_task(_process_events, ...)`，緊接 `return {"status":"ok"}`；確認 for-loop 已從主體完全消失
+
+任務: #1c `_process_events` 內首行 `db = SessionLocal()`，整段 `try/except Exception: log` 包住，`finally: db.close()`；不沿用 handler 的 request-scoped db
+
+依賴: #1b -> #1a
+依賴: #1c -> #1a
+
+**驗收標準（只驗 #1，先別管副作用回歸）**
+1. `grep -n 'translate\|\.reply' src/saas_mvp/routers/line_webhook.py` 的命中行**全部落在 `_process_events` 內**，handler 主體（`async def line_webhook` 到 `return`）零命中。
+2. 合法簽章請求 → `status_code == 200` 且 `json() == {"status":"ok"}`。
+3. 跑單一測試確認落地：先只跑「快速回 200」那條，綠了再跑全套回歸。
+
+執行指令: ./run_tests.sh
+
+**給工程師三個提醒（這是 2 輪沒過的最可能坑）**
+1. **先確認改的是這個 lane 的檔**：`task-1/src/saas_mvp/routers/line_webhook.py`——之前可能改錯 lane。改完立刻 `grep -n _process_events <該檔>` 自證落地，再宣稱完成。
+2. **別重寫整個 handler**，只做「剪下 for-loop → 貼成函式 → 換成 add_task + return」三步，最小 diff。
+3. 確認 `SessionLocal` 可 import（背景自管 session 用）。
+
+下一步要我直接派工程師執行這個最小切片嗎？還是先請你確認 `SessionLocal` 來源無誤再動工。
+【架構師】<think>
+PM 給出了精準的卡點診斷：設計沒問題，是「改動沒落地」這個機械問題。PM 已給出三步最小切片 #1a/#1b/#1c。
+
+架構師這輪的職責：
+1. 回應 PM 的判斷（贊成/反對/補充）
+2. 確認設計定案對這個最小切片仍然適用，沒有要調整的
+3. 對「三個提醒」表態
+4. 對 PM 的問題「下一步直接派工程師？還是先確認 SessionLocal？」做架構層面的回應
+
+關鍵點：
+- SessionLocal 來源：研究員在調研時已確認有這個東西（在 deps 或 db 模組）。架構師的設計定案明確要求「handler 用 Depends(get_db) 拿 request-scoped session 僅做『查 cfg + 查 tenant plan』；背景任務 _process_events 內部以 SessionLocal() 自管 session」。
+- 既有 db.py 用的是 SQLAlchemy 1.x/2.x 風格的 sessionmaker，這是標準做法。
+- 提醒 #1（先確認改對 lane）是 high-value 自證動作。
+- 提醒 #2（最小 diff）是對的，符合架構守門原則。
+- 提醒 #3（SessionLocal 可 import）需要先驗證。
+
+架構師要做的：
+- 贊成 PM 的判斷（不是設計問題、是落地問題）
+- 確認設計定案 1-10 對最小切片仍適用，**不需要調整**——最小切片正是設計定案的子集
+- 對三個提醒逐項表態，特別是提醒 #1（自證落地）非常關鍵
+- 對 SessionLocal 問題：要求先 grep 確認再動工（避免再卡一輪）
+- 不直接寫程式碼（架構師職責）
+
+補充一個架構師該有的「保護性決策」：
+- 最小切片若先過 #1，後續 #2-#6 的執行仍要按依賴順序來——但 #1a/#1b/#1c 已經把「抽函式 + background_tasks + 自管 session」一次解決，沒有拆分風險
+- 提醒 #1 提到 `task-1/src/...`——這暗示是多 lane 工作目錄結構，架構師應順帶確認 lane 命名約定
+
+簡潔、聚焦、團隊會議語氣。
+</think>
+
+贊成 PM 裁示。設計沒問題，是落地卡住——再丟一次「全套設計」等於把同樣的卡點複製第三輪。
+
+**對設計定案的影響：零調整。** 最小切片 #1a/#1b/#1c 正是設計定案 #1/#2/#3 的子集實作，方向一致、不衝突。
+
+**對三個提醒逐項表態：**
+
+`提醒 1`（改對 lane + grep 自證）：**架構級必要動作。** 自證落地必須寫進 DoD——「宣稱完成」前 `grep -n '_process_events\|background_tasks' task-1/src/saas_mvp/routers/line_webhook.py` 截圖佐證。沒這步，第 3 輪還是會被同一個鬼打牆。
+
+`提醒 2`（最小 diff，不重寫 handler）：**完全同意，這就是架構守門的本意。** 三步剪貼、不優化、不順手清既有多餘程式碼、不動簽章鏈與計費語意。
+
+`提醒 3`（SessionLocal 可 import）：**動工前先驗證這一步。** 這是「0.5 天成本」動作，1 分鐘可做完——`grep -rn 'SessionLocal\|sessionmaker' task-1/src/saas_mvp/` 確認：
+- 既有的 `SessionLocal` 在 `db.py`（或同名模組）可 import
+- 既有 `Depends(get_db)` 也是從這裡來的
+- 若用 `sessionmaker(bind=engine)` 風格，背景內 `SessionLocal()` 新開是慣用
+
+若 grep 找不到 → 停下回報，不在最小切片內自己造 `SessionLocal`（那是「鍍金 + 隱性負債」）。
+
+**架構師對 SessionLocal 問題的回答：先驗證再動工。** PM 提的兩個選項我選後者——**先請工程師跑 grep 確認 SessionLocal 來源**，30 秒完成、確認後立刻執行 #1a/#1b/#1c。不要「順手造一個」也不要「先做 #1a 等之後補」——前者擴大 diff、後者把綁定問題留到 #2。
+
+**給工程師的執行前清單（≤5 分鐘內做完才開工）：**
+1. `cd task-1 && pwd` 確認 lane
+2. `grep -rn 'SessionLocal\|sessionmaker' src/` 確認可 import
+3. `wc -l src/saas_mvp/routers/line_webhook.py` 確認行數（改完要比對）
+4. 找到 handler 內 `for event in events:` 的起始行號（for-loop 邊界）
+
+**完成後自證 DoD（缺一不可）：**
+- `grep -n 'translate\|\.reply' src/saas_mvp/routers/line_webhook.py` 命中行**全在 `_process_events` 內**
+- `grep -n 'background_tasks' src/saas_mvp/routers/line_webhook.py` 出現 `add_task` 與 `BackgroundTasks` 注入
+- handler 主體（`async def line_webhook` 內）**零** `for event in events:` 殘留
+- 單跑「快速回 200」測試綠，再跑 `./run_tests.sh` 全套
+
+`設計決策: 最小切片 #1a/#1b/#1c 依賴執行前先 grep 確認 SessionLocal 來源存在於 db 模組；找不到則停下回報，不在切片內自造 sessionmaker（避免擴大 diff 與隱性負債）`
+
+`設計決策: DoD 含「grep 自證落地」硬性步驟——translate/.reply/_process_events/background_tasks 四個 grep 命中必須符合設計定案 #1/#2/#3 的切點邊界，未達標不算完成`
+
+`設計決策: 單一測試先綠再跑全套——先跑「快速回 200」那條驗收 #1，綠了再執行 ./run_tests.sh 全套回歸，避免第 3 輪又被「其他測試干擾」模糊掉卡點`
+
+派工程師時把這三條一併轉交。最小切片落地、回 200 那條綠了，我再回來對 #5/#6（測試三件套補齊、docstring 與 KNOWN_LIMITATIONS 更新）做架構定案收尾。
+【工程師】
+【高級工程師】<think>
+KNOWN_LIMITATIONS.md 沒更新背景化相關的 M2 技術債（驗收標準 #6 明確要求更新）。
+
+OK，現在我有完整畫面了。讓我給出審查決議：
+
+**結構性驗收標準**：
+1. ✓ handler 主體不含 translate/reply 呼叫（只有註解）
+2. ✓ handler 立即 return `{"status":"ok"}` 200
+3. ✓ 拒絕路徑（無 config / 缺 header / 簽章錯 / destination 不符 / JSON 壞）仍同步處理
+4. ✓ 切點邊界正確（HMAC 驗章、destination 二次驗證、列舉防護全在主體）
+5. ✓ 輸入契約只接純資料（tenant_id、plan、default_target_lang、access_token、events、translator、line_client）——不傳 Request/cfg
+6. ✓ 例外處理（try/except + log.exception + swallow）正確
+7. ✓ 既有簽章/隔離/quota 邏輯零改動
+
+**安全驗收**：
+- 列舉防護保留 ✓
+- HMAC 驗章鏈完整保留 ✓
+- 不變的常數時間 helper ✓
+- log reason 區分（no_config/missing_header/bad_signature/bad_destination）保留 ✓
+- 解密失敗回 200 阻止 LINE 重試保留 ✓
+- 背景任務的輸入是純資料，channel_secret 不在背景暴露 ✓
+
+**主要問題**：
+1. **既有測試全紅（blocker）**：`SessionLocal()` 直接從 `saas_mvp.db` import 是 module-level singleton，測試用 `dependency_overrides[get_db]` 無法覆蓋它。`test_line_task1_quota_billing.py`、`test_line_task5_webhook.py` 等都用 `StaticPool` 共享 in-memory connection，背景任務走 production engine 看不到 test engine 的表 → `no such table: line_user_languages`。
+2. **KNOWN_LIMITATIONS.md 未更新**：驗收 #6 明確要求「更新 docstring 與 KNOWN_LIMITATIONS」，背景化相關的 M2 技術債條目還沒寫進去。
+3. **測試三件套未補**（PM 議程 #5）：(a) 200 + {"status":"ok"} 立即回；(b) TestClient 等背景跑完後斷言副作用如舊；(c) 拒絕路徑無任何背景副作用對照組——這些都還沒建檔。
+
+**次要問題**：
+- 變數命名 `cfg` 在 docstring 提到「不傳 cfg 物件」，但實際 import 沒有 `cfg` 在 `_process_events` 簽名中，簽名乾淨；但主體的 `cfg = db.execute(...)` 變數名仍在（line ~150）——這是局部變數無問題，僅 docstring 風格。
+- handler 內變數 `tenant` 用 `db.get(Tenant, tenant_id)` 取得 plan，這是 request-scoped session——OK，因為只做讀取。
+- `access_token` 是明文敏感資料傳入 background，但 in-process 不會序列化，無洩漏面。
+
+**決議：退回**
+
+理由：
+1. **既有測試全紅是 blocker**：必須修正 `SessionLocal` 注入路徑，讓背景任務能沿用測試 override 的 engine。最少修正方式——把 `session_factory` 也設計為可注入（背景任務接收 `session_factory` 參數，handler 從 `get_db` 拿到 session 後傳 `SessionLocal` factory，或更乾淨——把 `SessionLocal` 設計為可由依賴注入替換的 factory）。
+2. KNOWN_LIMITATIONS.md 需補 M2 技術債條目
+3. 測試三件套需建檔（驗收 #5）
+
+我作為審查者應該具體可執行地指出修正方式，但不要替工程師寫程式碼。
+</think>
+
+## 高級工程師審查報告 — Task #1 快速回 200
+
+### 結構驗收（Task #1 核心切片）
+
+| 驗收點 | 結果 | 證據 |
+|--------|------|------|
+| handler 主體零 `translate`/`.reply` 呼叫 | ✅ | `grep` 命中行 105/107 皆為註解；所有實際呼叫（`translator.translate`、`_translate_sync`、`line_client.reply`）皆在 `_process_events`（行 331–402） |
+| 合法簽章路徑立即回 `{"status":"ok"}` 200 | ✅ | 行 251–262：`add_task` 後直接 `return {"status": "ok"}` |
+| 切點邊界正確（HMAC/destination/列舉防護留主體） | ✅ | 行 130–242 全在 `async def line_webhook` 內；無論 `cfg is None` / 缺 header / 簽章錯 / destination 不符 / JSON 壞，皆同步拋 `HTTPException(400)`，**不會**進入 `add_task` |
+| 輸入契約只接純資料 | ✅ | `_process_events(tenant_id, plan, default_target_lang, access_token, events, translator, line_client)`——無 `Request`、無 `cfg`、無 `channel_secret`、無 request-scoped `db` |
+| 計費/簽章/紅投語意零改動 | ✅ | redelivery 去重、`has_quota`→`translate`→`reply`→`increment_usage(plan, chars=N)` 順序與舊版一致；`chars <= 0` 早退、`len(translated)` 採譯文字數沿用 |
+
+### 安全驗收
+
+- 列舉防護四路徑收斂保留（`_INVALID_SIGNATURE_DETAIL` + `_constant_time_verify` 全在主體）
+- `LineConfigDecryptionError` 仍主體內回 200 阻止 LINE 重試
+- 背景例外 `try/except Exception` + `log.exception` swallow，不外拋（response 已送 200）
+- docstring 詳載「in-process / 單 worker / worker crash 丟失靠 redelivery」語意，跨人協作依據足
+- `_translate_sync` helper 包成單一翻譯呼叫點，理由清楚（等價於舊 `asyncio.to_thread`）
+
+### 設計 OK，但實作缺關鍵一塊 — **既有測試全紅（blocker）**
+
+跑 `./run_tests.sh`（略過 `test_line_task2_char_quota.py` 一個 collection 級 import 錯誤，那是其他 lane 的 deprecation，不在本任務責任）：
+
+```
+FAILED tests/test_line_task1_quota_billing.py     (6/6)
+FAILED tests/test_line_task5_webhook.py            (≥15 條)
+FAILED tests/test_qa_task1_billing_deferred.py     (6/6)
+FAILED tests/test_qa_task3_webhook_char_metering.py (≥12 條)
+FAILED tests/test_qa_task4_to_thread.py            (4/4)
+FAILED tests/test_translation_enhanced.py
+```
+
+**根因**（同一條）：背景任務 `db = SessionLocal()` 直接 import `saas_mvp.db.SessionLocal`，是 module-level singleton，**測試無法 override**。既有測試用 `dependency_overrides[get_db]` 注入 `StaticPool` 共連 in-memory SQLite——handler 的 `db` 走 override 看得到 `line_user_languages` 表，但 `_process_events` 走 production engine 是另一條 connection，in-memory DB 空的，所以 `no such table: line_user_languages`。
+
+這是架構師設計定案 #2「DB session 生命週期分兩條」未涵蓋「測試可注入性」的直接後果——驗收標準 #6「既有測試全綠、既有簽章/隔離/quota 測試零回歸」直接破口。
+
+### 順帶缺漏
+
+- `KNOWN_LIMITATIONS.md` 未補背景化 M2 技術債條目（task queue 升級、SDK async client 改寫、retry/DLQ、背景任務監控指標、worker crash 任務丟失依賴 LINE redelivery）——驗收 #6 明文要求
+- 測試三件套（#5）未建檔：(a) 200 + `{"status":"ok"}` 立即回；(b) TestClient 等背景跑完後 spy 斷言副作用；(c) 拒絕路徑對照組「無背景觸發」
+
+### 修正方向（不替你寫碼）
+
+`SessionLocal` 必須是**可注入**的工廠，不該在 `_process_events` 內部硬編。最低成本改法——handler 用既有 `Depends(get_db)` 拿 session 後，把 `db.get_bind()` 對應的 `sessionmaker` 抽成可注入 factory（典型做法：在 `saas_mvp/db.py` 新增 `get_session_factory()` dependency，回傳 `SessionLocal` 模組參考；測試 override 此 dependency 指到 `_Session`）。`add_task(_process_events, ..., session_factory=...)`，背景內 `db = session_factory()`。這樣既有 `app.dependency_overrides` 模式零破壞。
+
+`KNOWN_LIMITATIONS.md` 直接補 4–5 條 M2 條目即可。
+
+---
+
+**決議: 退回**
+
+必須修正：
+1. **【blocker】`SessionLocal` 注入路徑修正**——讓背景任務能沿用測試 override 的 engine，否則既有測試 30+ 條全紅，違反驗收 #6
+2. **【blocker】`KNOWN_LIMITATIONS.md` 補背景化 M2 技術債條目**（task queue / async SDK / retry-DLQ / 監控指標 / worker crash 依賴 LINE redelivery）
+3. **【blocker】測試三件套建檔**（驗收 #5）——「200 立即回」「背景副作用保留」「拒絕路徑零背景觸發」三類斷言缺一不可
+
+#1 修完請先跑 `./run_tests.sh`（含被跳過的 `test_line_task2_char_quota.py`）確認零回歸，再回頭補 #2/#3。
+
+## 任務 #1 已知限制：**快速回 200**：合法簽章請求 `response.status_code == 200` 且 `response.json() == {"status": "ok"}`，handler 主體不含 translate/reply 呼叫。（huddle 與重試後仍未通過）
+
+## 異議退回 任務 #2：**背景副作用保留**：TestClient 回傳後（背景已跑完），spy 斷言 `translate_call_count == 1`、`reply_call_count == 1`、`ApiUsage.char_count` 恰增 `len(translated)`、`count` 恰 +1 —— 與背景化前完全一致。
+我先看實際程式碼，不能只憑討論放行。
+實作尚未進行（現行 `line_webhook.py` 仍是同步 for-loop）。我重點查設計裡最致命的測試風險：背景自管 session 與測試注入 session 的衝突。
+確認到一個會直接打掉驗收標準 #2 的實質問題。我把證據攤開。
+
+## 異議：架構的「背景自管 session 用 `SessionLocal()`」與既有測試 harness 不相容，會讓 #2 的 spy/計量斷言全部失敗
+
+**事實鏈（皆來自實檔，非推測）：**
+
+1. **既有測試只透過 `dependency_overrides[get_db]` 注入 DB**，而那個 session 綁的是測試自建的獨立引擎：
+   - `tests/test_line_task1_quota_billing.py:53-58` 自建 `_engine = create_engine("sqlite:///:memory:", poolclass=StaticPool)` + `_Session`，再 `override_db` yield `_Session()`（L104-111）。
+   - 表只建在這個 `_engine` 上（`Base.metadata.create_all(bind=_engine)`，L101）。
+
+2. **模組層 `saas_mvp.db.SessionLocal` 綁的是另一顆引擎**（`db.py:12-16`，`sqlite:///:memory:` 預設 pool）。`conftest.py` 只把 `init_db` 設成 no-op（L34），**從未 rebind `SessionLocal`**。每個 `create_engine(":memory:")` 是**各自獨立的空資料庫**。
+
+3. 架構決策 #3/#4 明寫：`_process_events` 內部以 `SessionLocal()` 自管 session，預設 `session_factory=SessionLocal`。**但背景任務跑在 threadpool，用模組 `SessionLocal` 連到的是測試引擎以外的空 DB**——沒有 `tenants`／`api_usage` 表、沒有 cfg、沒有 tenant。
+
+**後果（直接違反驗收 #2 與 #6）：**
+- 背景內 `db.get(Tenant, tenant_id)` → `None` → `tenant.plan` 取值炸 → 被架構決策 #5 的 `try/except` **靜默吞掉** → `translate`／`reply` 根本不會被呼叫 → `translate_call_count == 0`、`reply_call_count == 0`、`ApiUsage` 無新增。
+- 驗收 #2 要求「`translate_call_count == 1`、`reply_call_count == 1`、`char_count += len(translated)`、`count +1`」**全數落空**；驗收 #6「既有測試零修改即綠」同時破功。
+
+**矛盾點：** 架構決策 #7 自己宣稱「既有 spy 斷言零修改即綠」「測試可注入 SessionLocal factory」——這兩句互斥。既有測試覆寫的是 `get_db`，**不是** `session_factory`；要讓背景看到測試 DB，就**必須改既有測試**去覆寫新工廠，這與「零修改即綠」直接打架。而若回頭傳 request-scoped `db` 進背景，又是架構決策 #3 自己否決的不安全做法。
+
+**可行修法方向（供工程師）：** handler 在背景化**前**從 request session 取得綁定引擎，傳一個同引擎的工廠進去——`factory = sessionmaker(bind=db.get_bind())`，背景內 `with factory() as s: ...`。如此：測試端 `db.get_bind()` 拿到的是 `_engine`（StaticPool 跨執行緒共享同一顆 in-memory DB）→ 背景看得到資料且零改測試；production 端拿到的是真實引擎、且不依賴已關閉的 request session。**這正是架構決策把工廠寫死成 `SessionLocal` 所遺漏的關鍵一步。**
+
+設計未修正前，#2 不可能達成。
+
+異議: 成立
+
+## 異議退回 任務 #2：**背景副作用保留**：TestClient 回傳後（背景已跑完），spy 斷言 `translate_call_count == 1`、`reply_call_count == 1`、`ApiUsage.char_count` 恰增 `len(translated)`、`count` 恰 +1 —— 與背景化前完全一致。
+已實作可能有更新，我重新查現況，而非沿用上輪結論。
+現況未變：handler 仍是同步 for-loop，背景化尚未實作；設計也未針對上輪缺陷修正。我重新核對致命點仍成立。
+
+## 異議：設計把 `_process_events` 的 `session_factory` 寫死為 `SessionLocal`，與既有測試 harness 的 DB 注入機制不相容 → 直接打掉驗收 #2
+
+**證據（實檔，剛重新核對）：**
+
+1. 既有測試**只**透過 `dependency_overrides[get_db]` 注入 DB，且綁的是測試自建的獨立引擎：
+   - `tests/test_line_task1_quota_billing.py:53-58`：`_engine = create_engine("sqlite:///:memory:", poolclass=StaticPool)` + `_Session`；表只建在這顆引擎（L101 `create_all(bind=_engine)`），`override_db` yield `_Session()`（L104-111）。
+2. 模組層 `saas_mvp.db.SessionLocal` 綁的是**另一顆** `sqlite:///:memory:` 引擎（`db.py:14-16`）。`conftest.py` 只把 `init_db` 設 no-op（L34），**從未 rebind `SessionLocal`**。兩顆 `:memory:` 是各自獨立的空資料庫。
+
+**後果：** 架構決策 #4 明寫 `session_factory=SessionLocal`、決策 #3 自管 session。背景任務（跑在 threadpool）用模組 `SessionLocal` 連到的是**測試引擎以外的空 DB**——無 `tenants`／`api_usage` 表、無 cfg、無 tenant。於是：
+- `db.get(Tenant, tenant_id)` → `None` → 取 `tenant.plan` 炸 → 被決策 #5 的 `try/except` **靜默吞掉** → `translate`／`reply` 根本不被呼叫。
+- 驗收 #2 的 `translate_call_count == 1`、`reply_call_count == 1`、`char_count += len(translated)`、`count +1` **全數落空**；驗收 #6「既有測試零修改即綠」同時破功。
+
+**自相矛盾：** 決策 #3 理由句宣稱「與測試 dependency_overrides 模式不衝突（測試可注入 SessionLocal factory）」、決策 #7 宣稱「既有 spy 斷言零修改即綠」——兩者互斥。既有測試覆寫的是 `get_db`，**不是** `session_factory`；要讓背景看到測試 DB，就必須改既有測試注入新工廠，與「零修改即綠」直接打架。
+
+**修法方向（給工程師）：** handler 在背景化**前**從 request session 取綁定引擎、傳同引擎工廠進背景——`factory = sessionmaker(bind=db.get_bind())`，背景內 `with factory() as s: ...`。如此測試端 `db.get_bind()` 拿到 `_engine`（StaticPool 跨執行緒共享同一顆 in-memory DB）→ 背景看得到資料且零改測試；production 端拿真實引擎、且不依賴已關閉的 request session。這正是設計把工廠寫死成 `SessionLocal` 所遺漏的一步。
+
+設計未修正前，#2 不可能達成；又因尚未實作，亦無可驗收的成果。
+
+異議: 成立
+
+## 卡關討論 任務 #2：**背景副作用保留**：TestClient 回傳後（背景已跑完），spy 斷言 `translate_call_count == 1`、`reply_call_count == 1`、`ApiUsage.char_count` 恰增 `len(translated)`、`count` 恰 +1 —— 與背景化前完全一致。
+【專案經理】先看現況，不空談。
+未背景化的原狀。關鍵在背景化的嘗試現在在哪。看 diff 與失敗測試。
+核心矛盾浮現了。先跑測試確認實際失敗點。
+關鍵發現了。現在跑一個最小實驗，證實「TestClient 是否等背景跑完」——這決定整個 blocker 的性質。
+兩個根因都確認了。實測鐵證：`elapsed=0.209s`、`task_done` 在 `post()` 回傳前就跑完——**TestClient 一定會等 BackgroundTasks 跑完**。
+
+快速確認第二個根因（背景自管 session 的 DB 指向問題）：
+兩個根因都用鐵證鎖定了。`SessionLocal` 綁 production `engine`，測試 `override_db` 綁 in-memory `_engine`——背景若用全域 `SessionLocal()` 自管 session，會寫到不同的 DB。
+
+---
+
+## PM 裁決：blocker 拆成兩個獨立根因，各有立即可執行的修法
+
+### 根因 A —— 真正卡住驗收 #2 的元兇（必修）
+架構定案寫「背景內用 `SessionLocal()` 自管 session」。但測試是用 `dependency_overrides[get_db]` 把 session 指到 in-memory `_engine`。**全域 `SessionLocal` 綁的是 production `engine`**——背景寫一邊、測試讀另一邊，`increment_usage` 進了錯的 DB，測試讀回來永遠 `count==0 / char_count==0`。這就是連 2 輪 criterion #2 不過的真因（不是漏算，是寫到別的庫）。
+
+**修法（小、準、可立即做）**：handler 丟背景前取 `bind = db.get_bind()`，把這個 engine 傳進 `_process_events`，背景內用 `Session(bind=bind)` 建自己的 session（用畢 close）。
+- 測試走 in-memory `_engine`、正式走 production `engine`，**同一 engine** → 副作用看得到。
+- 仍滿足架構「不沿用 request-scoped session、背景自管交易邊界」的要求，只是改成跟著 engine 而非全域 `SessionLocal`。
+
+### 根因 B —— 假綠偵測器本身不可能綠（判定為超範圍鍍金）
+`test_response_returns_before_translate_completes` 要求 `elapsed < 0.1s`，但我**實測**：TestClient 一定會等 BackgroundTasks 跑完（`elapsed=0.209s`、`task_done` 在 `post()` 回傳前就完成）。這條在 `BackgroundTasks + TestClient` 下**物理上不可能綠**——它想用 wall-clock 證明非同步，而 TestClient 設計上把整個 ASGI cycle 塌縮成同步。**驗收 #2 只要求「副作用保留」，不含 wall-clock 非同步性。**
+
+**修法二選一**：
+- (推薦) 改「時間」為「解耦」斷言：注入會 `raise` 的 translator → 斷言 response 仍 `200` 且 `translate_call_count==1`。同步版（無 try/except）會 500，背景版吞例外回 200——乾淨證明「response 決定先於 events 處理」，不靠 wall-clock、零 flaky。
+- 或直接移除這條 sanity check（它測的東西不在驗收標準內）。
+
+---
+
+### 給工程師的最小行動清單
+1. `_process_events(...)` 簽名把「session 來源」從全域 `SessionLocal` 改成 handler 傳入的 `bind = db.get_bind()`，背景內 `Session(bind=bind)`。
+2. handler 在 `add_task` 前先 `bind = db.get_bind()`（request session 還活著時取）。
+3. 與 QA 對齊：把根因 B 的時間測試換成 raising-translator 解耦斷言，或刪除。
+
+兩者都不擴大範圍、不碰簽章鏈與計費語意。預期改完 16 條全綠。要不要我直接請工程師按這份清單動手？
+【架構師】
+【工程師】
+【高級工程師】
+
+## 任務 #2 已知限制：**背景副作用保留**：TestClient 回傳後（背景已跑完），spy 斷言 `translate_call_count == 1`、`reply_call_count == 1`、`ApiUsage.char_count` 恰增 `len(translated)`、`count` 恰 +1 —— 與背景化前完全一致。（huddle 與重試後仍未通過）
+
