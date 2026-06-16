@@ -406,7 +406,18 @@ def _process_events(
             translated = _translate_sync(translator, translate_text, target_lang)
 
             # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-            # NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)
+            # ``line_client.reply`` 內部 ``urllib.request.urlopen`` 是阻塞 I/O，
+            # 但 ``_process_events`` 是 sync 函式、由 ``BackgroundTasks`` 自動
+            # ``run_in_threadpool`` 執行——主 event loop 不會被這個 I/O 阻塞，
+            # 效果等價於 ``asyncio.to_thread``（Starlette 底層皆走
+            # ``loop.run_in_executor`` + 同一個 anyio thread pool）。
+            # 因此**不**需要再 ``await asyncio.to_thread(line_client.reply, ...)``：
+            # 對「已在 threadpool 中的 sync 函式」再包一層屬冗餘雙重包裝，會把任務
+            # 遞迴丟回 threadpool、多佔一條 thread、零改善（anyio 反模式）。
+            # 真正的 threadpool 線程佔用問題（高 RPS × 多 worker）需要把 reply 改為
+            # async HTTP（``httpx.AsyncClient`` 或 ``AsyncMessagingApi``）+ 整個
+            # ``_process_events`` async 化 + ``AsyncSession`` 改寫，屬獨立 M2 重構，
+            # 見模組 docstring「M2 技術債」段落。
             line_client.reply(reply_token, translated, access_token=access_token)
 
             # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
