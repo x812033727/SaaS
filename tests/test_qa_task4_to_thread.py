@@ -21,6 +21,13 @@ increment_usage。``BackgroundTasks`` 對 sync 函式自動以
     阻塞，任何門檻在 TestClient 下物理上不可能過。契約面 spy 不依賴
     threadpool dispatch 時間、不需 sleep、測試瞬間完成。
 
+黑白對照組（保證測試判別力）：
+  * positive（文字事件）：dispatch + reply call_count == 1 + 譯文正確
+  * reverse（非 message 事件，如 follow）：dispatch 但 call_count == 0
+    （內層 ``event_type != "message"`` guard 生效）
+
+  兩者配對可抓出兩類 regression：非文字事件誤觸 reply、或文字事件漏 dispatch。
+
 回歸涵蓋：
   * 既有 ``test_line_task1_quota_billing.py`` 與所有 line webhook 相關
     測試皆綠，端到端語意由它們守（reply 結果、quota 計費、redelivery
@@ -121,6 +128,19 @@ def _text_event(text: str, reply_token: str = "rt-qa4", uid: str = "Uqa4001") ->
     }
 
 
+def _follow_event(uid: str = "Uct002") -> dict:
+    """非 message 事件（follow）— 觸發 handler 丟背景，但 ``_process_events``
+    內層 guard ``event_type != "message"`` 直接 continue，**不**觸發 reply。
+
+    用作反向樣本：證明 BackgroundTasks dispatch ≠ 一定 reply，測試有真判別力。
+    """
+    return {
+        "type": "follow",
+        "replyToken": "rt-follow",
+        "source": {"type": "user", "userId": uid},
+    }
+
+
 def _payload(*events) -> bytes:
     return json.dumps({"events": list(events)}).encode("utf-8")
 
@@ -200,3 +220,43 @@ class TestBackgroundDispatchContract:
         # 端到端仍正確：背景跑完、reply 收到翻譯結果
         assert _fake_line_client.call_count == 1
         assert _fake_line_client.last_text == "[ZH-TW] contract"
+
+    def test_non_message_event_dispatches_but_does_not_reply(
+        self, client, tenant, monkeypatch
+    ):
+        """反向樣本：非 message 事件（follow）觸發 dispatch 但**不**觸發 reply。
+
+        與 positive test 配對證明測試有真判別力：
+          * handler 一律丟 _process_events 到 BackgroundTasks（dispatch 與 event
+            類型無關，這是契約本體）
+          * _process_events 內層 guard ``event_type != "message"`` 直接 continue，
+            略過非文字事件，**不**觸發 translate / reply / increment
+
+        若 regression 讓非文字事件誤觸 reply，``call_count == 1`` 會抓出；
+        若 regression 讓 handler 對非文字事件不 dispatch，
+        ``add_task 呼叫清單為空`` 會抓出。
+        """
+        captured: list[dict] = []
+        real_add_task = BackgroundTasks.add_task
+
+        def spy_add_task(self, func, *args, **kwargs):
+            captured.append({"name": func.__name__, "args": args, "kwargs": kwargs})
+            return real_add_task(self, func, *args, **kwargs)
+
+        monkeypatch.setattr(BackgroundTasks, "add_task", spy_add_task)
+
+        tid = tenant
+        body = _payload(_follow_event(uid="UctFollow"))
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+
+        assert r.status_code == 200
+        # handler 仍丟 _process_events（dispatch 對所有合法事件無條件）
+        assert any(c["name"] == "_process_events" for c in captured), (
+            "handler 對非 message 事件也必須 dispatch _process_events（內層 guard 才會跳過）"
+            f"實際 add_task 呼叫 = {captured!r}"
+        )
+        # 內層 guard 生效：reply **未**被呼叫
+        assert _fake_line_client.call_count == 0, (
+            f"非 message 事件不應觸發 reply，實際 call_count = "
+            f"{_fake_line_client.call_count}，last_text = {_fake_line_client.last_text!r}"
+        )
