@@ -90,7 +90,8 @@ def get_usage(
         )
     ).scalar_one_or_none()
     used_today = tenant_row.count if tenant_row else 0
-    # 既有 NULL 列由讀取端兜底 0（model default=0 僅對新 INSERT 生效）
+    # 讀取端兜底 0：DDL 帶 server_default 保證新 row 永非 NULL；
+    # ``(or 0)`` 為 defense in depth，吸收相容性 edge case。
     used_chars = (tenant_row.char_count or 0) if tenant_row else 0
 
     # ── per-key 明細（join ApiKeyUsage + ApiKey）──────────────

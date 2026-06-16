@@ -1,6 +1,6 @@
 """ApiUsage model — per-tenant daily API call counter."""
 
-from sqlalchemy import Column, Date, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import Column, Date, ForeignKey, Integer, UniqueConstraint, text
 from sqlalchemy.orm import relationship
 
 from saas_mvp.db import Base
@@ -14,9 +14,13 @@ class ApiUsage(Base):
     period = Column(Date, nullable=False)        # 計量日期（UTC date）
     count = Column(Integer, nullable=False, default=0)
     # 翻譯字數累計（與 count 獨立計量，獨立超額擋下）。
-    # 新 INSERT 由 SQLAlchemy default 自動補 0；既有 NULL 列由讀取端
-    # ``(row.char_count or 0)`` 兜底，不需一次性 migration UPDATE。
-    char_count = Column(Integer, nullable=False, default=0)
+    # 雙保險：``default=0`` 給 ORM INSERT、``server_default=text("0")`` 給
+    # DDL DEFAULT；後者確保 raw SQL INSERT（如測試塞配額）也會自動補 0，
+    # 不撞 NOT NULL。讀取端 ``(row.char_count or 0)`` 為第三層防線，
+    # 對接相容性 row。
+    char_count = Column(
+        Integer, nullable=False, default=0, server_default=text("0"),
+    )
 
     tenant = relationship("Tenant")
 
