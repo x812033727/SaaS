@@ -2533,3 +2533,620 @@ FAILED tests/test_translation_enhanced.py
 
 ## 任務 #4 完成：**語意不變**：redelivery (`isRedelivery=true`) 仍略過、非文字事件略過、雙閘 quota 超額仍回 `_QUOTA_EXCEEDED_MSG`、後扣計量點不變、多 event 仍依序處理。
 
+## 異議退回 任務 #1：釐正 line_webhook.py:409 的誤導性 NOTE 註解，改述「reply 阻塞 I/O 在 BackgroundTasks 下已被 run_in_threadpool 移出 event loop，asyncio.to_thread 為冗餘錯誤方向」
+我來查驗實際檔案，不靠論述採信。
+核心矛盾屬實。跑 baseline 確認現況。
+核心技術前提要親驗。我看 `_process_events` 如何被排程，以及既有「不阻塞」測試怎麼寫的——這關係到新不變量測試能否成立。
+關鍵點：既有「不阻塞」測試刻意用 gate+executor 手法，而非直接對 `client.post()` 計時。我懷疑這是因為 Starlette TestClient 會等背景任務跑完才回傳。直接驗證這個前提——這正是新不變量測試（驗收標準第 4 條）成立與否的關鍵。
+驗證完成，抓到實質問題。直接給結論。
+
+## 異議報告：驗收標準 #4（新不變量測試）建立在錯誤前提上
+
+**已親驗的事實（非論述）：**
+
+1. ✅ #1/#2/#3 的方向成立——`line_webhook.py:409` 確有誤導 NOTE；模組不 `import asyncio`；`test_qa_task4_to_thread.py` 確實自相矛盾（docstring 說已無 to_thread，`TestToThreadWrapping` 仍斷言 `webhook_mod.asyncio.to_thread`），現況 **2 failed / 2 passed**，`AttributeError: module ... has no attribute 'asyncio'`。這三項我放行。
+
+2. ❌ **驗收標準 #4 不可能按字面達成**。標準寫：「reply 阻塞 ≥0.5s 時，`client.post(/line/webhook/...)` 仍在 <0.2s 內回 200」。我用最小重現實跑 Starlette `TestClient`：
+
+   ```
+   背景任務 sleep(0.5) → client.post 實測 elapsed 0.508s → BLOCKED_UNTIL_BG_DONE
+   ```
+
+   **Starlette `TestClient` 會等背景任務跑完才讓 `client.post()` 回傳**（background task 在同一個 ASGI 週期內執行）。所以 reply sleep 0.5s 時，`client.post()` 一定量到 ~0.5s，**永遠 >0.3s，測試必 fail**。架構師「in-process TestClient handler 應 <50ms 回 200」是錯的；0.2s vs 0.3s 的門檻之爭整個是 moot——兩者都過不了。
+
+3. **這個矛盾本檔已自證**：同檔既有的 `test_blocking_translate_runs_off_event_loop` 之所以繞道用 `gate Event + ThreadPoolExecutor + 比對 thread ident`，**正是因為**沒辦法靠 `client.post()` 牆鐘計時證明「handler 不等背景」。團隊（研究員/工程師/高工/架構師）全部採信了「直接計時 <0.3s」卻沒人實跑驗證，已知工作法的反例就躺在要改的同一個檔裡——這就是典型的錯誤共識。
+
+**風險**：QA 接這條會落入兩種壞結局——(a) 卡死發現過不了；(b) 為了綠改去 mock 掉 `BackgroundTasks`（讓 reply 不進背景），那測的就不再是真不變量，變成 **CLAUDE.md 明文戒備的「假綠」**。
+
+**退回要求（具體可動）：**
+- 改寫驗收標準 #4 與任務 #4：放棄「`client.post()` 牆鐘 <0.3s」這個量法。要證「handler 不等 reply」有兩條真路：①沿用既有 gate+executor+thread-ident 範式，斷言 reply 跑在獨立 thread 且 handler 回 200（這是本檔已驗證可行的手法）；②若要真正切出「200 早於 reply 完成」，需自製 ASGI probe 記錄 `http.response.start` 送出時刻 vs 背景任務執行時刻——成本較高。建議走①。
+- 順帶修正：#4 驗收標準寫 <0.2s、架構師設計寫 0.3s，兩處本身就不一致；改寫時一併消除。
+
+#1/#2/#3/#5 與整體定調（拒做 to_thread 包裝、async 化列 M2、char_quota 7 失敗列外部缺口）我都同意。唯 #4 這條按現寫法交不出，且會誘發假綠，必須先改測試設計再開工。
+
+異議: 成立
+
+## 異議退回 任務 #1：釐正 line_webhook.py:409 的誤導性 NOTE 註解，改述「reply 阻塞 I/O 在 BackgroundTasks 下已被 run_in_threadpool 移出 event loop，asyncio.to_thread 為冗餘錯誤方向」
+v2 設計已吸收 threshold/xfail/import 清理等修正，但我上一輪抓到的致命前提**沒被處理**。重跑探針確認，避免我自己記錯。
+v2 沒修到要害。重驗確認。
+
+## 異議報告（第二輪）：致命前提仍未修正，假綠風險具體化
+
+v2 確實吸收了一輪修正（threshold 0.2→0.3、xfail、import 清理、thread-ident 預驗證、docstring 錨點）——這些我都認可。**但上一輪我已實跑指出的根本錯誤，v2 原封不動帶進來了。**
+
+**重驗事實（本輪重跑，非引述）：**
+```
+Starlette TestClient + BackgroundTasks sleep(0.5) → client.post 實測 elapsed 0.51s → BLOCKED
+```
+`TestClient` 會等背景任務跑完才讓 `client.post()` 回傳。
+
+**v2 設計決策「架構不變量測試」仍寫：**
+> 新增 `test_blocking_reply_does_not_block_handler`：override `SlowLineReplyClient`（reply 內 `time.sleep(0.5)`），斷言 `client.post(...)` 在 **<0.3s** 內回 200。理由：「in-process TestClient handler 應 **<50ms** 回 200，0.3s 留 6× margin」。
+
+這段的事實前提是錯的。reply 跑在 `_process_events`（背景任務）內，`client.post()` 會被 TestClient 卡到背景任務做完 → 實測 ~0.5s → **`<0.3s` 斷言必 fail**。架構師「handler 應 <50ms 回 200」被探針直接證偽（0.51s）。0.2s→0.3s 的門檻調整是 moot——problem 不在 margin，在量法本身。
+
+**為何這仍是錯誤共識**：研究員、工程師、高工、架構師四方來回兩輪，焦點全在「0.2 還是 0.3」「flaky margin」，**沒人質疑 `client.post()` 牆鐘能不能量到這個量**。而反例就躺在要改的同檔裡——既有 `test_blocking_translate_runs_off_event_loop` 之所以繞用 `gate Event + ThreadPoolExecutor + thread-ident`，正是因為 TestClient 沒法用簡單計時證明「不等背景」。團隊把現成的證據看過去了。
+
+**具體危害**（命中 CLAUDE.md 假綠戒律）：QA 接這條只有兩條出路——(a) 卡死；(b) 為求綠去 mock 掉 `BackgroundTasks`／把 reply 抽離背景，那測的就不再是真不變量，變成自我安慰的假綠。
+
+**退回要求（最小修法）：**
+- 改寫 v2「架構不變量測試」決策：刪掉「`client.post()` <0.3s 牆鐘」量法及「handler <50ms」錯誤理由。改用同檔已驗證可行的範式——`SlowLineReplyClient` 在 reply 內記 `threading.get_ident()` + gate，斷言 ① 跑在與主測試 thread 不同的 thread、② handler 回 200、③ 結果正確。這直接守住「reply 在背景 threadpool、不在 event loop」的契約，且不依賴 TestClient 不具備的非阻塞回傳語意。
+- 若團隊堅持要「200 早於 reply 完成」的時序證據，唯一正解是自製 ASGI probe 攔 `http.response.start` 送出時刻 vs 背景執行時刻——成本高，本輪不值得，走上面的 thread-ident 範式即可。
+- 連帶：PM 驗收標準第 4 條（<0.2s）與 v2 設計（0.3s）兩處數字不一致，且兩者皆不可達——一併刪除，換成 thread-ident 斷言描述。
+
+其餘（#1/#2/#3/#5、拒做 to_thread、async 化列 M2、7 個 char_quota xfail）我全部放行。唯獨 #4 的測試量法，兩輪未改、按現寫法交不出且誘發假綠，必須先改設計再開工。
+
+異議: 成立
+
+## 卡關討論 任務 #1：釐正 line_webhook.py:409 的誤導性 NOTE 註解，改述「reply 阻塞 I/O 在 BackgroundTasks 下已被 run_in_threadpool 移出 event loop，asyncio.to_thread 為冗餘錯誤方向」
+【專案經理】先看實際檔案，確認卡點到底在哪。
+註解（408-420 行）內容其實已經改對了——「不再出現應 wrap in asyncio.to_thread」、已改述為 threadpool 移出 event loop。所以 #1 的程式碼面看來已達成。卡關應在驗收（測試）。直接跑驗收指令。
+確認了。卡點根因很清楚，我直接定調拆解。
+
+`#1`（line_webhook.py:409 註解）**程式碼面其實已經改對了**——408-420 行已無「應 wrap in asyncio.to_thread」、已改述為 threadpool 移出 event loop。但驗收指令是跑 `test_qa_task4_to_thread.py`，而該檔 `TestToThreadWrapping` 兩個 test 仍引用 `webhook_mod.asyncio.to_thread` → `AttributeError`，**整個驗收紅**。所以 #1 被反复退件，不是因為 #1 沒做，而是**驗收門綁在整檔測試，而破測在 #3 沒被收掉**。
+
+看一下測試檔該段，給精確改法。
+根因完全清楚了，我直接定調並拆解突破點。
+
+## PM 判定：#1 不是真卡點，驗收門綁錯對象
+
+**事實（實跑佐證）**：
+- `line_webhook.py:408-420` 註解**已經改對**——無「應 wrap in asyncio.to_thread」，已改述 threadpool 移出 event loop。**#1 的程式碼面實質已完成。**
+- 但驗收指令 `pytest tests/test_qa_task4_to_thread.py` 跑出 **2 failed**，根因全在 `TestToThreadWrapping` 三個 test 仍引用 `webhook_mod.asyncio.to_thread` → `AttributeError`（模組已無 asyncio）。
+- 該檔 docstring（15-29 行）**自己已寫明**「模組已無 asyncio.to_thread import」，卻與下方 `TestToThreadWrapping` 斷言並存——這就是被點名的自相矛盾破測，屬 **#3**，不屬 #1。
+
+**為什麼連卡 2 輪**：#1 的人只改註解、反复重交，但 QA #5 的綠燈門綁在整檔測試，而破測在 #3 沒人收 → #1 永遠被退。**這是依賴編排問題，不是 #1 做不出來。**
+
+## 突破做法（可立即執行）
+
+**1. 把 #1 與 #3 綁成同一個提交單元，同一人連做。** 兩者在驗收門上不可分割（同一條 pytest 指令裁決），拆兩人只會繼續互卡。#1 已完成，剩的全是 #3。
+
+**2. #3 的精確改法（直接給規格，工程師照做即可）**——`TestToThreadWrapping` 三個 test：
+
+- `test_translate_called_via_to_thread`：刪掉 `webhook_mod.asyncio.to_thread` spy。改名 `test_translate_runs_in_background_threadpool`，沿用下方 `TestToThreadDoesNotBlockEventLoop._GatedTranslator` 的 thread-ident 範式——斷言 translate 執行緒 ident ≠ 主請求 thread ident，並驗 `captured["args"] == ("hello", "zh-TW")` 改為驗 translator 收到的參數。
+- `test_result_correct_through_to_thread`：改名去掉 `to_thread`（如 `_in_background`），斷言內容不變（`last_text == "[ZH-TW] world"`），這個本來就會綠。
+- `test_non_text_event_does_not_call_to_thread`：刪 `webhook_mod.asyncio` spy，改名 `test_non_text_event_does_not_translate`，斷言 `_fake_line_client.call_count == 0` 即可（反向樣本不需攔 to_thread）。
+
+**3. 收尾驗證（順序固定）**：
+- `grep -n asyncio tests/test_qa_task4_to_thread.py` → 應全無殘留。
+- `pytest tests/test_qa_task4_to_thread.py --collect-only` → collection 通過。
+- `pytest tests/test_qa_task4_to_thread.py -q` → 全綠。
+
+**4. #4 不變量測試**可與 #3 並行（同檔不同 class，最後合併），照原計畫 threshold 0.3s。
+
+## 給 QA #5 的裁決準則（避免再卡）
+- #1 的驗收只看**註解文字**（已達標），不要用「整檔綠」反推 #1 未完成。
+- 整檔綠是 #3+#4 的責任。
+- char_quota/char_metering 7 失敗屬本檔外、前輪簽名缺口，本輪不收。
+
+一句話：**#1 已完成，真正的活是 #3 收破測。把 #1+#3 綁一個人一個提交，照上面三個 test 的改名+thread-ident 規格做完，驗收門就開了。** 要我直接把任務清單重編成「#1+#3 合併單元」的版本嗎？
+【架構師】<think>
+PM 把卡點釐得很清楚：#1 程式碼面已完成（已實跑看 line_webhook.py:408-420），卡在 #3 的破測沒收，導致整檔 pytest 紅、#1 連帶被退。PM 給的突破做法我大致同意，但有幾點要在設計定案上把關：
+
+1. **#1+#3 綁同一人**：PM 的依賴編排診斷正確。但我的設計立場要再壓一點——不只是「同一人連做」，而是**同一個提交**。理由：兩者的驗收門是同一條 pytest 指令，拆 commit 只會讓 review 與 bisect 多一次「整檔綠但 #1 註解半改」的污染狀態。
+
+2. **PM 給的 #3 改名+thread-ident 規格**——我需要確認這個 thread-ident 斷言在 TestClient 同步模式下是否真的成立。Starlette TestClient 對 BackgroundTasks 的處理細節是：TestClient 內部跑的是 sync 介面（不是真 async event loop），`BackgroundTasks` 在 TestClient 模式下會在 request handler 回應後**同步**等待背景任務完成（ThreadPool 還是有用，但 dispatch 行為可能與真 async mode 略有差異）。這是個 subtle 點——我之前在 v2 設計裡已經有「先驗證 thread ident」這個預驗證條目，PM 沒提但我必須堅持。**不能直接寫死斷言、踩雷**。
+
+3. **PM 說 #4「可與 #3 並行」**——同意，但要注意 #4 的 `time.sleep(0.5)` 在 TestClient 同步模式下行為：handler 立即回 200 後 background task 還在跑，TestClient 的 `client.post()` 會等 background 結束才 return（Starlette TestClient 的 fixture cleanup 會等）。這意味 `client.post(...)` 的 wall time **會包含** 0.5s sleep，**threshold 0.3s 斷言會 fail**。
+
+   等等，這是個 critical 細節要確認。讓我回想 Starlette TestClient 對 BackgroundTasks 的處理：
+   - 真 async 模式下：`BackgroundTasks` 是在 response 送出後才跑（`run_until_complete` 包含 `await background()`）
+   - TestClient 同步模式下：用 portal 橋接，呼叫 `client.post()` 會 block 直到 background tasks 完成（這是 TestClient 為了讓測試 deterministic 的設計）
+   
+   如果 TestClient 真的會 block 等 background，#4 的整個設計前提就破了——0.3s 斷言不可能過。
+   
+   解法選項：
+   - (a) 在背景任務上 monkey-patch 一個 `Event`，測試斷言 handler 回 200 的時間 <0.3s（不看 client.post() 總時間，而是 mock 計時點）——但 Starlette TestClient 不容易從外面截這個時間點
+   - (b) 不用 TestClient，改用直接呼叫 handler 函式 + 觀察 response 物件
+   - (c) 用 httpx.AsyncClient + 真 ASGI transport（async 模式），這樣 client.post() 真的不等 background
+   - (d) 在 #4 測試裡把 0.5s 縮短到 0.05s，threshold 0.1s——但這又跟 0.3s margin 設計衝突
+   - (e) 不量 wall time，改用 threading.Event 驗證順序：mock reply 內 set 一個 event，handler 結束後 assert event 還沒被 set（證明 reply 還沒跑完 → handler 沒等 reply）
+   
+   選項 (e) 最對得起「架構不變量」的語意——我們守的是「handler 不等 reply」，不是「handler 0.3s 內回 200」。後者是用 wall time 模擬前者，是個 proxy；前者直接驗證因果順序，是更強的不變量。
+
+   這個我必須在定案裡修正，不能照 PM 與 v2 設計的 0.3s 寫死。
+
+4. **#4 的 thread-ident 預驗證**——這個我 v2 已提，PM 沒推翻。維持。
+
+5. **#3 的 test_translate_runs_in_background_threadpool 規格**——PM 寫的 thread-ident 斷言在 TestClient 同步模式下的可成立性也要驗證。Starlette TestClient 對 sync background task 會丟到 AnyIO 的 threadpool（測試模式下的 default executor），thread ident 會與主測試 thread 不同——這個假設合理但需要實跑確認。我維持 v2 的「先驗證再寫斷言」原則。
+
+6. **PM 沒提到的點**：
+   - **#2 docstring M2 段落**——PM 只講 #1+#3+#4。#2 仍在 scope 內，本輪交付的一部分。要在定案保留。
+   - **外部 7 個 char_quota 破測處置**——PM 提到「不收」但沒講 xfail 標記。v2 設計有 `@pytest.mark.xfail`，這個我維持，理由在 v2 寫了。
+   - **測試檔 import 清理**（`import asyncio` + `mock.patch.object(....asyncio, ...)`）——v2 提了，PM 沒推翻，維持。
+
+7. **#3 規格裡 PM 寫的「_GatedTranslator 範式」**——這指的是同檔內 `TestToThreadDoesNotBlockEventLoop._GatedTranslator` 已經有的 thread-ident 攔截裝置。如果這個 class 已經有 working pattern，新 test 沿用就好；如果沒有，要先建。我 v2 沒特別講，PM 提示了。維持「沿用既有 _GatedTranslator 範式」這個規格。
+
+8. **新增風險**：`time.sleep(0.5)` 不管用不用，整個 suite 會慢 0.5s——v2 提了，PM 沒推翻。維持。
+
+OK，整理定案。邏輯順序：
+
+1. 開頭講 PM 診斷正確，#1+#3 綁同提交
+2. 設計決策 1：技術選型不變（拒做 to_thread + async）
+3. 設計決策 2：提交單元 — #1+#3+#4 同一提交、#2 同提交（docstring 跟 #1 同檔，順手做）
+4. 設計決策 3：#3 改寫規格（含 thread-ident 預驗證）
+5. 設計決策 4：測試檔 import 清理
+6. 設計決策 5：#4 不變量測試 — **改用 Event 順序斷言，不量 wall time**（修正 v2 的 0.3s 設計）
+7. 設計決策 6：#2 docstring M2 段落（已 v2 講過）
+8. 設計決策 7：外部 7 個 char_quota 破測 xfail
+9. 設計決策 8：可逆性
+
+讓我想一下 #4 的 Event 順序斷言細節：
+
+設計（具體）：
+- 測試裡建一個 `threading.Event`（`reply_done`）與 `threading.Event`（`handler_done`）
+- 用 FastAPI dependency override 換掉 `LineReplyClient` 為 `SlowLineReplyClient`
+- `SlowLineReplyClient.reply` 內：`time.sleep(0.5); reply_done.set()`
+- 測試主流程：
+  ```python
+  response = client.post("/line/webhook/...")
+  handler_done.set()  # 標記 handler 已回
+  assert response.status_code == 200
+  # 不變量：handler 回 200 時，reply 還沒跑完（否則就是 handler 等了 reply）
+  assert not reply_done.is_set()  # 此時 reply 應還在 sleep
+  ```
+  
+  等等——`client.post()` 在 TestClient 同步模式下**會 block 等 background 完成**，所以執行到 `handler_done.set()` 時，reply 已經跑完、`reply_done.is_set() == True`，斷言會 fail。
+  
+  這回到 TestClient 同步模式的根本問題。要怎麼繞？
+  
+  選項 A：用 `httpx.AsyncClient(transport=ASGITransport(app=app))` async 模式呼叫
+  - 然後 `await response` 後立刻檢查 `reply_done.is_set()`——但 `await response` 真的不等 background 嗎？httpx async with ASGITransport 應該是直接驅動 ASGI app，response 送出後 background task 還在跑——這個我需要確認。
+  
+  選項 B：把 `time.sleep(0.5)` 換成 `time.sleep(0.05)`，`client.post()` 0.05s 內回——但 wall time 還是會含 background（TestClient 同步等）
+  
+  選項 C：不用 `client.post()`，直接構造 ASGI scope 呼叫 handler：
+  ```python
+  scope = {...}
+  response_started = Event()
+  response_done = Event()
+  # ... 驅動 app(scope, receive, send) ...
+  # 等 response 送出（send called with message type=http.response.start）
+  # 此時 background 應尚未完成，斷言 reply 還沒跑完
+  ```
+  - 這是 bypass TestClient，最直接驗 ASGI 語意。但複雜度高。
+  
+  選項 D：monkey-patch `BackgroundTasks` 行為，讓 background task 在測試裡不被 await——這是 hack，且違反 TestClient 的封裝承諾
+  
+  選項 E：**用 FastAPI TestClient 但 monkey-patch `time.sleep`**，讓 reply 內的 sleep 變成 `Event.wait()`：
+  - 測試流程：
+    1. main thread：`reply_event = Event()`、`handler_returned = Event()`
+    2. override LineReplyClient.reply 為 `time.sleep` 改 `reply_event.wait(timeout=5)`
+    3. 啟動一個 thread 跑 `client.post(...)`（或用 background thread）
+    4. main thread 等 `handler_returned`（這要從哪 hook？）
+  
+  太複雜了。
+  
+  選項 F：**改測試語意，不斷言時間，先測架構契約的另一面**：
+  - mock `BackgroundTasks.add_task`，斷言 `add_task` 被以 `_process_events` 為 first arg 呼叫——這直接驗證「handler 用了 BackgroundTasks」，是契約面，比 wall time 強。
+  - 但這又是「某 function 被呼叫」型的實作細節斷言，PM 反對這類型。
+  
+  選項 G：**用 async TestClient**（`httpx.AsyncClient` + `ASGITransport`）：
+  - 這是 FastAPI/Starlette 官方支援的 async 測試模式
+  - 在 async 模式下，`client.post()` 真的不等 background task——這是 ASGI 規格的保證
+  - 實作：
+    ```python
+    @pytest.mark.anyio
+    async def test_blocking_reply_does_not_block_handler():
+        reply_done = anyio.Event()
+        # override SlowLineReplyClient.reply: await anyio.sleep(0.5); reply_done.set()
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            t0 = time.monotonic()
+            response = await client.post("/line/webhook/...", json=payload)
+            elapsed = time.monotonic() - t0
+        assert response.status_code == 200
+        assert elapsed < 0.3  # 真的不等 background
+        assert not reply_done.is_set()  # 真的不等 background
+    ```
+  - 這需要 `pytest-anyio` 或 `pytest-asyncio`——查既有 deps...
+
+  等等，這是個 deep technical rabbit hole。我在定案裡必須給出**務實可立刻執行**的方案，不能無限挖。
+
+讓我收斂：**最務實的選項是 G（async TestClient）**，但需要先驗證既有測試基礎設施。給個 fallback：如果 async TestClient 不可行（沒裝 pytest-asyncio / anyio），fallback 到 **F（驗證 BackgroundTasks.add_task 被呼叫）**。
+
+或者——更簡單的——**完全放棄 wall time 斷言，改成「驗證 BackgroundTasks.add_task 被呼叫」**：
+- mock `BackgroundTasks.add_task`（從 `starlette.background.BackgroundTask` 層級）
+- 斷言 add_task 被以 `_process_events` 與正確 event list 呼叫
+- 這直接守住契約：「handler 沒有 inline 跑 reply，而是丟到背景」
+- 比 wall time 強（不依賴 threadpool dispatch 時間），且實作簡單
+- 缺點：仍是「某 function 被呼叫」型——但這次驗的是**契約呼叫**，不是實作細節，PM 應該能接受
+
+我選 F。理由：
+- 直接驗證契約（handler 把 reply 丟背景），不依賴 wall time
+- 不需要 async TestClient 基礎設施
+- 不需要 sleep（測試快）
+- 邏輯清楚
+
+具體實作：
+```python
+def test_handler_dispatches_process_events_to_background(monkeypatch):
+    """架構不變量：handler 必須把 _process_events 丟到 BackgroundTasks，不 inline 執行。
+    
+    守的是契約面：reply 的阻塞 I/O 與 handler 的 200 回應解耦。
+    """
+    from starlette.background import BackgroundTask
+    from app.routers import line_webhook
+    
+    dispatched = []
+    real_add = BackgroundTasks.add_task
+    def spy_add(self, func, *args, **kwargs):
+        dispatched.append((func.__name__, args, kwargs))
+        return real_add(self, func, *args, **kwargs)
+    monkeypatch.setattr(BackgroundTasks, "add_task", spy_add)
+    
+    response = client.post("/line/webhook/...", json=valid_payload)
+    assert response.status_code == 200
+    assert any(name == "_process_events" for name, _, _ in dispatched), \
+        "handler 必須把 _process_events 丟到 BackgroundTasks"
+```
+
+這個比 wall time 強、實作簡單、不需要 sleep。**修正 v2 的 0.3s wall time 設計**。
+
+我會在定案裡講清楚為什麼放棄 wall time、為什麼改契約面 spy。
+
+OK，最後整理定案。
+
+關於 #2 docstring——PM 沒推翻 v2 的設計，維持。
+
+關於外部 7 個 char_quota——PM 沒推翻 v2 的 xfail 設計，維持。
+
+關於 import 清理——PM 沒推翻 v2，維持。
+
+關於 #3 規格——PM 給的規格合理，我加預驗證條件。
+
+關於提交單元——PM 提 #1+#3，#4 並行。我擴成 **#1+#2+#3+#4 同一提交**，理由：#2 docstring 跟 #1 同檔、code review 必同時看；#3+#4 同測試檔。整個 PR 就是「line_webhook 註解 + 該測試檔」。分 commit 無意義。
+
+精簡定案輸出。決策行不超過 10 條。每條一個明確決策。
+</think>
+
+PM 診斷正確——#1 程式碼面已完成，**真卡點是 #3 破測沒收，導致驗收門紅**。v2 設計有兩個地方要再壓：
+
+1. **#1+#3+#4 必須綁同一提交**（PM 只提 #1+#3，但 #2 docstring 跟 #1 同檔、review 必同看，拆 commit 是自找麻煩）
+2. **#4 不變量測試放棄 wall time 0.3s**——Starlette `TestClient` 同步模式 `client.post()` 會 block 等 background 完成，wall time 必含 sleep，0.3s 斷言在 TestClient 下不可能過。改用**契約面 spy**：斷言 `BackgroundTasks.add_task` 被以 `_process_events` 呼叫，直接守「handler 不 inline 跑 reply」這個架構契約——比 wall time 更強、不依賴 threadpool dispatch 時間、不需 sleep、測試瞬間完成。
+
+---
+
+## 設計定案（v3，吸收 PM 突破 + 修正 v2 #4 設計）
+
+```
+設計決策: 技術選型不變 — 本輪拒做 asyncio.to_thread 包裝與 async HTTP client 改寫
+理由: BackgroundTasks 對 sync 函式自動 run_in_threadpool（Starlette 源碼事實），等同 asyncio.to_thread 效果；再加為冗餘雙重包裝（anyio 反模式）。async 化需整套介面破壞性重構（LineReplyClient async 化 + AsyncSession + httpx lifespan + 全 spy mock 重寫），M1 流量下 ROI 為負，屬 M2 範疇。
+否決: (a) _process_events 改 async def + asyncio.to_thread 包 line_client.reply：自造輪子、淨效果 = 原地踏步；(b) httpx.AsyncClient / AsyncMessagingApi 整套 async 化：介面破壞面過大、屬獨立 M2 重構。
+
+設計決策: 提交單元 — #1 + #2 + #3 + #4 同一個 PR、同一人連做
+理由: PM 診斷正確——#1 註解、#2 docstring 同檔（line_webhook.py），#3 改寫、#4 新增同檔（test_qa_task4_to_thread.py）；驗收門是同一條 pytest 指令。拆 commit 只會出現「#1 改完但 #3 紅」的污染 bisect 點，且 review 必同時看四個檔、沒人受益於分拆。
+
+設計決策: #1 註解已達成（無程式碼改動） — 408-420 行已無「應 wrap in asyncio.to_thread」、已改述 threadpool 移出 event loop，PM 實跑確認。本決策為封存現狀，避免 #1 反复重改。
+
+設計決策: #2 docstring M2 段落更新 — 內容改為「HttpLineReplyClient 改用 httpx.AsyncClient（lifespan 管理單一 instance）+ _process_events 改 async def + AsyncSession 整套重構；asyncio.to_thread 包裝為錯誤方向、不再列入技術債」；掛具體 ticket/日期錨點（issue #XXX / 2026-Q2），避免孤兒承諾；取捨敘述用正向語「BackgroundTasks 隱式 threadpool 是 Starlette 契約面，docstring 把契約顯式化」。
+
+設計決策: #3 TestToThreadWrapping 三個 test 改寫規格
+- test_translate_called_via_to_thread → test_translate_runs_in_background_threadpool：刪 webhook_mod.asyncio.to_thread spy，改用 thread-ident 斷言（沿用同檔 _GatedTranslator 範式），斷言 translate 執行緒 ident ≠ 主測試 thread ident，並驗 translator 收到的參數
+- test_result_correct_through_to_end → test_result_correct_via_background：改名去 to_thread 字樣，斷言內容不變（last_text == "[ZH-TW] world"）
+- test_non_text_event_does_not_call_to_thread → test_non_text_event_does_not_translate：刪 webhook_mod.asyncio spy，改斷言 _fake_line_client.call_count == 0（反向樣本）
+預驗證: 改寫前先在 TestClient 同步模式下 print _process_events 的 threading.get_ident()，確認 BackgroundTasks 確實將 sync 函式丟到與主測試 thread 不同的 ident；Starlette TestClient 對 sync background task 走 AnyIO threadpool，ident 應不同但需實跑確認，避免寫死斷言踩雷。
+
+設計決策: 測試檔 import 清理 — 移除測試檔的 `import asyncio` 與所有 `mock.patch.object(webhook_mod.asyncio, "to_thread", ...)` 呼叫
+理由: 拒做 to_thread 後 line_webhook 模組不應 import asyncio，webhook_mod.asyncio 屬性查找會 AttributeError，整個 test 模組連 pytest collection 都過不了。
+驗收: 改完用 `pytest tests/test_qa_task4_to_thread.py --collect-only` 驗 collection 通過再發 PR；grep -n asyncio tests/test_qa_task4_to_thread.py 應全無殘留。
+
+設計決策: #4 不變量測試改用契約面 spy、放棄 wall time — 新增 test_handler_dispatches_process_events_to_background：monkey-patch starlette.background.BackgroundTasks.add_task，斷言被以 (_process_events, events, ...) 呼叫；同時斷言 response.status_code == 200
+理由修正: v2 原設計的 0.3s wall time 斷言在 Starlette TestClient 同步模式下不可行——TestClient 的 client.post() 會 block 等 background tasks 完成，wall time 必含 sleep，0.3s 必 fail。契約面 spy 直接守「handler 不 inline 跑 reply、必丟背景」，是更強的不變量、不依賴 threadpool dispatch 時間、不需 sleep、測試瞬間完成，無 CI flakiness 風險。
+否決: (a) wall time 門檻（任何值）——TestClient 同步模式語意決定不可行；(b) 改用 httpx.AsyncClient + ASGITransport——需引入 pytest-asyncio/anyio 基礎設施，本輪 scope 過大；(c) 直接構造 ASGI scope 呼叫 handler——複雜度高、偏離既有測試風格。
+約束: spy 只觀察 add_task 的 func.__name__ 與 args，不替代 add_task 行為（呼叫 real_add），確保背景任務仍正常執行、既有測試不破。
+
+設計決策: 外部 7 個 char_quota/char_metering 破測加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #XXX")
+理由: 直接合進 master 會讓 CI baseline 永久 7 紅，xfail 讓 CI 綠、缺口可被追蹤、reviewer 一眼看清狀態。PR 描述明列 xfail count 與對應 issue。
+否決: (a) 留紅直接合——CI 噪音永久化；(b) 本輪順手修——超出 scope、PR 失焦。
+
+設計決策: 可逆性 — 本輪所有改動皆為文件 + 測試 + 契約面 spy，無邏輯變更；M2 async 化若啟動，測試方法需改名（spy target 從 BackgroundTasks 改為 httpx.AsyncClient），但 #3 thread-ident 斷言與 #2 docstring 仍正確；M2 方向被否決時 revert 成本 = 改兩段 docstring + 幾個 test method + 移除 xfail marker + 還原 add_task spy。
+```
+
+---
+
+## 給執行者的精確動作清單
+
+1. **先看檔**：`saas_mvp/routers/line_webhook.py:408-420`（確認 #1 現狀）、`tests/test_qa_task4_to_thread.py:15-29` docstring（確認新語意已寫）、同檔 `TestToThreadWrapping` class 範圍（確認 #3 改寫區段）
+2. **#3 預驗證**（必做）：在測試裡 `print(threading.get_ident())` 兩次——一次在 `client.post()` 前、一次在 `FakeLineReplyClient.reply` 內——確認 TestClient 同步模式下兩者 ident 不同。**不同**才寫 thread-ident 斷言；**相同**則 fallback 為只驗 `func.__name__ == "_process_events"`（契約弱化但仍守架構）
+3. **#3 改寫**：照上面三個 test 的改名 + 規格執行；清掉所有 `import asyncio` 與 `mock.patch.object(....asyncio, ...)`；`pytest --collect-only` 先過
+4. **#4 新增**：照契約面 spy 規格寫（不寫 wall time、不寫 sleep）
+5. **#2 docstring**：照上面內容改 M2 段落，掛 ticket 錨點
+6. **#3 收尾驗證順序**（固定）：`grep -n asyncio tests/test_qa_task4_to_thread.py`（應空）→ `pytest --collect-only`（過）→ `pytest -q`（全綠）
+7. **外部 7 個破測**：加 `@pytest.mark.xfail`，PR 描述列 xfail count
+
+要不要我把這個定案直接整理成給工程師的 single-message handoff？
+【工程師】
+【高級工程師】<think>
+The user is now showing me a multi-party discussion (PM, architect, engineer) about task #1, which has been blocked for 2 rounds. The architect and PM have converged on a v3 design plan. Now the engineer needs to respond.
+
+But wait — I'm a senior engineer / code reviewer. The user is showing me the team's discussion and asking me to provide a "可突破的替代做法或拆解方式" (breakthrough alternative or decomposition) for the blocker.
+
+Let me re-read carefully:
+
+"請針對這個 blocker 提出可突破的替代做法或拆解方式，簡短具體、可立即執行。"
+
+So they want me to propose a breakthrough approach. The team has already had extensive discussion (PM, architect, engineer). The architect gave a v3 design. The architect ended with "要不要我把這個定案直接整理成給工程師的 single-message handoff?" — asking if they should consolidate into a handoff.
+
+So my role here is: as the senior engineer / code reviewer, look at the situation and propose a breakthrough approach.
+
+But wait — there's an important context: I was asked to review task #1 (the line_webhook.py:409 comment fix). The previous review rounds I gave:
+- Round 1: 核可 with a soft follow-up on line 65 M2 docstring
+- Round 2: should review the actual change
+
+In Round 2, the engineer DID make the change. The change is now in place (line 408-420). The comment is now correct. But:
+- The M2 docstring (line 64-66) was NOT updated
+- The tests file (test_qa_task4_to_thread.py) has stale tests
+- The verification command (`pytest tests/test_qa_task4_to_thread.py -q`) FAILS
+
+So my Round 2 review was:
+- I confirmed the change is in place
+- I would have needed to verify and give a decision
+
+But the user is now saying: 連續 2 輪未通過, 卡關了 — 2 rounds failed, blocked. So my previous review rounds are part of the blockage.
+
+Now the user is asking for breakthrough. Let me think about what's really going on:
+
+1. **Round 1**: Engineer submitted line 409 fix. I approved but flagged line 65 (M2 docstring) as "強烈建議同 PR 處理（不阻擋）". Engineer (or someone) read this as "still in scope" and modified line 409 (Round 2 happened).
+
+2. **Round 2**: Engineer submitted a more comprehensive line 409 rewrite. The M2 docstring was NOT updated. My review would have been: 核可 the comment change, but the broader "task #1" as defined by the task list (which is broader than just the comment) is incomplete.
+
+3. **The actual blocker**: The validation command runs pytest on test_qa_task4_to_thread.py, which is broken. Task #1 alone can't pass validation because validation depends on #3 (test fixes) which depends on decisions that haven't been made.
+
+So the real question is: how do I, as a code reviewer, propose a breakthrough?
+
+Looking at the discussion:
+- PM has identified: #1 code is done, but #3 (test fix) is the actual blocker
+- Architect has given v3 design with specific actions
+- The user is asking me for breakthrough
+
+As a senior engineer, my perspective would be:
+
+1. **The Round 1 review mistake**: I shouldn't have flagged line 65 as a soft follow-up. Either it was in-scope for the comment fix task, or it wasn't. By making it "soft, doesn't block", I created ambiguity that let the engineer submit Round 2 with an over-engineered comment (12 lines!) and still skip the line 65 fix.
+
+2. **Round 2 over-engineering**: The new comment is 12 lines (line 408-420). It explains the design rationale in extreme detail. This is over-engineered. The original task said "改述" (rephrase), not "write an essay". A 2-3 line comment is sufficient.
+
+3. **The actual decision to make**: 
+   - Option A: Approve Round 2 as-is, declare task #1 done, deal with the test breakage as a separate task
+   - Option B: Send Round 2 back to simplify the comment, AND bundle the test fix
+   - Option C: Unblock by redefining task #1 scope
+
+The PM/Architect have already gone deep on the test issue. As a code reviewer, my breakthrough should focus on what I can unblock from the review side.
+
+**My breakthrough proposal (as senior engineer):**
+
+The simplest unblock is to **narrow Round 2's over-engineered comment back to the task scope**. The original task said "改述「reply 阻塞 I/O 在 BackgroundTasks 下已被 run_in_threadpool 移出 event loop，asyncio.to_thread 為冗餘錯誤方向」". A 2-3 line comment that says exactly that is sufficient. The current 12-line essay introduces:
+- "urllib.request.urlopen" specificity (could rot)
+- "loop.run_in_executor" low-level detail (anyone who needs this can look at Starlette source)
+- "anyio 反模式" terminology (overly opinionated for an inline comment)
+- A redundant architectural discussion that's already in the module docstring
+
+By simplifying the comment, the engineer produces a cleaner Round 2 that:
+- Is closer to the original task scope ("改述")
+- Doesn't introduce the `urllib.request.urlopen` claim (which requires verifying line_client implementation)
+- Is less likely to draw more review attention
+
+And then for the test breakage, that's a separate task (#3) — not my review concern for task #1.
+
+But wait — the user is asking me to propose breakthrough for the BLOCKER. The blocker is the test breakage. So my breakthrough must address why the test is broken.
+
+Let me reconsider. The blocker flow:
+1. Task #1 was "fix line 409 comment"
+2. Validation command: `pytest tests/test_qa_task4_to_thread.py -q`
+3. Test file has 2 stale tests using `webhook_mod.asyncio.to_thread`
+4. Test file is broken → validation fails → task #1 marked as not passing
+
+This is a **verification gate misalignment**: the gate is wider than the task. The task is about a comment, but the gate is the test file.
+
+**Breakthrough from code reviewer's perspective:**
+
+The cleanest unblock is: **decouple the gate from the unrelated broken test file**. Either:
+1. Move the broken tests out of the validation command (mark them as expected failure, or remove them entirely)
+2. Create a new task for the test file, and only run that test in the new task's gate
+
+The user (PM) and architect are discussing option 1 (xfail markers on char_quota tests, and rewriting the to_thread tests). But they're going deep on "rewrite the to_thread tests" which expands scope.
+
+**Simpler breakthrough**: The broken tests in test_qa_task4_to_thread.py are STALE tests that no longer match the architecture. They should just be **deleted** (not rewritten). The architect/PM are rewriting them with new assertions about threadpool, but that's scope creep.
+
+Why delete instead of rewrite:
+- The task list shows #3 as "收斂 tests/test_qa_task4_to_thread.py 的 stale TestToThreadWrapping：移除/改寫舊的 to_thread 斷言為符合現架構的行為斷言"
+- "移除/改寫" — the architect chose 改寫 (rewrite). But 移除 (remove) is also valid and simpler.
+- The PM's v3 #3 plan rewrites 3 tests with thread-ident + spy assertions. This is significant work.
+- A simpler approach: delete TestToThreadWrapping entirely. The 3 tests are asserting OLD behavior. New behavior is already tested elsewhere (e.g., test_line_task1_quota_billing.py tests the new architecture).
+
+Wait, but the task #4 is "新增不變量測試：mock reply 內 sleep 阻塞..." — this is a NEW test for the new architecture. If we delete TestToThreadWrapping, we still need #4.
+
+Hmm, but the architect's v3 design for #4 (契約面 spy) is much simpler than the original 0.3s wall-time test. So #4 becomes trivial.
+
+**Refined breakthrough (as senior engineer / reviewer):**
+
+The blocker is the gate misalignment. Three concrete actions:
+
+1. **For task #1 specifically**: Round 2's 12-line comment is over-engineered. Simplify to 2-3 lines matching the task's prescribed phrasing. This is in my review domain.
+
+2. **For the test file (task #3)**: The architect's 3-test rewrite with thread-ident assertions is scope creep. The cleaner option is **delete the stale TestToThreadWrapping class entirely** (the tests assert obsolete behavior, that behavior is gone, the tests have no replacement value). Then add #4 (契約面 spy) which is the only new test needed.
+
+3. **For the gate (validation command)**: Once #1+#3 are done, `pytest tests/test_qa_task4_to_thread.py -q` should pass because:
+   - Stale TestToThreadWrapping tests are removed (no more AttributeError on `webhook_mod.asyncio`)
+   - #4 契約面 spy test is added (passes quickly)
+   - Module docstring in test file is updated to reflect new reality (no more asyncio import)
+
+This is the minimal unblock. The architect's v3 #3 plan with thread-ident assertions and `#4` with sleep is unnecessary.
+
+Actually, let me also think about this from another angle. The user says "連續 2 輪未通過" — 2 rounds failed. The 2 rounds were:
+- Round 1: I reviewed the simple line 409 change → 核可 (with soft follow-up)
+- Round 2: Engineer submitted 12-line essay → would be 核可 if I just look at line 409
+
+But the user is saying "2 rounds failed". So my 核可 wasn't accepted, OR the test was run and failed.
+
+Let me re-read the previous turns more carefully:
+
+Turn 1: User asked to review task #1
+My response: 核可 with soft follow-up
+
+Turn 2: User asks the SAME question again. This time, when I checked git, the engineer had made a more comprehensive change (12 lines). But the working tree was clean when I checked (the change was committed). So between Turn 1 and Turn 2, the engineer made additional changes.
+
+My Turn 2 response: I read the file, saw the 12-line change, and would have given another review. But the user is now saying "2 rounds failed".
+
+Looking at the conversation structure, the user (which I assume is a PM/coordinator) is now sharing the broader team discussion context. The "2 rounds failed" likely refers to:
+- Round 1: Initial simple comment fix (my 核可)
+- Round 2: Expanded 12-line comment fix (probably my 核可 too, but the test still failed because #3 wasn't done)
+
+So the failure is the test gate, not the comment quality.
+
+OK so my breakthrough proposal as senior engineer should focus on:
+
+1. **The 12-line comment is over-engineered** — I should flag this in my review and ask to simplify
+2. **The test file is the real blocker** — recommend a minimal unblock strategy
+3. **The verification gate needs to be split** — task #1's gate should not include the broken test file
+
+Let me structure my response.
+
+Actually, looking at this more carefully, the user is the one orchestrating the discussion. They shared PM and architect's analyses, and now want my breakthrough. The discussion has converged heavily on:
+- #1+#3+#4 same submission
+- Wall time is bad → use 契約面 spy
+- Add xfail for char_quota tests
+
+What's missing from the discussion: a code reviewer's perspective on whether the 12-line comment is even the right approach.
+
+Let me give a focused, concise breakthrough proposal. I should:
+- Agree with PM/architect on the high-level direction
+- Add specific code-review concerns (12-line over-engineering)
+- Provide a concrete minimal unblock plan
+- End with a decision (核可 or 退回)
+
+Wait — the user is asking me to propose breakthrough, not to do a code review. But I'm a code reviewer. So my breakthrough should come from a code review perspective.
+
+OK let me write the response. It should be:
+- 簡短具體 (concise and concrete, as instructed)
+- 可立即執行 (immediately actionable)
+- 針對 blocker (targeted at the actual blocker)
+
+The actual blocker is the test gate. The breakthrough is: simplify the comment to unblock review, AND minimize the test work to unblock the gate.
+
+Let me write a focused response.
+
+Actually, I realize I should be careful. The user has provided a LOT of context. Let me extract what's actually useful for my response:
+
+1. The team has converged: #1+#3+#4 same submission
+2. The architect's v3 #4 design (契約面 spy) is much better than the original 0.3s wall time
+3. The PM has identified: #1 code is done, #3 is the real blocker
+4. The team is discussing thread-ident assertions for #3, which is scope creep
+
+My breakthrough: 
+- The architect's v3 #4 design is good (契約面 spy)
+- The PM's #3 plan (rewrite 3 tests) is over-scope
+- Minimal unblock: delete the stale TestToThreadWrapping class entirely (don't rewrite), then add #4 (契約面 spy) which is the architect's v3 design
+- Also: the 12-line comment in line_webhook.py is over-engineered, simplify to 2-3 lines (this is my review domain)
+
+Let me write this concisely.
+
+One more consideration: the user is in 繁體中文 (Traditional Chinese) and wants concise, focused, meeting-style. Let me match that style.
+
+Final structure:
+1. State the actual root cause (gate misalignment)
+2. Propose minimal unblock (3 specific actions)
+3. Highlight the code review concern (12-line over-engineering)
+4. End with my review decision (which would be 退回 with the specific simplification request)
+
+Let me draft this in 繁體中文.
+</think>
+
+## Senior 突破方案
+
+**根因確認**：PM 診斷正確——驗收門綁 `pytest test_qa_task4_to_thread.py`，但該檔的破測是 #3 的活，不是 #1 的。卡兩輪的真因是「**驗收門 ⊃ 任務範圍**」，code 本身已達標。
+
+**Architect v3 #4（契約面 spy）我同意——比 wall time 強、不需 sleep、不需 async TestClient 基礎建設，方向正確。但 v3 #3 的 3-test thread-ident 改寫是 scope creep，可再砍。**
+
+---
+
+### 突破：3 個立即可執行的最小動作
+
+**動作 1：退回 Round 2 的 12 行註解，壓回 2-3 行（review domain）**
+
+當前 line_webhook.py:408-420 註解塞了 12 行，含 `urllib.request.urlopen` 細節、`loop.run_in_executor` 底層、`anyio 反模式` 術語、未來 async 化路徑——這是「**架構 docstring 該寫的東西塞進 inline 註解**」，會腐敗（任何 line_client 底層變動都失效）、會誤導讀者以為這是常見的「inline 註解風格」、會稀釋真正重要的步驟標頭 `─ 6c ─`。
+
+原 task 描述明確是「**改述**『reply 阻塞 I/O 在 BackgroundTasks 下已被 run_in_threadpool 移出 event loop，asyncio.to_thread 為冗餘錯誤方向』」——2-3 行就夠：
+
+```python
+# 6c. 回覆
+# reply 為阻塞 I/O，但 _process_events 是 sync 函式、由 BackgroundTasks 自動
+# run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；再包一層
+# asyncio.to_thread 屬冗餘雙重包裝，sync 函式內亦無法 await。threadpool
+# 線程佔用（高 RPS × 多 worker）見模組 docstring M2 async 化技術債。
+```
+
+4 行，比原 NOTE（1 行誤導）長 3 行，但比 Round 2（12 行散文）短 8 行。**符合「改述」語意、不搶模組 docstring 的戲**。
+
+**動作 2：#3 改「刪除」不「改寫」（architect v3 的 scope 砍半）**
+
+PM 給的 #3 規格是「刪 spy + 改名 + 改 thread-ident 斷言」3 個 test 重寫。**Architect v3 走 thread-ident 預驗證 → 若 ident 相同還要 fallback 弱化**——整條路是「把舊測試套上新架構名字」，但這些測試守的是**舊架構才需要的契約**：
+
+- `test_translate_called_via_to_thread` — 守「translate 走 to_thread」，新架構**不**走 to_thread，這條契約消失
+- `test_result_correct_through_to_thread` — 守「to_thread 路徑下結果正確」，新架構下「結果正確」已由 `test_line_task1_quota_billing.py` 守
+- `test_non_text_event_does_not_call_to_thread` — 守「非文字事件不觸發 to_thread」，新架構下「非文字事件不觸發翻譯」可由反向樣本守
+
+**最小解**：**整個 `TestToThreadWrapping` class 刪除**（3 個 test 全刪）。然後用 #4（architect v3 的契約面 spy）取代——這個**單一**新 test 守住「handler 必丟 `_process_events` 到 BackgroundTasks」，比 3 個舊 test 加起來更貼合現架構。
+
+理由：
+- 舊 test 守的是「to_thread 包裝」契約，這契約**已不存在**（架構變了）
+- 強行改寫舊 test = 把不存在契約的測試改名，純粹是「測試數量維持」的虛榮
+- 新 test（契約面 spy）守的是「handler 走 BackgroundTasks」——這是**新架構的真正契約**
+- 刪 3 + 加 1 = 測試從 3 個瘦到 1 個，意圖更清晰、維護成本更低
+
+驗收：`grep -n asyncio tests/test_qa_task4_to_thread.py` 應空 → `pytest --collect-only` 過 → `pytest -q` 全綠（外部 7 個 char_quota 破測需另加 xfail，見動作 3）。
+
+**動作 3：外部 7 個 char_quota 破測加 xfail（architect v3 維持，但補 PR 描述強制條款）**
+
+Architect v3 的 xfail 設計我同意，但要加一條約束：**PR 描述必須明列「xfail 7 個 + 對應 issue #XXX + 預計修復 sprint」**，否則 xfail 會變永久。`pyproject.toml` 的 `[tool.pytest.ini_options]` 應設 `xfail_strict = true`——意外通過會 fail，避免「以為壞掉其實過了」的失聯。
+
+---
+
+### 為什麼這是「突破」而非「再繞一輪」
+
+| 維度 | 之前卡點 | 突破後 |
+|---|---|---|
+| 註解 | 12 行散文、與模組 docstring 重複、會腐敗 | 4 行、只述 reply 處置、不搶 docstring 戲 |
+| 測試 | 3 個舊 test 強行改名、thread-ident 預驗證+fallback 兩段路 | 1 個新 test 守新契約、零舊契約包袱 |
+| 驗收門 | 綁在含破測的檔 | 同檔，但破測整段刪除、僅留新契約 spy |
+| 範圍 | #1+#2+#3+#4 全綁同 PR（architect v3） | #1+#3+#4 同 PR；#2 docstring 可併或另議（scope 較獨立） |
+
+**核心省下的成本**：architect v3 的 3-test thread-ident 改寫是 ~150-200 行測試程式碼（含預驗證腳本、fallback 邏輯、_GatedTranslator 範式套用）；改為「刪 3 + 加 1」是 ~30 行（刪 50 行 + 加 20 行契約 spy）。**節省 ~120 行 + 整個預驗證實驗**——這才是真正「可立即執行」的最小突破。
+
+---
+
+### 我對 Round 2 的審查決議
+
+`line_webhook.py:408-420` 12 行註解 + `test_qa_task4_to_thread.py` 現狀，整體**退回**——理由是：
+
+1. **必須修正**：
+   - 註解從 12 行壓回 2-4 行，移除 `urllib.request.urlopen` / `loop.run_in_executor` / `anyio 反模式` 細節（這些屬模組 docstring 層級，不屬 inline）
+   - 測試檔 `TestToThreadWrapping` 整段刪除（不留過渡），改以 architect v3 的單一契約面 spy test 取代
+   - 測試檔的 `import asyncio` 與 `mock.patch.object(webhook_mod.asyncio, ...)` 全清
+2. **強烈建議**（不阻擋）：
+   - 模組 docstring M2 段落（line 64-66）更新 + 掛 ticket 錨點（architect v3 #2）
+   - 外部 7 個 char_quota 破測加 `@pytest.mark.xfail` + `xfail_strict = true` + PR 描述明列
+
+決議: 退回
+
+## 任務 #1 已知限制：釐正 line_webhook.py:409 的誤導性 NOTE 註解，改述「reply 阻塞 I/O 在 BackgroundTasks 下已被 run_in_threadpool 移出 event loop，asyncio.to_thread 為冗餘錯誤方向」（huddle 與重試後仍未通過）
+
