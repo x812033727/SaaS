@@ -831,30 +831,46 @@ class TestBillingPointDeferred:
         assert _usage_count(tid) == before + 1
 
     def test_translate_failure_does_not_charge(self, client, tenant_a):
-        """反向：translate 拋例外 → quota used 不變（不白扣），且未回覆。"""
+        """反向：translate 拋例外 → handler 仍回 200、quota used 不變（task #5 契約）。
+
+        背景化前：handler 同步拋例外 → 500、測試用 ``pytest.raises`` 收。
+        背景化後：handler 立即回 200，翻譯在 background 內炸被
+        ``_process_events`` 的 ``try/except`` 攔下只 log。語意保留
+        （quota 不白扣）+ 新契約（response 仍 200）。
+        """
         _, tid = tenant_a
         before = _usage_count(tid)
         app = client.app
         app.dependency_overrides[get_translator] = lambda: _BoomTranslator()
         try:
             body = _payload(_make_text_event("boom", "rt-bill-tx", line_user_id="Ubill002"))
-            with pytest.raises(RuntimeError):
-                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            assert r.status_code == 200, (
+                f"翻譯炸時 handler 應回 200（背景例外只 log），"
+                f"got {r.status_code} body={r.text!r}"
+            )
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_translator] = lambda: _stub_translator
         # 計費點在 translate 之後 → 失敗不增加
         assert _usage_count(tid) == before
 
     def test_reply_failure_does_not_charge(self, client, tenant_a):
-        """反向：reply 拋例外 → quota used 不變（翻譯成功但回覆失敗也不白扣）。"""
+        """反向：reply 拋例外 → handler 仍回 200、quota used 不變（task #5 契約）。
+
+        reply 在 background 內炸、handler 已送出 200、背景 try/except
+        攔下只 log。line_client.reply 失敗前 increment 還沒跑（後扣
+        骨架）→ quota 維持原值。
+        """
         _, tid = tenant_a
         before = _usage_count(tid)
         app = client.app
         app.dependency_overrides[get_line_client] = lambda: _BoomReplyClient()
         try:
             body = _payload(_make_text_event("boom2", "rt-bill-rp", line_user_id="Ubill003"))
-            with pytest.raises(RuntimeError):
-                client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+            assert r.status_code == 200
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_line_client] = lambda: _fake_line_client
         # 計費點在 reply 之後 → 失敗不增加

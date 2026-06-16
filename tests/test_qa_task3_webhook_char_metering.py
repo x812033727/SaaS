@@ -300,7 +300,14 @@ class TestHandCalculatedIncrement:
 
 class TestNoChargeOnDownstreamFailure:
     def test_translate_raises_does_not_increment_char_count(self, client):
-        """翻譯拋例外 → count 與 char_count 都不變（防「白扣字」）。"""
+        """翻譯拋例外 → handler 仍回 200、count/char_count 都不變（白扣防護不破）。
+
+        背景化前：handler 同步拋例外 → 500，測試用 ``pytest.raises`` 收。
+        背景化後（task #5 契約）：handler 立即回 200；翻譯在背景內炸、
+        被 ``_process_events`` 的 ``try/except Exception`` 攔下只 log，
+        不外拋也不污染已送出的 response。語意保留（無白扣）+ 新契約
+        （response 仍 200）需在此同時斷言。
+        """
         tid = _new_tenant(client)
         before_c, before_cc = _read(tid)
         assert (before_c, before_cc) == (0, 0)
@@ -308,8 +315,12 @@ class TestNoChargeOnDownstreamFailure:
         app = client.app
         app.dependency_overrides[get_translator] = lambda: _BoomTranslator()
         try:
-            with pytest.raises(RuntimeError, match="translate backend down"):
-                _post(client, tid, _make_text_event("/lang en hi", "rt-tx"))
+            r = _post(client, tid, _make_text_event("/lang en hi", "rt-tx"))
+            # task #5：背景化後 handler 立即回 200，例外被吞
+            assert r.status_code == 200, (
+                f"背景化契約：翻譯炸時仍應 200，got {r.status_code} body={r.text!r}"
+            )
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_translator] = lambda: _stub_translator
 
@@ -318,7 +329,13 @@ class TestNoChargeOnDownstreamFailure:
         assert cc == 0, f"翻譯失敗時 char_count 應 0，got {cc}（白扣）"
 
     def test_reply_raises_does_not_increment_char_count(self, client):
-        """回覆拋例外（翻譯成功但 LINE API 死）→ char_count 不變。"""
+        """回覆拋例外（翻譯成功但 LINE API 死）→ handler 仍回 200、char_count 不變。
+
+        同 task #5 契約：reply 在 background 內炸、handler 已送出 200、
+        背景 try/except 攔下只 log。line_client.reply 失敗時 increment
+        還沒跑（後扣骨架：translate → reply → increment），所以雙閘+
+        後扣聯手保證不白扣。
+        """
         tid = _new_tenant(client)
         before_c, before_cc = _read(tid)
         assert (before_c, before_cc) == (0, 0)
@@ -326,8 +343,9 @@ class TestNoChargeOnDownstreamFailure:
         app = client.app
         app.dependency_overrides[get_line_client] = lambda: _BoomReplyClient()
         try:
-            with pytest.raises(RuntimeError, match="LINE reply API down"):
-                _post(client, tid, _make_text_event("/lang en hello", "rt-rp"))
+            r = _post(client, tid, _make_text_event("/lang en hello", "rt-rp"))
+            assert r.status_code == 200
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_line_client] = lambda: _fake_line_client
 
@@ -337,7 +355,12 @@ class TestNoChargeOnDownstreamFailure:
 
     def test_translate_failure_with_partial_history_keeps_partial_chars(self, client):
         """邊界：先前已累加 N 字 → 翻譯失敗不影響既有累加。
-        證明：失敗是「無增量」非「重置」。"""
+        證明：失敗是「無增量」非「重置」。
+
+        背景化契約：handler 已回 200，背景內翻譯炸被吞；新失敗的
+        event 對應的 (count, char_count) 增量為 0，既有累加 (2, 14)
+        不被回滾——ApiUsage row 的真實累計語意保留。
+        """
         tid = _new_tenant(client)
         _post(client, tid, _make_text_event("/lang en hi", "rt-ok1"))  # +7
         _post(client, tid, _make_text_event("/lang en hi", "rt-ok2"))  # +7
@@ -346,8 +369,9 @@ class TestNoChargeOnDownstreamFailure:
         app = client.app
         app.dependency_overrides[get_translator] = lambda: _BoomTranslator()
         try:
-            with pytest.raises(RuntimeError):
-                _post(client, tid, _make_text_event("/lang en hello", "rt-boom"))
+            r = _post(client, tid, _make_text_event("/lang en hello", "rt-boom"))
+            assert r.status_code == 200
+            assert r.json() == {"status": "ok"}
         finally:
             app.dependency_overrides[get_translator] = lambda: _stub_translator
 
