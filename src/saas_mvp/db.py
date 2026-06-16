@@ -21,6 +21,26 @@ class Base(DeclarativeBase):
     pass
 
 
+def get_session_factory():
+    """FastAPI dependency: 回傳可呼叫的 session factory（無引數，回傳 ``Session``）。
+
+    預設回傳 :data:`SessionLocal`（production module-level singleton）。
+    測試透過 ``app.dependency_overrides[get_session_factory] = lambda: _Session``
+    替換成測試自己的 ``sessionmaker(bind=_engine)``——背景任務內
+    ``db = session_factory()`` 即可沿用測試的 ``StaticPool`` 共連 in-memory
+    SQLite，看得到所有 ``Base.metadata.create_all`` 建出的表。
+
+    用途：背景任務（line_webhook ``_process_events`` 等）需要「離開 request
+    生命週期」自管 session，又不能硬編 ``SessionLocal()``——硬編會綁死
+    production engine，測試無法 override。
+
+    與 :func:`get_db` 的差異：``get_db`` 為 request-scoped yield session
+    （FastAPI 依賴收尾關閉）；本函式回傳**可重複呼叫**的 factory，適合跨
+    await 邊界、需獨立交易的任務。
+    """
+    return SessionLocal
+
+
 def get_db():
     """FastAPI dependency: yield a DB session then close it."""
     db = SessionLocal()

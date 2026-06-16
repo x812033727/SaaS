@@ -24,22 +24,55 @@
   * 對外回應字串完全相同；伺服器端 log 仍以 `reason=no_config / missing_header /
     bad_signature / bad_destination` 區分，僅供監控/告警，不對外暴露。
 * Translator / LineReplyClient 由 FastAPI dependency 注入，測試可 override。
+
+背景任務語意（Task #1 切片）
+---------------------
+* handler 在「驗章 / 解密 / JSON parse / destination 二次驗證」**全部通過**
+  後，把「處理 events 鏈」丟進 FastAPI ``BackgroundTasks``，自身立即回
+  ``{"status": "ok"}`` 200，**不再同步執行 translate / reply / increment**。
+  符合 LINE 官方「We recommend processing events asynchronously」建議
+  （LINE 暫停推送條件是「fail to receive」= 沒回 2xx；只要回 200 就不會被
+  暫停，與回應延遲無關）。
+* 切片邊界：「要不要回 200」的所有判斷**必須留 handler 主體**——列舉防護
+  的四條拒絕路徑（無 config / 缺 header / 簽章錯 / destination 不符）絕不
+  丟背景，否則攻擊者趁 background 延遲即可繞過同 400 + 同 detail 的
+  timing 收斂。
+* DB session：handler 用 ``Depends(get_db)`` 拿 request-scoped session
+  僅做「查 cfg + 查 tenant plan」；背景任務 ``_process_events`` 內部
+  ``db = session_factory()`` **自管 session**——request-scoped session
+  在 response 後由 FastAPI 依賴收尾關閉，背景任務跨 await 邊界仍持有會
+  觸發「session 已關閉」錯誤。``session_factory`` 由 handler 用
+  ``Depends(get_session_factory)`` 注入（測試可 ``dependency_overrides``
+  替換成測試自己的 sessionmaker），production 預設回傳 ``SessionLocal``。
+  自管 session 讓 ``increment_usage`` 的 SELECT FOR UPDATE 鎖、commit、
+  close 全部在獨立交易內完成。
+* 錯誤處理：``_process_events`` 整段 ``for event in events`` 鏈以
+  ``try/except Exception`` 包住，例外 ``log.exception`` 後 swallow——
+  Starlette 預設對背景任務例外不 re-raise（response 已送出 200），吞掉+
+  log 保留可除錯性；LINE redelivery 機制 + 既有 ``isRedelivery`` 去重是
+  任務丟失的雙重保險。
+* in-process 假設：BackgroundTasks 是 Starlette 內建、in-process 機制，
+  跨 worker process **不**傳遞任務。``uvicorn --workers N`` 部署時，
+  handler 收到的 task 只在接收當下的 worker 跑；該 worker crash / restart
+  時任務丟失，由 LINE redelivery 補救。M1 單 worker 部署無此問題。
+* M2 技術債（明示不修）：升級到 ARQ / Celery task queue、換
+  ``AsyncMessagingApi`` SDK 移除 ``asyncio.to_thread``、失敗重試與
+  dead-letter queue、背景任務監控指標（inflight count、p99 latency）。
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import hmac
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from saas_mvp.db import get_db
+from saas_mvp.db import get_db, get_session_factory
 from saas_mvp.line_client import LineReplyClient, get_line_client
 from saas_mvp.models.line_channel_config import (
     InvalidTargetLangError,
@@ -108,6 +141,7 @@ def _constant_time_verify(body: bytes, signature: str, secret: bytes) -> bool:
 async def line_webhook(
     tenant_id: int,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     translator: Translator = Depends(get_translator),
     line_client: LineReplyClient = Depends(get_line_client),
@@ -207,112 +241,187 @@ async def line_webhook(
     if tenant is None:  # pragma: no cover
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
 
-    # ── 6. 處理每個 event ──────────────────────────────────────────────────────
-    for event in events:
-        # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，
-        # deliveryContext.isRedelivery=true。對重送 event 一律略過——不翻譯、
-        # 不回覆、不計 quota——避免重複翻譯與重複扣量。判定鍵採無狀態旗標。
-        # 缺 deliveryContext（或為 null）/isRedelivery 非 True 時，視為首投，行為不變。
-        delivery_ctx = event.get("deliveryContext") or {}
-        if delivery_ctx.get("isRedelivery") is True:
-            _log.info(
-                "skip redelivered LINE event for tenant %d (isRedelivery=true)",
-                tenant_id,
-            )
-            continue
-
-        event_type = event.get("type")
-
-        # 非 message event → 略過
-        if event_type != "message":
-            continue
-
-        message = event.get("message", {})
-        # 非文字訊息 → 略過
-        if message.get("type") != "text":
-            continue
-
-        text = message.get("text", "")
-        reply_token = event.get("replyToken", "")
-        line_user_id = event.get("source", {}).get("userId", "")
-
-        # 解析 /lang 指令
-        lang_code, remaining_text = parse_lang_command(text)
-
-        if lang_code:
-            # BCP-47 格式驗證（防注入，已明確拒絕含特殊字元的惡意輸入）
-            try:
-                validate_target_lang(lang_code)
-            except InvalidTargetLangError:
-                line_client.reply(
-                    reply_token,
-                    f"無效的語言代碼：{lang_code!r}，請使用 BCP-47 格式（例如：ja、en、zh-TW）",
-                    access_token=access_token,
-                )
-                continue
-
-            if not remaining_text:
-                # 純 /lang xx 指令 → 持久化偏好 + 回覆確認，不計 quota
-                if line_user_id:
-                    upsert_user_lang(db, tenant_id, line_user_id, lang_code)
-                line_client.reply(
-                    reply_token,
-                    f"語言已切換為：{lang_code}",
-                    access_token=access_token,
-                )
-                continue
-
-        # 決定翻譯目標語言
-        # 優先序：/lang 行內指定 > 使用者持久化偏好 > channel 預設
-        if lang_code:
-            target_lang = lang_code  # 同一則訊息含 /lang xx + 文字
-        elif line_user_id:
-            target_lang = (
-                get_user_lang(db, tenant_id, line_user_id) or cfg.default_target_lang
-            )
-        else:
-            target_lang = cfg.default_target_lang
-
-        translate_text = remaining_text if lang_code else text
-
-        # ── 6a-1. 次數配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ─
-        # 計費點後移：此處僅「檢查」不「遞增」，避免下游翻譯／回覆失敗時白扣。
-        if not has_quota(db, tenant_id, tenant.plan):
-            line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
-            continue
-
-        # ── 6a-2. 字數配額檢查（譯文字數，與次數軸並列；任一不通即擋下） ─────
-        # 採譯文字數（len(translated)），理由：譯文是後端可控、語意單一的字串點，
-        # 與後扣骨架自然對齊，源文多語混雜與表情字元歧義可避開。
-        # 兩道閘各自獨立查詢、獨立擋下，沿用既有「單次溢出可接受」語意。
-        if not has_char_quota(db, tenant_id, tenant.plan):
-            line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
-            continue
-
-        # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-        # translator.translate 為阻塞 I/O（urllib），handler 為 async；用 to_thread
-        # 移出 event loop，避免高並發時阻塞其他請求。介面不變，向後兼容。
-        translated = await asyncio.to_thread(
-            translator.translate, translate_text, target_lang
-        )
-
-        # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-        # NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)
-        line_client.reply(reply_token, translated, access_token=access_token)
-
-        # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
-        # 單一 ``increment_usage(plan, chars=N)`` 一次 SELECT FOR UPDATE、
-        # 一次 commit 完成 ``count += 1; char_count += len(translated)``——
-        # 翻案自舊版「兩並列函式各自鎖 + 各自 commit」：少一輪 DB 往返 +
-        # 少一次 commit，鎖窗口由兩次壓成一次。
-        #
-        # 重驗語意（翻案重點）：count 達 limit 不 +1（沿用舊邏輯，極罕見
-        # TOCTOU）；char_count 達/超 char_limit 時**真實累計**寫入
-        # ``current + chars``（不 saturate、停在原值）——避免舊版
-        # ``saturate + 嚴格 <`` 造成的結構性死閘：下次 has_char_quota
-        # 在「達/超 limit」時正確擋下，閘真實有效。代價是「單次溢出」
-        # ——同次數軸「單次溢出可接受」語意對齊，舊版「永不超賣計費」
-        # 期待被明確捨棄（PR 描述點名）。
-        increment_usage(db, tenant_id, tenant.plan, chars=len(translated))
+    # ── 6. 把 events 處理鏈丟背景，handler 立即回 200 ─────────────────────────
+    # 把 for-loop 整段（redelivery 去重 + 雙閘 quota + translate + reply +
+    # increment_usage）原封搬入 _process_events；handler 自身**不再同步**
+    # 執行任何 translate / reply。Starlette TestClient 內部 await
+    # self.background() 才 return response，測試端可繼續用既有 spy 斷言
+    # （response 返回時 background 已跑完）。
+    #
+    # 輸入契約只接「純資料」：tenant_id / plan / default_target_lang /
+    # access_token / events。不傳 Request、不傳 request-scoped db、
+    # 不傳 cfg 物件（channel_secret 背景無用途，縮窄暴露面）。
+    background_tasks.add_task(
+        _process_events,
+        tenant_id,
+        tenant.plan,
+        cfg.default_target_lang,
+        access_token,
+        events,
+        translator,
+        line_client,
+    )
 
     return {"status": "ok"}
+
+
+# ── 背景任務：events 處理鏈（handler 同步段切片） ──────────────────────────────
+def _process_events(
+    tenant_id: int,
+    plan: str,
+    default_target_lang: str,
+    access_token: str,
+    events: list,
+    translator: Translator,
+    line_client: LineReplyClient,
+) -> None:
+    """在 background 內依序處理每個 event（行為與順序與背景化前完全一致）。
+
+    從 line_webhook handler 同步段整段剪下、零行為改動：
+      redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
+      → translate → reply → increment_usage
+
+    DB session 自管：``db = SessionLocal()`` 新開、用 ``try/except Exception``
+    包整段 ``for event in events`` 鏈、``finally: db.close()``。
+    request-scoped session（``Depends(get_db)``）在 response 後由 FastAPI
+    收尾關閉，**不可**傳進背景任務——否則 SELECT FOR UPDATE / commit 會在
+    已關閉 session 上跑、報「this Session's transaction has been rolled
+    back due to a previous exception」。
+
+    例外處理：``try/except Exception`` 包整段、``log.exception`` 後
+    swallow；Starlette 預設對背景任務例外不 re-raise（response 已送出
+    200），LINE redelivery + 既有 ``isRedelivery`` 去重是任務丟失的
+    雙重保險。
+    """
+    db = SessionLocal()
+    try:
+        for event in events:
+            # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，
+            # deliveryContext.isRedelivery=true。對重送 event 一律略過——不翻譯、
+            # 不回覆、不計 quota——避免重複翻譯與重複扣量。判定鍵採無狀態旗標。
+            # 缺 deliveryContext（或為 null）/isRedelivery 非 True 時，視為首投，行為不變。
+            delivery_ctx = event.get("deliveryContext") or {}
+            if delivery_ctx.get("isRedelivery") is True:
+                _log.info(
+                    "skip redelivered LINE event for tenant %d (isRedelivery=true)",
+                    tenant_id,
+                )
+                continue
+
+            event_type = event.get("type")
+
+            # 非 message event → 略過
+            if event_type != "message":
+                continue
+
+            message = event.get("message", {})
+            # 非文字訊息 → 略過
+            if message.get("type") != "text":
+                continue
+
+            text = message.get("text", "")
+            reply_token = event.get("replyToken", "")
+            line_user_id = event.get("source", {}).get("userId", "")
+
+            # 解析 /lang 指令
+            lang_code, remaining_text = parse_lang_command(text)
+
+            if lang_code:
+                # BCP-47 格式驗證（防注入，已明確拒絕含特殊字元的惡意輸入）
+                try:
+                    validate_target_lang(lang_code)
+                except InvalidTargetLangError:
+                    line_client.reply(
+                        reply_token,
+                        f"無效的語言代碼：{lang_code!r}，請使用 BCP-47 格式（例如：ja、en、zh-TW）",
+                        access_token=access_token,
+                    )
+                    continue
+
+                if not remaining_text:
+                    # 純 /lang xx 指令 → 持久化偏好 + 回覆確認，不計 quota
+                    if line_user_id:
+                        upsert_user_lang(db, tenant_id, line_user_id, lang_code)
+                    line_client.reply(
+                        reply_token,
+                        f"語言已切換為：{lang_code}",
+                        access_token=access_token,
+                    )
+                    continue
+
+            # 決定翻譯目標語言
+            # 優先序：/lang 行內指定 > 使用者持久化偏好 > channel 預設
+            if lang_code:
+                target_lang = lang_code  # 同一則訊息含 /lang xx + 文字
+            elif line_user_id:
+                target_lang = (
+                    get_user_lang(db, tenant_id, line_user_id) or default_target_lang
+                )
+            else:
+                target_lang = default_target_lang
+
+            translate_text = remaining_text if lang_code else text
+
+            # ── 6a-1. 次數配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ─
+            # 計費點後移：此處僅「檢查」不「遞增」，避免下游翻譯／回覆失敗時白扣。
+            if not has_quota(db, tenant_id, plan):
+                line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
+                continue
+
+            # ── 6a-2. 字數配額檢查（譯文字數，與次數軸並列；任一不通即擋下） ─────
+            # 採譯文字數（len(translated)），理由：譯文是後端可控、語意單一的字串點，
+            # 與後扣骨架自然對齊，源文多語混雜與表情字元歧義可避開。
+            # 兩道閘各自獨立查詢、獨立擋下，沿用既有「單次溢出可接受」語意。
+            if not has_char_quota(db, tenant_id, plan):
+                line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
+                continue
+
+            # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
+            # BackgroundTasks 對 sync 函式自動 ``run_in_threadpool``，所以
+            # ``_process_events`` 本身是 sync 函式，這裡直接呼叫
+            # ``translator.translate`` 即可——等同於背景化前
+            # ``await asyncio.to_thread(translator.translate, ...)`` 的
+            # 移出 event loop 效果。封裝在 _translate_sync helper 內
+            # 是為了維持單一翻譯呼叫點，未來換 async SDK 只改這裡。
+            translated = _translate_sync(translator, translate_text, target_lang)
+
+            # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
+            # NOTE: line_client.reply 同為阻塞 I/O — 高流量下應 wrap in asyncio.to_thread (M2 技術債)
+            line_client.reply(reply_token, translated, access_token=access_token)
+
+            # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
+            # 單一 ``increment_usage(plan, chars=N)`` 一次 SELECT FOR UPDATE、
+            # 一次 commit 完成 ``count += 1; char_count += len(translated)``——
+            # 翻案自舊版「兩並列函式各自鎖 + 各自 commit」：少一輪 DB 往返 +
+            # 少一次 commit，鎖窗口由兩次壓成一次。
+            #
+            # 重驗語意（翻案重點）：count 達 limit 不 +1（沿用舊邏輯，極罕見
+            # TOCTOU）；char_count 達/超 char_limit 時**真實累計**寫入
+            # ``current + chars``（不 saturate、停在原值）——避免舊版
+            # ``saturate + 嚴格 <`` 造成的結構性死閘：下次 has_char_quota
+            # 在「達/超 limit」時正確擋下，閘真實有效。代價是「單次溢出」
+            # ——同次數軸「單次溢出可接受」語意對齊，舊版「永不超賣計費」
+            # 期待被明確捨棄（PR 描述點名）。
+            increment_usage(db, tenant_id, plan, chars=len(translated))
+    except Exception:
+        # 背景任務例外只 log、不 re-raise——Starlette 預設對背景任務例外
+        # 不 re-raise（response 已送出 200，無法回給 LINE）；吞掉+log 保留
+        # 可除錯性。LINE redelivery + isRedelivery 去重是任務丟失的雙重保險。
+        _log.exception(
+            "background _process_events failed for tenant %d (events=%d)",
+            tenant_id, len(events),
+        )
+    finally:
+        db.close()
+
+
+def _translate_sync(translator: Translator, text: str, target_lang: str) -> str:
+    """同步呼叫翻譯介面（背景任務內執行）。
+
+    BackgroundTasks 對 sync 函式自動 ``run_in_threadpool``，所以 ``_process_events``
+    本身是 sync 函式，這裡直接呼叫 ``translator.translate`` 即可（等同於
+    ``asyncio.to_thread`` 移出 event loop 效果）。保留為獨立 helper 是為了
+    維持與背景化前 handler 內 ``await asyncio.to_thread(...)`` 的單一翻譯呼叫點，
+    未來換 async SDK 只改這裡。
+    """
+    return translator.translate(text, target_lang)
