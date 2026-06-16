@@ -13,6 +13,9 @@
 * 兩軸均採「後扣」語意：副作用成功後才計量，下游失敗拋出時不白扣
 * 「單次溢出可接受」：has_* 與 increment_* 之間存在 TOCTOU 窗口，鎖內
   重驗確保永不超賣計費（恢復舊版 check_and_increment 的原子保證）
+* char_count 欄位：model 端 DDL 帶 ``server_default=text("0")``，
+  讀取端 ``(row.char_count or 0)`` 為 defense in depth（對接相容性 row），
+  不再需要一次性 backfill 腳本
 """
 
 from __future__ import annotations
@@ -230,8 +233,10 @@ def get_quota_status(db: Session, tenant_id: int, plan: str) -> dict:
             ApiUsage.period == today,
         )
     ).scalar_one_or_none()
-    # 既有 NULL 列由讀取端兜底 0（model default=0 僅對新 INSERT 生效；
-    # 既有 row 的 char_count 為 NULL，需在此避免 ArithmeticError / None 比較）。
+    # 讀取端兜底 0：DDL 帶 server_default 保證新 row 永非 NULL；
+    # ``(or 0)`` 為 defense in depth，吸收極罕見的相容性 row
+    # （例如測試直接用 session.add() 繞過 column default），
+    # 避免 ArithmeticError / None 比較。
     used = row.count if row else 0
     used_chars = (row.char_count or 0) if row else 0
     return {
@@ -265,7 +270,8 @@ def has_char_quota(db: Session, tenant_id: int, plan: str, needed: int = 0) -> b
             ApiUsage.period == today,
         )
     ).scalar_one_or_none()
-    # 讀取端兜底 0：既有 NULL 列在 (or 0) 後安全可比
+    # 讀取端兜底 0：DDL 帶 server_default 保證新 row 永非 NULL；
+    # ``(or 0)`` 為 defense in depth，吸收相容性 edge case。
     used_chars = (row.char_count or 0) if row else 0
     validate_count(used_chars)
     if needed < 0:
@@ -293,7 +299,8 @@ def increment_char_usage(
         raise ValueError(f"chars must be >= 0, got {chars}")
     today = datetime.date.today()
     row = _get_or_create_usage_locked(db, tenant_id, today)
-    # 既有 NULL 列兜底 0
+    # 讀取端兜底 0：DDL 帶 server_default 保證新 row 永非 NULL；
+    # ``(or 0)`` 為 defense in depth，吸收相容性 edge case。
     current = row.char_count or 0
     validate_count(current)
 
