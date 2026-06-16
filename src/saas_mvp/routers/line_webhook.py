@@ -38,14 +38,20 @@
   丟背景，否則攻擊者趁 background 延遲即可繞過同 400 + 同 detail 的
   timing 收斂。
 * DB session：handler 用 ``Depends(get_db)`` 拿 request-scoped session
-  僅做「查 cfg + 查 tenant plan」；背景任務 ``_process_events`` 內部
-  ``db = session_factory()`` **自管 session**——request-scoped session
-  在 response 後由 FastAPI 依賴收尾關閉，背景任務跨 await 邊界仍持有會
-  觸發「session 已關閉」錯誤。``session_factory`` 由 handler 用
-  ``Depends(get_session_factory)`` 注入（測試可 ``dependency_overrides``
-  替換成測試自己的 sessionmaker），production 預設回傳 ``SessionLocal``。
-  自管 session 讓 ``increment_usage`` 的 SELECT FOR UPDATE 鎖、commit、
-  close 全部在獨立交易內完成。
+  僅做「查 cfg + 查 tenant plan」；**丟背景前先抓出綁定 engine**
+  ``bind = db.get_bind()``，把 ``bind`` 傳進 ``_process_events``。
+  背景任務內部以 ``Session(bind=bind)`` **自管 session**——request-scoped
+  session 在 response 後由 FastAPI 依賴收尾關閉，背景任務跨 await 邊界
+  仍持有會觸發「session 已關閉」錯誤。為什麼不傳 handler 的 ``db``
+  進去？同樣理由（已關閉 session）。為什麼不讓背景用模組全域
+  ``SessionLocal()``？production 綁 production engine、測試
+  ``dependency_overrides[get_db]`` 綁的是另一顆 in-memory
+  ``StaticPool`` engine——兩顆 :memory: 是各自獨立的空 DB，背景寫到
+  錯的庫，測試端讀不到副作用。用 ``db.get_bind()`` 從 request session
+  抓出當下綁定的 engine，**測試端**自然拿測試的 engine（StaticPool
+  跨執行緒共享同一顆 in-memory DB → 背景看得到資料、零改測試）、
+  **production 端**拿真實 engine。``increment_usage`` 的
+  SELECT FOR UPDATE 鎖、commit、close 全部在獨立交易內完成。
 * 錯誤處理：``_process_events`` 整段 ``for event in events`` 鏈以
   ``try/except Exception`` 包住，例外 ``log.exception`` 後 swallow——
   Starlette 預設對背景任務例外不 re-raise（response 已送出 200），吞掉+
@@ -72,7 +78,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from saas_mvp.db import get_db, get_session_factory
+from saas_mvp.db import get_db
 from saas_mvp.line_client import LineReplyClient, get_line_client
 from saas_mvp.models.line_channel_config import (
     InvalidTargetLangError,
@@ -248,9 +254,16 @@ async def line_webhook(
     # self.background() 才 return response，測試端可繼續用既有 spy 斷言
     # （response 返回時 background 已跑完）。
     #
-    # 輸入契約只接「純資料」：tenant_id / plan / default_target_lang /
-    # access_token / events。不傳 Request、不傳 request-scoped db、
-    # 不傳 cfg 物件（channel_secret 背景無用途，縮窄暴露面）。
+    # 輸入契約只接「純資料 + engine handle」：tenant_id / plan /
+    # default_target_lang / access_token / events / engine (= db.get_bind())。
+    # 不傳 Request、不傳 request-scoped db（response 後由 FastAPI 收尾
+    # 關閉、背景持有會炸）、不傳 cfg 物件（channel_secret 背景無用途，
+    # 縮窄暴露面）。傳 engine 而非工廠，理由見模組 docstring：測試端
+    # `dependency_overrides[get_db]` 注入的是綁在測試 in-memory engine
+    # 的 session，這個 engine 必須跟著帶進背景，否則背景寫到錯的庫。
+    # 取 bind 的時機是 request session 還活著的「現在」，response 後
+    # db 已關閉、bind 屬性依然可讀（engine 物件獨立於 session 生命週期）。
+    bind = db.get_bind()
     background_tasks.add_task(
         _process_events,
         tenant_id,
@@ -260,6 +273,7 @@ async def line_webhook(
         events,
         translator,
         line_client,
+        bind,
     )
 
     return {"status": "ok"}
@@ -274,6 +288,7 @@ def _process_events(
     events: list,
     translator: Translator,
     line_client: LineReplyClient,
+    bind,
 ) -> None:
     """在 background 內依序處理每個 event（行為與順序與背景化前完全一致）。
 
@@ -281,8 +296,13 @@ def _process_events(
       redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
       → translate → reply → increment_usage
 
-    DB session 自管：``db = SessionLocal()`` 新開、用 ``try/except Exception``
+    DB session 自管：``db = Session(bind=bind)`` 新開、用 ``try/except Exception``
     包整段 ``for event in events`` 鏈、``finally: db.close()``。
+    ``bind`` 由 handler 在丟背景前以 ``db.get_bind()`` 抓出——傳 engine 而非
+    factory，是為了對齊測試的 ``dependency_overrides[get_db]`` 機制：
+    request session 綁的是測試自己的 in-memory StaticPool engine，背景
+    用同一 engine 開 session 才能看到資料（若改用模組全域 ``SessionLocal()``
+    會綁到 production 引擎，兩顆 :memory: 互相獨立、測試端永遠讀不到副作用）。
     request-scoped session（``Depends(get_db)``）在 response 後由 FastAPI
     收尾關閉，**不可**傳進背景任務——否則 SELECT FOR UPDATE / commit 會在
     已關閉 session 上跑、報「this Session's transaction has been rolled
@@ -293,7 +313,7 @@ def _process_events(
     200），LINE redelivery + 既有 ``isRedelivery`` 去重是任務丟失的
     雙重保險。
     """
-    db = SessionLocal()
+    db = Session(bind=bind)
     try:
         for event in events:
             # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，

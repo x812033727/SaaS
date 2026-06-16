@@ -524,12 +524,17 @@ class TestQuotaExceededNoSideEffects:
         )
 
 
-# ── 4. 拒絕路徑零背景副作用（任務 #5(c) 對照組） ────────────────────────────
+# ── 4. 拒絕路徑零背景副作用（任務 #3 / #5(c) 對照組） ─────────────────────────
 # 拒絕路徑必須**完全同步**判定、絕不丟背景——若在拒絕路徑誤觸發背景，
 # 會污染 DB、洩漏租戶存在性、繞過列舉防護。這組測試是 high-value 防護。
+#
+# 任務 #3 驗收原文（逐字對應）：
+#   無 config / 缺 header / 簽章錯 / destination 不符 / 非法 JSON
+#   → 回原狀態碼（400 等），且 translate_call_count == 0、ApiUsage 未新增
+# 五條全收，避免「背景在拒絕路徑誤觸發」的 regression 漏網。
 
 class TestRejectPathsZeroBackgroundSideEffects:
-    """所有拒絕路徑都**不得**觸發 translate / reply / DB 寫入。"""
+    """所有 5 條拒絕路徑都**不得**觸發 translate / reply / DB 寫入。"""
 
     def test_no_config_rejects_400_no_side_effects(self, client):
         """無 LINE config 的 tenant_id → 400 + 無副作用。"""
@@ -598,6 +603,60 @@ class TestRejectPathsZeroBackgroundSideEffects:
         c, cc = _read_usage(tid)
         assert c == 0
         assert cc == 0
+
+    def test_bad_destination_rejects_400_no_side_effects(self, client):
+        """destination 不符（LINE Console 錯配）→ 400 + 無副作用。
+
+        任務 #3 第五條拒絕路徑。cfg.line_bot_user_id 已設且 payload.destination
+        與之不符 → handler 在主體同步判斷回 400，**不**丟背景。
+        防「destination 檢查丟到 background → 攻擊者趁背景延遲繞過列舉防護」。
+        """
+        from saas_mvp.models.line_channel_config import LineChannelConfig
+
+        tid = _new_tenant(client)
+        # 在 DB 補上 line_bot_user_id 模擬「bot/info 已回填」狀態
+        db = _Session()
+        try:
+            cfg = db.query(LineChannelConfig).filter(
+                LineChannelConfig.tenant_id == tid
+            ).one()
+            cfg.line_bot_user_id = "U_bot_user_id_for_dest_test"
+            db.commit()
+        finally:
+            db.close()
+
+        # 構造 destination 與 cfg.line_bot_user_id 不符的合法簽章請求
+        body_dict = {
+            "destination": "U_some_OTHER_bot_user_id",
+            "events": [_text_event("/lang en hi", "rt-bd")],
+        }
+        body = json.dumps(body_dict).encode("utf-8")
+        r = client.post(
+            f"/line/webhook/{tid}",
+            content=body,
+            headers={"X-Line-Signature": _sign(body)},
+        )
+        # 1) 回原狀態碼（400）
+        assert r.status_code == 400, (
+            f"destination 不符應回 400，got {r.status_code} body={r.text!r}"
+        )
+        # 2) 零背景副作用——translate / reply / DB 寫入皆未觸發
+        assert _spy_translator.translate_call_count == 0, (
+            f"destination 拒絕路徑不應觸發 translate，"
+            f"got {_spy_translator.translate_call_count} 次"
+        )
+        assert _spy_line_client.reply_call_count == 0, (
+            f"destination 拒絕路徑不應觸發 reply，"
+            f"got {_spy_line_client.reply_call_count} 次"
+        )
+        c, cc = _read_usage(tid)
+        assert c == 0, f"destination 拒絕路徑不應新增 count，got {c}"
+        assert cc == 0, f"destination 拒絕路徑不應新增 char_count，got {cc}"
+        # 3) 對外回應 detail 與簽章失敗完全一致（列舉防護不被破壞）
+        assert r.json()["detail"] == "Invalid X-Line-Signature", (
+            f"destination 拒絕 detail 應與簽章失敗一致（防 oracle），"
+            f"got {r.json()['detail']!r}"
+        )
 
 
 # ── 5. 背景化確實發生（sanity check / 假綠偵測器） ──────────────────────────
