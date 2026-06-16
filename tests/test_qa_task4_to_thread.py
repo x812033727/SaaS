@@ -28,6 +28,14 @@ increment_usage。``BackgroundTasks`` 對 sync 函式自動以
 
   兩者配對可抓出兩類 regression：非文字事件誤觸 reply、或文字事件漏 dispatch。
 
+BackgroundTasks 結構契約（不依賴 wall time）：
+  * threadpool ident：``_process_events`` 跑在與 handler request thread
+    不同的 thread（用 ``_EventGateReplyClient`` 卡 reply、從 gate 內抓 ident）
+  * schedule list：handler return 後 ``bg.tasks`` 含 ``_process_events`` callable
+    （用 ``_invoke_handler_directly`` 繞過 TestClient 直接 inspect）
+  * exception isolation：背景 reply 拋例外 → handler 仍回 200、例外不外拋
+    （守住 Starlette「response 已送出則 background 不 re-raise」契約）
+
 回歸涵蓋：
   * 既有 ``test_line_task1_quota_billing.py`` 與所有 line webhook 相關
     測試皆綠，端到端語意由它們守（reply 結果、quota 計費、redelivery
@@ -41,12 +49,15 @@ increment_usage。``BackgroundTasks`` 對 sync 函式自動以
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
 import os
+import threading
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks
@@ -139,6 +150,80 @@ def _follow_event(uid: str = "Uct002") -> dict:
         "replyToken": "rt-follow",
         "source": {"type": "user", "userId": uid},
     }
+
+
+# ── 架構不變量測試輔助（gate-based） ─────────────────────────────────────────
+
+class _EventGateReplyClient(FakeLineReplyClient):
+    """Gate-based fake reply client——reply 內抓 ``threading.get_ident()``、
+    signal ``called_event``、block 在 ``gate.wait()`` 等測試端釋放。
+
+    為何用 ``threading.Event`` 而非 ``time.sleep``：
+      * ``time.sleep`` 浪費 CI 時間
+      * ``Event.wait()`` 提供「測試主動控制時序」能力：背景執行到 reply
+        時 block、測試端可任意時刻讀取 ``self.ident`` 與釋放 gate
+      * 達成 senior 方案 A：抓 background 真實 thread ident，證明
+        ``_process_events`` 跑在與 handler request thread 不同的 thread
+
+    Attributes:
+        ident: ``reply()`` 被呼叫時的 thread ident（背景 threadpool）
+        called_event: reply 進入後 set，測試端用來同步「已進入 reply」信號
+    """
+
+    def __init__(self, gate: threading.Event) -> None:
+        super().__init__()
+        self.gate = gate
+        self.ident: int | None = None
+        self.called_event = threading.Event()
+
+    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
+        self.ident = threading.get_ident()
+        self.called_event.set()
+        self.gate.wait()  # 測試端釋放 gate 才放行
+        return super().reply(reply_token, text, access_token=access_token)
+
+
+class _ExplodingReplyClient(FakeLineReplyClient):
+    """reply 一律拋例外——驗 handler 對背景例外的隔離契約。"""
+
+    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
+        raise RuntimeError("LINE API down (test injection)")
+
+
+async def _invoke_handler_directly(app, tid: int, body: bytes, bg: BackgroundTasks):
+    """繞過 TestClient 直接呼叫 ``line_webhook``，傳入 explicit BackgroundTasks。
+
+    為何需要：TestClient 的 sync mode 內部會 await background 跑完才 return，
+    無法在「handler 已 return 但 background 尚未跑」的時點 inspect ``bg.tasks``。
+    直呼 handler 可在 handler return 後、background 跑之前檢視排程清單。
+    """
+    from saas_mvp.routers.line_webhook import line_webhook
+
+    fake_request = SimpleNamespace()
+    async def get_body():
+        return body
+    fake_request.body = get_body
+    fake_request.headers = {"X-Line-Signature": _sign(body)}
+
+    # 從 app 的 dependency override 拿 db session（沿用既有測試配置）
+    db_gen = app.dependency_overrides[get_db]()
+    db = next(db_gen)
+    try:
+        response = await line_webhook(
+            tenant_id=tid,
+            request=fake_request,
+            background_tasks=bg,
+            db=db,
+            translator=_stub_translator,
+            line_client=_fake_line_client,
+        )
+    finally:
+        try:
+            next(db_gen)
+        except StopIteration:
+            pass
+
+    return response
 
 
 def _payload(*events) -> bytes:
@@ -260,3 +345,148 @@ class TestBackgroundDispatchContract:
             f"非 message 事件不應觸發 reply，實際 call_count = "
             f"{_fake_line_client.call_count}，last_text = {_fake_line_client.last_text!r}"
         )
+
+
+# ── 架構不變量：BackgroundTasks 結構契約（3 條） ──────────────────────────────
+
+class TestBackgroundTaskContract:
+    """BackgroundTasks 的三條結構契約——守「BackgroundTasks 不阻塞 handler」。
+
+    與上一類 ``TestBackgroundDispatchContract`` 互補：
+      * 上一類用 spy 證明「handler 確實呼叫 BackgroundTasks.add_task」
+        （行為契約，從外部觀察）
+      * 本類用 gate / 直呼 handler / 例外注入 證明「background 真的在
+        與 handler 不同的 thread 跑 + 排程清單含 _process_events + 背景
+        例外不污染 response」（結構契約，從內部觀察）
+
+    為何不用 wall time：Starlette ``TestClient`` 同步模式 ``client.post``
+    內部 await ``self.background()`` 才回傳 response，wall time 物理上必
+    含 reply 阻塞 I/O 耗時；本類用「thread ident」「bg.tasks 結構」「例外
+    隔離」三條**不依賴時序**的契約避開這個坑。
+    """
+
+    def test_process_events_runs_off_handler_thread(self, client, tenant):
+        """契約 1（threadpool）：``_process_events`` 跑在與 handler request
+        thread 不同的 thread——證明 BackgroundTasks 真實用 threadpool dispatch。
+
+        機制：用 ``_EventGateReplyClient`` 卡住 reply、從 gate 內抓
+        ``threading.get_ident()``（此時執行緒必在 background threadpool，
+        因 reply 由 ``_process_events`` 觸發）。測試端用 ``client.post`` 跑在
+        另一條 thread（避免 self-block），主 thread 同步等待後斷言 ident 不同。
+        """
+        gate = threading.Event()
+        gated = _EventGateReplyClient(gate=gate)
+
+        app = client.app
+        prev_override = app.dependency_overrides.get(get_line_client)
+        app.dependency_overrides[get_line_client] = lambda: gated
+
+        main_tid = threading.get_ident()
+        post_result: dict = {}
+        post_error: dict = {}
+
+        def post_in_thread():
+            try:
+                tid = tenant
+                body = _payload(_text_event(
+                    "gate", reply_token="rt-gate", uid="Ugate"
+                ))
+                r = client.post(
+                    f"/line/webhook/{tid}",
+                    content=body, headers=_headers(body),
+                )
+                post_result["status"] = r.status_code
+                post_result["body"] = r.json()
+            except Exception as e:
+                post_error["exc"] = e
+
+        try:
+            worker = threading.Thread(target=post_in_thread)
+            worker.start()
+
+            # 等 reply 進入 background threadpool（被 gate 卡住）
+            assert gated.called_event.wait(timeout=5.0), (
+                "reply 從未被呼叫——background 沒跑或 reply 路徑被改"
+            )
+
+            # 此時 ``gated.ident`` 為 background thread 的 ident
+            assert gated.ident is not None
+            assert gated.ident != main_tid, (
+                f"_process_events 應跑在 background threadpool；"
+                f"main_tid={main_tid} gated.ident={gated.ident}（相同 = inline 執行）"
+            )
+
+            # 釋放 gate、收尾 post thread
+            gate.set()
+            worker.join(timeout=5.0)
+            assert not post_error, f"client.post 內部拋例外: {post_error!r}"
+            assert post_result["status"] == 200
+        finally:
+            if prev_override is not None:
+                app.dependency_overrides[get_line_client] = prev_override
+            else:
+                app.dependency_overrides.pop(get_line_client, None)
+
+    def test_handler_schedules_process_events_as_background_task(
+        self, client, tenant
+    ):
+        """契約 2（schedule）：handler 排入 ``BackgroundTasks.tasks`` 的是
+        ``_process_events`` callable——直接 inspect 結構，不依賴時序。
+
+        機制：繞過 TestClient、用 ``asyncio.run`` 直呼 ``line_webhook`` 並
+        傳入 explicit ``BackgroundTasks()`` instance。handler return 後、
+        background 跑之前，inspect ``bg.tasks`` 拿排程清單。
+        """
+        tid = tenant
+        body = _payload(_text_event(
+            "inspect", reply_token="rt-inspect", uid="Uinspect"
+        ))
+        bg = BackgroundTasks()
+
+        response = asyncio.run(_invoke_handler_directly(
+            client.app, tid, body, bg
+        ))
+
+        assert response == {"status": "ok"}
+        # 直接 inspect 排程清單
+        task_funcs = [getattr(t.func, "__name__", repr(t.func)) for t in bg.tasks]
+        assert "_process_events" in task_funcs, (
+            f"BackgroundTasks 應排入 _process_events callable，got {task_funcs!r}"
+        )
+
+    def test_handler_returns_200_when_background_raises(
+        self, client, tenant
+    ):
+        """契約 3（exception isolation）：背景 reply 拋例外 → handler 已送出
+        200、例外不外拋、client.post 不爆。
+
+        守住 Starlette「response 已送出則 background 例外不 re-raise」契約——
+        防止 LINE 看到 5xx 觸發 redelivery storm。``_process_events`` 內部
+        ``try/except Exception`` 也兜底防 log 之外的二次外拋。
+        """
+        exploding = _ExplodingReplyClient()
+        app = client.app
+        prev_override = app.dependency_overrides.get(get_line_client)
+        app.dependency_overrides[get_line_client] = lambda: exploding
+
+        try:
+            tid = tenant
+            body = _payload(_text_event(
+                "boom", reply_token="rt-boom", uid="Uboom"
+            ))
+            # TestClient fixture 已設 raise_server_exceptions=True
+            # 若 background 例外外拋、會變 500
+            r = client.post(
+                f"/line/webhook/{tid}",
+                content=body, headers=_headers(body),
+            )
+            assert r.status_code == 200, (
+                f"背景 reply 拋例外時 handler 仍應 200，got {r.status_code} "
+                f"body={r.text!r}"
+            )
+            assert r.json() == {"status": "ok"}
+        finally:
+            if prev_override is not None:
+                app.dependency_overrides[get_line_client] = prev_override
+            else:
+                app.dependency_overrides.pop(get_line_client, None)
