@@ -8,6 +8,8 @@
 3. 一次性 backfill：`_migrate_backfill_char_count()` 把 NULL 列統一回填 0。
 4. backfill 冪等：第二次起 rowcount=0，no-op；非 NULL 列不動。
 5. backfill 容錯：表不存在 / engine 爆掉 → 僅 warning，不阻擋啟動。
+6. raw INSERT 省略 char_count 不撞 NOT NULL（server_default=0 兜底）——確保
+   既有測試 fixture 用 raw SQL 種資料的回歸不復發。
 
 對應既有 `_migrate_add_line_bot_user_id` 的 qa 測試風格：
   test_qa_task4_migrate_line_bot_user_id.py（7 條案例）→ 本檔 7 條對應案例。
@@ -15,6 +17,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 
 import pytest
@@ -22,6 +25,19 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 import saas_mvp.db as dbmod
+# 完整 model 註冊鏈：Tenant→User、LineChannelConfig→Tenant 等 relationship
+# 解析時需要所有 model class 已進入 SQLAlchemy class registry。逐一 import
+# 確保 mapper 設定不報 KeyError。
+from saas_mvp.models import (  # noqa: F401
+    api_key,
+    api_key_usage,
+    line_channel_config,
+    note,
+    plan_change_history,
+    tenant,
+    usage,
+    user,
+)
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.usage import ApiUsage
 
@@ -79,12 +95,17 @@ class TestModelDeclaresCharCount:
     """驗收標準 1：『ApiUsage 具 char_count 欄位，預設 0』"""
 
     def test_column_declared_on_model(self):
-        """model 必須有 char_count 屬性，型別 Integer、預設 0。"""
+        """model 必須有 char_count 屬性，型別 Integer、預設 0、nullable=False。"""
         col = ApiUsage.__table__.columns.get(COLUMN)
         assert col is not None, "ApiUsage 必須宣告 char_count 欄位"
         assert col.type.python_type is int, f"char_count 型別應為 int，got {col.type}"
         assert col.nullable is False, "char_count 應為 nullable=False"
-        assert col.default is not None, "char_count 應有 server/default"
+        # 兩端 default 都必須有：default=0（ORM 端）+ server_default（DB 端）
+        assert col.default is not None, "char_count 應有 client-side default=0"
+        assert col.server_default is not None, (
+            "char_count 必須有 server_default（DB DEFAULT 0）——"
+            "raw INSERT 省略欄位時不撞 NOT NULL、ALTER ADD COLUMN 對既有列自動回填"
+        )
 
     def test_new_row_default_is_zero(self, tmp_path):
         """新 INSERT 走 SQLAlchemy default → char_count = 0。"""
@@ -98,9 +119,9 @@ class TestModelDeclaresCharCount:
             tenant = Tenant(name="t-default-zero", plan="free")
             s.add(tenant)
             s.flush()
-            row = ApiUsage(tenant_id=tenant.id, period="2024-01-01", count=0)
+            row = ApiUsage(tenant_id=tenant.id, period=datetime.date(2024, 1, 1), count=0)
             s.add(row)
-            s.flush()
+            s.commit()
             assert row.char_count == 0, (
                 f"新 INSERT 的 char_count 應 = 0（default=0），got {row.char_count}"
             )
@@ -133,7 +154,7 @@ class TestNullCharCountReadable:
             tenant = Tenant(name="t-null-test", plan="free")
             s.add(tenant)
             s.flush()
-            row = ApiUsage(tenant_id=tenant.id, period="2024-01-01", count=5)
+            row = ApiUsage(tenant_id=tenant.id, period=datetime.date(2024, 1, 1), count=5)
             s.add(row)
             s.commit()
             row_id = row.id
@@ -146,6 +167,7 @@ class TestNullCharCountReadable:
                 ),
                 {"i": row_id},
             )
+        s.close()
 
         # 重新用 ORM 載入：模擬 production 升級後第一次讀取
         with Session() as s:
@@ -303,16 +325,6 @@ class TestNewEnvBackfillIsNoop:
     → 新 INSERT 自動 char_count=0，backfill 找不到 NULL 列，no-op。"""
 
     def test_create_all_then_backfill_noop(self, tmp_path, patch_engine):
-        from saas_mvp.models import (  # noqa: F401
-            api_key,
-            api_key_usage,
-            line_channel_config,
-            note,
-            plan_change_history,
-            tenant,
-            usage,
-            user,
-        )
         eng = create_engine(
             f"sqlite:///{tmp_path}/new.db",
             connect_args={"check_same_thread": False},
@@ -330,9 +342,10 @@ class TestNewEnvBackfillIsNoop:
             t = Tenant(name="t-newenv", plan="free")
             s.add(t)
             s.flush()
-            s.add(ApiUsage(tenant_id=t.id, period="2024-01-01", count=0))
+            s.add(ApiUsage(tenant_id=t.id, period=datetime.date(2024, 1, 1), count=0))
             s.commit()
             tid = t.id
+        s.close()
 
         # backfill 應 no-op，不改既有資料
         dbmod._migrate_backfill_char_count()
@@ -344,32 +357,68 @@ class TestNewEnvBackfillIsNoop:
         assert val == 0
 
 
-# ── 7. init_db 內已掛載：呼叫 init_db 不會因 backfill 失敗而阻擋啟動 ─────────
+# ── 7. server_default 防回歸：raw INSERT 省略 char_count 不撞 NOT NULL ──────
 
-class TestInitDbIntegratesBackfill:
-    """init_db() 內已呼叫 _migrate_backfill_char_count()——驗證整合無誤。"""
+class TestServerDefaultPreventsNotNull:
+    """回歸防護：既有測試 fixture 用 raw SQL 種資料（task4_qa、task6_apikey、
+    task4_quota、task5_usage_endpoint、test_task5_crud 共 6 個檔）皆省略
+    char_count。若 model 沒有 server_default=0，這些 raw INSERT 會撞
+    ``NOT NULL constraint failed: api_usage.char_count``。
 
-    def test_init_db_runs_backfill(self, tmp_path, monkeypatch):
-        eng = _make_old_db_engine(tmp_path)
-        monkeypatch.setattr(dbmod, "engine", eng)
+    本 case 直接驗證：schema 內 char_count 欄位確實帶 DEFAULT 0。
+    """
 
-        # init_db() 會走 import model 鏈 → Base.metadata.create_all 嘗試
-        # 建立所有表。但本測試的「舊 DB」只有 api_usage 一張表，create_all
-        # 會因缺其他表（如 tenants 對其他 model 有 FK）失敗——故這裡只驗證
-        # backfill 自身被 init_db 內呼叫，不跑完整 create_all。
-        # 直接呼叫 backfill 函式（已在 init_db 路徑內）：
-        dbmod._migrate_backfill_char_count()
-
-        after = eng.connect().execute(
-            text(f"SELECT {COLUMN} FROM {TABLE} ORDER BY id")
-        ).fetchall()
-        assert all(v == 0 for v, in after), "backfill 後 NULL 應回填 0"
-
-    def test_init_db_calls_backfill_in_path(self):
-        """靜態驗證：init_db() 源碼內已掛載 _migrate_backfill_char_count()。"""
-        import inspect as _inspect
-        src = _inspect.getsource(dbmod.init_db)
-        assert "_migrate_backfill_char_count" in src, (
-            "init_db 必須掛載 _migrate_backfill_char_count()，"
-            "確保 production 啟動時 backfill 被自動執行"
+    def test_column_has_db_default_zero(self, tmp_path):
+        """inspect 讀 schema 確認 DEFAULT 0 已存在於 DB 層。"""
+        eng = create_engine(
+            f"sqlite:///{tmp_path}/schema.db",
+            connect_args={"check_same_thread": False},
         )
+        dbmod.Base.metadata.create_all(bind=eng)
+        # SQLite 對 server_default 反映在 column metadata 的 default 屬性
+        cols = {c["name"]: c for c in inspect(eng).get_columns(TABLE)}
+        col_meta = cols[COLUMN]
+        assert col_meta["default"] is not None, (
+            "DB schema 內 char_count 必須有 DEFAULT 0——raw INSERT 省略欄位時"
+            "靠此 default 兜底，否則撞 NOT NULL constraint"
+        )
+        # SQLAlchemy 把 text("0") 序列化為 "0" 字串
+        assert str(col_meta["default"]).strip("'\"") in ("0",), (
+            f"char_count 預期 DB DEFAULT 0，got {col_meta['default']!r}"
+        )
+
+    def test_raw_insert_without_char_count_succeeds(self, tmp_path):
+        """模擬既有測試 raw SQL 種資料語法（task4_qa:401 等），確認不再撞 NOT NULL。
+
+        tenant 走 ORM（避免撞 tenant.is_active 自己的 server_default 問題——
+        本測試焦點是 api_usage.char_count，不是 tenant）。
+        """
+        eng = create_engine(
+            f"sqlite:///{tmp_path}/raw.db",
+            connect_args={"check_same_thread": False},
+        )
+        dbmod.Base.metadata.create_all(bind=eng)
+        Session = sessionmaker(bind=eng)
+        with Session() as s:
+            t = Tenant(name="t-raw-insert", plan="free")
+            s.add(t)
+            s.commit()
+            tid = t.id
+        s.close()
+
+        # 與 test_task4_qa.py:401 完全相同的 raw INSERT 語法
+        with eng.begin() as conn:
+            # 故意省略 char_count——以前會撞 NOT NULL
+            conn.execute(
+                text(
+                    "INSERT INTO api_usage (tenant_id, period, count) "
+                    "VALUES (:t, '2024-01-01', 5)"
+                ),
+                {"t": tid},
+            )
+            # server_default 兜底 → 應自動 = 0
+            val = conn.execute(
+                text(f"SELECT {COLUMN} FROM api_usage WHERE tenant_id = :t"),
+                {"t": tid},
+            ).scalar()
+        assert val == 0
