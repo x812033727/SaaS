@@ -786,3 +786,7 @@ class BackgroundTask:
 
 總結一句話：**本輪「`asyncio.to_thread` 包裝」在當前 BackgroundTasks 架構下是自造輪子**——`run_in_threadpool` 已達成相同目的，**真正的改進是換 async HTTP client，但那需要整個 async 化重構、屬 M2 範疇**。建議本輪只更新誤導性註解、不動邏輯。
 
+## 2026-06-19 02:37
+
+我先看現有 `routers/tenants.py` 與 line-config service 介面，再只補查端點設計、FastAPI auth/dependency 與 DELETE/PUT 行為相關文件。
+
