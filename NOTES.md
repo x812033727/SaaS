@@ -3786,3 +3786,5 @@ Summary should be terse, focused, like a team meeting. The PM裁決 is already d
 
 ## 任務 #5 完成：QA 回歸：本輪相關測試全綠且全檔內部一致，並確認 char_quota/char_metering 7 失敗為既存外部缺口（本輪未新增破測）
 
+## 任務 #1 完成：實作需求
+
