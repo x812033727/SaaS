@@ -452,3 +452,50 @@
 - 時間：2026-06-19 02:41
 - 理由：對齊 self-service API 慣例；前端需避免輪詢吃掉租戶配額。
 
+## 採維運腳本 `saas_mvp.ops.backfill_line_bot_user_id`，不新增 API、不引入新 framework。
+- 時間：2026-06-19 03:04
+- 理由：這是窄範圍資料回填，降低認證面與長期維護面。
+- 否決方案：遠端觸發 API、背景任務系統。
+
+## 不重用 `upsert_line_config()`；只重用 HTTP bot/info client 與 ORM 解密後的 `access_token`。
+- 時間：2026-06-19 03:04
+- 理由：回填不應覆寫 secret/token/lang。
+
+## CLI 介面支援 `--dry-run`、`--apply` 二選一，預設不寫入。
+- 時間：2026-06-19 03:04
+- 理由：犧牲操作便利，避免誤改正式資料。
+
+## 查詢預設只處理 `line_bot_user_id IS NULL`，支援 `--tenant-id`、`--limit`，並依 `tenant_id` 穩定排序。
+- 時間：2026-06-19 03:04
+
+## `--tenant-id` 指到已回填資料時，要輸出 `skipped reason=already_set`，不可靜默略過。
+- 時間：2026-06-19 03:04
+
+## `--dry-run` 仍呼叫 LINE bot/info，但不 flush、不 commit。
+- 時間：2026-06-19 03:04
+- 理由：驗證可回填性；文件需明講這不是純本機檢查，可能受 token、網路、rate limit 影響。
+
+## 每筆資料獨立交易；成功才 commit，失敗、衝突或 `IntegrityError` 必須 rollback 後繼續下一筆。
+- 時間：2026-06-19 03:04
+- 理由：放棄全批原子性，換取可續跑與低 blast radius。
+
+## unique constraint 是衝突真相來源；可做 precheck 協助分類，但仍必須 catch `IntegrityError`。
+- 時間：2026-06-19 03:04
+- 理由：避免 race condition。
+
+## 結果狀態固定為 `updated / skipped / failed / conflict`，stdout 使用穩定 `key=value` 行與 summary。
+- 時間：2026-06-19 03:04
+
+## 衝突輸出 `conflict reason=duplicate_line_bot_user_id`；若安全可得，附 `conflict_tenant_id`，但不輸出 userId/token/secret 明文。
+- 時間：2026-06-19 03:04
+
+## 腳本不呼叫 `init_db()`、不自動 migration；schema 不符就 fail fast。
+- 時間：2026-06-19 03:04
+- 理由：維運腳本只做資料回填，避免 dry-run 造成隱性寫入。
+
+## 測試以 fake `LineBotInfoClient` 與測試 session factory 離線覆蓋成功、dry-run、bot/info 失敗、unique 衝突、非 NULL 不覆寫、`--tenant-id` 已回填 skipped。
+- 時間：2026-06-19 03:04
+
+## 文件補在 README 的 LINE Messaging API 區塊，包含 dry-run/apply 指令、`--limit` 建議、可重跑語意、summary 解讀與外部呼叫風險。
+- 時間：2026-06-19 03:04
+
