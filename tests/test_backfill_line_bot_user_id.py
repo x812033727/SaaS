@@ -7,6 +7,7 @@ from io import StringIO
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -184,28 +185,81 @@ def test_bot_info_failure_does_not_stop_other_tenants(db_session_factory):
     assert _stored_bot_id(db_session_factory, good_id) == UID_B
 
 
-def test_duplicate_user_id_is_reported_as_conflict(db_session_factory):
+def test_duplicate_user_id_is_reported_as_conflict_and_batch_continues(db_session_factory):
     with db_session_factory() as db:
         owner = _tenant(db, "owner")
         target = _tenant(db, "target")
+        good = _tenant(db, "good")
         _config(db, owner, token="tok-owner", line_bot_user_id=UID_A)
         _config(db, target, token="tok-target")
+        _config(db, good, token="tok-good")
         owner_id = owner.id
         target_id = target.id
+        good_id = good.id
 
-    fake = FakeBotInfoClient({"tok-target": UID_A})
+    fake = FakeBotInfoClient({"tok-target": UID_A, "tok-good": UID_B})
     results = backfill_line_bot_user_ids(
         session_factory=db_session_factory,
         bot_info_client=fake,
         apply=True,
     )
 
-    assert len(results) == 1
+    assert len(results) == 2
     assert results[0].tenant_id == target_id
     assert results[0].status == "conflict"
     assert results[0].reason == "duplicate_line_bot_user_id"
     assert results[0].conflict_tenant_id == owner_id
+    assert (results[1].tenant_id, results[1].status, results[1].reason) == (
+        good_id,
+        "updated",
+        "applied",
+    )
     assert _stored_bot_id(db_session_factory, target_id) is None
+    assert _stored_bot_id(db_session_factory, good_id) == UID_B
+
+
+def test_dry_run_never_commits_and_limit_scans_oldest_null(db_session_factory):
+    with db_session_factory() as db:
+        first = _tenant(db, "first")
+        second = _tenant(db, "second")
+        already_set = _tenant(db, "already-set")
+        _config(db, first, token="tok-first")
+        _config(db, second, token="tok-second")
+        _config(db, already_set, token="tok-existing", line_bot_user_id=UID_B)
+        first_id = first.id
+        second_id = second.id
+        already_set_id = already_set.id
+
+    commit_calls: list[str] = []
+
+    class TrackingSession(OrmSession):
+        def commit(self) -> None:
+            commit_calls.append("commit")
+            super().commit()
+
+    tracking_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=db_session_factory.kw["bind"],
+        class_=TrackingSession,
+    )
+    fake = FakeBotInfoClient({"tok-first": UID_A, "tok-second": UID_B})
+
+    results = backfill_line_bot_user_ids(
+        session_factory=tracking_factory,
+        bot_info_client=fake,
+        apply=False,
+        limit=1,
+    )
+
+    assert [(r.tenant_id, r.status, r.reason) for r in results] == [
+        (first_id, "updated", "dry_run")
+    ]
+    assert commit_calls == []
+    assert fake.calls == ["tok-first"]
+    assert _stored_bot_id(db_session_factory, first_id) is None
+    assert _stored_bot_id(db_session_factory, second_id) is None
+    assert _stored_bot_id(db_session_factory, already_set_id) == UID_B
 
 
 def test_cli_report_has_summary_and_hides_secrets_tokens_user_ids(db_session_factory):
