@@ -790,3 +790,7 @@ class BackgroundTask:
 
 我先看現有 `routers/tenants.py` 與 line-config service 介面，再只補查端點設計、FastAPI auth/dependency 與 DELETE/PUT 行為相關文件。
 
+## 2026-06-19 02:59
+
+我會先快速看現有租戶與 LINE 設定程式碼，避免調研脫離架構；再只補查 LINE 官方取得 bot profile/userId、維運端點/批次腳本與交易處理的缺口。
+
