@@ -413,3 +413,42 @@
 ## 可逆性 — 本輪所有改動皆為文件 + 測試 + Fake 測試輔助屬性，無邏輯變更；M2 async 化若啟動，測試方法改名（to_thread→background threadpool 斷言）但 delay 機制與不變量測試可重用；M2 方向被否決時 revert 成本 = 改兩段 docstring + 幾個 test method + 移除 xfail marker。
 - 時間：2026-06-16 13:57
 
+## 核可自助 LINE config API 落在 `tenants.py`，端點為 `GET/PUT/DELETE /tenants/me/line-config`。
+- 時間：2026-06-19 02:41
+- 理由：貼近既有租戶自助邊界，放棄新增 router。
+
+## `tenant_id` 一律取自 `current_user.tenant_id`。
+- 時間：2026-06-19 02:41
+- 否決方案：不接受 path/body 傳入 tenant_id，避免越權面。
+
+## Router 只薄封裝既有 `services.line_config` CRUD，補 `webhook_url`。
+- 時間：2026-06-19 02:41
+- 理由：保護依賴方向，放棄重寫 self-service service。
+
+## Response 只回遮罩狀態 `has_channel_secret`、`has_access_token`，不回明文 secret/token。
+- 時間：2026-06-19 02:41
+
+## `webhook_url` 使用 `line_webhook.webhook_url_for(tenant_id)` 產生相對路徑。
+- 時間：2026-06-19 02:41
+- 理由：後端不綁部署 host；前端或部署層負責補 origin。
+- 否決方案：不硬碼完整 URL。
+
+## `PUT` 沿用 admin 行為，同步執行 LINE bot/info 驗證與回填。
+- 時間：2026-06-19 02:41
+- 理由：保持語意一致；接受最高 10 秒外部延遲。
+- 否決方案：本輪不拆非同步回填或獨立驗證端點。
+
+## Request body 短期沿用 admin 欄位定義；若欄位再擴充，再抽共用 schema。
+- 時間：2026-06-19 02:41
+- 理由：避免過早抽象，但保留可逆性。
+
+## `DELETE` 回 `204 No Content`。
+- 時間：2026-06-19 02:41
+
+## 認證、停用租戶、404 與驗證錯誤沿用既有 dependency/service，不在 router 重包。
+- 時間：2026-06-19 02:41
+
+## 三個端點掛既有 rate limit dependency。
+- 時間：2026-06-19 02:41
+- 理由：對齊 self-service API 慣例；前端需避免輪詢吃掉租戶配額。
+
