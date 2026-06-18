@@ -783,6 +783,76 @@
       "rejected": "",
       "session_id": "pj414ec0cf17",
       "created_at": 1781589461.6964934
+    },
+    {
+      "decision": "核可自助 LINE config API 落在 `tenants.py`，端點為 `GET/PUT/DELETE /tenants/me/line-config`。",
+      "rationale": "貼近既有租戶自助邊界，放棄新增 router。",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.157194
+    },
+    {
+      "decision": "`tenant_id` 一律取自 `current_user.tenant_id`。",
+      "rationale": "",
+      "rejected": "不接受 path/body 傳入 tenant_id，避免越權面。",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1571991
+    },
+    {
+      "decision": "Router 只薄封裝既有 `services.line_config` CRUD，補 `webhook_url`。",
+      "rationale": "保護依賴方向，放棄重寫 self-service service。",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572003
+    },
+    {
+      "decision": "Response 只回遮罩狀態 `has_channel_secret`、`has_access_token`，不回明文 secret/token。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572013
+    },
+    {
+      "decision": "`webhook_url` 使用 `line_webhook.webhook_url_for(tenant_id)` 產生相對路徑。",
+      "rationale": "後端不綁部署 host；前端或部署層負責補 origin。",
+      "rejected": "不硬碼完整 URL。",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572025
+    },
+    {
+      "decision": "`PUT` 沿用 admin 行為，同步執行 LINE bot/info 驗證與回填。",
+      "rationale": "保持語意一致；接受最高 10 秒外部延遲。",
+      "rejected": "本輪不拆非同步回填或獨立驗證端點。",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.157204
+    },
+    {
+      "decision": "Request body 短期沿用 admin 欄位定義；若欄位再擴充，再抽共用 schema。",
+      "rationale": "避免過早抽象，但保留可逆性。",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572056
+    },
+    {
+      "decision": "`DELETE` 回 `204 No Content`。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572063
+    },
+    {
+      "decision": "認證、停用租戶、404 與驗證錯誤沿用既有 dependency/service，不在 router 重包。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572073
+    },
+    {
+      "decision": "三個端點掛既有 rate limit dependency。",
+      "rationale": "對齊 self-service API 慣例；前端需避免輪詢吃掉租戶配額。",
+      "rejected": "",
+      "session_id": "pj9a2f85cd21",
+      "created_at": 1781808094.1572082
     }
   ]
 }
