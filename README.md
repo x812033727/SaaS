@@ -299,6 +299,42 @@ POST /line/webhook/{tenant_id}
 
 **支援的目標語言**（BCP-47 格式）：`zh-TW`、`en`、`ja`、`ko` 等（後端需支援對應語言）。
 
+### 回填既有 LINE bot userId（維運腳本）
+
+既有 `line_channel_configs.line_bot_user_id IS NULL` 的資料，可用一次性腳本回填。
+腳本沿用現有 `HttpLineBotInfoClient`，會解密 DB 內的 access token 後呼叫
+LINE `GET /v2/bot/info`；stdout 不輸出 access token、channel secret 或 LINE userId。
+
+```bash
+# 先 dry-run：會呼叫 LINE bot/info，但不寫入 DB
+PYTHONPATH=src python3 -m saas_mvp.ops.backfill_line_bot_user_id --dry-run --limit 50
+
+# 確認結果後再 apply；每筆獨立 commit，可重跑
+PYTHONPATH=src python3 -m saas_mvp.ops.backfill_line_bot_user_id --apply --limit 50
+
+# 單一租戶排查；若已回填會輸出 skipped reason=already_set
+PYTHONPATH=src python3 -m saas_mvp.ops.backfill_line_bot_user_id --dry-run --tenant-id 123
+```
+
+輸出格式為穩定 `key=value` 行：
+
+```text
+mode=dry_run
+tenant_id=123 status=updated reason=dry_run
+summary total=1 updated=1 skipped=0 failed=0 conflict=0
+```
+
+狀態說明：
+
+| status | 說明 |
+|--------|------|
+| `updated` | `--dry-run` 表示可回填，`--apply` 表示已寫入 |
+| `skipped` | 找不到設定或該租戶已回填，不覆寫既有值 |
+| `failed` | bot/info 失敗、回應缺 userId 或 commit 失敗 |
+| `conflict` | 回傳的 bot userId 已被其他租戶使用 |
+
+`--dry-run` 不是純本機檢查，仍會呼叫 LINE API，可能受 token、網路與 rate limit 影響。
+
 ### 翻譯後端
 
 | 設定 | 行為 |
