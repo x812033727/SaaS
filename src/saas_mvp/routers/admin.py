@@ -81,7 +81,23 @@ class LineConfigUpsertBody(BaseModel):
     default_target_lang: str = "zh-TW"
 
 
-@router.get("/line-configs/{tenant_id}", summary="查詢租戶 LINE 設定（遮罩版）")
+class AdminLineConfigResponse(BaseModel):
+    tenant_id: int
+    has_channel_secret: bool
+    has_access_token: bool
+    default_target_lang: str
+    credential_status: str = "unchecked"
+    credential_last_error: str | None = None
+    credential_checked_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@router.get(
+    "/line-configs/{tenant_id}",
+    response_model=AdminLineConfigResponse,
+    summary="查詢租戶 LINE 設定（遮罩版）",
+)
 def get_line_config(
     tenant_id: int,
     db: Session = Depends(get_db),
@@ -89,7 +105,11 @@ def get_line_config(
     return line_config_svc.get_line_config(db, tenant_id)
 
 
-@router.put("/line-configs/{tenant_id}", summary="建立或更新租戶 LINE 設定")
+@router.put(
+    "/line-configs/{tenant_id}",
+    response_model=AdminLineConfigResponse,
+    summary="建立或更新租戶 LINE 設定",
+)
 def upsert_line_config(
     tenant_id: int,
     body: LineConfigUpsertBody,

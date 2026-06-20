@@ -9,6 +9,22 @@ class LineReplyError(Exception):
     """LINE reply API 呼叫失敗（網路錯誤、HTTP 錯誤、回應格式異常）。"""
 
 
+class LineBotInfoError(Exception):
+    """LINE bot/info 呼叫失敗的基底例外。"""
+
+
+class LineBotInfoCredentialError(LineBotInfoError):
+    """access token 無效或未授權。"""
+
+
+class LineBotInfoNetworkError(LineBotInfoError):
+    """bot/info 網路層失敗，例如 timeout、DNS 或連線中斷。"""
+
+
+class LineBotInfoParseError(LineBotInfoError):
+    """bot/info 回應格式不符預期。"""
+
+
 class LineReplyClient(ABC):
     """LINE Messaging API reply client 介面。
 
@@ -61,5 +77,8 @@ class LineBotInfoClient(ABC):
             成功時回傳 userId（格式 U[0-9a-f]{32}）；回應缺少 userId 時回 None。
 
         Raises:
-            任何網路/HTTP 失敗一律拋例外，由呼叫端決定是否吞掉（upsert 不阻擋）。
+            LineBotInfoCredentialError: token 無效或未授權。
+            LineBotInfoNetworkError: 網路層失敗。
+            LineBotInfoParseError: 回應格式不是可解析 JSON。
+            LineBotInfoError: 其他 bot/info API 失敗。
         """

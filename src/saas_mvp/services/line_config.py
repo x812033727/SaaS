@@ -9,20 +9,48 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from saas_mvp.line_client import LineBotInfoClient
+from saas_mvp.line_client import (
+    LineBotInfoClient,
+    LineBotInfoCredentialError,
+    LineBotInfoError,
+    LineBotInfoNetworkError,
+    LineBotInfoParseError,
+)
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.line_channel_config import (
-    LineChannelConfig,
-    validate_target_lang,
     InvalidTargetLangError,
+    LineChannelConfig,
+    LineConfigDecryptionError,
+    validate_target_lang,
 )
 
 logger = logging.getLogger(__name__)
+
+_STATUS_UNCHECKED = "unchecked"
+_STATUS_VALID = "valid"
+_STATUS_INVALID = "invalid"
+_STATUS_ERROR = "error"
+_STATUS_CONFLICT = "conflict"
+_ERROR_MAX_LEN = 255
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _clip_error(message: str) -> str:
+    return message[:_ERROR_MAX_LEN]
+
+
+def _normalize_credential_status(value: str | None) -> str:
+    return value or _STATUS_UNCHECKED
 
 
 def _to_response(cfg: LineChannelConfig) -> dict:
@@ -32,9 +60,126 @@ def _to_response(cfg: LineChannelConfig) -> dict:
         "has_channel_secret": bool(cfg.channel_secret_enc),
         "has_access_token": bool(cfg.access_token_enc),
         "default_target_lang": cfg.default_target_lang,
+        "credential_status": _normalize_credential_status(cfg.credential_status),
+        "credential_last_error": cfg.credential_last_error,
+        "credential_checked_at": (
+            cfg.credential_checked_at.isoformat() if cfg.credential_checked_at else None
+        ),
         "created_at": cfg.created_at.isoformat() if cfg.created_at else None,
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
     }
+
+
+def _access_token_changed(cfg: LineChannelConfig, access_token: str) -> bool:
+    if cfg.access_token_enc is None:
+        return True
+    try:
+        return cfg.access_token != access_token
+    except LineConfigDecryptionError:
+        return True
+
+
+def _set_unchecked_for_token_change(cfg: LineChannelConfig) -> None:
+    cfg.line_bot_user_id = None
+    cfg.credential_status = _STATUS_UNCHECKED
+    cfg.credential_last_error = None
+    cfg.credential_checked_at = None
+
+
+def _mark_credential_status(
+    db: Session,
+    cfg: LineChannelConfig,
+    *,
+    status_value: str,
+    error: str | None,
+) -> None:
+    cfg.credential_status = status_value
+    cfg.credential_last_error = _clip_error(error) if error else None
+    cfg.credential_checked_at = _utcnow()
+    db.commit()
+    db.refresh(cfg)
+
+
+def _verify_and_mark_bot_info(
+    db: Session,
+    cfg: LineChannelConfig,
+    *,
+    tenant_id: int,
+    bot_info_client: LineBotInfoClient,
+) -> None:
+    try:
+        uid = bot_info_client.get_user_id(cfg.access_token)
+        if not uid:
+            _mark_credential_status(
+                db,
+                cfg,
+                status_value=_STATUS_INVALID,
+                error="LINE bot/info did not return a valid userId",
+            )
+            return
+
+        cfg.line_bot_user_id = uid
+        cfg.credential_status = _STATUS_VALID
+        cfg.credential_last_error = None
+        cfg.credential_checked_at = _utcnow()
+        db.commit()
+        db.refresh(cfg)
+    except IntegrityError:
+        logger.warning(
+            "bot/info uid conflict for tenant %s, marking credential conflict",
+            tenant_id,
+            exc_info=True,
+        )
+        db.rollback()
+        db.refresh(cfg)
+        _mark_credential_status(
+            db,
+            cfg,
+            status_value=_STATUS_CONFLICT,
+            error="LINE bot userId is already connected to another tenant",
+        )
+    except (LineBotInfoCredentialError, LineBotInfoParseError) as exc:
+        logger.warning(
+            "bot/info credential invalid for tenant %s: %s",
+            tenant_id,
+            type(exc).__name__,
+        )
+        db.rollback()
+        db.refresh(cfg)
+        _mark_credential_status(
+            db,
+            cfg,
+            status_value=_STATUS_INVALID,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    except (LineBotInfoNetworkError, LineBotInfoError) as exc:
+        logger.warning(
+            "bot/info check failed for tenant %s: %s",
+            tenant_id,
+            type(exc).__name__,
+        )
+        db.rollback()
+        db.refresh(cfg)
+        _mark_credential_status(
+            db,
+            cfg,
+            status_value=_STATUS_ERROR,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    except Exception as exc:  # noqa: BLE001 - legacy/fake clients may raise arbitrary errors
+        logger.warning(
+            "bot/info uid fetch failed for tenant %s, marking credential error",
+            tenant_id,
+            exc_info=True,
+        )
+        db.rollback()
+        db.refresh(cfg)
+        _mark_credential_status(
+            db,
+            cfg,
+            status_value=_STATUS_ERROR,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def get_line_config(db: Session, tenant_id: int) -> dict:
@@ -64,8 +209,8 @@ def upsert_line_config(
 
     若提供 ``bot_info_client``，在設定 commit 成功後自動呼叫 LINE
     ``GET /v2/bot/info`` 取 bot userId 並回填 ``line_bot_user_id``。
-    bot/info 失敗（網路/離線）或 userId 已被他租戶佔用（IntegrityError）時，
-    僅記 warning、rollback，不阻擋 upsert——設定仍儲存成功、欄位留原值。
+    bot/info 失敗或 userId 已被他租戶佔用時，不阻擋 upsert，而是寫入
+    credential_status 供 API 回應揭露。
 
     Raises
     ------
@@ -86,34 +231,28 @@ def upsert_line_config(
     if cfg is None:
         cfg = LineChannelConfig(tenant_id=tenant_id)
         db.add(cfg)
+        token_changed = True
+    else:
+        token_changed = _access_token_changed(cfg, access_token)
 
     cfg.channel_secret = channel_secret
     cfg.access_token = access_token
     cfg.default_target_lang = default_target_lang
+    if token_changed:
+        _set_unchecked_for_token_change(cfg)
+    elif cfg.credential_status is None:
+        cfg.credential_status = _STATUS_UNCHECKED
 
     db.commit()
     db.refresh(cfg)
 
-    # bot/info 自動回填 userId：失敗不阻擋 upsert（離線相容）。
-    # get_user_id 失敗與二次 commit 的 IntegrityError 共用同一 try/except，
-    # rollback 必須顯式呼叫，防止 session 髒狀態污染後續請求。
     if bot_info_client is not None:
-        try:
-            uid = bot_info_client.get_user_id(cfg.access_token)
-            if uid:
-                cfg.line_bot_user_id = uid
-                db.commit()
-        except Exception:
-            # exc_info 保留類型/stack，tenant_id 利於線上排查；不洩漏 token/uid 值
-            logger.warning(
-                "bot/info uid fetch failed for tenant %s, skipping",
-                tenant_id,
-                exc_info=True,
-            )
-            db.rollback()
-            # rollback 後 cfg 記憶體值已過期，refresh 與 DB 對齊（line_bot_user_id 回 NULL），
-            # 防後續擴充 _to_response 暴露此欄位時吃到 stale 值
-            db.refresh(cfg)
+        _verify_and_mark_bot_info(
+            db,
+            cfg,
+            tenant_id=tenant_id,
+            bot_info_client=bot_info_client,
+        )
 
     return _to_response(cfg)
 

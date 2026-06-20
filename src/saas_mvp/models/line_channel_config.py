@@ -103,6 +103,12 @@ class LineChannelConfig(Base):
     # 新環境由 create_all 直接建立；既有 DB 由 db._migrate_add_line_bot_user_id() 補欄。
     line_bot_user_id = Column(String(64), nullable=True, unique=True, index=True)
 
+    # LINE channel access token 的 bot/info 驗證狀態。
+    # 舊資料可能為 NULL；API 邊界層統一正規化為 "unchecked"。
+    credential_status = Column(String(16), nullable=True, default="unchecked")
+    credential_last_error = Column(String(255), nullable=True)
+    credential_checked_at = Column(DateTime(timezone=True), nullable=True)
+
     # 預設翻譯目標語言（BCP-47 tag，如 "zh-TW", "en", "ja"）
     default_target_lang = Column(String(16), nullable=False, default="zh-TW")
 

@@ -64,6 +64,7 @@ def init_db() -> None:
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
     # 新環境由 create_all 自動建立，此處 inspect 後即略過。
     _migrate_add_line_bot_user_id()
+    _migrate_add_line_credential_status_fields()
     _migrate_backfill_char_count()
 
 
@@ -104,6 +105,46 @@ def _migrate_add_line_bot_user_id() -> None:
         _log.warning(
             "schema migration for %s.%s skipped due to error: %s",
             table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_line_credential_status_fields() -> None:
+    """為既有 line_channel_configs 表補上 credential 驗證狀態欄位。
+
+    只做 ADD COLUMN，不回填舊資料；讀取/API 邊界會把 NULL 正規化為
+    ``unchecked``。任何失敗僅記 warning，不阻擋服務啟動。
+    """
+    table = "line_channel_configs"
+    columns = {
+        "credential_status": "VARCHAR(16)",
+        "credential_last_error": "VARCHAR(255)",
+        "credential_checked_at": "DATETIME",
+    }
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        missing = {
+            name: col_type for name, col_type in columns.items() if name not in existing
+        }
+        if not missing:
+            return
+
+        with engine.begin() as conn:
+            for name, col_type in missing.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+        _log.info(
+            "migrated: added %s columns to %s",
+            ", ".join(sorted(missing)),
+            table,
+        )
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s credential fields skipped due to error: %s",
+            table,
+            type(exc).__name__,
         )
 
 

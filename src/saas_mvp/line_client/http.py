@@ -13,6 +13,10 @@ import urllib.request
 
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
+    LineBotInfoCredentialError,
+    LineBotInfoError,
+    LineBotInfoNetworkError,
+    LineBotInfoParseError,
     LineReplyClient,
     LineReplyError,
 )
@@ -85,8 +89,8 @@ class HttpLineReplyClient(LineReplyClient):
 class HttpLineBotInfoClient(LineBotInfoClient):
     """呼叫真實 LINE `GET /v2/bot/info` 取得 bot userId 的 client。
 
-    僅用 stdlib urllib。任何失敗直接拋例外（OSError/HTTPError/解析錯誤），
-    由呼叫端（upsert）決定吞掉並記 warning，不阻擋設定儲存。
+    僅用 stdlib urllib。HTTP/網路/解析失敗會轉成 line_client.base 的
+    型別化例外，由呼叫端決定狀態落 DB，不阻擋設定儲存。
 
     Args:
         api_url: bot/info endpoint（預設官方 URL，測試時可替換）。
@@ -108,8 +112,25 @@ class HttpLineBotInfoClient(LineBotInfoClient):
             headers={"Authorization": f"Bearer {access_token}"},
             method="GET",
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            data = json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            if exc.code in {400, 401, 403}:
+                raise LineBotInfoCredentialError(
+                    f"LINE bot/info credential rejected: HTTP {exc.code}"
+                ) from exc
+            raise LineBotInfoError(f"LINE bot/info HTTP {exc.code}") from exc
+        except OSError as exc:
+            raise LineBotInfoNetworkError("LINE bot/info network error") from exc
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LineBotInfoParseError("LINE bot/info returned invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise LineBotInfoParseError("LINE bot/info returned non-object JSON")
+
         user_id = data.get("userId")
         # 缺欄位或不符 LINE 規格（U + 32 hex）一律當 None，不存入 DB
         if not user_id or not _LINE_USER_ID_RE.match(user_id):
