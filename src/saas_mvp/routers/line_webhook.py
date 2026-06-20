@@ -457,4 +457,4 @@ def _translate_sync(translator: Translator, text: str, target_lang: str) -> str:
     helper 封裝是為了維持單一翻譯呼叫點，未來換 async SDK 只改這裡。
     為何可 sync 直呼：見步驟 6c 註解（canonical 說明位置）。
     """
-    return translator.translate(text, target_lang)
+    return translator.translate(text, target_lang).text
