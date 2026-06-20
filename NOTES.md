@@ -4021,3 +4021,35 @@ I will view `tests/test_line_task2_translator.py` to examine the unit tests for 
 
 ## 任務 #4 完成：AC4：`.venv/bin/pytest tests/test_line_task2_translator.py` 全數通過。（現況 ✅ 36 passed）
 
+## 異議退回 任務 #1：新增 `LineWebhookEvent` model（表 `line_webhook_events`），欄位含 `id, tenant_id, webhook_event_id, status, attempt_count, last_error, last_stage, created_at, updated_at, processed_at`，加唯一約束 `(tenant_id, webhook_event_id)`
+先看實際程式碼再下結論，不憑設計敘述放行。
+已讀實際程式碼、既有 model 範式（`usage.py` 的 `UniqueConstraint`、`line_channel_config.py` 的時間欄位）、`db.py` 輕量 migration 風格與 `_process_events` 現況。我只就驗收標準與 PM 已定範圍挑刺。
+
+## 異議要點
+
+**1. 架構設計與驗收標準 #2 直接打架（實質、會造成假共識）**
+- 驗收 #2 字面寫死：「同一 `webhookEventId` 第二次（含重送、含 `isRedelivery=false`）進入 `_process_events` **不再 reply**」。
+- 但架構師的「細分重入控制流」決定：`FAILED 且 last_stage < REPLY_SENT` → 重設 `PENDING`、`attempt_count` 歸零、**重新處理（會 reply／計量）**。
+- 這兩條規則互斥。QA 照驗收 #2 literal 寫測試（任何第二次出現都不 reply）就會把架構師這條判死；架構師照自己設計寫，#2 的測試又會紅。**現在團隊有兩份互相矛盾的真理來源，必須先收斂再讓 #3/#4 動工**，否則就是典型「下游才爆」的假共識。
+- 我的傾向：本輪 PM 已明確砍掉 retry（「沒有 retry worker，重跑不在範圍」）。**請直接砍掉 FAILED→PENDING 重跑**，failed 一律留檔診斷、不自動重處理，讓行為與驗收 #2／#5 一致。要保留重跑就得正式改寫驗收 #2 措辭並新增任務，不能默默塞進設計。
+
+**2. 越界鍍金，PM 已表態反對者又被加回來（範圍）**
+- 「7 天 retention + Cron 定時刪除」+ 為它而建的複合索引 `(created_at, status)`：**四個任務裡沒有任何一項涵蓋清理任務，無 owner、無驗收條件**。這是純越界，task #1 不該為一個不存在的功能預埋索引。請刪掉 `(created_at, status)` 索引，retention 要做就另立任務走正式排程。
+- `attempt_count` 歸零邏輯依附在已被砍的 retry 語意上 —— 連帶移除，欄位保留為被動診斷即可（對齊 PM 原裁示）。
+
+**3. 可放行的部分（確認無誤）**
+- Model 欄位、`(tenant_id, webhook_event_id)` `UniqueConstraint`、`init_db()` 註冊 import + `create_all` 落點，皆符合既有範式與驗收 #1，這部分沒問題。
+- Status/Stage Enum 與「reply 後不重送」屬合理、與 #5 一致，不反對。
+
+**結論**：task #1 的 model 本體可做，但團隊現在的「共識」內嵌了一條與驗收 #2 衝突的行為決策，加上一個 PM 已反對的越界 retention 範圍 —— 這正是會讓 #3/#4 返工的假共識。先收斂「failed 要不要重跑」並砍掉 retention 鍍金，再往下。
+
+異議: 成立
+
+## 任務 #1 完成：新增 `LineWebhookEvent` model（表 `line_webhook_events`），欄位含 `id, tenant_id, webhook_event_id, status, attempt_count, last_error, last_stage, created_at, updated_at, processed_at`，加唯一約束 `(tenant_id, webhook_event_id)`
+
+## 任務 #2 完成：在 `init_db()` 註冊新 model import 並確保新表由 `create_all` 建立，對齊既有輕量 migration 風格（啟動失敗僅 warning、不阻擋）
+
+## 任務 #3 完成：改寫 `_process_events`：逐 event 以 `webhookEventId` claim/查詢狀態，`processed` 或已存在 pending 則略過、否則建 pending；處理完標 `processed`，例外標 `failed`＋`last_stage`，移除單純 `isRedelivery=true` skip（`isRedelivery` 僅留 log）
+
+## 任務 #4 完成：撰寫測試：同 ID 重送不重複回覆/計量、同 ID 但 `isRedelivery=false` 也略過、`isRedelivery=true` 但新 ID 要處理、多 event payload 逐筆獨立、缺 `webhookEventId` 的退化行為
+
