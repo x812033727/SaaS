@@ -99,11 +99,18 @@ class SpyTranslator(Translator):
     def __init__(self, *, delay: float = 0.0) -> None:
         self._delay = delay
         self.translate_args: list[tuple[str, str]] = []
+        self.skipped_texts: set[str] = set()
 
     def translate(self, text: str, target_lang: str) -> TranslationResult:
         if self._delay > 0:
             time.sleep(self._delay)
         self.translate_args.append((text, target_lang))
+        if text in self.skipped_texts:
+            return TranslationResult(
+                text=text,
+                detected_lang=target_lang,
+                skipped=True,
+            )
         return TranslationResult(
             text=f"[{target_lang.upper()}] {text}",
             detected_lang=None,
@@ -160,6 +167,7 @@ def client():
 def _reset_spies():
     """每個 test 重新計數——防殘留狀態污染。"""
     _spy_translator.translate_args.clear()
+    _spy_translator.skipped_texts.clear()
     _spy_line_client.reset()
     yield
 
@@ -401,6 +409,28 @@ class TestMultipleEventsPreserved:
         c, cc = _read_usage(tid)
         assert c == 2
         assert cc == 14, f"2 則累加 7+7=14，got {cc}"
+
+    def test_skipped_result_has_no_reply_or_usage_and_next_event_counts(self, client):
+        """驗收 #3：result.skipped=True 不 reply、不計量；同批正常筆照常計量。"""
+        tid = _new_tenant(client)
+        _spy_translator.skipped_texts.add("same-language")
+
+        r = _post(
+            client,
+            tid,
+            _text_event("same-language", "rt-skip"),
+            _text_event("normal", "rt-normal"),
+        )
+        assert r.status_code == 200
+
+        assert _spy_translator.translate_call_count == 2
+        assert _spy_line_client.reply_call_count == 1
+        reply = _spy_line_client.reply_args[0]
+        assert reply.reply_token == "rt-normal"
+        assert reply.text == "[ZH-TW] normal"
+        c, cc = _read_usage(tid)
+        assert c == 1
+        assert cc == len("[ZH-TW] normal")
 
     def test_duplicate_id_skipped_no_translate_no_reply_no_count(self, client):
         """相同 webhookEventId 第二次進入 → 不翻譯、不回覆、不計 count/char。"""
