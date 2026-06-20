@@ -370,6 +370,28 @@ class TestTextMessageTranslation:
         assert "[ZH-TW] msg1" in texts
         assert "[ZH-TW] msg2" in texts
 
+    def test_same_language_event_skips_reply_and_quota_but_next_event_runs(self, client):
+        """同語言 skip：不回覆、不計量；同批下一筆正常事件仍處理。"""
+        _, tid = _register(client)
+        before = _read_usage_count(tid)
+        app = client.app
+        original_override = app.dependency_overrides[get_translator]
+        app.dependency_overrides[get_translator] = lambda: StubTranslator(source_lang="zh-TW")
+        try:
+            body = _payload(
+                _make_text_event("同語言原文", "rt-same", line_user_id="Usame001"),
+                _make_text_event("/lang en normal", "rt-normal", line_user_id="Unormal001"),
+            )
+            r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+        finally:
+            app.dependency_overrides[get_translator] = original_override
+
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 1
+        assert _fake_line_client.sent[0].reply_token == "rt-normal"
+        assert _fake_line_client.last_text == "[EN] normal"
+        assert _read_usage_count(tid) == before + 1
+
 
 # ── 測試：/lang 指令 ──────────────────────────────────────────────────────────
 

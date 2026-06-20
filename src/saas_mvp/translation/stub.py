@@ -38,18 +38,15 @@ class StubTranslator(Translator):
         self._source_lang = source_lang
 
     def translate(self, text: str, target_lang: str) -> TranslationResult:
+        detected = self._source_lang
         if (
             self._source_lang is not None
             and target_lang.upper() == self._source_lang.upper()
         ):
-            return TranslationResult(
-                text=text,
-                detected_lang=self._source_lang,
-                skipped=True,
-            )
+            return TranslationResult(text=text, detected_lang=detected, skipped=True)
         return TranslationResult(
             text=f"[{target_lang.upper()}] {text}",
-            detected_lang=self._source_lang,
+            detected_lang=detected,
             skipped=False,
         )
 

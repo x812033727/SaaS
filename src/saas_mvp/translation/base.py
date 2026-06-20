@@ -1,4 +1,4 @@
-"""Translator abstract base class and shared exceptions."""
+"""Translator abstract base class, result type, and shared exceptions."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass

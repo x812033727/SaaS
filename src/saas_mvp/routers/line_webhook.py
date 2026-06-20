@@ -411,7 +411,8 @@ def _process_events(
 
                 # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
                 # 為何 sync 直呼：見步驟 6c 註解（BackgroundTasks 自動
-                # run_in_threadpool 已將 I/O 移出 event loop，asyncio.to_thread 冗餘）。
+                # run_in_threadpool 已將 I/O 移出 event loop；不需要再包
+                # asyncio.to_thread，否則只是冗餘雙重包裝）。
                 result = _translate_sync(translator, translate_text, target_lang)
                 if result.skipped:
                     _log.info(
