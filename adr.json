@@ -1182,6 +1182,97 @@
       "rejected": "管理端直接回傳 dict 或免 response model 的簡便設計，因為這會使管理端的 API schema 模糊化，增加前後端對接與維護的隱性成本。",
       "session_id": "pj896e4af8d0",
       "created_at": 1781953096.6307526
+    },
+    {
+      "decision": "翻譯跳過判定委託給 Translator 內部決定，Webhook 消費 `skipped` 狀態直接中斷，不進行 reply 且不扣除租戶內部字數額度。",
+      "rationale": "保護 webhook 邊界，避免其理解翻譯器底層（如 DeepL）的語言偵測與字串比對細節，維持低耦合度。",
+      "rejected": "在 webhook 層先發送獨立的語言偵測 API 以",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274214
+    },
+    {
+      "decision": "Webhook 在翻譯前必須先通過租戶內部額度檢查（Quotas Gate），若額度不足則直接回覆超額並中斷，不呼叫外部翻譯 API；若額度足夠，則呼叫翻譯 API。若翻譯後判定 skipped，不扣除租戶內部額度，且不發送 LINE 回覆。",
+      "rationale": "保障內部額度上限（Quotas Gate），同時維持 webhook 邊界與 Translator 底層（如 DeepL）的語言偵測與字串比對細節解耦。",
+      "rejected": "在 webhook 層先發送獨立的語言偵測 API 以免除外部翻譯呼叫的方案。因為這會導致額外的 API 往返延遲且使業務邏輯變複雜。",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.327426
+    },
+    {
+      "decision": "`credential_last_error` 欄位僅存入預定義且對使用者安全之錯誤文案或錯誤碼，禁止直接寫入原始例外訊息（Exception messages）。",
+      "rationale": "防止底層例外（如網路逾時、API 連線細節）夾帶敏感資訊或系統內部路徑洩漏至前端，確保安全性。",
+      "rejected": "僅對 exception 原始字串進行 255 字元截斷並寫入 DB 的方案。",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274274
+    },
+    {
+      "decision": "將 `credential_status` 集中管理於 Schema 或專門的 `LineCredentialStatus` Enum 中，強制約束狀態值為 `\"unchecked\"`, `\"valid\"`, `\"invalid\"`, `\"error\"`, `\"conflict\"`。",
+      "rationale": "消除裸字串散落於 service、router 與 test 的不一致風險，增強型別安全性及可維護性。",
+      "rejected": "在各模組中隨機使用裸字串與 API 直接互動的方案。",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274283
+    },
+    {
+      "decision": "在 `line_bot_user_id` 欄位 migration 時，即使該欄位已存在，若 unique index 缺失，仍以 try-except 嘗試追加建立 Unique 索引。",
+      "rationale": "確保半套舊 DB 在演進過程中能順利補齊 index，維持多租戶隔離的強健性與可逆性。",
+      "rejected": "僅判斷欄位存在即跳過 index 追加的簡化 migration 方案。",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274324
+    },
+    {
+      "decision": "Unique 衝突 Rollback 後，使用同一個 Session 開啟新交易將狀態標記為 `conflict`，不建立額外的 DB 連線 Session。",
+      "rationale": "減少不必要的資料庫連線開啟，在保持交易隔離與狀態寫入的同時最佳化連線資源。",
+      "rejected": "為寫入衝突狀態而硬開獨立新 DB Session 的方案。",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.327434
+    },
+    {
+      "decision": "採用 `TranslationResult` 作為 `@dataclass(frozen=True, slots=True)` 以保證翻譯資料在背景任務傳遞時的不可變性。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274355
+    },
+    {
+      "decision": "在 `src/saas_mvp/db.py` 的 `init_db()` 中註冊 import 新 model `saas_mvp.models.line_webhook_event`，確保測試環境 metadata 建表一致性。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274367
+    },
+    {
+      "decision": "新增 `tests/test_line_idempotency.py` 用於自動化測試核心去重與重入行為。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.327438
+    },
+    {
+      "decision": "在 Pydantic 模型的 Service/Router 層將 DB 讀出的 `credential_status` 的 `NULL` 值正規化為 `\"unchecked\"`。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274393
+    },
+    {
+      "decision": "在 `line_client/base.py` 定義型別化異常（如 `LineBotInfoCredentialError` 等）以隔離底層 `urllib` 實作細節。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274405
+    },
+    {
+      "decision": "變更 access_token 時立即清除 `line_bot_user_id` 並重設狀態為 `\"unchecked\"`，防止驗證空窗期誤認租戶。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.3274415
+    },
+    {
+      "decision": "`AdminLineConfigResponse` 與 `TenantLineConfigResponse` 在 API 輸出時嚴格禁止明文憑證，一律只回傳遮罩布林值。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pja3a0622488",
+      "created_at": 1781962721.327443
     }
   ]
 }
