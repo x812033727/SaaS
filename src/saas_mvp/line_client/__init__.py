@@ -14,6 +14,10 @@ Public API::
 
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
+    LineBotInfoCredentialError,
+    LineBotInfoError,
+    LineBotInfoNetworkError,
+    LineBotInfoParseError,
     LineReplyClient,
     LineReplyError,
 )
@@ -55,6 +59,10 @@ def get_bot_info_client() -> LineBotInfoClient:
 __all__ = [
     "LineReplyClient",
     "LineReplyError",
+    "LineBotInfoError",
+    "LineBotInfoCredentialError",
+    "LineBotInfoNetworkError",
+    "LineBotInfoParseError",
     "HttpLineReplyClient",
     "FakeLineReplyClient",
     "SentReply",

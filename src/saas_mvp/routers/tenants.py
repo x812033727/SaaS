@@ -31,6 +31,9 @@ class TenantLineConfigResponse(BaseModel):
     has_channel_secret: bool
     has_access_token: bool
     default_target_lang: str
+    credential_status: str = "unchecked"
+    credential_last_error: str | None = None
+    credential_checked_at: str | None = None
     # service 層已 .isoformat() 序列化，宣告為 str | None 避免重複序列化
     created_at: str | None = None
     updated_at: str | None = None

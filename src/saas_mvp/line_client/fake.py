@@ -89,7 +89,12 @@ class StubLineBotInfoClient(LineBotInfoClient):
         calls: 收到的 access_token 清單（按呼叫順序），供斷言。
     """
 
-    def __init__(self, user_id: str | None = None, *, raises: bool = False) -> None:
+    def __init__(
+        self,
+        user_id: str | None = None,
+        *,
+        raises: bool | Exception = False,
+    ) -> None:
         self._user_id = user_id
         self._raises = raises
         self.calls: list[str] = []
@@ -97,6 +102,8 @@ class StubLineBotInfoClient(LineBotInfoClient):
     def get_user_id(self, access_token: str) -> str | None:
         """回傳建構時指定的 user_id；raises=True 時拋例外。"""
         self.calls.append(access_token)
+        if isinstance(self._raises, Exception):
+            raise self._raises
         if self._raises:
             raise RuntimeError("stub bot/info unavailable")
         return self._user_id

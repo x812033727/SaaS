@@ -4,7 +4,7 @@
   - 正常回應 {"userId": "U..."} → 回傳 userId，且帶正確 URL/Bearer header/GET method
   - 回應缺 userId → 回 None（service 端據此留 NULL）
   - userId 為空字串 → 回 None（避免寫入空字串覆蓋）
-  - 網路錯誤（OSError）/ HTTPError → 直接拋例外（由 upsert 端吞掉記 warning）
+  - 網路錯誤（OSError）/ HTTPError → 轉成型別化例外（由 upsert 端寫狀態）
 """
 
 from __future__ import annotations
@@ -24,6 +24,10 @@ os.environ.setdefault(
 )
 
 from saas_mvp.line_client.http import HttpLineBotInfoClient
+from saas_mvp.line_client import (
+    LineBotInfoCredentialError,
+    LineBotInfoNetworkError,
+)
 
 _UID = "U" + "b" * 32
 
@@ -75,7 +79,7 @@ def test_get_user_id_network_error_raises():
         raise OSError("connection refused")
 
     with mock.patch("urllib.request.urlopen", _boom):
-        with pytest.raises(OSError):
+        with pytest.raises(LineBotInfoNetworkError):
             client.get_user_id("tok")
 
 
@@ -88,5 +92,5 @@ def test_get_user_id_http_error_raises():
         )
 
     with mock.patch("urllib.request.urlopen", _boom):
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(LineBotInfoCredentialError):
             client.get_user_id("tok")
