@@ -438,3 +438,95 @@ def test_failed_event_is_marked_failed_and_next_event_processed(app_client):
         ("evt-failed", "failed", "quota_checked", False),
         ("evt-ok", "processed", "usage_incremented", True),
     ]
+
+
+def test_failed_event_before_reply_is_retried_on_same_webhook_event_id(app_client):
+    client, translator, line_client = app_client
+    tenant_id = _seed_tenant()
+
+    first = _payload(
+        _text_event(
+            "first",
+            "rt-retry-first",
+            "Uretry",
+            webhook_event_id="evt-retry-failed",
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=first,
+        headers=_headers(first),
+    )
+    assert response.status_code == 200
+    assert translator.calls == [("first", "zh-TW")]
+    assert line_client.call_count == 0
+    assert _webhook_event_rows(tenant_id) == [
+        ("evt-retry-failed", "failed", "quota_checked", False)
+    ]
+
+    second = _payload(
+        _text_event(
+            "second",
+            "rt-retry-second",
+            "Uretry",
+            webhook_event_id="evt-retry-failed",
+            is_redelivery=True,
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=second,
+        headers=_headers(second),
+    )
+
+    assert response.status_code == 200
+    assert translator.calls == [("first", "zh-TW"), ("second", "zh-TW")]
+    assert line_client.call_count == 1
+    assert line_client.sent[0].reply_token == "rt-retry-second"
+    assert line_client.sent[0].text == "[ZH-TW] second"
+    assert _usage_count(tenant_id) == 1
+    assert _webhook_event_rows(tenant_id) == [
+        ("evt-retry-failed", "processed", "usage_incremented", True)
+    ]
+
+
+def test_failed_reply_sent_event_skips_redelivery_without_duplicate_reply(app_client):
+    client, _, line_client = app_client
+    client.app.dependency_overrides[get_translator] = lambda: StubTranslator()
+    tenant_id = _seed_tenant()
+
+    db = _Session()
+    try:
+        db.add(
+            LineWebhookEvent(
+                tenant_id=tenant_id,
+                webhook_event_id="evt-reply-sent-failed",
+                status="failed",
+                last_stage="reply_sent",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    body = _payload(
+        _text_event(
+            "do-not-reply-again",
+            "rt-reply-sent-retry",
+            "Ureplysent",
+            webhook_event_id="evt-reply-sent-failed",
+            is_redelivery=True,
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers=_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert line_client.call_count == 0
+    assert _usage_count(tenant_id) == 0
+    assert _webhook_event_rows(tenant_id) == [
+        ("evt-reply-sent-failed", "failed", "reply_sent", False)
+    ]

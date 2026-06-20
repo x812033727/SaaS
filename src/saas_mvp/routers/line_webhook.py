@@ -5,8 +5,9 @@
 * raw body 用 Request.body() 取得，再 JSON decode，確保 HMAC 比對用原始 bytes。
 * X-Line-Signature 驗章失敗 → 400（符合 LINE 文件建議）。
 * 非文字事件靜默略過，回 200 OK。
-* 重送去重：以 webhookEventId 持久化 claim 狀態；重複 ID 一律略過
-  （不翻譯、不回覆、不計量）。deliveryContext.isRedelivery 僅作診斷 log。
+* 重送去重：以 webhookEventId 持久化 claim 狀態；processed / pending
+  重複 ID 略過，failed 且尚未送出 reply 者允許重試。deliveryContext.isRedelivery
+  僅作診斷 log。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
 * quota 計費點後移：先做非遞增檢查放行，待 translate 與 reply 皆成功後才
   increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。increment_usage
@@ -88,7 +89,7 @@ import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -374,6 +375,13 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+_FAILED_RETRYABLE_STAGES_BEFORE_REPLY = (
+    LineWebhookEventStage.CLAIMED.value,
+    LineWebhookEventStage.QUOTA_CHECKED.value,
+    LineWebhookEventStage.TRANSLATED.value,
+)
+
+
 def _claim_webhook_event(
     db: Session,
     tenant_id: int,
@@ -397,6 +405,20 @@ def _claim_webhook_event(
         return row, True
     except IntegrityError:
         db.rollback()
+        retry_claimed = _claim_failed_webhook_event_for_retry(
+            db,
+            tenant_id,
+            webhook_event_id,
+        )
+        if retry_claimed:
+            existing = _get_webhook_event(db, tenant_id, webhook_event_id)
+            _log.info(
+                "retry failed LINE webhook event tenant=%d webhook_event_id=%s",
+                tenant_id,
+                webhook_event_id,
+            )
+            return existing, True
+
         existing = db.execute(
             select(LineWebhookEvent).where(
                 LineWebhookEvent.tenant_id == tenant_id,
@@ -410,6 +432,55 @@ def _claim_webhook_event(
             existing.status if existing is not None else "unknown",
         )
         return existing, False
+
+
+def _claim_failed_webhook_event_for_retry(
+    db: Session,
+    tenant_id: int,
+    webhook_event_id: str,
+) -> bool:
+    """把 reply 前失敗的 row 原子改回 pending；成功者才可重跑。"""
+    now = _utcnow()
+    result = db.execute(
+        update(LineWebhookEvent)
+        .where(
+            LineWebhookEvent.tenant_id == tenant_id,
+            LineWebhookEvent.webhook_event_id == webhook_event_id,
+            LineWebhookEvent.status == LineWebhookEventStatus.FAILED.value,
+            or_(
+                LineWebhookEvent.last_stage.is_(None),
+                LineWebhookEvent.last_stage.in_(
+                    _FAILED_RETRYABLE_STAGES_BEFORE_REPLY
+                ),
+            ),
+        )
+        .values(
+            status=LineWebhookEventStatus.PENDING.value,
+            attempt_count=LineWebhookEvent.attempt_count + 1,
+            last_error=None,
+            last_stage=LineWebhookEventStage.CLAIMED.value,
+            processed_at=None,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        return False
+    db.commit()
+    return True
+
+
+def _get_webhook_event(
+    db: Session,
+    tenant_id: int,
+    webhook_event_id: str,
+) -> LineWebhookEvent | None:
+    return db.execute(
+        select(LineWebhookEvent).where(
+            LineWebhookEvent.tenant_id == tenant_id,
+            LineWebhookEvent.webhook_event_id == webhook_event_id,
+        )
+    ).scalar_one_or_none()
 
 
 def _mark_webhook_event_processed(
