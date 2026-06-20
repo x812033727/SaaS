@@ -582,3 +582,50 @@
 - 理由：系統計量以「譯文字數」為準，翻譯前無法得知精確長度；若改用源文字數估計會引入不準確的預估與雙重計費標準，因此選擇「只防既有超額，不防單次超量成本」。
 - 否決方案：在翻譯前以源文字數乘以粗估係數進行 quota 阻擋。
 
+## 新增 `LineWebhookEvent` Model 用於儲存 Webhook 處理狀態，不引入 Redis，完全依賴關聯式資料庫（SQLite/PostgreSQL）與 SQLAlchemy 實作冪等去重。
+- 時間：2026-06-20 17:15
+- 理由：保持系統依賴的極簡與乾淨，使開發測試環境能與目前單機/SQLite 架構對齊，免去額外運維與網路開銷。
+- 否決方案：否決引進 Redis 分散式鎖，這會破壞現有「僅依賴 SQLAlchemy」的乾淨邊界並增加建置與營運成本。
+
+## `LineWebhookEvent` 表不儲存 LINE Webhook 的 event payload（如聊天內容、簽章、使用者 ID 等），僅儲存 metadata（如狀態、階段、更新時間等）。
+- 時間：2026-06-20 17:15
+- 理由：消除敏感個資與 token 洩漏的安全與 GDPR 合規風險，同時避免 metadata 資料表儲存量暴增。
+- 否決方案：否決儲存完整 JSON payload，因為這會帶來顯著的安全隱患且無消費端。
+
+## 在 `LineWebhookEvent` 中，將 LINE Webhook payload 傳入的 `webhookEventId`（camelCase）寫入/查詢時對齊轉換為資料庫欄位 `webhook_event_id`（snake_case）進行去重；若 event 缺少該 id 則退化為直接處理。
+- 時間：2026-06-20 17:15
+- 理由：明確宣告駝峰到蛇形的對齊，防止實作時因名稱落差讀錯欄位導致去重全部失效。
+
+## 對 `LineWebhookEvent` 表的 `(tenant_id, webhook_event_id)` 建立聯合唯一約束（UniqueConstraint），並對 `(created_at, status)` 建立複合索引。
+- 時間：2026-06-20 17:15
+- 理由：聯合唯一約束是防止併發寫入/重複處理的最後一道資料庫防線；複合索引是為了保障保留期清理的效能。
+
+## 定案 metadata 歷史保留期清理策略（Retention Policy），僅保留 7 天內的去重 metadata，由背景定時任務（如 Cron）定期刪除過期紀錄。
+- 時間：2026-06-20 17:15
+- 理由：LINE 的重送機制通常在數小時內結束，保留 7 天可提供充足的去重保障，並使 metadata 資料表體積大小收斂。
+
+## 使用強型別 Enum 定義事件狀態（`LineWebhookEventStatus`：`PENDING`, `PROCESSED`, `FAILED`）與處理階段（`LineWebhookEventStage`：`CLAIMED`, `QUOTA_CHECKED`, `TRANSLATED`, `REPLY_SENT`, `USAGE_INCREMENTED`），並定義階段大小順序。
+- 時間：2026-06-20 17:15
+- 理由：避免拼寫錯誤（Typo）散落程式碼，並在重入判斷時有明確的階段先後順序依據。
+
+## 當偵測到 `webhook_event_id` 已存在於資料庫時，進入細分重入控制流：若狀態為 `PROCESSED` 或 `PENDING`（併發中）一律直接略過；若狀態為 `FAILED` 且 `last_stage < REPLY_SENT`，則將狀態改回 `PENDING` 重設嘗試次數並重新處理該 event；若狀態為 `FAILED` 且 `last_stage >= REPLY_SENT`，則直接略過。
+- 時間：2026-06-20 17:15
+- 理由：解決了「首次處理失敗後重送被永久略過」的 Bug，同時因 `REPLY_SENT` 代表 reply token 已被消費過，重送重試會引發 LINE API 報錯，故對此案放棄補計量與重新 reply，以運維日誌留痕人工對帳。
+- 否決方案：否決「不論何種 FAILED 一律重新 retry」，這會導致已被消费的 reply token 被二次呼叫而導致系統崩潰。
+
+## 在 `_process_events` 內封裝 `mark_processed(db, event_row)` 與 `mark_failed(db, event_row, stage, exception)` 兩個 transactional helpers 用於變更狀態、更新 updated_at 並 commit/rollback。
+- 時間：2026-06-20 17:15
+- 理由：防範因為 `_process_events` 控制流分支眾多，導致手動 commit 時漏更新 processed / failed 狀態的風險。
+
+## 在 `mark_failed(db, event_row, stage, exception)` 寫入 `last_error` 欄位時，必須限制長度（最大 255 字元）且只截取 Exception 的類別名稱與安全摘要，嚴禁寫入可能包含聊天內容或 token 的 exception 詳情。
+- 時間：2026-06-20 17:15
+- 理由：遵守資安規範，防止敏感聊天內容與 API 金鑰被間接寫入日誌與資料庫。
+
+## 在 `src/saas_mvp/db.py` 的 `init_db()` 中註冊 import 新 model `saas_mvp.models.line_webhook_event`，確保在測試環境的 `Base.metadata.create_all` 亦能載入新 metadata 自動建表。
+- 時間：2026-06-20 17:15
+- 理由：與現有的 db 初始化及測試 overrides 機制完全對齊，降低 Regression 機率。
+
+## 新增 `tests/test_line_idempotency.py`，測試覆蓋範圍需包含：首投成功、重送 processed 略過、重送 pending 略過、重送 failed 且未過 `REPLY_SENT`（需重新 retry 成功）、重送 failed 且已過 `REPLY_SENT`（略過不重複 reply）、以及缺 ID 退化判定。
+- 時間：2026-06-20 17:15
+- 理由：確保核心去重邏輯與重入行為有自動化測試防禦，保障系統的可逆性與升級安全。
+
