@@ -69,12 +69,15 @@ class DeepLTranslator(Translator):
         其餘語言直接做大小寫不敏感的相等比對。
         """
         d = detected.upper()
+        n = norm.upper()
         if d == "ZH":
-            return norm.startswith("ZH")
-        return d == norm
+            return n.startswith("ZH")
+        if n == "ZH":
+            return d.startswith("ZH")
+        return d == n
 
     def translate(self, text: str, target_lang: str) -> TranslationResult:
-        """Call DeepL API and return translated text plus skip metadata.
+        """Call DeepL API and return translated text with metadata.
 
         若 DeepL 回傳的 ``detected_source_language`` 等同於正規化後的 target，
         代表來源語言已是目標語言，直接回傳原文（避免把同語言翻譯結果回覆給用戶）。
@@ -121,17 +124,21 @@ class DeepLTranslator(Translator):
         # 一律包成 TranslationError，維持原有錯誤封裝語意。
         try:
             translation = body["translations"][0]
-            detected = translation.get("detected_source_language", "")
-            detected_lang = detected or None
-            if detected and self._is_same_language(detected, norm):
+            detected_raw = translation.get("detected_source_language")
+            detected = (
+                detected_raw
+                if isinstance(detected_raw, str) and detected_raw
+                else None
+            )
+            if detected is not None and self._is_same_language(detected, norm):
                 return TranslationResult(
                     text=text,
-                    detected_lang=detected_lang,
+                    detected_lang=detected,
                     skipped=True,
                 )
             return TranslationResult(
                 text=translation["text"],
-                detected_lang=detected_lang,
+                detected_lang=detected,
                 skipped=False,
             )
         except (KeyError, IndexError, AttributeError, TypeError) as exc:
