@@ -41,6 +41,11 @@ def test_line_webhook_event_table_columns_and_unique_constraint():
     ]
     assert ("tenant_id", "webhook_event_id") in unique_columns
 
+    index_names = {
+        index["name"] for index in inspector.get_indexes("line_webhook_events")
+    }
+    assert "ix_line_webhook_events_created_status" not in index_names
+
 
 def test_line_webhook_event_defaults_and_duplicate_guard():
     engine = create_engine(

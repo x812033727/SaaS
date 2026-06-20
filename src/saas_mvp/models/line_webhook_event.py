@@ -9,7 +9,6 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
-    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -81,5 +80,4 @@ class LineWebhookEvent(Base):
             "webhook_event_id",
             name="uq_line_webhook_events_tenant_event",
         ),
-        Index("ix_line_webhook_events_created_status", "created_at", "status"),
     )
