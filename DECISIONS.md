@@ -629,3 +629,33 @@
 - 時間：2026-06-20 17:15
 - 理由：確保核心去重邏輯與重入行為有自動化測試防禦，保障系統的可逆性與升級安全。
 
+## 使用 SQLite ALTER TABLE 在 `line_channel_configs` 新增 `credential_status` (狀態包含：unchecked, valid, invalid, error, conflict)、`credential_last_error` 與 `credential_checked_at` 三個欄位。（技術選型）
+- 時間：2026-06-20 18:58
+- 理由：保持極簡的資料庫演進機制，避免引進大型工具鏈的複雜度，保障現有輕量級架構。
+- 否決方案：引入 Alembic 作為 schema 遷移工具，因為當前專案只屬於單張表欄位增減，引入它屬於過度設計，徒增團隊維護成本。
+
+## 在 Pydantic response model（`TenantLineConfigResponse` 與新定義的 `AdminLineConfigResponse`）中，將 `credential_status` 的型別定義為 `str`，且預設值為 `"unchecked"`。當從 DB 讀出 `credential_status` 為 `NULL` 時，在 Service/Router 層將其正規化（Normalize）為 `"unchecked"`，確保 API 契約的完整性。（介面）
+- 時間：2026-06-20 18:58
+- 理由：避免在 DB migration 中執行 `UPDATE` 回填舊資料的方案，將正規化邏輯留在記憶體與 API 邊界層。
+- 否決方案：在資料庫遷移腳本中執行 `UPDATE` 回填舊資料，這可能在資料量大時帶來鎖表或性能開銷，且無法因應未來直接以空欄位寫入的極端情況。
+
+## 在 `line_client/base.py` 定義型別化異常，如 `LineBotInfoError`（基底）、`LineBotInfoCredentialError`（針對 401/403 等憑證失效錯誤）、`LineBotInfoNetworkError`（針對 Timeout/DNS 解析/網路中斷錯誤）、`LineBotInfoParseError`（針對 API 回傳格式不符或缺 userId 錯誤）。`HttpLineBotInfoClient` 捕獲 `urllib` 相關錯誤後轉換拋出，Service 層再據此將狀態對應寫入 `invalid`、`error` 或 `conflict`。（模組切分）
+- 時間：2026-06-20 18:58
+- 理由：保護模組邊界（保護依賴方向），使得 Service 業務層只依賴抽象 client 提供的型別化異常，隔離底層 `urllib` 的實現細節。
+- 否決方案：讓 Service 層直接捕獲 `urllib` 的 HTTPError 與 OSError 並分類錯誤，這會使底層 HTTP 實現的細節滲透到業務邏輯層，未來更換 HTTP client 時會造成極大重構代價。
+
+## 在呼叫 `upsert_line_config` 更新設定時，若 access_token 被更新（即與舊設定不同），不論驗證成功與否，皆必須立即將舊的 `line_bot_user_id` 清除（設為 `NULL`），並將 `credential_status` 設為 `"unchecked"`，直到本次 API 驗證完成。若本次驗證最終為 `invalid/error/conflict`，則 `line_bot_user_id` 維持 `NULL`；若驗證為 `valid`，才寫入新的 `line_bot_user_id`。（介面）
+- 時間：2026-06-20 18:58
+- 理由：防止在 token 已失效或更新、但驗證失敗的空窗期，webhook 還繼續用舊的 `line_bot_user_id` 誤認租戶，降低安全性錯配風險。
+- 否決方案：即使驗證失敗也保留舊 `line_bot_user_id` 供 webhook 使用的寬鬆容錯設計。這雖然會導致短暫的 LINE Webhook 服務不可用（因為 userId 被清空），但安全性與資料一致性高於暫時的容錯。
+
+## 當 `line_bot_user_id` 發生 unique 衝突導致交易 rollback 時，必須在 `db.rollback()` 與 `db.refresh(cfg)` 後，另外開啟一個獨立交易，僅更新並 commit `credential_status='conflict'` 與截斷至 255 字元的安全錯誤摘要。（模組切分）
+- 時間：2026-06-20 18:58
+- 理由：避免 rollback 連狀態更新也一併抹除，確保錯誤狀態能被正確記錄到資料庫中以供租戶查看。
+- 否決方案：在同一個 Session 中使用 nested transaction (savepoint) 來局部 rollback 衝突。這在 SQLite 併發環境下容易引發資料庫鎖定 (lock) 問題，故放棄以降低併發風險。
+
+## 在 `routers/admin.py` 中定義並套用專門的 `AdminLineConfigResponse`（繼承或複寫欄位），同步擴充 `credential_status`、`credential_last_error` 與 `credential_checked_at` 欄位。並且在兩個 response 模型的 serializer 中，嚴格禁止回傳 `channel_secret` 與 `access_token` 的明文，一律僅回傳遮罩布林值。（介面）
+- 時間：2026-06-20 18:58
+- 理由：保障管理端與自助端 API 文件與行為的一致性，防止未來維護時產生漂移，且不洩漏敏感憑證。
+- 否決方案：管理端直接回傳 dict 或免 response model 的簡便設計，因為這會使管理端的 API schema 模糊化，增加前後端對接與維護的隱性成本。
+
