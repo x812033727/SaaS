@@ -1040,3 +1040,39 @@ Sources:
 - [Stripe — Handle verification outcomes（status enum 範式）](https://docs.stripe.com/identity/handle-verification-outcomes)
 - [RESTful API Design Best Practices Guide 2026 — daily.dev](https://daily.dev/blog/restful-api-design-best-practices-guide-2024/)
 
+## 2026-06-20 16:44
+
+---
+
+## 調研結果
+
+### 現況掃描
+
+**重點: 本輪任務已 100% 實作完成，無需動工。** 逐項確認：
+
+| 需求 | 實際狀態 |
+|---|---|
+| `base.py` 含 `TranslationResult` | ✅ 第 11–18 行，`@dataclass(frozen=True, slots=True)` |
+| 欄位 `text: str` | ✅ |
+| 欄位 `detected_lang: str | None` | ✅ |
+| 欄位 `skipped: bool` | ✅ |
+| `Translator.translate` 型別標註 `-> TranslationResult` | ✅ `base.py` 第 28 行 |
+| `StubTranslator` 實作（含 `detected_lang`/`skipped`） | ✅ `stub.py` 第 40–51 行 |
+| `DeepLTranslator` 實作 | ✅ `http.py` 第 79–147 行 |
+| Webhook 消費端使用 `.skipped`、`.detected_lang` | ✅ `line_webhook.py` 第 417、422 行 |
+| 測試覆蓋 `.text`、`.skipped`、`.detected_lang` 斷言 | ✅ `test_line_task2_translator.py` 第 36–84 行 |
+
+**重點: 額外加分：`slots=True`** — 現行實作比任務規格更嚴謹，CPython 記憶體佔用更小、屬性拼錯時即 `AttributeError`（而非靜默建立新屬性）。來源：[Python docs — dataclasses slots](https://docs.python.org/3/library/dataclasses.html#dataclasses.dataclass)
+
+**重點: 無殘留 string-return 舊介面** — 搜尋全 `src/` 找不到任何仍把 `translate()` 結果當純字串用的呼叫端；所有消費端均已改用 `.text` 與 `.skipped`。
+
+---
+
+### 建議
+
+**建議: 這個改良任務可直接標記完成，不需要任何改動。**
+
+**建議: 若需要確認測試全綠，可直接跑 `pytest tests/test_line_task2_translator.py -v`，應 100% 通過。**
+
+**建議: 下一步可對齊藍圖 P1 尚未實作的部分**，例如 quota 計量、`credential_status` 暴露到 PUT response（前次調研已有具體建議），而非重複投入已完成的任務。
+
