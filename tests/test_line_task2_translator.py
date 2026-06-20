@@ -32,7 +32,10 @@ class TestStubTranslator:
     def test_basic_translation(self):
         t = StubTranslator()
         result = t.translate("hello", "ja")
-        assert result == TranslationResult("[JA] hello", None, False)
+        assert isinstance(result, TranslationResult)
+        assert result.text == "[JA] hello"
+        assert result.detected_lang is None
+        assert result.skipped is False
 
     def test_lang_uppercased_in_output(self):
         t = StubTranslator()

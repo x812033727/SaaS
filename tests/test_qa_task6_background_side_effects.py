@@ -104,7 +104,11 @@ class SpyTranslator(Translator):
         if self._delay > 0:
             time.sleep(self._delay)
         self.translate_args.append((text, target_lang))
-        return TranslationResult(f"[{target_lang.upper()}] {text}", None, False)
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=None,
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True

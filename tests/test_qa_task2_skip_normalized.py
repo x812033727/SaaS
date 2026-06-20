@@ -54,7 +54,7 @@ def test_skip_zh_tw_when_detected_is_normalized_hant():
         original = "今天天氣很好"
         out = t.translate(original, "zh-TW")
     assert out.text == original
-    assert out.text is original     # 回傳原文物件本身
+    assert out.text is original     # 結果物件內保留原文物件本身
     assert out.detected_lang == "ZH-HANT"
     assert out.skipped is True
     assert "[" not in out.text      # 無 [LANG] 包裝

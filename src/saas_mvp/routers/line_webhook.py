@@ -414,6 +414,11 @@ def _process_events(
                 # run_in_threadpool 已將 I/O 移出 event loop，asyncio.to_thread 冗餘）。
                 translation = _translate_sync(translator, translate_text, target_lang)
                 if translation.skipped:
+                    _log.info(
+                        "skip same-language LINE event for tenant %d detected=%s",
+                        tenant_id,
+                        translation.detected_lang,
+                    )
                     continue
                 translated = translation.text
 

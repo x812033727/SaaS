@@ -50,8 +50,7 @@ import saas_mvp.models.line_user_lang as _lul                                   
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
-from saas_mvp.translation import StubTranslator, get_translator
-from saas_mvp.translation.base import TranslationResult
+from saas_mvp.translation import StubTranslator, TranslationResult, get_translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 

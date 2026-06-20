@@ -108,7 +108,11 @@ class SpyTranslator(Translator):
         self.translate_args.append((text, target_lang))
         if self._raise is not None:
             raise self._raise
-        return TranslationResult(f"[{target_lang.upper()}] {text}", None, False)
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=None,
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True

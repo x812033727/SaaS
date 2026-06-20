@@ -51,7 +51,11 @@ class FailsFirstTranslator(Translator):
         self.calls.append((text, target_lang))
         if len(self.calls) == 1:
             raise TranslationError("first event failed")
-        return TranslationResult(f"[{target_lang.upper()}] {text}", None, False)
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=None,
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True

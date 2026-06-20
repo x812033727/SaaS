@@ -129,16 +129,21 @@ class DeepLTranslator(Translator):
         # 一律包成 TranslationError，維持原有錯誤封裝語意。
         try:
             translation = body["translations"][0]
-            detected = translation.get("detected_source_language", "") or ""
-            if self._is_same_language(detected, norm):
+            detected_raw = translation.get("detected_source_language")
+            detected = (
+                detected_raw
+                if isinstance(detected_raw, str) and detected_raw
+                else None
+            )
+            if detected is not None and self._is_same_language(detected, norm):
                 return TranslationResult(
                     text=text,
-                    detected_lang=detected or None,
+                    detected_lang=detected,
                     skipped=True,
                 )
             return TranslationResult(
                 text=translation["text"],
-                detected_lang=detected or None,
+                detected_lang=detected,
                 skipped=False,
             )
         except (KeyError, IndexError, AttributeError, TypeError) as exc:

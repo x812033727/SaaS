@@ -21,18 +21,21 @@ class TestStubSkipBoundaries:
         text = "  これは\tテスト [JA] 記号 ❤ "
         result = s.translate(text, "ja")
         assert result.text == text
+        assert result.detected_lang == "ja"
         assert result.skipped is True
 
     def test_empty_text_same_lang_returns_empty(self):
         s = StubTranslator(source_lang="en")
         result = s.translate("", "en")
         assert result.text == ""
+        assert result.detected_lang == "en"
         assert result.skipped is True
 
     def test_empty_text_different_lang_wraps(self):
         s = StubTranslator(source_lang="en")
         result = s.translate("", "ja")
         assert result.text == "[JA] "
+        assert result.detected_lang == "en"
         assert result.skipped is False
 
     @pytest.mark.parametrize(
@@ -83,10 +86,13 @@ class TestStubSkipBoundaries:
         wrapped = s.translate("a", "en")
         skipped_again = s.translate("a", "JA")
         assert skipped_first.text == "a"
+        assert skipped_first.detected_lang == "ja"
         assert skipped_first.skipped is True
         assert wrapped.text == "[EN] a"
+        assert wrapped.detected_lang == "ja"
         assert wrapped.skipped is False
         assert skipped_again.text == "a"
+        assert skipped_again.detected_lang == "ja"
         assert skipped_again.skipped is True
 
     def test_is_available_always_true(self):

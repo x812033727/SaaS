@@ -42,8 +42,7 @@ import saas_mvp.models.line_user_lang as _lul                                   
 from saas_mvp.app import create_app                                             # noqa: E402
 from saas_mvp.db import Base, get_db                                            # noqa: E402
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client          # noqa: E402
-from saas_mvp.translation import StubTranslator, get_translator               # noqa: E402
-from saas_mvp.translation.base import TranslationResult                        # noqa: E402
+from saas_mvp.translation import StubTranslator, TranslationResult, get_translator  # noqa: E402
 from saas_mvp.models.usage import ApiUsage                                      # noqa: E402
 from saas_mvp.quota import PLAN_DAILY_LIMITS                                    # noqa: E402
 
