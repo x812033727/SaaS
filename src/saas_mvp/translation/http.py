@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from saas_mvp.translation.base import Translator, TranslationError
+from saas_mvp.translation.base import TranslationResult, Translator, TranslationError
 
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 
@@ -22,11 +22,6 @@ _DEEPL_LANG_MAP = {
     "ZH-TW": "ZH-HANT",
     "ZH-CN": "ZH-HANS",
 }
-
-# DeepL 對中文偵測只回 "ZH"，不細分繁簡；因此同語言比對時，detected="ZH"
-# 視為等同於任一中文變體 target（ZH-HANT/ZH-HANS）。
-_ZH_NORM_TARGETS = {"ZH-HANT", "ZH-HANS"}
-
 
 class DeepLTranslator(Translator):
     """Translation backend that calls the DeepL REST API.
@@ -70,16 +65,16 @@ class DeepLTranslator(Translator):
         """偵測到的來源語言是否等同於正規化後的 target。
 
         DeepL 對中文偵測只回 "ZH"（不分繁簡），故 detected="ZH" 時，
-        只要 target 為任一中文變體（ZH-HANT/ZH-HANS）即視為同語言；
+        只要 target 以 ZH 開頭即視為同語言；
         其餘語言直接做大小寫不敏感的相等比對。
         """
         d = detected.upper()
         if d == "ZH":
-            return norm in _ZH_NORM_TARGETS
+            return norm.startswith("ZH")
         return d == norm
 
-    def translate(self, text: str, target_lang: str) -> str:
-        """Call DeepL API and return translated text.
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
+        """Call DeepL API and return translated text plus skip metadata.
 
         若 DeepL 回傳的 ``detected_source_language`` 等同於正規化後的 target，
         代表來源語言已是目標語言，直接回傳原文（避免把同語言翻譯結果回覆給用戶）。
@@ -127,9 +122,18 @@ class DeepLTranslator(Translator):
         try:
             translation = body["translations"][0]
             detected = translation.get("detected_source_language", "")
-            if self._is_same_language(detected, norm):
-                return text
-            return translation["text"]
+            detected_lang = detected or None
+            if detected and self._is_same_language(detected, norm):
+                return TranslationResult(
+                    text=text,
+                    detected_lang=detected_lang,
+                    skipped=True,
+                )
+            return TranslationResult(
+                text=translation["text"],
+                detected_lang=detected_lang,
+                skipped=False,
+            )
         except (KeyError, IndexError, AttributeError, TypeError) as exc:
             raise TranslationError(
                 f"Unexpected DeepL response structure: {body!r}"

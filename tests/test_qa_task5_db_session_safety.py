@@ -83,7 +83,7 @@ from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.translation import StubTranslator, get_translator
-from saas_mvp.translation.base import Translator
+from saas_mvp.translation.base import TranslationResult, Translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 
@@ -104,11 +104,15 @@ class SpyTranslator(Translator):
         self.translate_args: list[tuple[str, str]] = []
         self._raise = raise_on_translate
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         self.translate_args.append((text, target_lang))
         if self._raise is not None:
             raise self._raise
-        return f"[{target_lang.upper()}] {text}"
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=None,
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True
