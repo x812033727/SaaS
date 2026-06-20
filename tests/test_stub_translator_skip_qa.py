@@ -19,15 +19,21 @@ class TestStubSkipBoundaries:
         """skip 時回傳的就是原字串內容（含特殊字元/空白），不做任何改寫。"""
         s = StubTranslator(source_lang="ja")
         text = "  これは\tテスト [JA] 記号 ❤ "
-        assert s.translate(text, "ja") == text
+        result = s.translate(text, "ja")
+        assert result.text == text
+        assert result.skipped is True
 
     def test_empty_text_same_lang_returns_empty(self):
         s = StubTranslator(source_lang="en")
-        assert s.translate("", "en") == ""
+        result = s.translate("", "en")
+        assert result.text == ""
+        assert result.skipped is True
 
     def test_empty_text_different_lang_wraps(self):
         s = StubTranslator(source_lang="en")
-        assert s.translate("", "ja") == "[JA] "
+        result = s.translate("", "ja")
+        assert result.text == "[JA] "
+        assert result.skipped is False
 
     @pytest.mark.parametrize(
         "src,tgt,text,expected",
@@ -38,7 +44,9 @@ class TestStubSkipBoundaries:
         ],
     )
     def test_same_lang_case_insensitive_variants(self, src, tgt, text, expected):
-        assert StubTranslator(source_lang=src).translate(text, tgt) == expected
+        result = StubTranslator(source_lang=src).translate(text, tgt)
+        assert result.text == expected
+        assert result.skipped is True
 
     @pytest.mark.parametrize(
         "src,tgt,text,expected",
@@ -50,20 +58,32 @@ class TestStubSkipBoundaries:
     )
     def test_different_lang_always_wraps(self, src, tgt, text, expected):
         """反向樣本：證明 skip 具真實判別力，非全部回原文。"""
-        assert StubTranslator(source_lang=src).translate(text, tgt) == expected
+        result = StubTranslator(source_lang=src).translate(text, tgt)
+        assert result.text == expected
+        assert result.skipped is False
 
     def test_none_source_lang_no_skip_even_if_target_looks_same(self):
         """未設 source_lang → 任何 target 都包裝，永不 skip。"""
         s = StubTranslator()
-        assert s.translate("hi", "ja") == "[JA] hi"
-        assert s.translate("hi", "en") == "[EN] hi"
+        ja = s.translate("hi", "ja")
+        en = s.translate("hi", "en")
+        assert ja.text == "[JA] hi"
+        assert ja.skipped is False
+        assert en.text == "[EN] hi"
+        assert en.skipped is False
 
     def test_skip_does_not_persist_across_calls(self):
         """同一實例：同語言回原文、切到他語仍正確包裝（無狀態殘留）。"""
         s = StubTranslator(source_lang="ja")
-        assert s.translate("a", "ja") == "a"        # skip
-        assert s.translate("a", "en") == "[EN] a"   # 包裝
-        assert s.translate("a", "JA") == "a"        # 再次 skip
+        first = s.translate("a", "ja")
+        second = s.translate("a", "en")
+        third = s.translate("a", "JA")
+        assert first.text == "a"
+        assert first.skipped is True
+        assert second.text == "[EN] a"
+        assert second.skipped is False
+        assert third.text == "a"
+        assert third.skipped is True
 
     def test_is_available_always_true(self):
         assert StubTranslator(source_lang="ja").is_available() is True

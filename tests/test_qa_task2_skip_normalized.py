@@ -53,9 +53,11 @@ def test_skip_zh_tw_when_detected_is_normalized_hant():
         t = DeepLTranslator(api_key="k")
         original = "今天天氣很好"
         out = t.translate(original, "zh-TW")
-    assert out == original
-    assert out is original          # 回傳原文物件本身
-    assert "[" not in out           # 無 [LANG] 包裝
+    assert out.text == original
+    assert out.text is original          # 回傳原文物件本身
+    assert out.skipped is True
+    assert out.detected_lang == "ZH-HANT"
+    assert "[" not in out.text           # 無 [LANG] 包裝
 
 
 def test_skip_zh_cn_when_detected_is_normalized_hans():
@@ -64,7 +66,9 @@ def test_skip_zh_cn_when_detected_is_normalized_hans():
     with _patch_urlopen(body):
         t = DeepLTranslator(api_key="k")
         out = t.translate("今天天气很好", "zh-CN")
-    assert out == "今天天气很好"
+    assert out.text == "今天天气很好"
+    assert out.skipped is True
+    assert out.detected_lang == "ZH-HANS"
 
 
 def test_skip_detected_case_insensitive():
@@ -73,7 +77,9 @@ def test_skip_detected_case_insensitive():
     with _patch_urlopen(body):
         t = DeepLTranslator(api_key="k")
         out = t.translate("原文", "ZH-TW")
-    assert out == "原文"
+    assert out.text == "原文"
+    assert out.skipped is True
+    assert out.detected_lang == "zh-hant"
 
 
 # ── skip 不觸發：detected != 正規化後 target ───────────────────────────────
@@ -88,7 +94,9 @@ def test_no_skip_when_detected_is_raw_unnormalized_target():
     with _patch_urlopen(body):
         t = DeepLTranslator(api_key="k")
         out = t.translate("simplified-ish", "zh-TW")
-    assert out == "正體譯文"          # 回譯文，未 skip
+    assert out.text == "正體譯文"          # 回譯文，未 skip
+    assert out.skipped is False
+    assert out.detected_lang == "ZH-TW"
 
 
 def test_no_skip_different_script_hans_vs_hant():
@@ -98,7 +106,9 @@ def test_no_skip_different_script_hans_vs_hant():
     with _patch_urlopen(body):
         t = DeepLTranslator(api_key="k")
         out = t.translate("简体来源", "zh-TW")
-    assert out == "繁體結果"
+    assert out.text == "繁體結果"
+    assert out.skipped is False
+    assert out.detected_lang == "ZH-HANS"
 
 
 def test_no_skip_normal_cross_language():
@@ -106,7 +116,9 @@ def test_no_skip_normal_cross_language():
     with _patch_urlopen(body):
         t = DeepLTranslator(api_key="k")
         out = t.translate("hello", "zh-TW")
-    assert out == "你好"
+    assert out.text == "你好"
+    assert out.skipped is False
+    assert out.detected_lang == "EN"
 
 
 # ── payload 與 skip 共用同一 norm（防呆一致性）────────────────────────────
@@ -121,7 +133,8 @@ def test_payload_uses_norm_and_skip_consistent():
     sent = capture["data"].decode()
     assert "target_lang=ZH-HANT" in sent     # payload 用 norm
     assert "ZH-TW" not in sent
-    assert out == "原文資料"                  # 同一 norm 觸發 skip
+    assert out.text == "原文資料"             # 同一 norm 觸發 skip
+    assert out.skipped is True
 
 
 if __name__ == "__main__":

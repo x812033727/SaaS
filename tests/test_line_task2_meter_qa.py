@@ -43,7 +43,7 @@ from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import PLAN_DAILY_LIMITS
-from saas_mvp.translation import StubTranslator, get_translator
+from saas_mvp.translation import StubTranslator, TranslationResult, get_translator
 from saas_mvp.translation.base import Translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ class SpyTranslator(Translator):
         self._inner = StubTranslator()
         self.calls: list[tuple[str, str]] = []
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         self.calls.append((text, target_lang))
         return self._inner.translate(text, target_lang)
 
