@@ -45,8 +45,8 @@ from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.line_client.base import LineReplyError
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import PLAN_DAILY_LIMITS
-from saas_mvp.translation import StubTranslator, TranslationResult, get_translator
-from saas_mvp.translation.base import TranslationError, Translator
+from saas_mvp.translation import StubTranslator, get_translator
+from saas_mvp.translation.base import TranslationError, TranslationResult, Translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 

@@ -4,8 +4,8 @@ Public API::
 
     from saas_mvp.translation import (
         Translator,          # abstract base class
-        TranslationResult,    # immutable translate() result
         TranslationError,    # raised when translation fails
+        TranslationResult,   # text + detected language + skip flag
         StubTranslator,      # deterministic offline stub
         DeepLTranslator,     # real HTTP backend (DeepL-compatible)
         get_translator,      # factory: returns configured backend or stub

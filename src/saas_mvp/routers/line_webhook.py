@@ -306,7 +306,7 @@ def _process_events(
 
     從 line_webhook handler 同步段整段剪下、零行為改動：
       redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
-      → translate → reply → increment_usage
+      → translate → same-language skip → reply → increment_usage
 
     DB session 自管：每個 event 進入處理邊界時以
     ``with Session(bind=bind) as db`` 新開 session，離開該筆 event
@@ -462,7 +462,9 @@ def _process_events(
 
 
 def _translate_sync(
-    translator: Translator, text: str, target_lang: str
+    translator: Translator,
+    text: str,
+    target_lang: str,
 ) -> TranslationResult:
     """同步呼叫翻譯介面（背景任務內執行）。
 

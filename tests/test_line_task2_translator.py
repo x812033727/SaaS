@@ -10,6 +10,7 @@ from saas_mvp.translation import (
     StubTranslator,
     Translator,
     TranslationError,
+    TranslationResult,
     get_translator,
     parse_lang_command,
 )
@@ -31,7 +32,9 @@ class TestStubTranslator:
     def test_basic_translation(self):
         t = StubTranslator()
         result = t.translate("hello", "ja")
+        assert isinstance(result, TranslationResult)
         assert result.text == "[JA] hello"
+        assert result.detected_lang is None
         assert result.skipped is False
 
     def test_lang_uppercased_in_output(self):
@@ -53,7 +56,10 @@ class TestStubTranslator:
         assert r1 == r2
 
     def test_deterministic_different_instances(self):
-        assert StubTranslator().translate("hi", "en") == StubTranslator().translate("hi", "en")
+        left = StubTranslator().translate("hi", "en")
+        right = StubTranslator().translate("hi", "en")
+        assert left.text == right.text
+        assert left.skipped == right.skipped
 
     def test_translate_empty_string(self):
         t = StubTranslator()
@@ -69,6 +75,13 @@ class TestStubTranslator:
         result = t.translate("こんにちは", "en")
         assert result.text == "[EN] こんにちは"
         assert result.skipped is False
+
+    def test_same_language_returns_original_and_skipped(self):
+        t = StubTranslator(source_lang="ja")
+        result = t.translate("こんにちは", "JA")
+        assert result.text == "こんにちは"
+        assert result.detected_lang == "ja"
+        assert result.skipped is True
 
 
 # ── DeepLTranslator (offline tests only) ─────────────────────────────────────
