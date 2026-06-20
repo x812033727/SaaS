@@ -26,6 +26,7 @@ src/saas_mvp/models/api_key.py
 src/saas_mvp/models/api_key_usage.py
 src/saas_mvp/models/line_channel_config.py
 src/saas_mvp/models/line_user_lang.py
+src/saas_mvp/models/line_webhook_event.py
 src/saas_mvp/models/note.py
 src/saas_mvp/models/plan_change_history.py
 src/saas_mvp/models/tenant.py
@@ -71,12 +72,15 @@ tests/test_line_task5_destination.py
 tests/test_line_task5_timing_logs.py
 tests/test_line_task5_webhook.py
 tests/test_line_timing_helper.py
+tests/test_line_webhook_event_init_db.py
+tests/test_line_webhook_event_model.py
 tests/test_qa_task1_acceptance.py
 tests/test_qa_task1_billing_deferred.py
 tests/test_qa_task1_char_count_model.py
 tests/test_qa_task2_bot_info_http.py
 tests/test_qa_task2_skip_normalized.py
 tests/test_qa_task2_stub_translation_result.py
+tests/test_qa_task3_idempotency_gaps.py
 tests/test_qa_task3_webhook_char_metering.py
 tests/test_qa_task4_admin_line_endpoints.py
 tests/test_qa_task4_migrate_line_bot_user_id.py

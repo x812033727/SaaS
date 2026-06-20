@@ -4055,3 +4055,45 @@ I will view `tests/test_line_task2_translator.py` to examine the unit tests for 
 
 ## 任務 #1 完成：實作需求
 
+## 任務 #1 完成：驗證 base.py 的 TranslationResult 為 @dataclass(frozen=True) 且欄位含 text:str、detected_lang:str|None、skipped:bool，Translator.translate 標註回傳 TranslationResult
+
+## 任務 #2 完成：grep 確認 stub.py、http.py、line_webhook.py 三呼叫端皆回傳/消費 TranslationResult，無殘留純字串或 tuple 介面
+
+## 異議退回 任務 #3：驗證 webhook 在 result.skipped=True 時不呼叫 reply、不計 quota；正常筆正常回覆並計量
+我是異議檢查者，先實際看 webhook 的 skip/計量邏輯與對應測試，不靠共識。
+程式碼邏輯正確：`skipped` 在 reply 前 return，正常筆才 reply+increment_usage。但驗收標準 #3 是要「測試斷言」。我要確認執行指令裡的三個測試檔有沒有真的涵蓋 webhook 的 skip/quota 行為。
+關鍵點來了：驗收標準 #3 要的是 **webhook 層**斷言（reply 0 次 / increment_usage 不增 / 正常筆 reply 1 次且 chars 正確）。但執行指令的三個測試檔，從 grep 看全是 **translator 層**（StubTranslator/DeepLTranslator 回傳 skipped），沒看到 `_process_events`、`increment_usage` 計數斷言。我要確認 webhook 層斷言到底在哪、有沒有被納入執行指令。
+重大發現：webhook 層的斷言（reply 0/1 次、increment_usage）其實在 `test_qa_task6_background_side_effects.py`、`test_qa_task3_webhook_char_metering.py`、`test_qa_task3_idempotency_gaps.py`——**這三個檔都不在執行指令裡**。執行指令的三個檔只測 translator 層的 skipped 語意。我實跑兩邊確認。
+缺 sqlalchemy 依賴，測試根本跑不起來。先裝依賴再實跑。
+專案有 `.venv`，用它跑。
+兩邊都實跑了，結論如下。
+
+**現況查證（我親自跑，非讀共識）：**
+- 程式碼正確：`line_webhook.py:608` `result.skipped` 在 reply 前 `return`，正常筆才走 `reply`（622）+ `increment_usage(chars=len(result.text))`（627）。✅
+- 執行指令三檔：**85 passed**。
+- webhook 層斷言檔（`test_qa_task6_background_side_effects.py` + `test_qa_task3_webhook_char_metering.py`）：**33 passed, 1 xfailed**。
+
+**但我抓到一個實質缺口——驗證範圍錯配：**
+
+任務 #3 的核心是 **webhook 層行為**（reply 0/1 次、increment_usage 不增/正確計量），驗收標準 #3 寫得很明確。然而執行指令列的三個檔——`test_qa_task2_stub_translation_result`、`test_line_task2_translator`、`test_translation_enhanced`——**全是 translator 層**，只斷言「StubTranslator/DeepLTranslator 回傳 `skipped=True`」，**沒有任何一條測 `_process_events` 的 `reply_call_count` 或 `increment_usage`**。
+
+真正驗證驗收標準 #3 的斷言（`reply_call_count == 0` on skip、`== 1` 正常筆、char_count 計量）全在 `test_qa_task6_background_side_effects.py` / `test_qa_task3_webhook_char_metering.py`——**這兩個檔不在執行指令裡**。
+
+也就是說：**照執行指令跑出來的綠，證明的是「翻譯器會回傳 skipped」，不是「webhook 收到 skipped 後真的不回覆、不計量」**。任務 #3 宣稱的東西，沒被它指定的 demo 指令覆蓋到。這正是「綠燈但測錯東西」的假共識陷阱。
+
+**這不是程式碼問題（碼是對的、webhook 測試我跑了也綠），是執行指令選錯檔的問題。** 修法極輕——把 `test_qa_task6_background_side_effects.py`（必要）加進執行指令即可：
+
+```
+執行指令: python3 -m pytest tests/test_qa_task2_stub_translation_result.py tests/test_line_task2_translator.py tests/test_translation_enhanced.py tests/test_qa_task6_background_side_effects.py -q
+```
+
+附帶查核（非阻擋）：char_metering 有 1 個 xfail，原因是 `increment_usage` 內部 char_count off-by-one，已標記 M2 待辦、屬 quota 模組責任，非 webhook 契約，故不阻擋 #3。
+
+在執行指令補上 webhook 側效測試、實跑為綠之前，不該以「三檔綠 = 任務 #3 完成」結案——因為那三檔不碰任務 #3 的核心。
+
+異議: 成立
+
+## 任務 #3 完成：驗證 webhook 在 result.skipped=True 時不呼叫 reply、不計 quota；正常筆正常回覆並計量
+
+## 任務 #4 完成：跑聚焦測試確認全綠：translator 介面、stub skip、enhanced translation
+
