@@ -33,11 +33,16 @@ import saas_mvp.db as _saas_db  # noqa: E402
 
 _saas_db.init_db = lambda: None
 
-# 確保 LineChannelConfig 進入 SQLAlchemy class registry，
-# 使 Tenant.line_channel_config relationship 的字串解析不失敗。
+# 確保所有 relationship 字串引用的 model 都進入 SQLAlchemy class registry；
+# 各測試檔才能單獨執行，不靠其他測試先 import 的順序副作用。
+from saas_mvp.models import api_key as _ak  # noqa: F401, E402
+from saas_mvp.models import api_key_usage as _aku  # noqa: F401, E402
+from saas_mvp.models import note as _n  # noqa: F401, E402
+from saas_mvp.models import plan_change_history as _pch  # noqa: F401, E402
+from saas_mvp.models import tenant as _t  # noqa: F401, E402
+from saas_mvp.models import usage as _us  # noqa: F401, E402
+from saas_mvp.models import user as _u  # noqa: F401, E402
 import saas_mvp.models.line_channel_config as _lcm  # noqa: F401, E402
-
-# 確保 LineUserLanguage 進入 SQLAlchemy class registry（/lang 持久化表）。
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401, E402
 
 # ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login

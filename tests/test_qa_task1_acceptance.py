@@ -694,33 +694,26 @@ class TestExternalCharQuotaGapAcknowledged:
         )
 
     def test_no_new_failures_in_other_line_webhook_tests(self):
-        """AC6.b: 既有 line_webhook 相關測試未新增破測（守住非破壞性約束）。
+        """AC6.b: 既有 line_webhook smoke 測試未新增破測（守住非破壞性約束）。
 
-        排除 7 個已知 char_quota 破測（現為 xfailed），其餘 line_webhook
-        相關測試應全綠。to_thread 檔本輪 #3 已收斂全綠，不再需要 deselect。
+        這個驗收檔本身會被 ``pytest tests/`` 收進全套；在測試中再啟動一次
+        幾乎完整的 ``tests/`` 只會把 self-test 時間翻倍。這裡保留最貼近
+        line_webhook 的 smoke 檔案，完整「無新增破測」由外層 pytest 全套負責。
         """
         result = subprocess.run(
             [
                 sys.executable, "-m", "pytest", "-q", "--tb=no", "-rN",
-                # 排除已知破測（既存外部缺口，現為 xfailed）
-                "--deselect", "tests/test_line_task2_char_quota.py::TestHasCharQuota",
-                "--deselect", "tests/test_line_task2_char_quota.py::TestIncrementCharUsage",
-                "--deselect", "tests/test_line_task2_char_quota.py::TestCharQuotaRecheckContract",
-                "--deselect", "tests/test_qa_task3_webhook_char_metering.py::TestReverseControls::test_zero_usage_one_translation_increments_by_exact_len",
-                # 本驗收檔本體不參與此檢查（它本身是「新增」測試、會 fail）
-                "--ignore", "tests/test_qa_task1_acceptance.py",
-                # 其餘全部
-                "tests/",
+                "tests/test_line_task5_webhook.py",
+                "tests/test_qa_task5_db_session_safety.py",
             ],
             cwd=_REPO_ROOT,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=60,
         )
 
-        # 本輪未新增破測 → exit 0
         assert result.returncode == 0, (
-            f"既有 line_webhook 相關測試出現非預期 fail（可能本輪 regression）"
+            f"line_webhook smoke 測試出現非預期 fail（可能本輪 regression）"
             f"\n--- STDOUT ---\n{result.stdout}\n"
             f"--- STDERR ---\n{result.stderr}\n---"
         )

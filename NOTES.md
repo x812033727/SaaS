@@ -3788,3 +3788,91 @@ Summary should be terse, focused, like a team meeting. The PM裁決 is already d
 
 ## 任務 #1 完成：實作需求
 
+## 卡關討論 任務 #1：建立 `saas_mvp.ops.backfill_line_bot_user_id` 批次腳本入口，掃描 `line_bot_user_id IS NULL` 的 LINE config
+【專案經理】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【架構師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【高級工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+
+## 任務 #1 已知限制：建立 `saas_mvp.ops.backfill_line_bot_user_id` 批次腳本入口，掃描 `line_bot_user_id IS NULL` 的 LINE config（huddle 與重試後仍未通過）
+
+## 卡關討論 任務 #2：複用既有 `HttpLineBotInfoClient` 與 ORM `access_token` 解密屬性，逐筆取得 bot userId 並回填
+【專案經理】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【架構師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【高級工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+
+## 任務 #2 已知限制：複用既有 `HttpLineBotInfoClient` 與 ORM `access_token` 解密屬性，逐筆取得 bot userId 並回填（huddle 與重試後仍未通過）
+
+## 卡關討論 任務 #3：加入 `--dry-run`、`--apply`、`--limit`、`--tenant-id` 與 summary 輸出，單筆失敗不中斷整批
+【專案經理】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【架構師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【高級工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+
+## 任務 #3 已知限制：加入 `--dry-run`、`--apply`、`--limit`、`--tenant-id` 與 summary 輸出，單筆失敗不中斷整批（huddle 與重試後仍未通過）
+
+## 卡關討論 任務 #4：補離線測試覆蓋成功回填、dry-run 不寫入、非 NULL 不覆寫、bot/info 失敗、重複 userId 衝突
+【專案經理】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【架構師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【高級工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+
+## 任務 #4 已知限制：補離線測試覆蓋成功回填、dry-run 不寫入、非 NULL 不覆寫、bot/info 失敗、重複 userId 衝突（huddle 與重試後仍未通過）
+
+## 卡關討論 任務 #5：更新維運文件，說明環境變數、先 dry-run 再 apply、可重跑與輸出解讀
+【專案經理】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【架構師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+【高級工程師】【系統】Codex CLI 執行失敗（exit 1）。
+{"type": "error", "message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}
+{"type": "turn.failed", "error": {"message": "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:57 AM."}}
+
+## 任務 #5 已知限制：更新維運文件，說明環境變數、先 dry-run 再 apply、可重跑與輸出解讀（huddle 與重試後仍未通過）
+
+## 任務 #1 完成：將 `_process_events` 的 `try/except` 移入 `for event in events` 迴圈內，每個 event 獨立捕捉例外
+
+## 任務 #2 完成：在 per-event `except` 區塊中於 `_log.exception` 之前呼叫 `db.rollback()` 重置 session，並在 log 加上 event index 便於排查
+
+## 任務 #3 完成：縮小或移除原外層 `try/except`，並同步更新函式 docstring 的例外處理說明以反映 per-event 語意
+
+## 任務 #4 完成：新增 `tests/test_line_multi_event_isolation.py`：兩 event payload，第一個 translate 拋例外，斷言第二個正常翻譯、reply sent、quota +1
+
