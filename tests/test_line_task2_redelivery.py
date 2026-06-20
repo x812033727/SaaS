@@ -1,11 +1,11 @@
-"""Task #2 驗收測試 — LINE Webhook 重送去重（deliveryContext.isRedelivery）
+"""LINE Webhook 冪等去重（webhookEventId）
 
 驗收標準
 --------
-- isRedelivery=true 的文字 event → fake client 未收到 reply、quota used 不變、回 200
-- isRedelivery=false → 行為與現狀一致（翻譯 + 回覆 + 計量）
+- 相同 webhookEventId 第二次進入 → fake client 未收到 reply、quota used 不變、回 200
+- isRedelivery=true 但 webhookEventId 首次出現 → 行為與現狀一致（翻譯 + 回覆 + 計量）
 - 缺 deliveryContext 欄位 → 視為首投，正常處理
-- 多 event 混合：僅重送者被略過，首投者照常處理（反向對照）
+- 多 event 混合：僅重複 ID 被略過，首投者照常處理（反向對照）
 
 全部離線：StubTranslator + FakeLineReplyClient。
 """
@@ -89,13 +89,22 @@ def _headers(body: bytes, secret: str = _CHANNEL_SECRET) -> dict:
     return {"X-Line-Signature": _sign(body, secret)}
 
 
-def _text_event(text: str, reply_token: str, *, is_redelivery=None, user_id="Uredeliver") -> dict:
+def _text_event(
+    text: str,
+    reply_token: str,
+    *,
+    is_redelivery=None,
+    user_id="Uredeliver",
+    webhook_event_id: str | None = None,
+) -> dict:
     ev = {
         "type": "message",
         "replyToken": reply_token,
         "source": {"type": "user", "userId": user_id},
         "message": {"type": "text", "text": text},
     }
+    if webhook_event_id is not None:
+        ev["webhookEventId"] = webhook_event_id
     if is_redelivery is not None:
         ev["deliveryContext"] = {"isRedelivery": is_redelivery}
     return ev
@@ -167,19 +176,41 @@ def tid(client):
 
 
 class TestRedeliveryDedup:
-    def test_redelivery_true_skipped_no_reply_no_quota(self, client, tid):
-        """isRedelivery=true → 不翻譯、不回覆、quota 不變、200。"""
+    def test_duplicate_webhook_event_id_skipped_no_reply_no_quota(self, client, tid):
+        """相同 webhookEventId 第二次進入 → 不翻譯、不回覆、quota 不變。"""
+        first = _payload(
+            _text_event("first", "rt-first-dup", webhook_event_id="evt-redelivery-dup")
+        )
+        r1 = client.post(f"/line/webhook/{tid}", content=first, headers=_headers(first))
+        assert r1.status_code == 200
+        assert _fake_line_client.call_count == 1
+
+        _fake_line_client.reset()
         before = _usage_count(tid)
-        body = _payload(_text_event("重送訊息", "rt-redeliver", is_redelivery=True))
+        body = _payload(
+            _text_event(
+                "重送訊息",
+                "rt-redeliver",
+                is_redelivery=True,
+                webhook_event_id="evt-redelivery-dup",
+            )
+        )
         r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
         assert r.status_code == 200
         assert _fake_line_client.call_count == 0          # 未回覆
         assert _usage_count(tid) == before                # quota 不變
 
-    def test_redelivery_false_processed_normally(self, client, tid):
-        """isRedelivery=false → 正常翻譯 + 回覆 + 計量（反向對照）。"""
+    def test_redelivery_true_new_webhook_event_id_processed_normally(self, client, tid):
+        """isRedelivery=true 但 webhookEventId 首次出現 → 正常處理。"""
         before = _usage_count(tid)
-        body = _payload(_text_event("hello", "rt-first", is_redelivery=False))
+        body = _payload(
+            _text_event(
+                "hello",
+                "rt-first",
+                is_redelivery=True,
+                webhook_event_id="evt-redelivery-new",
+            )
+        )
         r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
         assert r.status_code == 200
         assert _fake_line_client.call_count == 1
@@ -209,12 +240,24 @@ class TestRedeliveryDedup:
         assert _fake_line_client.call_count == 1
         assert _fake_line_client.last_text == "[ZH-TW] ping"
 
-    def test_mixed_only_redelivered_skipped(self, client, tid):
-        """混合：首投 + 重送 → 僅首投被翻譯回覆，重送被略過。"""
+    def test_mixed_only_duplicate_id_skipped(self, client, tid):
+        """混合：重複 ID + 首投 → 僅首投被翻譯回覆，重複 ID 被略過。"""
+        seed = _payload(
+            _text_event("seed", "rt-mix-seed", webhook_event_id="evt-mix-dup")
+        )
+        r0 = client.post(f"/line/webhook/{tid}", content=seed, headers=_headers(seed))
+        assert r0.status_code == 200
+        _fake_line_client.reset()
+
         before = _usage_count(tid)
         body = _payload(
-            _text_event("first-msg", "rt-mix-1", is_redelivery=False),
-            _text_event("redelivered-msg", "rt-mix-2", is_redelivery=True),
+            _text_event(
+                "redelivered-msg",
+                "rt-mix-2",
+                is_redelivery=True,
+                webhook_event_id="evt-mix-dup",
+            ),
+            _text_event("first-msg", "rt-mix-1", webhook_event_id="evt-mix-fresh"),
         )
         r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
         assert r.status_code == 200

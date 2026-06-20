@@ -181,6 +181,7 @@ def _text_event(
     line_user_id: str = "Uq001",
     *,
     redelivery: bool = False,
+    webhook_event_id: str | None = None,
 ) -> dict:
     ev: dict = {
         "type": "message",
@@ -188,6 +189,8 @@ def _text_event(
         "source": {"type": "user", "userId": line_user_id},
         "message": {"type": "text", "text": text},
     }
+    if webhook_event_id is not None:
+        ev["webhookEventId"] = webhook_event_id
     if redelivery:
         ev["deliveryContext"] = {"isRedelivery": True}
     return ev
@@ -399,37 +402,65 @@ class TestMultipleEventsPreserved:
         assert c == 2
         assert cc == 14, f"2 則累加 7+7=14，got {cc}"
 
-    def test_redelivery_skipped_no_translate_no_reply_no_count(self, client):
-        """重送 (isRedelivery=true) → 不翻譯、不回覆、不計 count、不計 char。
-        背景化後此語意必須保留（既有決策，不被切片破壞）。
-        """
+    def test_duplicate_id_skipped_no_translate_no_reply_no_count(self, client):
+        """相同 webhookEventId 第二次進入 → 不翻譯、不回覆、不計 count/char。"""
         tid = _new_tenant(client)
-        r = _post(client, tid, _text_event("/lang en hi", "rt-red", redelivery=True))
+        first = _post(
+            client,
+            tid,
+            _text_event("/lang en hi", "rt-first", webhook_event_id="evt-bg-dup"),
+        )
+        assert first.status_code == 200
+        _spy_translator.translate_args.clear()
+        _spy_line_client.reset()
+
+        r = _post(
+            client,
+            tid,
+            _text_event(
+                "/lang en hi",
+                "rt-red",
+                redelivery=True,
+                webhook_event_id="evt-bg-dup",
+            ),
+        )
         assert r.status_code == 200
 
         assert _spy_translator.translate_call_count == 0
         assert _spy_line_client.reply_call_count == 0
         c, cc = _read_usage(tid)
-        assert c == 0
-        assert cc == 0
+        assert c == 1
+        assert cc == 7
 
-    def test_mixed_redelivery_and_normal_only_normal_counted(self, client):
-        """混合：1 重送 + 1 正常 → 只正常那則被處理。
-        防「重送也漏到背景誤觸翻譯 / 計量」。
-        """
+    def test_mixed_duplicate_id_and_normal_only_normal_counted(self, client):
+        """混合：1 重複 ID + 1 正常 → 只正常那則被處理。"""
         tid = _new_tenant(client)
+        seed = _post(
+            client,
+            tid,
+            _text_event("/lang en hi", "rt-seed", webhook_event_id="evt-bg-mix-dup"),
+        )
+        assert seed.status_code == 200
+        _spy_translator.translate_args.clear()
+        _spy_line_client.reset()
+
         r = _post(
             client, tid,
-            _text_event("/lang en hi", "rt-r", redelivery=True),
-            _text_event("/lang en hi", "rt-n"),
+            _text_event(
+                "/lang en hi",
+                "rt-r",
+                redelivery=True,
+                webhook_event_id="evt-bg-mix-dup",
+            ),
+            _text_event("/lang en hi", "rt-n", webhook_event_id="evt-bg-mix-new"),
         )
         assert r.status_code == 200
 
         assert _spy_translator.translate_call_count == 1
         assert _spy_line_client.reply_call_count == 1
         c, cc = _read_usage(tid)
-        assert c == 1
-        assert cc == 7
+        assert c == 2
+        assert cc == 14
 
     def test_non_text_event_skipped_no_translate(self, client):
         """非 text event（如 follow）→ 不翻譯、不計量。
