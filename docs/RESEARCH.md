@@ -794,3 +794,54 @@ class BackgroundTask:
 
 我會先快速看現有租戶與 LINE 設定程式碼，避免調研脫離架構；再只補查 LINE 官方取得 bot profile/userId、維運端點/批次腳本與交易處理的缺口。
 
+## 2026-06-20 09:16
+
+先看既有測試，了解目前的預期行為：
+資料夠了，整理調研結論：
+
+---
+
+## 本輪調研：`_process_events` per-event 例外隔離
+
+**重點: 現況確認** — `_process_events` 的 `try/except Exception` 包住整個 `for event in events`（line 330–449），第一個 event 任何例外（translate/reply/increment_usage 皆可）→ 整個 `except` 觸發 → **後續所有 events 被跳過**，完全符合此次改良動機。
+
+**重點: SQLAlchemy session 例外後不可直接重用** — 官方文件明確：任何 flush/commit 拋例外後，session 進入 invalid state；`continue` 下一個 event 前必須呼叫 `db.rollback()` 才能重置 session，否則後續 SELECT 報「this Session's transaction has been rolled back」錯。來源：[SQLAlchemy 2.0 Sessions FAQ](https://docs.sqlalchemy.org/en/20/faq/sessions.html)
+
+**重點: loop 內 DB 操作清單** — 需要被 rollback 保護的點：`has_quota` / `has_char_quota`（開隱式 tx）、`upsert_user_lang`（db.commit 包含在內）、`increment_usage`（SELECT FOR UPDATE + db.commit）。若 `translate` 或 `reply` 在任何 SELECT 之後拋例外，session 已有未關閉隱式 tx，**必須 rollback** 才乾淨。
+
+**重點: LINE replyToken 各自獨立** — 每個 event 有自己的 replyToken，單次有效、1 分鐘過期，event 間完全無關聯。一個 event 的 reply 失敗不影響下一個 event 的 replyToken。來源：[LINE Messaging API — 回覆訊息](https://developers.line.biz/en/docs/messaging-api/sending-messages/#reply-messages)
+
+**重點: 現有測試無 multi-event batch 失敗場景** — `test_line_task1_quota_billing.py` 等均為單 event payload，不覆蓋「第一個 event 失敗、第二個 event 應繼續」的情境，需補新測試。
+
+---
+
+**建議: per-event try/except 放 for loop 內，結構如下：**
+```python
+for event in events:
+    try:
+        # ... 既有完整邏輯不動
+    except Exception:
+        db.rollback()  # ← 新增：重置 session 狀態，下一 event 用乾淨 tx
+        _log.exception(
+            "background _process_events event error tenant=%d event_idx=%d",
+            tenant_id, idx,  # ← 加 index 便於排查
+        )
+```
+
+**建議: 外層 `try/finally: db.close()` 保留** — 純粹確保 session 收尾，不動邏輯。
+
+**建議: `except` 裡 `db.rollback()` 必須在 `_log.exception` 之前** — logger 可能也做 DB 操作（若接了 DB handler），先 rollback 讓 session 乾淨最安全。
+
+**建議: 補一個新測試** `test_line_multi_event_isolation.py`：兩個 event payload，第一個 event translate 拋例外，斷言第二個 event 正常完成翻譯 + reply sent + quota +1；驗證「前一個 event 失敗不感染後一個」的契約能被測試守住。
+
+**建議: 外層 `except Exception` 可移除或降格** — 原本外層 try/except 的「整段失敗」場景現在只剩 `db = Session(bind=bind)` 或 for loop 外初始化失敗才觸發；可保留但縮小 scope 至 Session 建立那一行，避免吃掉 per-event 已處理過的例外。
+
+---
+
+**Sources:**
+- [SQLAlchemy 2.0 Sessions FAQ — session invalid after exception](https://docs.sqlalchemy.org/en/20/faq/sessions.html)
+- [SQLAlchemy 2.0 Session Basics — rollback after exception](https://docs.sqlalchemy.org/en/20/orm/session_basics.html)
+- [SQLAlchemy 2.0 — Transactions and Connection Management](https://docs.sqlalchemy.org/en/20/orm/session_transaction.html)
+- [SQLAlchemy Discussion #11945 — rollback after exception necessary?](https://github.com/sqlalchemy/sqlalchemy/discussions/11945)
+- [LINE Messaging API — reply messages & replyToken](https://developers.line.biz/en/docs/messaging-api/sending-messages/#reply-messages)
+
