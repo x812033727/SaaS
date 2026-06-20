@@ -45,7 +45,9 @@ class TestStubTranslator:
 
     def test_input_lang_already_upper(self):
         t = StubTranslator()
-        assert t.translate("test", "ZH-TW").text == "[ZH-TW] test"
+        result = t.translate("test", "ZH-TW")
+        assert result.text == "[ZH-TW] test"
+        assert result.skipped is False
 
     def test_deterministic_same_inputs(self):
         t = StubTranslator()
@@ -54,7 +56,10 @@ class TestStubTranslator:
         assert r1 == r2
 
     def test_deterministic_different_instances(self):
-        assert StubTranslator().translate("hi", "en") == StubTranslator().translate("hi", "en")
+        left = StubTranslator().translate("hi", "en")
+        right = StubTranslator().translate("hi", "en")
+        assert left.text == right.text
+        assert left.skipped == right.skipped
 
     def test_translate_empty_string(self):
         t = StubTranslator()

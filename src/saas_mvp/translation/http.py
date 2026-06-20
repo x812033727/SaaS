@@ -23,11 +23,6 @@ _DEEPL_LANG_MAP = {
     "ZH-CN": "ZH-HANS",
 }
 
-# DeepL 對中文偵測只回 "ZH"，不細分繁簡；因此同語言比對時，detected="ZH"
-# 視為等同於任一中文 target（ZH/ZH-HANT/ZH-HANS）。
-_ZH_NORM_TARGETS = {"ZH", "ZH-HANT", "ZH-HANS"}
-
-
 class DeepLTranslator(Translator):
     """Translation backend that calls the DeepL REST API.
 
@@ -70,15 +65,15 @@ class DeepLTranslator(Translator):
         """偵測到的來源語言是否等同於正規化後的 target。
 
         DeepL 對中文偵測只回 "ZH"（不分繁簡），故 detected="ZH" 時，
-        只要 target 為任一中文 tag（ZH/ZH-HANT/ZH-HANS）即視為同語言；
+        只要 target 以 ZH 開頭即視為同語言；
         其餘語言直接做大小寫不敏感的相等比對。
         """
         d = detected.upper()
         n = norm.upper()
         if d == "ZH":
-            return n in _ZH_NORM_TARGETS
+            return n.startswith("ZH")
         if n == "ZH":
-            return d in _ZH_NORM_TARGETS
+            return d.startswith("ZH")
         return d == n
 
     def translate(self, text: str, target_lang: str) -> TranslationResult:
