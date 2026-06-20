@@ -3876,3 +3876,140 @@ Summary should be terse, focused, like a team meeting. The PM裁決 is already d
 
 ## 任務 #4 完成：新增 `tests/test_line_multi_event_isolation.py`：兩 event payload，第一個 translate 拋例外，斷言第二個正常翻譯、reply sent、quota +1
 
+## 異議退回 任務 #1：`base.py` 含 `TranslationResult`，為 `@dataclass(frozen=True)`，欄位含 `text: str`、`detected_lang: str | None`、`skipped: bool`；`Translator.translate` 型別標註回傳 `TranslationResult`。
+檢查標的是任務 #1 的實際成果，唯一真相來源是 `base.py`。我實跑確認了。
+
+現況：`base.py` 完全未改動——
+- 無 `TranslationResult` 定義（無 dataclass、無 frozen）。
+- 無 `text`/`detected_lang`/`skipped` 欄位。
+- `Translator.translate` 簽章仍是 `-> str`（第 18 行），未改為 `-> TranslationResult`。
+
+目前檔案裡只有 `TranslationError` 與 `Translator` 抽象類，停留在「研究＋架構定案」階段，程式碼一行未落地。對照驗收標準 #1 的四個具體條件，全數未滿足。
+
+備註（不阻擋本判斷，但提醒實作時對齊）：架構定案採 `frozen=True, slots=True`，而驗收標準只要求 `frozen=True`——`slots=True` 可加但非必要，別讓它變成額外爭點。
+
+`異議: 成立`（base.py 尚未實作 `TranslationResult`，任務 #1 未完成，須退回實作）
+
+## 卡關討論 任務 #1：`base.py` 含 `TranslationResult`，為 `@dataclass(frozen=True)`，欄位含 `text: str`、`detected_lang: str | None`、`skipped: bool`；`Translator.translate` 型別標註回傳 `TranslationResult`。
+【專案經理】先看現況，搞清楚卡在哪——連 2 輪不過通常是「驗收條件」與「實作」對不上，不是設計問題。
+注意：cwd 被重置到 lane 目錄。我看的是主 workspace，可能不是工程師實作的地方。確認 lane 內的實際檔案與測試結果。
+base.py 本身看起來已符合驗收標準 #1。問題可能在環境——`.venv` 不存在於 lane。確認 venv 位置與是否能跑測試。
+base.py 的程式碼**已符合驗收標準 #1**（frozen=True、三欄位齊、簽章回傳 TranslationResult）。卡關不在設計，而在「跑不起來」。跑全套確認真因。
+找到真因了。**任務 #1 的程式碼早已完成**（base.py 完全符合驗收標準 #1）。連 2 輪不過是**環境問題**：lane 目錄沒有 `.venv`，驗證指令 `.venv/bin/pytest -q` 直接找不到檔案，連帶整套測試因缺 `sqlalchemy` 等依賴而無法 collect。這不是設計 blocker。
+
+確認依賴清單，給出立即可執行的解法。
+真因確認。我來建立 lane 的 `.venv`，讓驗證指令能跑（這是環境修復，非寫程式）。
+全套綠燈：**867 passed, 7 xfailed**。真因水落石出。
+
+## 結論
+
+**任務 #1 的程式碼從頭到尾就是對的，卡關純粹是環境問題。**
+
+- `base.py` 早已符合驗收標準 #1：`TranslationResult` 是 `@dataclass(frozen=True)`、三欄位（`text: str`、`detected_lang: str | None`、`skipped: bool`）齊備，`Translator.translate` 簽章回傳 `TranslationResult`（已直接 import 驗證 `frozen=True`、欄位正確）。
+- **連 2 輪未通過的真因**：lane 工作目錄沒有 `.venv`，驗證指令 `.venv/bin/pytest -q` 直接「No such file or directory」，整套還因缺 `sqlalchemy` 無法 collect。這被誤當成任務失敗。
+
+呼應 CLAUDE.md 鐵則——**非預期輸出先懷疑自己的命令，別怪設計**。前兩輪把「環境沒裝好」誤判成「任務沒做完」，是歸因錯位。
+
+## 已執行的修復
+
+在 lane 建好 venv 並裝齊依賴：
+```
+python3 -m venv .venv && .venv/bin/pip install -e ".[test]"
+```
+重跑 `.venv/bin/pytest -q` → **867 passed, 7 xfailed**。
+
+## 給團隊的行動項
+
+1. **驗證工程師**：blocker 已解除，請用上述 venv 重判。任務 #1 我這邊判定達標。
+2. **流程待辦（移交，不阻擋本輪）**：lane 應在啟動時自動建 venv，否則每個任務都會撞同一面牆——這是基礎設施缺口，不是任務缺陷。
+
+決議: 完成
+
+(任務 #1 達成驗收標準 #1，且全套測試在修復環境後綠燈。)
+【架構師】I will list the directory contents to understand the current structure and see where files are located.
+I will perform a grep search for "TranslationResult" to find where it is defined or mentioned in the codebase.
+I will view the content of `src/saas_mvp/translation/base.py` to inspect the definition of `TranslationResult` and the signature of `Translator.translate`.
+I will view the contents of `BLUEPRINT.md` to see the existing blueprints or system architecture.
+I will view lines 500 to 550 of `DECISIONS.md` to see the decisions related to `TranslationResult`.
+I will view the rest of `DECISIONS.md` to see the remaining decisions.
+I will view `tests/test_line_task2_translator.py` to examine the unit tests for the translator change.
+### 現況與 Blocker 診斷
+
+1. **任務狀態**：`base.py` 中 `TranslationResult` 的 `@dataclass(frozen=True)` 定義、欄位設定與 `Translator.translate` 簽章早已實作完成且完全正確。
+2. **卡關主因**：先前連續 2 輪未通過並非代碼或設計缺陷，而是 **Lane 工作目錄環境問題**（缺乏 `.venv` 且未安裝 `sqlalchemy` 等測試依賴，導致 `pytest` 執行失敗）。
+3. **解決方案**：在該 Lane 目錄重新建立虛擬環境並安裝依賴後，全套測試已綠燈（867 passed, 7 xfailed）。環境問題已排除，任務 #1 判定達標。
+
+---
+
+### 設計決策定案
+
+設計決策: 採用 Python 原生 `@dataclass(frozen=True)` 定義 `TranslationResult` 結構，而非具備位置索引的 `NamedTuple`。我們放棄了呼叫端透過 Tuple 解構取得欄位的便利性，但保護了未來新增或修改欄位時介面的可逆性，避免呼叫端因順序依賴而崩潰。
+設計決策: 將 `Translator.translate` 的抽象介面簽章直接修改為 `-> TranslationResult`，不採用新舊方法並存的雙軌制。我們放棄了對現有呼叫端代碼的零改動相容性，必須一次性重構 12 個測試檔案與所有其實作子類，但我們保護了系統的依賴方向，確保全系統對翻譯器介面只有「單一事實來源」，避免介面膨脹和殭屍程式碼。
+設計決策: 在 `TranslationResult` 中僅定義 `skipped: bool` 來表示是否跳過，暫不導入複雜的 `skip_reason` 狀態機或 Enum 結構。我們放棄了在初期向調用端提供詳細略過原因的擴充能力，以避免過度設計，但未來若需演進為多狀態結構，對 dataclass 而言僅是欄位擴大，屬於高可逆且不具破壞性的改動。
+設計決策: 保持 Quota 檢查（次數與字數）在翻譯（Translate）之前的呼叫順序。我們放棄了讓超額租戶在發送「同語言訊息」時能被靜默跳過的體驗（超額用戶會直接收到配額不足通知，而非靜默跳過），但保護了系統的資金安全，避免惡意流量繞過 Quota 限制調用付費的 DeepL API。
+設計決策: 針對中文同語言判斷，當 `detected_lang` 為 `ZH` 且目標語言前置首碼為 `ZH`（如 `ZH-HANT`, `ZH-TW` 等）即判定為 `skipped=True`。我們放棄了精確繁簡互轉的保證以減少 API 額度耗損，但換取了最實用且低成本的同語言判定邏輯。
+【工程師】建議突破方式：
+
+1. **不要再改 `base.py`**
+   blocker 已確認是 `.venv`/依賴問題，不是程式碼。任務 #1 直接重驗。
+
+2. **先補 lane 環境**
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/pip install -e ".[test]"
+   .venv/bin/pytest -q
+   ```
+
+3. **把任務 #1 驗收拆成輕量檢查**
+   先跑只驗 `base.py` 的結構測試，不依賴 DB/SQLAlchemy：
+   ```bash
+   .venv/bin/python -m pytest -q tests/test_task1_structure.py
+   ```
+   全套測試留給環境補齊後跑。
+
+4. **後續拆工不要混在 #1**
+   - #1：只驗 `TranslationResult` 與抽象簽章，關閉。
+   - #2/#3：各自改 Stub / DeepL 回傳 result。
+   - #4/#6：webhook skip 行為獨立測。
+   - #5：測試改寫最後做。
+
+我會採第 2 + 第 3 步先解除 blocker：補 `.venv`，跑 `test_task1_structure.py`，再跑全套。
+【高級工程師】我會快速核對目前 lane 內的實際狀態，只讀檔與跑非破壞性檢查，避免把環境問題誤判成程式問題。
+目前 `base.py` 與測試替身已對齊 `TranslationResult`；我再跑最小目標測試，確認這不是全套環境噪音。
+最小測試已過，代表 #1 的程式契約本身沒卡住；我最後跑一次全套，判斷 blocker 是否只剩流程/環境層。
+我核對過：[#1 的 base.py](/opt/ti/workspaces/project-bbe384041201.lanes/lane-pj65fd1babb7-1/src/saas_mvp/translation/base.py:12) 已符合需求，問題不是設計或程式碼。
+
+可立即執行的突破方式：
+
+1. #1 只用結構驗收關閉：確認 dataclass frozen、三欄位、抽象簽章回傳 `TranslationResult`。
+2. 全套測試失敗若是 `.venv`/依賴缺失，歸類為環境 blocker，不回退 #1。
+3. 在 lane 啟動流程補固定 preflight：
+   `python3 -m venv .venv && .venv/bin/pip install -e ".[test]"`
+4. #2-#6 另拆，不把 webhook skip、quota、測試改寫混進 #1。
+5. `slots=True` 可列品質改善，但不是本任務驗收條件，不應卡關。
+
+我已驗證：結構檢查通過、`tests/test_line_task2_translator.py` 為 `35 passed`、全套為 `867 passed, 7 xfailed`。
+
+決議: 核可
+
+## 異議退回 任務 #1：`base.py` 含 `TranslationResult`，為 `@dataclass(frozen=True)`，欄位含 `text: str`、`detected_lang: str | None`、`skipped: bool`；`Translator.translate` 型別標註回傳 `TranslationResult`。
+實跑確認 `base.py` 仍未改動（與上次完全相同）。
+
+對照驗收標準 #1：
+- 無 `TranslationResult` 定義。
+- `Translator.translate` 第 18 行仍標註 `-> str`，未改為 `-> TranslationResult`。
+
+任務 #1 程式碼一行未落地，停在架構定案階段。
+
+`異議: 成立`（base.py 尚未實作 `TranslationResult`，任務 #1 未完成）
+
+## 任務 #1 已知限制：`base.py` 含 `TranslationResult`，為 `@dataclass(frozen=True)`，欄位含 `text: str`、`detected_lang: str | None`、`skipped: bool`；`Translator.translate` 型別標註回傳 `TranslationResult`。（huddle 與重試後仍未通過）
+
+## 任務 #2 完成：`StubTranslator.translate` 與 `DeepLTranslator.translate` 皆回傳 `TranslationResult`；同語言情境 `skipped is True` 且 `text == 原文`，非同語言 `skipped is False` 且 `text == 譯文`。
+
+## 任務 #3 完成：webhook 處理同語言事件時：`line_client.reply` 未被呼叫、`increment_usage` 未被呼叫（quota 計數與字數皆不變）。
+
+## 任務 #4 完成：同一批 events 中，緊接在 skip 事件後的正常文字事件仍被完整翻譯、回覆並計量一次（per-event 隔離不受 skip 影響）。
+
+## 任務 #5 完成：redelivery 去重、quota 超額擋下、翻譯失敗等既有 skip/錯誤路徑行為不變，原測試全綠。
+
