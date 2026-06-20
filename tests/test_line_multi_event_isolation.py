@@ -24,7 +24,12 @@ import saas_mvp.models.line_channel_config as _lcm
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.usage import ApiUsage
-from saas_mvp.translation import TranslationError, Translator, get_translator
+from saas_mvp.translation import (
+    TranslationError,
+    TranslationResult,
+    Translator,
+    get_translator,
+)
 
 
 _engine = create_engine(
@@ -42,11 +47,15 @@ class FailsFirstTranslator(Translator):
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         self.calls.append((text, target_lang))
         if len(self.calls) == 1:
             raise TranslationError("first event failed")
-        return f"[{target_lang.upper()}] {text}"
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=None,
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True
