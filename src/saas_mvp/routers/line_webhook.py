@@ -308,9 +308,9 @@ def _process_events(
       redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
       → translate → reply → increment_usage
 
-    DB session 自管：``with Session(bind=bind) as db`` 新開並於背景處理結束
-    自動 close；不保留外層 ``except``，事件迴圈只由 per-event
-    ``try/except`` 做隔離。
+    DB session 自管：每個 event 進入處理邊界時以
+    ``with Session(bind=bind) as db`` 新開 session，離開該筆 event
+    自動 close；不跨 event 共用 session，也不保留外層 ``except``。
     ``bind`` 由 handler 在丟背景前以 ``db.get_bind()`` 抓出——傳 engine 而非
     factory，是為了對齊測試的 ``dependency_overrides[get_db]`` 機制：
     request session 綁的是測試自己的 in-memory StaticPool engine，背景
@@ -322,12 +322,12 @@ def _process_events(
     back due to a previous exception」。
 
     例外處理：每個 event 各自 ``try/except Exception``。單筆失敗時先
-    ``db.rollback()`` 重置 SQLAlchemy session，再記錄含 ``event_idx`` 的
-    ``log.exception``，然後繼續下一個 event；單一 event 失敗不會中斷同批
-    其他 events。
+    ``db.rollback()`` 重置該筆 event 的 SQLAlchemy session，再記錄含
+    ``event_idx`` 的 ``log.exception``，然後關閉該 session 並繼續下一個
+    event；單一 event 失敗不會中斷同批其他 events。
     """
-    with Session(bind=bind) as db:
-        for event_idx, event in enumerate(events):
+    for event_idx, event in enumerate(events):
+        with Session(bind=bind) as db:
             try:
                 # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，
                 # deliveryContext.isRedelivery=true。對重送 event 一律略過——不翻譯、

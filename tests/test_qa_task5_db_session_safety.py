@@ -8,21 +8,21 @@
 > DB session 安全：背景任務不使用已關閉的 request-scoped session；
 > 背景內例外被 try/except 攔下、只 log 不影響已送出的 200。
 
-本檔逐字對應驗收 #5，斷言四點：
+本檔逐字對應驗收 #5，斷言五點：
 
-1. **背景 session 與 request-scoped session 是不同物件**（id 不同）。
+1. **背景 event session 與 request-scoped session 是不同物件**（id 不同）。
    程式碼保證：handler 抓 ``db.get_bind()``（engine handle）丟背景，
-   背景用 ``Session(bind=bind)`` **新開** session；永不重用
-   request-scoped session。
+   背景每個 event 用 ``Session(bind=bind)`` **新開** session；永不重用
+   request-scoped session，也不跨 event 共用 session。
 
 2. **背景 session 與 request-scoped session 共享同一 engine**。
    程式碼保證：背景寫入的 ``ApiUsage`` 必須在測試 DB 可讀到。
    防「engine handle 拿錯 / 背景綁到 production 引擎」回歸。
 
-3. **背景內拋任何例外 → response 仍 200 + 不冒出 server exception**。
-   程式碼保證：``_process_events`` 整段 ``for event in events`` 在
-   ``try/except Exception`` 內，``_log.exception`` 後 swallow；Starlette
-   預設對背景任務例外不 re-raise。
+3. **背景內單筆 event 拋任何例外 → response 仍 200 + 不冒出 server exception**。
+   程式碼保證：``_process_events`` 每筆 event 各自建立 session，並在
+   per-event ``try/except Exception`` 內 ``_log.exception`` 後 swallow；
+   Starlette 預設對背景任務例外不 re-raise。
 
 4. **背景執行時 request-scoped session 已關閉**（深化 #1）。
    FastAPI dependency teardown 在 response 送出後執行 → request
@@ -32,8 +32,8 @@
    back``。本測試直接觀察兩者時序，防「不小心重用」的 regression。
 
 5. **多次 request 後 DB 連線不洩漏**。
-   程式碼保證：``finally: db.close()`` 確保 background session 必
-   釋回 pool；無 finally 會讓 StaticPool 之外的 engine 連線耗盡。
+   程式碼保證：per-event ``with Session(bind=bind)`` 確保 background
+   session 必釋回 pool；漏掉 close 會讓 StaticPool 之外的 engine 連線耗盡。
    測試用大量 request 驗證。
 
 設計說明
@@ -129,13 +129,13 @@ class SpyLineReplyClient(FakeLineReplyClient):
 # ── Session spy 工具 ────────────────────────────────────────────────────────
 # 用 patch.object 替換 line_webhook 模組內的 Session class，記下所有
 # 背景內被建立的 session 物件。同時 hook 該 instance 的 close() 方法，
-# 標記 ``_bg_spy_close_called`` 供測試觀察「finally 區塊是否跑了」。
+# 標記 ``_bg_spy_close_called`` 供測試觀察「close 是否跑了」。
 
 # 模組載入後再 import line_webhook（避免 line_webhook import 時還沒
 # patch；用 patch.object 動態替換，import 時機無影響）
 import saas_mvp.routers.line_webhook as _lw  # noqa: E402
 
-# 全域 session spy list —— 每次背景內 db = Session(bind=bind) 會 push 進來
+# 全域 session spy list —— 每次背景 event 內 db = Session(bind=bind) 會 push 進來
 _BG_SESSIONS: list[RealSession] = []
 # request-scoped session 觀察點：fixture 內的 override_get_db 會 push 進來
 _REQUEST_SESSIONS: list[RealSession] = []
@@ -148,7 +148,7 @@ def _spy_session_factory(*args, **kwargs):
     觀察，且在 instance 上 hook ``close()`` 標記
     ``_bg_spy_close_called = True``。SQLAlchemy 2.x session close()
     後 is_active / execute 行為不可靠，hook close() 是 100% 精準的
-    「finally 區塊跑了沒」指標。
+    「close 是否跑了」指標。
     """
     real = RealSession(*args, **kwargs)
     real._bg_spy_close_called = False
@@ -391,6 +391,28 @@ class TestBackgroundUsesOwnSession:
             f"（= 0 = 背景 session engine 與測試 engine 不同顆 :memory:）"
         )
 
+    def test_each_event_creates_independent_background_session(self, client):
+        """同一批兩個 event → 建立兩個不同且都會 close 的 background session。"""
+        tid = _new_tenant(client)
+        _BG_SESSIONS.clear()
+
+        r = _post(
+            client,
+            tid,
+            _text_event("/lang en hi", "rt-pe-1"),
+            _text_event("/lang en bye", "rt-pe-2"),
+        )
+        assert r.status_code == 200
+
+        assert len(_BG_SESSIONS) == 2, (
+            f"兩個 event 應各自建立一個 background session，got {len(_BG_SESSIONS)}"
+        )
+        assert len({id(s) for s in _BG_SESSIONS}) == 2, (
+            "同一批 events 不應共用同一個 background session"
+        )
+        for bg_db in _BG_SESSIONS:
+            _assert_session_closed(bg_db)
+
 
 # ── 2. 背景內例外被 try/except 攔下、不 re-raise ──────────────────────────
 #
@@ -467,8 +489,7 @@ class TestBackgroundExceptionSwallowed:
         2. ``response.json() == {"status": "ok"}``（對外契約不變）
         3. log 內有 ``_process_events failed`` 記錄（log.exception 觸發）
         4. translate 被呼叫 1 次（背景跑到 translate 才炸）→ 確認
-           ``try/except`` 是包在 for-loop 內，**整段**都被攔下而非
-           個別 try 漏抓
+           per-event ``try/except`` 包住該筆事件處理，沒有漏抓
         """
         app, tid = _setup_app_with_tenant("exc")
         exploding = SpyTranslator(raise_on_translate=RuntimeError("翻譯引擎爆炸了"))
@@ -629,7 +650,7 @@ class TestRequestSessionClosedBeforeBackground:
         """N 次 request → N 次 background session 被 close。
 
         觀察「close 後 execute 必炸」：每次 request 後的 background
-        session 都進入 closed 狀態。防「finally: db.close() 漏寫」。
+        session 都進入 closed 狀態。防「context manager close 漏寫」。
         """
         tid = _new_tenant(client)
 
@@ -645,7 +666,7 @@ class TestRequestSessionClosedBeforeBackground:
         assert len(bg_sessions_seen) >= 3, (
             f"3 次 request 應有 ≥3 個 background session，got {len(bg_sessions_seen)}"
         )
-        # 全部都 close（finally 區塊釋回 pool）
+        # 全部都 close（context manager 釋回 pool）
         for j, bg_db in enumerate(bg_sessions_seen):
             _assert_session_closed(bg_db)
 
@@ -706,12 +727,12 @@ def _assert_session_closed(bg_db: RealSession) -> None:
     """
     if not getattr(bg_db, "_bg_spy_close_called", False):
         raise AssertionError(
-            f"session.close() 沒被呼叫 → finally 區塊漏寫 / 連線洩漏"
+            f"session.close() 沒被呼叫 → context manager close 漏寫 / 連線洩漏"
         )
 
 
 class TestNoConnectionLeak:
-    """驗收 #5.4：``finally: db.close()`` 確保 background session 釋回 pool，
+    """驗收 #5.4：per-event ``with Session(bind=bind)`` 確保 background session 釋回 pool，
     多次 request 不會耗盡 engine 連線。"""
 
     def test_many_requests_close_all_background_sessions(self, client):
@@ -758,7 +779,7 @@ class TestNoConnectionLeak:
     def test_translate_exception_path_still_closes_session(self):
         """例外路徑：translate 炸例外 → background session 仍要 close。
 
-        沒有 ``finally: db.close()`` 會在例外路徑洩漏 session。本測試
+        沒有正確 close 會在例外路徑洩漏 session。本測試
         用 ``raise_server_exceptions=False`` 跑（避免 TestClient 把
         背景例外 re-raise 干擾斷言），觀察 background session 在例外
         路徑下仍正確 close。
@@ -782,6 +803,6 @@ class TestNoConnectionLeak:
                     assert r.status_code == 200
                     leaked_sessions.extend(_BG_SESSIONS)
 
-        # 重點：所有 leaked_sessions 都應被 close（finally 覆蓋例外路徑）
+        # 重點：所有 leaked_sessions 都應被 close（context manager 覆蓋例外路徑）
         for j, bg_db in enumerate(leaked_sessions):
             _assert_session_closed(bg_db)
