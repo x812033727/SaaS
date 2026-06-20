@@ -95,21 +95,16 @@ _CHANNEL_SECRET = "test-channel-secret-32-bytes-x!!"
 _ACCESS_TOKEN = "test-access-token-abc"
 
 
-# ── 6c 步驟註解行範圍（line 409 ± 12 行容納完整段落） ───────────────────────
-# 設計定案：以檔案內容定位，不寫死「行 N」——任何改寫後重讀檔案仍正確抓到
-# 6c 步驟段落。回退方案：直接讀 line 409 ± 12 行（容納整段 6c 多行註解）。
-_LINE_409_WINDOW = (397, 421)
-
-
 def _read_source() -> str:
     return _LINE_WEBHOOK_PATH.read_text(encoding="utf-8")
 
 
-def _read_line_range(start: int, end: int) -> str:
-    """讀取 source 第 start..end 行（1-based，含兩端）。"""
-    lines = _read_source().splitlines()
-    # 1-based 轉 0-based，且 end 含
-    return "\n".join(lines[start - 1 : end])
+def _read_6c_block() -> str:
+    """以內容定位 6c reply 註解區塊，避免 source 新增 helper 後行號漂移。"""
+    source = _read_source()
+    start = source.index("# ── 6c. 回覆")
+    end = source.index("line_client.reply(reply_token, result.text", start)
+    return source[start:end]
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -132,7 +127,7 @@ class TestLineWebhook409Contract:
         誤導原句：``# NOTE: line_client.reply 同為阻塞 I/O — 高流量下應
         wrap in asyncio.to_thread (M2 技術債)``。驗收後此句必須消失。
         """
-        block = _read_line_range(*_LINE_409_WINDOW)
+        block = _read_6c_block()
 
         # 1) 「應 wrap in asyncio.to_thread」誤導片語必須消失
         assert "應 wrap in asyncio.to_thread" not in block, (
@@ -153,7 +148,7 @@ class TestLineWebhook409Contract:
         - ``event loop`` 或 ``event-loop``（說明移出對象）
         - ``threadpool`` 或 ``thread pool``（說明移入位置）
         """
-        block = _read_line_range(*_LINE_409_WINDOW)
+        block = _read_6c_block()
         text_lower = block.lower()
 
         assert "run_in_threadpool" in block, (
@@ -177,7 +172,7 @@ class TestLineWebhook409Contract:
         - 「冗餘」/「redundant」
         兩組任一即滿足。
         """
-        block = _read_line_range(*_LINE_409_WINDOW)
+        block = _read_6c_block()
 
         # 否定式斷言：明確說「不需要再 await asyncio.to_thread」
         # 比單獨「不需要」更精準——避免被「reply 不需要 await」模糊通過
