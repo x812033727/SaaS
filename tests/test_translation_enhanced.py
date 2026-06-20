@@ -194,6 +194,21 @@ class TestDeepLSameLanguageSkip:
         assert result.detected_lang == "ZH"
         assert result.skipped is True
 
+    def test_zh_detect_skips_plain_zh_target(self):
+        """DeepL 回 ZH，target=zh（正規化 ZH）→ 同語言 skip，回原文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "x"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("中文原文", "zh")
+        assert result.text == "中文原文"
+        assert result.detected_lang == "ZH"
+        assert result.skipped is True
+
     def test_zh_detect_does_not_skip_non_zh_target(self):
         """DeepL 回 ZH 但 target=ja → 非同語言，回 API 譯文。"""
         t = DeepLTranslator(api_key="k")

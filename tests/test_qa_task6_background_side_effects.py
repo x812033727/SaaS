@@ -75,7 +75,7 @@ from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.line_client.fake import SentReply
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.translation import StubTranslator, get_translator
-from saas_mvp.translation.base import Translator
+from saas_mvp.translation.base import TranslationResult, Translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 
@@ -100,11 +100,11 @@ class SpyTranslator(Translator):
         self._delay = delay
         self.translate_args: list[tuple[str, str]] = []
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         if self._delay > 0:
             time.sleep(self._delay)
         self.translate_args.append((text, target_lang))
-        return f"[{target_lang.upper()}] {text}"
+        return TranslationResult(f"[{target_lang.upper()}] {text}", None, False)
 
     def is_available(self) -> bool:
         return True
@@ -695,7 +695,7 @@ class _ThreadRecordingTranslator(SpyTranslator):
         super().__init__()
         self.thread_id: int | None = None
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         # 入口先抓，再呼叫 super——避免 super 內部任何 thread switch
         # 干擾記錄。get_ident() 是 OS thread id，跨 await / 跨
         # threadpool 切換必變。

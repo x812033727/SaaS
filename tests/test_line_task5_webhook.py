@@ -51,6 +51,7 @@ from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.translation import StubTranslator, get_translator
+from saas_mvp.translation.base import TranslationResult
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 
@@ -804,7 +805,7 @@ class TestRedeliveryDedup:
 class _BoomTranslator(StubTranslator):
     """translate 一律拋例外，模擬下游翻譯失敗。"""
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         raise RuntimeError("translate backend down")
 
 

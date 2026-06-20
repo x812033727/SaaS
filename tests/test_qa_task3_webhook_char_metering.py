@@ -59,7 +59,7 @@ from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import PLAN_DAILY_CHAR_LIMITS, PLAN_DAILY_LIMITS
-from saas_mvp.translation import StubTranslator, get_translator
+from saas_mvp.translation import StubTranslator, TranslationResult, get_translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ _Session = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 class _BoomTranslator(StubTranslator):
     """translate 一律拋例外，模擬下游翻譯失敗。"""
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         raise RuntimeError("translate backend down")
 
 
@@ -436,9 +436,9 @@ class TestCharQuotaBlocksTranslate:
             def __init__(self) -> None:
                 self.calls: list[tuple[str, str]] = []
 
-            def translate(self, text: str, target_lang: str) -> str:
+            def translate(self, text: str, target_lang: str) -> TranslationResult:
                 self.calls.append((text, target_lang))
-                return f"[{target_lang.upper()}] {text}"
+                return TranslationResult(f"[{target_lang.upper()}] {text}", None, False)
 
             def is_available(self) -> bool:
                 return True

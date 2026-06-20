@@ -43,6 +43,7 @@ from saas_mvp.app import create_app                                             
 from saas_mvp.db import Base, get_db                                            # noqa: E402
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client          # noqa: E402
 from saas_mvp.translation import StubTranslator, get_translator               # noqa: E402
+from saas_mvp.translation.base import TranslationResult                        # noqa: E402
 from saas_mvp.models.usage import ApiUsage                                      # noqa: E402
 from saas_mvp.quota import PLAN_DAILY_LIMITS                                    # noqa: E402
 
@@ -165,7 +166,7 @@ def _set_used(tid: int, count: int) -> None:
 
 # ── 失敗 stub ────────────────────────────────────────────────────────────────
 class _BoomTranslator(StubTranslator):
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         raise RuntimeError("translate backend down")
 
 
