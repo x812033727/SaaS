@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from saas_mvp.translation.base import Translator, TranslationError
+from saas_mvp.translation.base import TranslationResult, Translator, TranslationError
 
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 
@@ -78,8 +78,8 @@ class DeepLTranslator(Translator):
             return norm in _ZH_NORM_TARGETS
         return d == norm
 
-    def translate(self, text: str, target_lang: str) -> str:
-        """Call DeepL API and return translated text.
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
+        """Call DeepL API and return translated text with metadata.
 
         若 DeepL 回傳的 ``detected_source_language`` 等同於正規化後的 target，
         代表來源語言已是目標語言，直接回傳原文（避免把同語言翻譯結果回覆給用戶）。
@@ -126,10 +126,18 @@ class DeepLTranslator(Translator):
         # 一律包成 TranslationError，維持原有錯誤封裝語意。
         try:
             translation = body["translations"][0]
-            detected = translation.get("detected_source_language", "")
+            detected = translation.get("detected_source_language", "") or ""
             if self._is_same_language(detected, norm):
-                return text
-            return translation["text"]
+                return TranslationResult(
+                    text=text,
+                    detected_lang=detected or None,
+                    skipped=True,
+                )
+            return TranslationResult(
+                text=translation["text"],
+                detected_lang=detected or None,
+                skipped=False,
+            )
         except (KeyError, IndexError, AttributeError, TypeError) as exc:
             raise TranslationError(
                 f"Unexpected DeepL response structure: {body!r}"
