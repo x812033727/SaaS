@@ -499,3 +499,33 @@
 ## 文件補在 README 的 LINE Messaging API 區塊，包含 dry-run/apply 指令、`--limit` 建議、可重跑語意、summary 解讀與外部呼叫風險。
 - 時間：2026-06-19 03:04
 
+## 背景任務 `_process_events` 必須以 per-event 為邊界進行獨立的例外處理，單一 event 失敗不得中斷其他 event。
+- 時間：2026-06-20 09:19
+- 理由：避免因單一 LINE event 翻譯或回覆失敗（如第三方 API 異常）導致同批次其他 events 被跳過，降低故障影響範圍。
+- 否決方案：整個 events 批次共用單一 `try-except` 區塊。
+
+## 每個 LINE event 必須擁有獨立的 SQLAlchemy DB Session 生命週期，於處理 event 開始時建立，結束或異常時在 `finally` 關閉。
+- 時間：2026-06-20 09:19
+- 理由：SQLAlchemy 的 Session 在發生異常後其交易狀態會失效，無法繼續執行後續操作。Per-event 的獨立 Session 生命週期可徹底隔絕異常污染，保證狀態乾淨。
+- 否決方案：整個批次共用單一 DB Session 並僅在例外時呼叫 `db.rollback()`，這在複雜異常下無法保證 session 狀態完全恢復。
+
+## 測試策略必須包含：(1) 單一 event 翻譯/回覆失敗時，其後 event 仍成功處理；(2) 單一 event 發生 DB 衝突時，其後 event 仍能正常扣減與計量；(3) 異常必須被 logger.exception 捕獲 swallow，不向上層拋出；(4) 去重機制不扣 Quota 且與 normal events 互不干擾。
+- 時間：2026-06-20 09:19
+- 理由：精準確保 per-event 隔離性與去重邏輯在各種極端失敗路徑下的正確性，避免 regression。
+- 否決方案：僅依賴執行全套 integration 測試或手動測試來驗證例外行為。
+
+## LINE Webhook Signature 驗簽與租戶存在性/配置驗證必須在 FastAPI 路由的同步 Request-Response 生命週期中完成，不得移入背景任務。
+- 時間：2026-06-20 09:19
+- 理由：保護系統安全邊界，防止無效或惡意請求同步拿到 200 OK，避免洩漏租戶存在性，並阻擋惡意流量耗盡背景線程。
+- 否決方案：將驗簽與租戶驗證全部移入背景任務以極致縮短 API 回應時間。
+
+## 背景任務 `_process_events` 不得持有或共享 Request-scoped 的 DB Session，必須使用 handler 在同步階段取得的 database engine (`bind`) 自建 Session。
+- 時間：2026-06-20 09:19
+- 理由：FastAPI Request-scoped Session 在 HTTP 回應送出後會自動關閉，若傳入背景任務會因 session 已關閉而報錯。
+- 否決方案：傳遞 Request-scoped DB Session 進背景任務並延長其生命週期。
+
+## 本次重構與測試執行一律以 `.venv/bin/pytest` 執行，不依賴 Antigravity CLI 的 `BypassSandbox` 權限。
+- 時間：2026-06-20 09:19
+- 理由：維持開發與測試流程的環境可攜性，符合本地沙箱執行安全規範。
+- 否決方案：要求使用者或 CI 環境提供 `BypassSandbox: true` 權限來跑測試。
+
