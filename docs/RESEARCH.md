@@ -845,3 +845,71 @@ for event in events:
 - [SQLAlchemy Discussion #11945 — rollback after exception necessary?](https://github.com/sqlalchemy/sqlalchemy/discussions/11945)
 - [LINE Messaging API — reply messages & replyToken](https://developers.line.biz/en/docs/messaging-api/sending-messages/#reply-messages)
 
+## 2026-06-20 10:12
+
+現有程式碼已讀完。整理調研結論：
+
+---
+
+## 本輪調研：LINE webhook event 持久化冪等表
+
+**重點: `webhookEventId` 格式確認** — LINE 官方文件明確：`webhookEventId` 是 **ULID 格式**（26 字元大寫英數字串），每個 webhook event 唯一，**redelivery 時值不變**、只有 `isRedelivery` 旗標不同。這才是冪等 key 的正確選擇。來源：[LINE Messaging API Reference](https://developers.line.biz/en/reference/messaging-api/index.html.md)
+
+**重點: 現況缺陷** — 目前 `isRedelivery=true` 直接 `continue`（無狀態旗標），有三個漏洞：① 首投成功但 reply 超時，LINE 重送此時 `isRedelivery=true` → 被跳過，用戶收不到翻譯；② 首投 `_process_events` 進行中（background）、LINE 又重送 `isRedelivery=false`（例如重試間隔內首投還沒完） → 重複處理；③ 無法區分「已處理成功」與「正在處理」兩種狀態。
+
+**重點: 標準狀態機為三態** — 業界冪等表常見模式：`pending`（已登記、處理中）→ `processed`（成功）/ `failed`（失敗可選保留）。完整防護邏輯：先 INSERT event_id，INSERT 衝突 → 已存在 → 直接 skip；INSERT 成功 → 處理；處理完 UPDATE 為 `processed`。來源：[Hookdeck — Implement Webhook Idempotency](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)、[Webhook Reliability 2026](https://www.digitalapplied.com/blog/webhook-reliability-idempotency-retries-engineering-reference-2026)
+
+**重點: SQLite + PostgreSQL 跨方言 INSERT 衝突處理** — SQLAlchemy 2.x 的 `sqlalchemy.dialects.sqlite.insert().on_conflict_do_nothing()` 是 SQLite 方言專屬；最跨方言的做法是 **catch `IntegrityError`**（`sqlalchemy.exc.IntegrityError`），SQLite/PG 都會在 UNIQUE 衝突時拋，不需 dialect 分支。另一選項是 `INSERT OR IGNORE`（SQLite）vs `INSERT … ON CONFLICT DO NOTHING`（PG）的條件路由。來源：[SQLAlchemy SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)、[SQLAlchemy Discussion #9675](https://github.com/sqlalchemy/sqlalchemy/discussions/9675)
+
+**重點: TTL 清理** — LINE 未公開 redelivery 重試窗口期，業界建議 TTL ≥ 最長重試期 × 2，通常 **24–72 小時**。DB 需定期清理舊記錄（periodic job 或 `_migrate_*` 輕量方式在 `init_db` 掛鉤）。Redis 有原生 TTL 更省事，但現有架構純 SQLAlchemy、引入 Redis 屬 M2 事。來源：[Hookdeck Guide](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)
+
+**重點: 現有 migration 模式** — 專案無 Alembic，用 `db.py` 的 `_migrate_*` inline 函式 + `init_db()` 呼叫；新增冪等表應沿用此模式，加 `_migrate_add_line_webhook_events_table()`，`Base.metadata.create_all` 的 import 清單也要補新 model。
+
+**重點: 測試衝擊** — `test_line_task2_redelivery.py` 的 `_text_event()` helper 目前不帶 `webhookEventId`，改用 DB 冪等後所有測試 payload 需補此欄位；現有「`isRedelivery=true` 跳過」的四個測試案例語意要轉換為「同 `webhookEventId` 第二次到達 → skip（無論 `isRedelivery`）」。
+
+---
+
+**建議: 冪等表 schema 最小設計：**
+```python
+class LineWebhookEvent(Base):
+    __tablename__ = "line_webhook_events"
+    webhook_event_id = Column(String(26), primary_key=True)   # ULID
+    tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    status           = Column(String(16), nullable=False, default="pending")  # pending/processed/failed
+    created_at       = Column(DateTime(timezone=True), nullable=False, ...)
+    processed_at     = Column(DateTime(timezone=True), nullable=True)
+```
+
+**建議: 冪等判斷放 per-event try 最前，用 `IntegrityError` catch 跨方言：**
+```python
+from sqlalchemy.exc import IntegrityError
+try:
+    db.execute(insert(LineWebhookEvent).values(
+        webhook_event_id=event.get("webhookEventId"),
+        tenant_id=tenant_id, status="pending", created_at=...
+    ))
+    db.commit()
+except IntegrityError:
+    db.rollback()
+    _log.info("skip duplicate event %s tenant=%d", event.get("webhookEventId"), tenant_id)
+    continue
+```
+
+**建議: `isRedelivery` 旗標可完全移除**，因為 DB 唯一索引已覆蓋所有重送場景，無狀態旗標只是「近似去重」，有前述三個漏洞。
+
+**建議: 補 `_migrate_add_line_webhook_events_table()` 到 `db.py`**，用 `inspector` 判斷表是否已存在（冪等），並在 `init_db()` 末尾呼叫，保持現有無 Alembic 模式。
+
+**建議: 清理任務** — M1 階段可在 `init_db()` 末掛一次性 `DELETE … WHERE created_at < NOW() - INTERVAL 3 DAY`；M2 再考慮獨立 cron job。
+
+**建議: 測試改寫策略** — 現有 `test_line_task2_redelivery.py` 的測試語意從「`isRedelivery=true` → skip」改為「同 `webhookEventId` 重投 → skip」；補一個新 case：「不同 `webhookEventId` 即使 `isRedelivery=true` 仍處理（邊界場景）」。
+
+---
+
+**Sources:**
+- [LINE Developers — Receive messages (webhook)](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+- [LINE Messaging API Reference (webhookEventId ULID)](https://developers.line.biz/en/reference/messaging-api/index.html.md)
+- [Hookdeck — Implement Webhook Idempotency](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)
+- [Webhook Reliability 2026 — Idempotency & Retry Reference](https://www.digitalapplied.com/blog/webhook-reliability-idempotency-retries-engineering-reference-2026)
+- [SQLAlchemy SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)
+- [SQLAlchemy Discussion #9675 — INSERT OR IGNORE with ORM](https://github.com/sqlalchemy/sqlalchemy/discussions/9675)
+
