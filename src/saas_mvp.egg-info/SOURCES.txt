@@ -31,6 +31,8 @@ src/saas_mvp/models/plan_change_history.py
 src/saas_mvp/models/tenant.py
 src/saas_mvp/models/usage.py
 src/saas_mvp/models/user.py
+src/saas_mvp/ops/__init__.py
+src/saas_mvp/ops/backfill_line_bot_user_id.py
 src/saas_mvp/routers/__init__.py
 src/saas_mvp/routers/admin.py
 src/saas_mvp/routers/api_keys.py
@@ -53,9 +55,11 @@ src/saas_mvp/translation/commands.py
 src/saas_mvp/translation/http.py
 src/saas_mvp/translation/stub.py
 tests/test_admin.py
+tests/test_backfill_line_bot_user_id.py
 tests/test_billing.py
 tests/test_line_channel_config_qa.py
 tests/test_line_config_bot_info.py
+tests/test_line_multi_event_isolation.py
 tests/test_line_task1_quota_billing.py
 tests/test_line_task2_char_quota.py
 tests/test_line_task2_meter_qa.py
@@ -67,6 +71,7 @@ tests/test_line_task5_destination.py
 tests/test_line_task5_timing_logs.py
 tests/test_line_task5_webhook.py
 tests/test_line_timing_helper.py
+tests/test_qa_task1_acceptance.py
 tests/test_qa_task1_billing_deferred.py
 tests/test_qa_task1_char_count_model.py
 tests/test_qa_task2_bot_info_http.py

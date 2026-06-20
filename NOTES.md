@@ -3868,3 +3868,11 @@ Summary should be terse, focused, like a team meeting. The PM裁決 is already d
 
 ## 任務 #5 已知限制：更新維運文件，說明環境變數、先 dry-run 再 apply、可重跑與輸出解讀（huddle 與重試後仍未通過）
 
+## 任務 #1 完成：將 `_process_events` 的 `try/except` 移入 `for event in events` 迴圈內，每個 event 獨立捕捉例外
+
+## 任務 #2 完成：在 per-event `except` 區塊中於 `_log.exception` 之前呼叫 `db.rollback()` 重置 session，並在 log 加上 event index 便於排查
+
+## 任務 #3 完成：縮小或移除原外層 `try/except`，並同步更新函式 docstring 的例外處理說明以反映 per-event 語意
+
+## 任務 #4 完成：新增 `tests/test_line_multi_event_isolation.py`：兩 event payload，第一個 translate 拋例外，斷言第二個正常翻譯、reply sent、quota +1
+
