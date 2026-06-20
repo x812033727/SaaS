@@ -25,6 +25,7 @@ import saas_mvp.models.line_user_lang as _lul  # noqa: F401
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.translation import (
+    StubTranslator,
     TranslationError,
     TranslationResult,
     Translator,
@@ -106,6 +107,29 @@ def app_client():
         yield client, translator, line_client
 
 
+@pytest.fixture()
+def skip_app_client():
+    Base.metadata.drop_all(bind=_engine)
+    Base.metadata.create_all(bind=_engine)
+    translator = StubTranslator(source_lang="zh-TW")
+    line_client = FakeLineReplyClient()
+    app = create_app()
+
+    def override_db():
+        db = _Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_translator] = lambda: translator
+    app.dependency_overrides[get_line_client] = lambda: line_client
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client, line_client
+
+
 def _seed_tenant() -> int:
     db = _Session()
     try:
@@ -160,7 +184,7 @@ def _usage_count(tenant_id: int) -> int:
         db.close()
 
 
-def _usage_char_count(tenant_id: int) -> int:
+def _usage_stats(tenant_id: int) -> tuple[int, int]:
     db = _Session()
     try:
         row = db.execute(
@@ -169,7 +193,9 @@ def _usage_char_count(tenant_id: int) -> int:
                 ApiUsage.period == datetime.date.today(),
             )
         ).scalar_one_or_none()
-        return row.char_count if row else 0
+        if row is None:
+            return 0, 0
+        return row.count, row.char_count
     finally:
         db.close()
 
@@ -221,5 +247,27 @@ def test_skip_event_does_not_stop_next_normal_text_event(app_client):
     assert line_client.call_count == 1
     assert line_client.sent[0].reply_token == "rt-normal"
     assert line_client.sent[0].text == "[ZH-TW] normal"
-    assert _usage_count(tenant_id) == 1
-    assert _usage_char_count(tenant_id) == len("[ZH-TW] normal")
+    assert _usage_stats(tenant_id) == (1, len("[ZH-TW] normal"))
+
+
+def test_same_language_event_skips_reply_and_usage_then_next_event_runs(skip_app_client):
+    client, line_client = skip_app_client
+    tenant_id = _seed_tenant()
+
+    body = _payload(
+        _text_event("同語言", "rt-skip", "Uskip"),
+        _text_event("/lang ja translate me", "rt-normal", "Unormal"),
+    )
+
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers=_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert line_client.call_count == 1
+    assert line_client.sent[0].reply_token == "rt-normal"
+    assert line_client.sent[0].text == "[JA] translate me"
+    assert _usage_stats(tenant_id) == (1, len("[JA] translate me"))

@@ -430,7 +430,7 @@ class TestCharQuotaBlocksTranslate:
     def test_char_blocked_does_not_call_translator(self, client):
         """字數超額路徑**真的沒呼叫** translator——用 app 層 spy 驗證。"""
         # 自帶 spy translator（不影響 module 級別 fixture 的其他測試）
-        from saas_mvp.translation.base import Translator
+        from saas_mvp.translation.base import TranslationResult, Translator
 
         class _SpyTranslator(Translator):
             def __init__(self) -> None:

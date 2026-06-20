@@ -10,7 +10,7 @@ class TranslationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class TranslationResult:
-    """Translation output plus backend language detection metadata."""
+    """Translation output plus backend language detection and skip metadata."""
 
     text: str
     detected_lang: str | None
@@ -33,8 +33,8 @@ class Translator(ABC):
             target_lang: BCP-47 language tag or API-specific code (e.g. 'JA', 'ZH-TW').
 
         Returns:
-            Translation result. ``skipped`` means the source language already
-            matches the target and callers should not reply or meter usage.
+            Translation result containing output text, detected source language,
+            and whether translation was skipped because source and target matched.
 
         Raises:
             TranslationError: if the backend is unavailable or returns an error.

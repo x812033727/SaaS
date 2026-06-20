@@ -306,7 +306,7 @@ def _process_events(
 
     從 line_webhook handler 同步段整段剪下、零行為改動：
       redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
-      → translate → skip same-lang / reply → increment_usage
+      → translate → same-language skip → reply → increment_usage
 
     DB session 自管：每個 event 進入處理邊界時以
     ``with Session(bind=bind) as db`` 新開 session，離開該筆 event
@@ -402,7 +402,7 @@ def _process_events(
                     continue
 
                 # ── 6a-2. 字數配額檢查（譯文字數，與次數軸並列；任一不通即擋下） ─────
-                # 採譯文字數（len(translated)），理由：譯文是後端可控、語意單一的字串點，
+                # 採譯文字數（len(result.text)），理由：譯文是後端可控、語意單一的字串點，
                 # 與後扣骨架自然對齊，源文多語混雜與表情字元歧義可避開。
                 # 兩道閘各自獨立查詢、獨立擋下，沿用既有「單次溢出可接受」語意。
                 if not has_char_quota(db, tenant_id, plan):
@@ -411,7 +411,7 @@ def _process_events(
 
                 # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
                 # 為何 sync 直呼：見步驟 6c 註解（BackgroundTasks 自動
-                # run_in_threadpool 已將 I/O 移出 event loop；asyncio.to_thread 冗餘）。
+                # run_in_threadpool 已將 I/O 移出 event loop，asyncio.to_thread 冗餘）。
                 result = _translate_sync(translator, translate_text, target_lang)
                 if result.skipped:
                     _log.info(
@@ -436,7 +436,7 @@ def _process_events(
 
                 # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
                 # 單一 ``increment_usage(plan, chars=N)`` 一次 SELECT FOR UPDATE、
-                # 一次 commit 完成 ``count += 1; char_count += len(translated)``——
+                # 一次 commit 完成 ``count += 1; char_count += len(result.text)``——
                 # 翻案自舊版「兩並列函式各自鎖 + 各自 commit」：少一輪 DB 往返 +
                 # 少一次 commit，鎖窗口由兩次壓成一次。
                 #
@@ -461,7 +461,9 @@ def _process_events(
 
 
 def _translate_sync(
-    translator: Translator, text: str, target_lang: str
+    translator: Translator,
+    text: str,
+    target_lang: str,
 ) -> TranslationResult:
     """同步呼叫翻譯介面（背景任務內執行）。
 
