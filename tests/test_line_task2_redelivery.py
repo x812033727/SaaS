@@ -38,6 +38,7 @@ import saas_mvp.models.line_user_lang as _lul                                   
 from saas_mvp.app import create_app                                              # noqa: E402
 from saas_mvp.db import Base, get_db                                             # noqa: E402
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client           # noqa: E402
+from saas_mvp.models.line_webhook_event import LineWebhookEvent                 # noqa: E402
 from saas_mvp.translation import StubTranslator, get_translator                 # noqa: E402
 from saas_mvp.models.usage import ApiUsage                                       # noqa: E402
 
@@ -161,6 +162,20 @@ def _usage_count(tid: int) -> int:
         db.close()
 
 
+def _webhook_event_rows(tid: int, webhook_event_id: str | None = None) -> list[tuple[str, str]]:
+    db = _Session()
+    try:
+        query = db.query(LineWebhookEvent).filter(LineWebhookEvent.tenant_id == tid)
+        if webhook_event_id is not None:
+            query = query.filter(LineWebhookEvent.webhook_event_id == webhook_event_id)
+        return [
+            (row.webhook_event_id, row.status)
+            for row in query.order_by(LineWebhookEvent.webhook_event_id).all()
+        ]
+    finally:
+        db.close()
+
+
 @pytest.fixture(autouse=True)
 def reset_fake_client():
     _fake_line_client.reset()
@@ -200,6 +215,42 @@ class TestRedeliveryDedup:
         assert _fake_line_client.call_count == 0          # 未回覆
         assert _usage_count(tid) == before                # quota 不變
 
+        rows = _webhook_event_rows(tid, "evt-redelivery-dup")
+        assert rows == [("evt-redelivery-dup", "processed")]
+
+    def test_duplicate_webhook_event_id_skipped_even_when_redelivery_false(self, client, tid):
+        """同 webhookEventId 第二次進入，即使 isRedelivery=false 也略過。"""
+        first = _payload(
+            _text_event(
+                "first false",
+                "rt-first-false",
+                is_redelivery=False,
+                webhook_event_id="evt-redelivery-false-dup",
+            )
+        )
+        r1 = client.post(f"/line/webhook/{tid}", content=first, headers=_headers(first))
+        assert r1.status_code == 200
+        assert _fake_line_client.call_count == 1
+
+        _fake_line_client.reset()
+        before = _usage_count(tid)
+        second = _payload(
+            _text_event(
+                "second false should skip",
+                "rt-second-false",
+                is_redelivery=False,
+                webhook_event_id="evt-redelivery-false-dup",
+            )
+        )
+        r2 = client.post(f"/line/webhook/{tid}", content=second, headers=_headers(second))
+
+        assert r2.status_code == 200
+        assert _fake_line_client.call_count == 0
+        assert _usage_count(tid) == before
+
+        rows = _webhook_event_rows(tid, "evt-redelivery-false-dup")
+        assert rows == [("evt-redelivery-false-dup", "processed")]
+
     def test_redelivery_true_new_webhook_event_id_processed_normally(self, client, tid):
         """isRedelivery=true 但 webhookEventId 首次出現 → 正常處理。"""
         before = _usage_count(tid)
@@ -224,6 +275,25 @@ class TestRedeliveryDedup:
         assert r.status_code == 200
         assert _fake_line_client.call_count == 1
         assert _fake_line_client.last_text == "[ZH-TW] world"
+
+    def test_missing_webhook_event_id_falls_back_to_direct_processing(self, client, tid):
+        """缺 webhookEventId 時不做冪等 claim；同 payload 兩筆都照常處理。"""
+        before = _usage_count(tid)
+        rows_before = len(_webhook_event_rows(tid))
+        body = _payload(
+            _text_event("no id one", "rt-no-id-1"),
+            _text_event("no id two", "rt-no-id-2"),
+        )
+        r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
+
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 2
+        assert [sent.text for sent in _fake_line_client.sent] == [
+            "[ZH-TW] no id one",
+            "[ZH-TW] no id two",
+        ]
+        assert _usage_count(tid) == before + 2
+        assert len(_webhook_event_rows(tid)) == rows_before
 
     def test_delivery_context_without_flag_treated_as_first_delivery(self, client, tid):
         """有 deliveryContext 但無 isRedelivery 鍵 → 視為首投。"""
