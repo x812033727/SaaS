@@ -1112,3 +1112,41 @@ LINE 官方文件直接指出重送不是唯一重複來源，應以 `webhookEve
 
 建議: 測試改成以 `webhookEventId` 為核心：同 ID 重送不重覆回覆/計量、同 ID 但 `isRedelivery=false` 也要 skip、`isRedelivery=true` 但新 ID 要處理、多 event payload 要逐筆獨立判斷。
 
+## 2026-06-20 18:52
+
+我會先讀現有 LINE 設定與憑證驗證落點，只補查本輪缺口：LINE 官方 `bot/info` 語意、token 驗證限制、API 錯誤回應與設定保存最佳實務。
+目前程式已經有 `line_config` 服務與自助/管理端點；我先確認它現在如何呼叫 `bot/info`、失敗時是否保存，以及回應 schema 是否已含狀態欄位。
+現況確認：`bot/info` 失敗目前被吞掉，設定仍 commit 且回應不暴露驗證狀態，這正是本輪缺口；接著查官方 API 與錯誤格式，避免用猜的狀態碼設計。
+我看到測試已固定舊行為「失敗不阻擋 upsert」，因此改良要以回應/資料欄位揭露驗證結果為主，避免直接把失敗改成 4xx 破壞相容。
+官方文件也提供 webhook endpoint test API，但它是驗證我們公開 URL 可收空事件，不是拿來驗 token/channel secret 配對；本輪可以先聚焦 `bot/info` 結果持久化。
+我會補一輪精準行號，方便後續拆工時直接落到 model、service、router 與既有測試，不再把調研變成抽象建議。
+重點: 現況 `upsert_line_config()` 先儲存設定，再呼叫 `bot/info`；失敗只記 warning，不阻擋，也不回傳失敗狀態，會造成錯誤 token 靜默生效。來源: [line_config.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/services/line_config.py:94)
+
+重點: 自助回應 schema 目前只有遮罩欄位、目標語言與 webhook URL，沒有 `credential_status` / `credential_error`。來源: [tenants.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/routers/tenants.py:27)
+
+重點: `line_channel_configs` 目前只保存 `line_bot_user_id`，沒有驗證時間、失敗原因或狀態欄位。來源: [line_channel_config.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/models/line_channel_config.py:101)
+
+重點: LINE 官方 `GET /v2/bot/info` 用 Bearer channel access token，成功回 `userId/basicId/displayName/...`，適合驗 token 是否可用並取得 bot identity。來源: https://developers.line.biz/en/reference/messaging-api/index.html.md
+
+重點: LINE API 失敗有明確 status 與 JSON error；`401` 代表未指定有效 channel access token，error body 有 `message/details` 可轉成安全提示。來源: https://developers.line.biz/en/reference/messaging-api/index.html.md
+
+重點: `bot/info` 不能驗證 `channel_secret`；channel secret 只在 webhook 簽章驗證時使用，官方常見失敗包含「用了其他 channel 的 secret」或 secret 被重發。來源: https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/
+
+重點: LINE 另有 channel access token verify API，可驗短期/長期 token 並回 `client_id/expires_in/scope`；但本 repo 已有 `bot/info` client，且 `bot/info` 同時能取得 `userId`。來源: https://developers.line.biz/en/reference/messaging-api/index.html.md
+
+重點: 官方 Python SDK 有 `get_bot_info()`，但本 repo runtime 依賴沒有 `line-bot-sdk`/`httpx`，現有 `urllib` client 已有測試覆蓋；本輪不必新增套件。來源: https://developers.line.biz/en/docs/messaging-api/line-bot-sdk/ 、[pyproject.toml](/opt/ti/workspaces/project-bbe384041201/pyproject.toml:10)
+
+重點: 既有專案沒有 Alembic，schema 演進走 `init_db()` 輕量 migration；SQLite 新增欄位對 `NOT NULL`/`UNIQUE` 有限制，新增狀態欄應用 nullable/default 保守處理。來源: [db.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/db.py:64) 、https://www.sqlite.org/lang_altertable.html
+
+建議: 在 `LineChannelConfig` 加 `credential_status`, `credential_last_error`, `credential_checked_at`；狀態建議用 `unchecked | valid | invalid | error | conflict`。
+
+建議: 保持 PUT 相容：即使 `bot/info` 失敗仍回 `200` 並保存設定，但回應明確帶 `credential_status="invalid/error"` 與安全化失敗提示，避免靜默。
+
+建議: `bot/info` 成功時設 `valid`、寫入 `line_bot_user_id`、清空錯誤；HTTP 401/400 或缺 `userId` 設 `invalid`；網路 timeout/5xx 設 `error`；unique 衝突設 `conflict`。
+
+建議: 不把 access token、channel secret、完整 LINE error body 寫進回應或 log；只保留 status code、錯誤類別與短訊息。
+
+建議: GET/PUT 自助端點與 admin 端點都回同一組狀態欄位；FastAPI `response_model` 會過濾輸出，記得同步 Pydantic schema。
+
+建議: 測試補三類：成功顯示 `valid`、HTTPError 401 顯示 `invalid`、網路例外顯示 `error` 且設定仍存在；另測回應不含明文 credential。
+
