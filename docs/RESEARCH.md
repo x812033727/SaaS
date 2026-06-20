@@ -1150,3 +1150,30 @@ LINE 官方文件直接指出重送不是唯一重複來源，應以 `webhookEve
 
 建議: 測試補三類：成功顯示 `valid`、HTTPError 401 顯示 `invalid`、網路例外顯示 `error` 且設定仍存在；另測回應不含明文 credential。
 
+## 2026-06-20 21:34
+
+我先看現有翻譯抽象與測試，再只補查 Python dataclass/抽象介面相關文件，避免重複調研 LINE/SQLAlchemy 題目。
+現況看起來這個需求已部分落地；我會抓關鍵檔案確認形狀與呼叫端，避免提出已經完成或不合架構的建議。
+本地重點已明確：`TranslationResult` 已存在且甚至加了 `slots=True`；下一步只驗 Python 版本與官方 dataclass/typing 依據，確認這不是過度設計。
+目前確認 Python 版本是 3.11，`str | None` 與 `dataclass(slots=True)` 都在支援範圍內；我再查官方文件與 DeepL 回應欄位，補足可查證依據。
+另外 `docs/RESEARCH.md` 已有這輪介面變更的過往結論；我會引用它作為本 repo 內部脈絡，只補外部佐證。
+重點: 現況已符合本輪需求；`TranslationResult` 位於 `base.py`，為 `@dataclass(frozen=True, slots=True)`，欄位含 `text`、`detected_lang`、`skipped`，`Translator.translate()` 回傳 `TranslationResult`。來源: [base.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/translation/base.py:11)
+
+重點: `StubTranslator`、`DeepLTranslator` 與 webhook 呼叫端都已改用 `TranslationResult`，沒有明顯殘留純字串回傳介面。來源: [stub.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/translation/stub.py:40)、[http.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/translation/http.py:79)、[line_webhook.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/routers/line_webhook.py:608)
+
+重點: Python 官方 `dataclasses` 支援 `frozen` 與 `slots`；`frozen=True` 會阻止欄位賦值，`slots=True` 自 Python 3.10 起可用；本專案要求 Python `>=3.11`。來源: https://docs.python.org/3/library/dataclasses.html 、[pyproject.toml](/opt/ti/workspaces/project-bbe384041201/pyproject.toml:5)
+
+重點: `str | None` 是 PEP 604 自 Python 3.10 起支援的 union 型別語法，與本專案 Python 版本相容。來源: https://peps.python.org/pep-0604/
+
+重點: `Translator(ABC)` + `@abstractmethod` 是官方抽象介面做法，子類未覆寫抽象方法時不可實例化。來源: https://docs.python.org/3/library/abc.html
+
+重點: DeepL 官方回應包含 `text` 與 `detected_source_language`；官方 Python SDK 的 `TextResult` 也暴露 `text`、`detected_source_lang`，本地 `TranslationResult` 形狀是貼近成熟 SDK 的做法。來源: https://developers.deepl.com/api-reference/translate 、https://github.com/DeepLcom/deepl-python
+
+重點: DeepL 明確說同來源/目標語言仍會計費；把 `skipped` 往外傳，讓 webhook 不回覆、不計量，是合理的成本控制點。來源: https://developers.deepl.com/api-reference/translate
+
+建議: 本輪不需要新增套件或重做抽象；沿用 `dataclass(frozen=True, slots=True)`。
+
+建議: 若團隊要驗收，跑聚焦測試即可：`pytest tests/test_qa_task2_stub_translation_result.py tests/test_line_task2_translator.py tests/test_translation_enhanced.py`。
+
+建議: 後續別再讓 `translate()` 回傳 `str` 或 tuple；以 `TranslationResult` 作唯一介面，避免 skip/偵測語言資訊再次散落。
+
