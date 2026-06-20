@@ -28,7 +28,10 @@ from saas_mvp.models import api_key as _ak, api_key_usage as _aku  # noqa: F401
 from saas_mvp.models import usage as _us, plan_change_history as _pch  # noqa: F401
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.line_channel_config import LineChannelConfig
-from saas_mvp.line_client import StubLineBotInfoClient
+from saas_mvp.line_client import (
+    LineBotInfoCredentialError,
+    StubLineBotInfoClient,
+)
 from saas_mvp.services import line_config as svc
 
 _BOT_USER_ID = "U" + "a" * 32
@@ -74,6 +77,9 @@ def test_bot_info_success_fills_user_id(db):
     )
 
     assert resp["has_access_token"] is True
+    assert resp["credential_status"] == "valid"
+    assert resp["credential_last_error"] is None
+    assert resp["credential_checked_at"] is not None
     assert stub.calls == ["tok"]  # 以明文 access_token 呼叫
     assert _orm_cfg(db, t.id).line_bot_user_id == _BOT_USER_ID
 
@@ -88,6 +94,8 @@ def test_bot_info_failure_does_not_block_upsert(db):
     )
 
     assert resp["tenant_id"] == t.id
+    assert resp["credential_status"] == "error"
+    assert "RuntimeError" in resp["credential_last_error"]
     assert _orm_cfg(db, t.id).line_bot_user_id is None
     # rollback 後 session 仍可用：後續寫入正常
     t2 = _tenant(db, name="beta")
@@ -103,7 +111,9 @@ def test_bot_info_returns_none_keeps_null(db):
         db, t.id, channel_secret="s", access_token="tok", bot_info_client=stub
     )
 
-    assert _orm_cfg(db, t.id).line_bot_user_id is None
+    cfg = _orm_cfg(db, t.id)
+    assert cfg.line_bot_user_id is None
+    assert cfg.credential_status == "invalid"
 
 
 def test_no_client_is_backward_compatible(db):
@@ -112,7 +122,9 @@ def test_no_client_is_backward_compatible(db):
 
     svc.upsert_line_config(db, t.id, channel_secret="s", access_token="tok")
 
-    assert _orm_cfg(db, t.id).line_bot_user_id is None
+    cfg = _orm_cfg(db, t.id)
+    assert cfg.line_bot_user_id is None
+    assert cfg.credential_status == "unchecked"
 
 
 def test_http_client_rejects_malformed_user_id():
@@ -157,6 +169,51 @@ def test_duplicate_user_id_does_not_break_upsert(db):
         db, t2.id, channel_secret="s", access_token="tok2", bot_info_client=stub
     )
     assert resp["tenant_id"] == t2.id
+    assert resp["credential_status"] == "conflict"
     assert _orm_cfg(db, t2.id).line_bot_user_id is None
     # t1 的值不受影響
     assert _orm_cfg(db, t1.id).line_bot_user_id == _BOT_USER_ID
+
+
+def test_credential_error_marks_invalid(db):
+    """token 被 LINE 拒絕 → 狀態 invalid，但設定仍保存。"""
+    t = _tenant(db)
+    stub = StubLineBotInfoClient(
+        raises=LineBotInfoCredentialError("LINE bot/info credential rejected: HTTP 401")
+    )
+
+    resp = svc.upsert_line_config(
+        db, t.id, channel_secret="s", access_token="bad-token", bot_info_client=stub
+    )
+
+    assert resp["credential_status"] == "invalid"
+    assert "LineBotInfoCredentialError" in resp["credential_last_error"]
+    cfg = _orm_cfg(db, t.id)
+    assert cfg.line_bot_user_id is None
+    assert cfg.access_token == "bad-token"
+
+
+def test_changed_token_clears_old_user_id_when_check_fails(db):
+    """access token 變更後驗證失敗，不沿用舊 line_bot_user_id。"""
+    t = _tenant(db)
+    svc.upsert_line_config(
+        db,
+        t.id,
+        channel_secret="s",
+        access_token="good-token",
+        bot_info_client=StubLineBotInfoClient(_BOT_USER_ID),
+    )
+    assert _orm_cfg(db, t.id).line_bot_user_id == _BOT_USER_ID
+
+    resp = svc.upsert_line_config(
+        db,
+        t.id,
+        channel_secret="s",
+        access_token="bad-token",
+        bot_info_client=StubLineBotInfoClient(
+            raises=LineBotInfoCredentialError("LINE bot/info credential rejected: HTTP 401")
+        ),
+    )
+
+    assert resp["credential_status"] == "invalid"
+    assert _orm_cfg(db, t.id).line_bot_user_id is None
