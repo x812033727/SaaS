@@ -980,3 +980,63 @@ Sources:
 - [Python dataclass vs NamedTuple 2026 Guide — TakoVibe](https://takovibe.com/blog/python-code-generators/)
 - [Earthly Blog — Python Data Classes vs Named Tuples](https://earthly.dev/blog/python-data-classes-vs-namedtuples/)
 
+## 2026-06-20 16:41
+
+先看現有 LINE 相關程式碼，再查官方 API 規格。
+現在看 `line_client` 與 QA 測試，再並行查 LINE bot/info API 規格：
+關鍵背景已掌握。查最後兩個缺口：bot/info 真實 error codes 與 credential 驗證狀態 API 最佳實踐：
+現況與 API 規格都掌握了，整理彙整如下：
+
+---
+
+## 調研彙整
+
+### 現況盤點
+
+**重點: `_to_response()` 完全不暴露驗證結果** — 目前 PUT 回應只含 `{tenant_id, has_channel_secret, has_access_token, default_target_lang, created_at, updated_at}`；`line_bot_user_id` 已存 DB 但 API 層隱藏。呼叫端無從判斷憑證是否真的打通。
+
+**重點: bot/info 失敗已靜默吞掉** — `upsert_line_config()` 的 try/except 把 bot/info 任何異常轉成 `logger.warning()` 後繼續，rollback 後 `line_bot_user_id` 留 NULL；response 不反映此事實，呼叫端以為設定成功且可用。
+
+**重點: LINE `GET /v2/bot/info` 成功回傳欄位** — `{userId, basicId, displayName, pictureUrl?, chatMode, markAsReadMode, premiumId?}`（來源：line-openapi messaging-api.yml）；**錯誤碼未被正式列入 OpenAPI spec**，但實測社群一致確認無效 access_token 回 **401 Unauthorized**（HTTPError），現有 `HttpLineBotInfoClient.get_user_id()` 遇到即 raise，已被 except 捕捉。
+
+**重點: Stripe 的 credential/verification status 業界範式** — 狀態 enum 用 `"pending" | "verified" | "unverified" | "failed"` 而非布林，可承載「未曾驗證」與「驗過但失敗」兩種不同語意。來源：[Stripe — Handle verification outcomes](https://docs.stripe.com/identity/handle-verification-outcomes)
+
+**重點: `StubLineBotInfoClient` 已有 `raises=True`** — 測試基礎設施已備；只需讓 response 欄位反映 stub 行為。
+
+**重點: 現有 `_to_response()` 不含 `line_bot_user_id`** — 雖 DB 有此欄，但 API 層從未回傳；若要在 response 攜帶 `bot_user_id` 需同步在此函式加欄位。
+
+---
+
+### 建議
+
+**建議: 在 `_to_response()` 加入兩個欄位：**
+```python
+"credential_status": "verified" | "unverified" | "failed",
+"credential_error":  str | None,   # 失敗時的 hint（e.g. "bot/info 401 Unauthorized"）
+```
+- `verified` = bot/info 成功、`line_bot_user_id` 已回填
+- `unverified` = 未提供 `bot_info_client`（離線/測試環境）
+- `failed` = bot/info 拋例外（token 錯誤、網路問題）
+
+**建議: `upsert_line_config()` 在 except 塊捕捉 `urllib.error.HTTPError` 與一般 `Exception` 分開處理：**
+- `HTTPError` → `credential_status="failed"`, `credential_error=f"bot/info HTTP {exc.code}: {exc.reason}"` （401 即可確診 token 錯誤）
+- 其他 `OSError` → `credential_status="failed"`, `credential_error="bot/info unreachable"` （網路問題，不代表 token 壞）
+
+**建議: 不要把 bot/info 失敗升為 4xx 阻擋儲存** — 網路短暫不可達不等同憑證錯誤；現行「儲存成功、失敗只 warn」語意正確，只需把失敗原因浮出到 response，讓呼叫端判斷是否需要重設。
+
+**建議: 同步將 `line_bot_user_id` 加入 response 欄位（值或 `null`）** — 目前 DB 有存但 API 藏著，導致 admin 無法得知哪些租戶已成功比對 bot userId；配合 `credential_status` 一起暴露才有診斷價值。
+
+**建議: `_to_response()` 改成接收 `credential_status` 與 `credential_error` 參數** — 這兩個值在 `upsert` 的 try/except 裡才知道，`get_line_config()` 則直接從 DB 欄位推導（`line_bot_user_id IS NOT NULL` → `verified`，否則 `unverified`）。
+
+**建議: 測試新增兩個 case：**
+1. `StubLineBotInfoClient(raises=True)` → PUT response 含 `credential_status="failed"`, `credential_error` 非空
+2. `StubLineBotInfoClient("U" + "a"*32)` → PUT response 含 `credential_status="verified"`, `line_bot_user_id` 非空
+
+---
+
+Sources:
+- [LINE OpenAPI — messaging-api.yml (getBotInfo)](https://github.com/line/line-openapi/blob/main/messaging-api.yml)
+- [LINE Messaging API Reference — Get Bot Info](https://developers.line.biz/en/reference/messaging-api/#get-bot-info)
+- [Stripe — Handle verification outcomes（status enum 範式）](https://docs.stripe.com/identity/handle-verification-outcomes)
+- [RESTful API Design Best Practices Guide 2026 — daily.dev](https://daily.dev/blog/restful-api-design-best-practices-guide-2024/)
+
