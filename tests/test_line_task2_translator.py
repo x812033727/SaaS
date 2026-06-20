@@ -30,15 +30,19 @@ def test_deepl_is_translator_subclass():
 class TestStubTranslator:
     def test_basic_translation(self):
         t = StubTranslator()
-        assert t.translate("hello", "ja") == "[JA] hello"
+        result = t.translate("hello", "ja")
+        assert result.text == "[JA] hello"
+        assert result.skipped is False
 
     def test_lang_uppercased_in_output(self):
         t = StubTranslator()
-        assert t.translate("world", "en") == "[EN] world"
+        result = t.translate("world", "en")
+        assert result.text == "[EN] world"
+        assert result.skipped is False
 
     def test_input_lang_already_upper(self):
         t = StubTranslator()
-        assert t.translate("test", "ZH-TW") == "[ZH-TW] test"
+        assert t.translate("test", "ZH-TW").text == "[ZH-TW] test"
 
     def test_deterministic_same_inputs(self):
         t = StubTranslator()
@@ -51,7 +55,7 @@ class TestStubTranslator:
 
     def test_translate_empty_string(self):
         t = StubTranslator()
-        assert t.translate("", "ja") == "[JA] "
+        assert t.translate("", "ja").text == "[JA] "
 
     def test_is_available_always_true(self):
         assert StubTranslator().is_available() is True
@@ -59,7 +63,7 @@ class TestStubTranslator:
     def test_unicode_text(self):
         t = StubTranslator()
         result = t.translate("こんにちは", "en")
-        assert result == "[EN] こんにちは"
+        assert result.text == "[EN] こんにちは"
 
 
 # ── DeepLTranslator (offline tests only) ─────────────────────────────────────
@@ -122,7 +126,7 @@ class TestGetTranslator:
         from saas_mvp import config as _cfg
         monkeypatch.setattr(_cfg.settings, "deepl_api_key", "")
         t = get_translator()
-        assert t.translate("test", "ja") == "[JA] test"
+        assert t.translate("test", "ja").text == "[JA] test"
 
 
 # ── parse_lang_command() ─────────────────────────────────────────────────────

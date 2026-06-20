@@ -101,7 +101,7 @@ from saas_mvp.models.line_channel_config import (
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.quota import has_char_quota, has_quota, increment_usage
-from saas_mvp.translation import Translator, get_translator
+from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 
 _log = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ def _process_events(
 
     從 line_webhook handler 同步段整段剪下、零行為改動：
       redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
-      → translate → reply → increment_usage
+      → translate → skip same-lang / reply → increment_usage
 
     DB session 自管：每個 event 進入處理邊界時以
     ``with Session(bind=bind) as db`` 新開 session，離開該筆 event
@@ -411,8 +411,17 @@ def _process_events(
 
                 # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
                 # 為何 sync 直呼：見步驟 6c 註解（BackgroundTasks 自動
-                # run_in_threadpool 已將 I/O 移出 event loop，無需 to_thread）。
-                translated = _translate_sync(translator, translate_text, target_lang)
+                # run_in_threadpool 已將 I/O 移出 event loop；asyncio.to_thread 冗餘）。
+                result = _translate_sync(translator, translate_text, target_lang)
+                if result.skipped:
+                    _log.info(
+                        "skip same-language LINE event for tenant %d event_idx=%d detected=%s target=%s",
+                        tenant_id,
+                        event_idx,
+                        result.detected_lang,
+                        target_lang,
+                    )
+                    continue
 
                 # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
                 # 為何 sync 直呼：reply 為阻塞 I/O（urllib.request.urlopen），但
@@ -423,7 +432,7 @@ def _process_events(
                 # 是「sync 函式無需 to_thread 包裝」的 canonical 說明位置——模組
                 # docstring M2 段、_translate_sync helper 與 6b 步驟都指向這裡。
                 # threadpool 線程佔用改善路徑見模組 docstring M2 段。
-                line_client.reply(reply_token, translated, access_token=access_token)
+                line_client.reply(reply_token, result.text, access_token=access_token)
 
                 # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
                 # 單一 ``increment_usage(plan, chars=N)`` 一次 SELECT FOR UPDATE、
@@ -438,7 +447,7 @@ def _process_events(
                 # 在「達/超 limit」時正確擋下，閘真實有效。代價是「單次溢出」
                 # ——同次數軸「單次溢出可接受」語意對齊，舊版「永不超賣計費」
                 # 期待被明確捨棄（PR 描述點名）。
-                increment_usage(db, tenant_id, plan, chars=len(translated))
+                increment_usage(db, tenant_id, plan, chars=len(result.text))
             except Exception:
                 # 單筆 event 失敗不可污染同批後續 event；rollback 必須先於 log。
                 db.rollback()
@@ -451,7 +460,9 @@ def _process_events(
                 continue
 
 
-def _translate_sync(translator: Translator, text: str, target_lang: str) -> str:
+def _translate_sync(
+    translator: Translator, text: str, target_lang: str
+) -> TranslationResult:
     """同步呼叫翻譯介面（背景任務內執行）。
 
     helper 封裝是為了維持單一翻譯呼叫點，未來換 async SDK 只改這裡。

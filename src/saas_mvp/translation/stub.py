@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from saas_mvp.translation.base import Translator
+from saas_mvp.translation.base import TranslationResult, Translator
 
 
 class StubTranslator(Translator):
@@ -37,13 +37,21 @@ class StubTranslator(Translator):
     def __init__(self, source_lang: str | None = None) -> None:
         self._source_lang = source_lang
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         if (
             self._source_lang is not None
             and target_lang.upper() == self._source_lang.upper()
         ):
-            return text
-        return f"[{target_lang.upper()}] {text}"
+            return TranslationResult(
+                text=text,
+                detected_lang=self._source_lang,
+                skipped=True,
+            )
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=self._source_lang,
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True

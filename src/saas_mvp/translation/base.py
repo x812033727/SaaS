@@ -1,10 +1,20 @@
 """Translator abstract base class and shared exceptions."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 
 class TranslationError(Exception):
     """Raised when a translation backend fails (network error, API error, etc.)."""
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationResult:
+    """Translation output plus backend language detection metadata."""
+
+    text: str
+    detected_lang: str | None
+    skipped: bool
 
 
 class Translator(ABC):
@@ -15,7 +25,7 @@ class Translator(ABC):
     """
 
     @abstractmethod
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         """Translate *text* to *target_lang* (e.g. 'ja', 'en', 'zh-TW').
 
         Args:
@@ -23,7 +33,8 @@ class Translator(ABC):
             target_lang: BCP-47 language tag or API-specific code (e.g. 'JA', 'ZH-TW').
 
         Returns:
-            Translated string.
+            Translation result. ``skipped`` means the source language already
+            matches the target and callers should not reply or meter usage.
 
         Raises:
             TranslationError: if the backend is unavailable or returns an error.

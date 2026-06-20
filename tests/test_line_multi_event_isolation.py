@@ -24,7 +24,12 @@ import saas_mvp.models.line_channel_config as _lcm
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.usage import ApiUsage
-from saas_mvp.translation import TranslationError, Translator, get_translator
+from saas_mvp.translation import (
+    TranslationError,
+    TranslationResult,
+    Translator,
+    get_translator,
+)
 
 
 _engine = create_engine(
@@ -42,11 +47,37 @@ class FailsFirstTranslator(Translator):
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         self.calls.append((text, target_lang))
         if len(self.calls) == 1:
             raise TranslationError("first event failed")
-        return f"[{target_lang.upper()}] {text}"
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang=None,
+            skipped=False,
+        )
+
+    def is_available(self) -> bool:
+        return True
+
+
+class SkipsFirstTranslator(Translator):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
+        self.calls.append((text, target_lang))
+        if len(self.calls) == 1:
+            return TranslationResult(
+                text=text,
+                detected_lang=target_lang,
+                skipped=True,
+            )
+        return TranslationResult(
+            text=f"[{target_lang.upper()}] {text}",
+            detected_lang="EN",
+            skipped=False,
+        )
 
     def is_available(self) -> bool:
         return True
@@ -129,6 +160,20 @@ def _usage_count(tenant_id: int) -> int:
         db.close()
 
 
+def _usage_char_count(tenant_id: int) -> int:
+    db = _Session()
+    try:
+        row = db.execute(
+            select(ApiUsage).where(
+                ApiUsage.tenant_id == tenant_id,
+                ApiUsage.period == datetime.date.today(),
+            )
+        ).scalar_one_or_none()
+        return row.char_count if row else 0
+    finally:
+        db.close()
+
+
 def test_first_event_translate_failure_does_not_stop_second_event(app_client):
     client, translator, line_client = app_client
     tenant_id = _seed_tenant()
@@ -151,3 +196,30 @@ def test_first_event_translate_failure_does_not_stop_second_event(app_client):
     assert line_client.sent[0].reply_token == "rt-second"
     assert line_client.sent[0].text == "[ZH-TW] second"
     assert _usage_count(tenant_id) == 1
+
+
+def test_skip_event_does_not_stop_next_normal_text_event(app_client):
+    client, _, line_client = app_client
+    translator = SkipsFirstTranslator()
+    client.app.dependency_overrides[get_translator] = lambda: translator
+    tenant_id = _seed_tenant()
+
+    body = _payload(
+        _text_event("same-language", "rt-skip", "Uskip"),
+        _text_event("normal", "rt-normal", "Unormal"),
+    )
+
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers=_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert translator.calls == [("same-language", "zh-TW"), ("normal", "zh-TW")]
+    assert line_client.call_count == 1
+    assert line_client.sent[0].reply_token == "rt-normal"
+    assert line_client.sent[0].text == "[ZH-TW] normal"
+    assert _usage_count(tenant_id) == 1
+    assert _usage_char_count(tenant_id) == len("[ZH-TW] normal")
