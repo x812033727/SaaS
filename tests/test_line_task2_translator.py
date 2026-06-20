@@ -10,6 +10,7 @@ from saas_mvp.translation import (
     StubTranslator,
     Translator,
     TranslationError,
+    TranslationResult,
     get_translator,
     parse_lang_command,
 )
@@ -30,15 +31,23 @@ def test_deepl_is_translator_subclass():
 class TestStubTranslator:
     def test_basic_translation(self):
         t = StubTranslator()
-        assert t.translate("hello", "ja") == "[JA] hello"
+        result = t.translate("hello", "ja")
+        assert isinstance(result, TranslationResult)
+        assert result.text == "[JA] hello"
+        assert result.detected_lang is None
+        assert result.skipped is False
 
     def test_lang_uppercased_in_output(self):
         t = StubTranslator()
-        assert t.translate("world", "en") == "[EN] world"
+        result = t.translate("world", "en")
+        assert result.text == "[EN] world"
+        assert result.skipped is False
 
     def test_input_lang_already_upper(self):
         t = StubTranslator()
-        assert t.translate("test", "ZH-TW") == "[ZH-TW] test"
+        result = t.translate("test", "ZH-TW")
+        assert result.text == "[ZH-TW] test"
+        assert result.skipped is False
 
     def test_deterministic_same_inputs(self):
         t = StubTranslator()
@@ -47,11 +56,16 @@ class TestStubTranslator:
         assert r1 == r2
 
     def test_deterministic_different_instances(self):
-        assert StubTranslator().translate("hi", "en") == StubTranslator().translate("hi", "en")
+        left = StubTranslator().translate("hi", "en")
+        right = StubTranslator().translate("hi", "en")
+        assert left.text == right.text
+        assert left.skipped == right.skipped
 
     def test_translate_empty_string(self):
         t = StubTranslator()
-        assert t.translate("", "ja") == "[JA] "
+        result = t.translate("", "ja")
+        assert result.text == "[JA] "
+        assert result.skipped is False
 
     def test_is_available_always_true(self):
         assert StubTranslator().is_available() is True
@@ -59,7 +73,15 @@ class TestStubTranslator:
     def test_unicode_text(self):
         t = StubTranslator()
         result = t.translate("こんにちは", "en")
-        assert result == "[EN] こんにちは"
+        assert result.text == "[EN] こんにちは"
+        assert result.skipped is False
+
+    def test_same_language_returns_original_and_skipped(self):
+        t = StubTranslator(source_lang="ja")
+        result = t.translate("こんにちは", "JA")
+        assert result.text == "こんにちは"
+        assert result.detected_lang == "ja"
+        assert result.skipped is True
 
 
 # ── DeepLTranslator (offline tests only) ─────────────────────────────────────
@@ -122,7 +144,9 @@ class TestGetTranslator:
         from saas_mvp import config as _cfg
         monkeypatch.setattr(_cfg.settings, "deepl_api_key", "")
         t = get_translator()
-        assert t.translate("test", "ja") == "[JA] test"
+        result = t.translate("test", "ja")
+        assert result.text == "[JA] test"
+        assert result.skipped is False
 
 
 # ── parse_lang_command() ─────────────────────────────────────────────────────

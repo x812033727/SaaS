@@ -845,3 +845,138 @@ for event in events:
 - [SQLAlchemy Discussion #11945 — rollback after exception necessary?](https://github.com/sqlalchemy/sqlalchemy/discussions/11945)
 - [LINE Messaging API — reply messages & replyToken](https://developers.line.biz/en/docs/messaging-api/sending-messages/#reply-messages)
 
+## 2026-06-20 10:12
+
+現有程式碼已讀完。整理調研結論：
+
+---
+
+## 本輪調研：LINE webhook event 持久化冪等表
+
+**重點: `webhookEventId` 格式確認** — LINE 官方文件明確：`webhookEventId` 是 **ULID 格式**（26 字元大寫英數字串），每個 webhook event 唯一，**redelivery 時值不變**、只有 `isRedelivery` 旗標不同。這才是冪等 key 的正確選擇。來源：[LINE Messaging API Reference](https://developers.line.biz/en/reference/messaging-api/index.html.md)
+
+**重點: 現況缺陷** — 目前 `isRedelivery=true` 直接 `continue`（無狀態旗標），有三個漏洞：① 首投成功但 reply 超時，LINE 重送此時 `isRedelivery=true` → 被跳過，用戶收不到翻譯；② 首投 `_process_events` 進行中（background）、LINE 又重送 `isRedelivery=false`（例如重試間隔內首投還沒完） → 重複處理；③ 無法區分「已處理成功」與「正在處理」兩種狀態。
+
+**重點: 標準狀態機為三態** — 業界冪等表常見模式：`pending`（已登記、處理中）→ `processed`（成功）/ `failed`（失敗可選保留）。完整防護邏輯：先 INSERT event_id，INSERT 衝突 → 已存在 → 直接 skip；INSERT 成功 → 處理；處理完 UPDATE 為 `processed`。來源：[Hookdeck — Implement Webhook Idempotency](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)、[Webhook Reliability 2026](https://www.digitalapplied.com/blog/webhook-reliability-idempotency-retries-engineering-reference-2026)
+
+**重點: SQLite + PostgreSQL 跨方言 INSERT 衝突處理** — SQLAlchemy 2.x 的 `sqlalchemy.dialects.sqlite.insert().on_conflict_do_nothing()` 是 SQLite 方言專屬；最跨方言的做法是 **catch `IntegrityError`**（`sqlalchemy.exc.IntegrityError`），SQLite/PG 都會在 UNIQUE 衝突時拋，不需 dialect 分支。另一選項是 `INSERT OR IGNORE`（SQLite）vs `INSERT … ON CONFLICT DO NOTHING`（PG）的條件路由。來源：[SQLAlchemy SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)、[SQLAlchemy Discussion #9675](https://github.com/sqlalchemy/sqlalchemy/discussions/9675)
+
+**重點: TTL 清理** — LINE 未公開 redelivery 重試窗口期，業界建議 TTL ≥ 最長重試期 × 2，通常 **24–72 小時**。DB 需定期清理舊記錄（periodic job 或 `_migrate_*` 輕量方式在 `init_db` 掛鉤）。Redis 有原生 TTL 更省事，但現有架構純 SQLAlchemy、引入 Redis 屬 M2 事。來源：[Hookdeck Guide](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)
+
+**重點: 現有 migration 模式** — 專案無 Alembic，用 `db.py` 的 `_migrate_*` inline 函式 + `init_db()` 呼叫；新增冪等表應沿用此模式，加 `_migrate_add_line_webhook_events_table()`，`Base.metadata.create_all` 的 import 清單也要補新 model。
+
+**重點: 測試衝擊** — `test_line_task2_redelivery.py` 的 `_text_event()` helper 目前不帶 `webhookEventId`，改用 DB 冪等後所有測試 payload 需補此欄位；現有「`isRedelivery=true` 跳過」的四個測試案例語意要轉換為「同 `webhookEventId` 第二次到達 → skip（無論 `isRedelivery`）」。
+
+---
+
+**建議: 冪等表 schema 最小設計：**
+```python
+class LineWebhookEvent(Base):
+    __tablename__ = "line_webhook_events"
+    webhook_event_id = Column(String(26), primary_key=True)   # ULID
+    tenant_id        = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    status           = Column(String(16), nullable=False, default="pending")  # pending/processed/failed
+    created_at       = Column(DateTime(timezone=True), nullable=False, ...)
+    processed_at     = Column(DateTime(timezone=True), nullable=True)
+```
+
+**建議: 冪等判斷放 per-event try 最前，用 `IntegrityError` catch 跨方言：**
+```python
+from sqlalchemy.exc import IntegrityError
+try:
+    db.execute(insert(LineWebhookEvent).values(
+        webhook_event_id=event.get("webhookEventId"),
+        tenant_id=tenant_id, status="pending", created_at=...
+    ))
+    db.commit()
+except IntegrityError:
+    db.rollback()
+    _log.info("skip duplicate event %s tenant=%d", event.get("webhookEventId"), tenant_id)
+    continue
+```
+
+**建議: `isRedelivery` 旗標可完全移除**，因為 DB 唯一索引已覆蓋所有重送場景，無狀態旗標只是「近似去重」，有前述三個漏洞。
+
+**建議: 補 `_migrate_add_line_webhook_events_table()` 到 `db.py`**，用 `inspector` 判斷表是否已存在（冪等），並在 `init_db()` 末尾呼叫，保持現有無 Alembic 模式。
+
+**建議: 清理任務** — M1 階段可在 `init_db()` 末掛一次性 `DELETE … WHERE created_at < NOW() - INTERVAL 3 DAY`；M2 再考慮獨立 cron job。
+
+**建議: 測試改寫策略** — 現有 `test_line_task2_redelivery.py` 的測試語意從「`isRedelivery=true` → skip」改為「同 `webhookEventId` 重投 → skip」；補一個新 case：「不同 `webhookEventId` 即使 `isRedelivery=true` 仍處理（邊界場景）」。
+
+---
+
+**Sources:**
+- [LINE Developers — Receive messages (webhook)](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+- [LINE Messaging API Reference (webhookEventId ULID)](https://developers.line.biz/en/reference/messaging-api/index.html.md)
+- [Hookdeck — Implement Webhook Idempotency](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)
+- [Webhook Reliability 2026 — Idempotency & Retry Reference](https://www.digitalapplied.com/blog/webhook-reliability-idempotency-retries-engineering-reference-2026)
+- [SQLAlchemy SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)
+- [SQLAlchemy Discussion #9675 — INSERT OR IGNORE with ORM](https://github.com/sqlalchemy/sqlalchemy/discussions/9675)
+
+## 2026-06-20 10:19
+
+現在我已掌握現況。讓我再確認幾個關鍵測試檔與 DeepL 官方 API 回應規格：
+掌握翻譯層全貌了。再看 webhook 處理與 quota 計量的接合點：
+現況已掌握完整。整理調研結果：
+
+---
+
+## 調研彙整
+
+### 現況盤點
+
+**重點: 現有 `Translator.translate()` 回傳純 `str`** — DeepLTranslator 內部已有 `detected` 變數與 `_is_same_language()` 判斷，但呼叫端（webhook `_process_events`）完全看不到 skip 決策；StubTranslator 同。目前同語言 skip 是靜默的——外層無從分辨「已翻譯文字正好相同」與「因同語言跳過」。
+
+**重點: 需要改動的呼叫端共 12 個測試檔** — `test_line_task2_translator.py`、`test_stub_translator_skip_qa.py`、`test_qa_task2_skip_normalized.py`、`test_translation_enhanced.py` 直接斷言 `.translate(...)` 回傳字串；其餘 8 個 webhook 測試透過 `_translate_sync` 間接觸及。
+
+**重點: webhook skip 點在 `_process_events` 的 step 6b→6d** — `translated = _translate_sync(...)` → `line_client.reply(...)` → `increment_usage()`。若 skip，兩者都不應執行；目前沒有這個分支。
+
+**重點: DeepL `detected_source_language` 欄位一定存在於 response translations[0]** — 官方 API ref 確認每筆 translation object 均含此欄位（source_lang 未提供時必定回填）。現有 `http.py` 已用 `.get("detected_source_language", "")` 安全讀取。來源: [DeepL API Reference — Translate Text](https://developers.deepl.com/api-reference/translate)
+
+**重點: Python 小值物件最佳實踐** — 不可變的回傳資料型別優先用 `@dataclass(frozen=True, slots=True)`（Python 3.10+）；比 NamedTuple 更易加欄位、型別標注更清晰、不暴露位置索引。來源: [TakoVibe 2026 比較指南](https://takovibe.com/blog/python-code-generators/)
+
+**重點: 介面擴充有三個選項：**
+- **Option A**：`translate()` 直接改回傳 `TranslationResult`（breaking，12 個測試需改）
+- **Option B**：新增 `translate_result()` 方法，`translate()` 保持舊 API（介面膨脹，舊方法變殭屍）
+- **Option C**：回傳 `tuple[str, str, bool]`（無型別安全）
+
+---
+
+### 建議
+
+**建議: 採 Option A，定義 `TranslationResult` dataclass 於 `base.py`：**
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True, slots=True)
+class TranslationResult:
+    text: str                   # 翻譯後（或同語言 skip 時的原）文字
+    detected_lang: str | None   # DeepL 偵測到的來源語言；Stub 固定為 source_lang（或 None）
+    skipped: bool               # True = 同語言，上游不回覆、不計 quota
+```
+
+**建議: `Translator.translate()` 抽象方法簽章改為 `-> TranslationResult`**，既有子類全部更新；`_translate_sync` helper 同步改。這是「唯一真相來源」，不要讓 skip 邏輯分散在實作與呼叫端。
+
+**建議: `_process_events` step 6b 後加一個 guard：**
+```python
+result = _translate_sync(translator, translate_text, target_lang)
+if result.skipped:
+    _log.info("skip same-lang event tenant=%d detected=%s", tenant_id, result.detected_lang)
+    continue   # 不 reply、不計 quota
+line_client.reply(reply_token, result.text, access_token=access_token)
+increment_usage(db, tenant_id, plan, chars=len(result.text))
+```
+
+**建議: StubTranslator 的 `detected_lang` 回傳 `self._source_lang`**（未設時回 `None`）；未設時 `skipped=False`（與現行行為一致）。
+
+**建議: 測試改寫最小策略** — 直接斷言字串的測試改為 `.text`；現有「同語言 skip → 回原文」的斷言追加 `.skipped is True`；反向樣本追加 `.skipped is False`，不刪現有測試邏輯，只加欄位讀取。
+
+**建議: 不要為「已是同語言」回覆「無需翻譯」訊息** — 靜默 skip 是正確 UX（用戶不知道後端有翻譯引擎），與 LINE 群組原始訊息共存不造成噪音。
+
+---
+
+Sources:
+- [DeepL Translate Text API Reference](https://developers.deepl.com/api-reference/translate)
+- [Python dataclass vs NamedTuple 2026 Guide — TakoVibe](https://takovibe.com/blog/python-code-generators/)
+- [Earthly Blog — Python Data Classes vs Named Tuples](https://earthly.dev/blog/python-data-classes-vs-namedtuples/)
+

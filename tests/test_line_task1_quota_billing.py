@@ -46,7 +46,7 @@ from saas_mvp.line_client.base import LineReplyError
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import PLAN_DAILY_LIMITS
 from saas_mvp.translation import StubTranslator, get_translator
-from saas_mvp.translation.base import TranslationError, Translator
+from saas_mvp.translation.base import TranslationError, TranslationResult, Translator
 
 # ── In-memory SQLite ──────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ _Session = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 class FailingTranslator(Translator):
     """每次 translate 都拋 TranslationError 的失敗 stub。"""
 
-    def translate(self, text: str, target_lang: str) -> str:
+    def translate(self, text: str, target_lang: str) -> TranslationResult:
         raise TranslationError("simulated translate failure")
 
     def is_available(self) -> bool:
