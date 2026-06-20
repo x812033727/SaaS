@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from saas_mvp.translation.base import TranslationResult, Translator, TranslationError
+from saas_mvp.translation.base import TranslationError, TranslationResult, Translator
 
 _DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
 

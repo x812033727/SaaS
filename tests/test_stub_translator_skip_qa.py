@@ -77,9 +77,9 @@ class TestStubSkipBoundaries:
     def test_skip_does_not_persist_across_calls(self):
         """同一實例：同語言回原文、切到他語仍正確包裝（無狀態殘留）。"""
         s = StubTranslator(source_lang="ja")
-        _assert_result(s.translate("a", "ja"), "a", True, "ja")       # skip
-        _assert_result(s.translate("a", "en"), "[EN] a", False, "ja") # 包裝
-        _assert_result(s.translate("a", "JA"), "a", True, "ja")       # 再次 skip
+        _assert_result(s.translate("a", "ja"), "a", True, "ja")  # skip
+        _assert_result(s.translate("a", "en"), "[EN] a", False, "ja")  # 包裝
+        _assert_result(s.translate("a", "JA"), "a", True, "ja")  # 再次 skip
 
     def test_is_available_always_true(self):
         assert StubTranslator(source_lang="ja").is_available() is True

@@ -5,7 +5,7 @@ translate() 回傳原文，不重複包裝/翻譯。
 
 關鍵語意（本檔鎖死）：
 - 比較對象是 _normalize_target_lang(target)，**不是**原始 BCP-47 target。
-  例 target=zh-TW → norm=ZH-HANT；唯有 detected=ZH-HANT 才 skip。
+  例 target=zh-TW → norm=ZH-HANT；detected 與 norm 同語言才 skip。
 - skip 回傳的是傳入的原文物件本身，不含任何 [LANG] 包裝、不回 body 內譯文。
 
 全程離線：mock urllib.request.urlopen，不打真實 DeepL。獨立檔，不改既有測試。

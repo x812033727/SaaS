@@ -10,7 +10,7 @@ class TranslationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class TranslationResult:
-    """Translation output plus skip metadata needed by callers."""
+    """Translation output plus backend language detection and skip metadata."""
 
     text: str
     detected_lang: str | None
