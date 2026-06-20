@@ -55,7 +55,7 @@
 * 錯誤處理：``_process_events`` 以單一 event 為例外邊界；每個 event
   各自 ``try/except Exception``，失敗時先 ``db.rollback()`` 重置 session、
   再 ``log.exception`` 記錄含 ``event_idx`` 的錯誤並繼續下一筆。單一 event
-  失敗不得中斷同批其他 events。
+  失敗不得中斷同批其他 events；不保留外層 ``except`` 吃掉整批。
 * in-process 假設：BackgroundTasks 是 Starlette 內建、in-process 機制，
   跨 worker process **不**傳遞任務。``uvicorn --workers N`` 部署時，
   handler 收到的 task 只在接收當下的 worker 跑；該 worker crash / restart
@@ -308,8 +308,9 @@ def _process_events(
       redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
       → translate → reply → increment_usage
 
-    DB session 自管：``db = Session(bind=bind)`` 新開；外層只保留
-    ``finally: db.close()`` 收尾。
+    DB session 自管：``with Session(bind=bind) as db`` 新開並於背景處理結束
+    自動 close；不保留外層 ``except``，事件迴圈只由 per-event
+    ``try/except`` 做隔離。
     ``bind`` 由 handler 在丟背景前以 ``db.get_bind()`` 抓出——傳 engine 而非
     factory，是為了對齊測試的 ``dependency_overrides[get_db]`` 機制：
     request session 綁的是測試自己的 in-memory StaticPool engine，背景
@@ -325,8 +326,7 @@ def _process_events(
     ``log.exception``，然後繼續下一個 event；單一 event 失敗不會中斷同批
     其他 events。
     """
-    db = Session(bind=bind)
-    try:
+    with Session(bind=bind) as db:
         for event_idx, event in enumerate(events):
             try:
                 # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，
@@ -449,8 +449,6 @@ def _process_events(
                     len(events),
                 )
                 continue
-    finally:
-        db.close()
 
 
 def _translate_sync(translator: Translator, text: str, target_lang: str) -> str:
