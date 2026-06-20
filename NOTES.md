@@ -4053,3 +4053,5 @@ I will view `tests/test_line_task2_translator.py` to examine the unit tests for 
 
 ## 任務 #4 完成：撰寫測試：同 ID 重送不重複回覆/計量、同 ID 但 `isRedelivery=false` 也略過、`isRedelivery=true` 但新 ID 要處理、多 event payload 逐筆獨立、缺 `webhookEventId` 的退化行為
 
+## 任務 #1 完成：實作需求
+
