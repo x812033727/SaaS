@@ -913,3 +913,70 @@ except IntegrityError:
 - [SQLAlchemy SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)
 - [SQLAlchemy Discussion #9675 — INSERT OR IGNORE with ORM](https://github.com/sqlalchemy/sqlalchemy/discussions/9675)
 
+## 2026-06-20 10:19
+
+現在我已掌握現況。讓我再確認幾個關鍵測試檔與 DeepL 官方 API 回應規格：
+掌握翻譯層全貌了。再看 webhook 處理與 quota 計量的接合點：
+現況已掌握完整。整理調研結果：
+
+---
+
+## 調研彙整
+
+### 現況盤點
+
+**重點: 現有 `Translator.translate()` 回傳純 `str`** — DeepLTranslator 內部已有 `detected` 變數與 `_is_same_language()` 判斷，但呼叫端（webhook `_process_events`）完全看不到 skip 決策；StubTranslator 同。目前同語言 skip 是靜默的——外層無從分辨「已翻譯文字正好相同」與「因同語言跳過」。
+
+**重點: 需要改動的呼叫端共 12 個測試檔** — `test_line_task2_translator.py`、`test_stub_translator_skip_qa.py`、`test_qa_task2_skip_normalized.py`、`test_translation_enhanced.py` 直接斷言 `.translate(...)` 回傳字串；其餘 8 個 webhook 測試透過 `_translate_sync` 間接觸及。
+
+**重點: webhook skip 點在 `_process_events` 的 step 6b→6d** — `translated = _translate_sync(...)` → `line_client.reply(...)` → `increment_usage()`。若 skip，兩者都不應執行；目前沒有這個分支。
+
+**重點: DeepL `detected_source_language` 欄位一定存在於 response translations[0]** — 官方 API ref 確認每筆 translation object 均含此欄位（source_lang 未提供時必定回填）。現有 `http.py` 已用 `.get("detected_source_language", "")` 安全讀取。來源: [DeepL API Reference — Translate Text](https://developers.deepl.com/api-reference/translate)
+
+**重點: Python 小值物件最佳實踐** — 不可變的回傳資料型別優先用 `@dataclass(frozen=True, slots=True)`（Python 3.10+）；比 NamedTuple 更易加欄位、型別標注更清晰、不暴露位置索引。來源: [TakoVibe 2026 比較指南](https://takovibe.com/blog/python-code-generators/)
+
+**重點: 介面擴充有三個選項：**
+- **Option A**：`translate()` 直接改回傳 `TranslationResult`（breaking，12 個測試需改）
+- **Option B**：新增 `translate_result()` 方法，`translate()` 保持舊 API（介面膨脹，舊方法變殭屍）
+- **Option C**：回傳 `tuple[str, str, bool]`（無型別安全）
+
+---
+
+### 建議
+
+**建議: 採 Option A，定義 `TranslationResult` dataclass 於 `base.py`：**
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True, slots=True)
+class TranslationResult:
+    text: str                   # 翻譯後（或同語言 skip 時的原）文字
+    detected_lang: str | None   # DeepL 偵測到的來源語言；Stub 固定為 source_lang（或 None）
+    skipped: bool               # True = 同語言，上游不回覆、不計 quota
+```
+
+**建議: `Translator.translate()` 抽象方法簽章改為 `-> TranslationResult`**，既有子類全部更新；`_translate_sync` helper 同步改。這是「唯一真相來源」，不要讓 skip 邏輯分散在實作與呼叫端。
+
+**建議: `_process_events` step 6b 後加一個 guard：**
+```python
+result = _translate_sync(translator, translate_text, target_lang)
+if result.skipped:
+    _log.info("skip same-lang event tenant=%d detected=%s", tenant_id, result.detected_lang)
+    continue   # 不 reply、不計 quota
+line_client.reply(reply_token, result.text, access_token=access_token)
+increment_usage(db, tenant_id, plan, chars=len(result.text))
+```
+
+**建議: StubTranslator 的 `detected_lang` 回傳 `self._source_lang`**（未設時回 `None`）；未設時 `skipped=False`（與現行行為一致）。
+
+**建議: 測試改寫最小策略** — 直接斷言字串的測試改為 `.text`；現有「同語言 skip → 回原文」的斷言追加 `.skipped is True`；反向樣本追加 `.skipped is False`，不刪現有測試邏輯，只加欄位讀取。
+
+**建議: 不要為「已是同語言」回覆「無需翻譯」訊息** — 靜默 skip 是正確 UX（用戶不知道後端有翻譯引擎），與 LINE 群組原始訊息共存不造成噪音。
+
+---
+
+Sources:
+- [DeepL Translate Text API Reference](https://developers.deepl.com/api-reference/translate)
+- [Python dataclass vs NamedTuple 2026 Guide — TakoVibe](https://takovibe.com/blog/python-code-generators/)
+- [Earthly Blog — Python Data Classes vs Named Tuples](https://earthly.dev/blog/python-data-classes-vs-namedtuples/)
+
