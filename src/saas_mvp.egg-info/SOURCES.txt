@@ -76,6 +76,7 @@ tests/test_qa_task1_billing_deferred.py
 tests/test_qa_task1_char_count_model.py
 tests/test_qa_task2_bot_info_http.py
 tests/test_qa_task2_skip_normalized.py
+tests/test_qa_task2_stub_translation_result.py
 tests/test_qa_task3_webhook_char_metering.py
 tests/test_qa_task4_admin_line_endpoints.py
 tests/test_qa_task4_migrate_line_bot_user_id.py
