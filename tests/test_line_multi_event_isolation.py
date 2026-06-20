@@ -22,6 +22,7 @@ from saas_mvp.models import note as _n, plan_change_history as _pch  # noqa: F40
 from saas_mvp.models import tenant as _t, usage as _us, user as _u  # noqa: F401
 import saas_mvp.models.line_channel_config as _lcm
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401
+from saas_mvp.models.line_webhook_event import LineWebhookEvent
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.translation import (
@@ -150,13 +151,25 @@ def _seed_tenant() -> int:
         db.close()
 
 
-def _text_event(text: str, reply_token: str, line_user_id: str) -> dict:
-    return {
+def _text_event(
+    text: str,
+    reply_token: str,
+    line_user_id: str,
+    *,
+    webhook_event_id: str | None = None,
+    is_redelivery: bool = False,
+) -> dict:
+    ev = {
         "type": "message",
         "replyToken": reply_token,
         "source": {"type": "user", "userId": line_user_id},
         "message": {"type": "text", "text": text},
     }
+    if webhook_event_id is not None:
+        ev["webhookEventId"] = webhook_event_id
+    if is_redelivery:
+        ev["deliveryContext"] = {"isRedelivery": True}
+    return ev
 
 
 def _payload(*events: dict) -> bytes:
@@ -196,6 +209,27 @@ def _usage_stats(tenant_id: int) -> tuple[int, int]:
         if row is None:
             return 0, 0
         return row.count, row.char_count
+    finally:
+        db.close()
+
+
+def _webhook_event_rows(tenant_id: int) -> list[tuple[str, str, str | None, bool]]:
+    db = _Session()
+    try:
+        rows = db.execute(
+            select(LineWebhookEvent)
+            .where(LineWebhookEvent.tenant_id == tenant_id)
+            .order_by(LineWebhookEvent.webhook_event_id)
+        ).scalars().all()
+        return [
+            (
+                row.webhook_event_id,
+                row.status,
+                row.last_stage,
+                row.processed_at is not None,
+            )
+            for row in rows
+        ]
     finally:
         db.close()
 
@@ -271,3 +305,136 @@ def test_same_language_event_skips_reply_and_usage_then_next_event_runs(skip_app
     assert line_client.sent[0].reply_token == "rt-normal"
     assert line_client.sent[0].text == "[JA] translate me"
     assert _usage_stats(tenant_id) == (1, len("[JA] translate me"))
+
+
+def test_duplicate_webhook_event_id_skips_second_reply_and_usage(app_client):
+    client, _, line_client = app_client
+    client.app.dependency_overrides[get_translator] = lambda: StubTranslator()
+    tenant_id = _seed_tenant()
+
+    first = _payload(
+        _text_event(
+            "first",
+            "rt-first",
+            "Ufirst",
+            webhook_event_id="evt-idem-dup",
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=first,
+        headers=_headers(first),
+    )
+    assert response.status_code == 200
+    assert line_client.call_count == 1
+    assert _usage_count(tenant_id) == 1
+
+    line_client.reset()
+    second = _payload(
+        _text_event(
+            "second",
+            "rt-second",
+            "Ufirst",
+            webhook_event_id="evt-idem-dup",
+            is_redelivery=True,
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=second,
+        headers=_headers(second),
+    )
+
+    assert response.status_code == 200
+    assert line_client.call_count == 0
+    assert _usage_count(tenant_id) == 1
+    assert _webhook_event_rows(tenant_id) == [
+        ("evt-idem-dup", "processed", "usage_incremented", True)
+    ]
+
+
+def test_redelivery_true_with_new_webhook_event_id_is_processed(app_client):
+    client, _, line_client = app_client
+    client.app.dependency_overrides[get_translator] = lambda: StubTranslator()
+    tenant_id = _seed_tenant()
+
+    body = _payload(
+        _text_event(
+            "fresh",
+            "rt-redelivery-fresh",
+            "Ufresh",
+            webhook_event_id="evt-redelivery-fresh",
+            is_redelivery=True,
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers=_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert line_client.call_count == 1
+    assert line_client.sent[0].text == "[ZH-TW] fresh"
+    assert _usage_count(tenant_id) == 1
+    assert _webhook_event_rows(tenant_id) == [
+        ("evt-redelivery-fresh", "processed", "usage_incremented", True)
+    ]
+
+
+def test_missing_webhook_event_id_falls_back_to_direct_processing(app_client):
+    client, _, line_client = app_client
+    client.app.dependency_overrides[get_translator] = lambda: StubTranslator()
+    tenant_id = _seed_tenant()
+
+    body1 = _payload(_text_event("one", "rt-no-id-1", "Unoid"))
+    body2 = _payload(_text_event("two", "rt-no-id-2", "Unoid"))
+    assert client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body1,
+        headers=_headers(body1),
+    ).status_code == 200
+    assert client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body2,
+        headers=_headers(body2),
+    ).status_code == 200
+
+    assert line_client.call_count == 2
+    assert _usage_count(tenant_id) == 2
+    assert _webhook_event_rows(tenant_id) == []
+
+
+def test_failed_event_is_marked_failed_and_next_event_processed(app_client):
+    client, translator, line_client = app_client
+    tenant_id = _seed_tenant()
+
+    body = _payload(
+        _text_event(
+            "first",
+            "rt-failed",
+            "Ufailed",
+            webhook_event_id="evt-failed",
+        ),
+        _text_event(
+            "second",
+            "rt-ok",
+            "Uok",
+            webhook_event_id="evt-ok",
+        ),
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers=_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert translator.calls == [("first", "zh-TW"), ("second", "zh-TW")]
+    assert line_client.call_count == 1
+    assert line_client.sent[0].reply_token == "rt-ok"
+    assert _usage_count(tenant_id) == 1
+    assert _webhook_event_rows(tenant_id) == [
+        ("evt-failed", "failed", "quota_checked", False),
+        ("evt-ok", "processed", "usage_incremented", True),
+    ]

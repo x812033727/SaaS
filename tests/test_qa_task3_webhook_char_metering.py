@@ -134,13 +134,17 @@ def _make_text_event(
     text: str,
     reply_token: str = "rt-char-001",
     line_user_id: str = "Uchar001",
+    webhook_event_id: str | None = None,
 ) -> dict:
-    return {
+    ev = {
         "type": "message",
         "replyToken": reply_token,
         "source": {"type": "user", "userId": line_user_id},
         "message": {"type": "text", "text": text},
     }
+    if webhook_event_id is not None:
+        ev["webhookEventId"] = webhook_event_id
+    return ev
 
 
 def _payload(*events) -> bytes:
@@ -527,20 +531,31 @@ class TestReverseControls:
         # "[EN] world" = 5+1+5 = 11
         assert cc == 11, f"從 0 起算應 +11，got {cc}"
 
-    def test_redelivery_does_not_increment_char_count(self, client):
-        """邊界：重送 event → 不翻譯、不計 char_count（既有規則不被破壞）。"""
+    def test_duplicate_id_does_not_increment_char_count(self, client):
+        """邊界：相同 webhookEventId 第二次進入 → 不翻譯、不計 char_count。"""
         tid = _new_tenant(client)
-        before = _read(tid)
-        assert before == (0, 0)
+        seed = _make_text_event(
+            "/lang en hi",
+            "rt-seed",
+            webhook_event_id="evt-char-dup",
+        )
+        r0 = _post(client, tid, seed)
+        assert r0.status_code == 200
+        assert _read(tid) == (1, 7)
 
-        ev = _make_text_event("/lang en hi", "rt-redeliv")
+        _fake_line_client.reset()
+        ev = _make_text_event(
+            "/lang en hi",
+            "rt-redeliv",
+            webhook_event_id="evt-char-dup",
+        )
         ev["deliveryContext"] = {"isRedelivery": True}
         r = _post(client, tid, ev)
         assert r.status_code == 200
 
         c, cc = _read(tid)
-        assert c == 0
-        assert cc == 0, f"重送 event 不應計 char，got {cc}"
+        assert c == 1
+        assert cc == 7, f"重複 event 不應重複計 char，got {cc}"
 
 
 # ── 6. count 軸 vs char 軸獨立計量（端到端） ─────────────────────────────────

@@ -8,7 +8,7 @@
 * 正常路徑 reply 必為譯文、count 恰好 +1；連兩則 +2。
 * 超量：HTTP 200（非 429/500）、reply 為配額訊息（非譯文）、count 不變、translate 0 次。
 * 反向對照：limit-1 仍翻譯並 +1（排除「永遠不翻譯」假綠）。
-* 邊界：同一 webhook 內「正常 event + redelivery event」→ 只計量 +1（redelivery 不翻不扣）。
+* 邊界：同一 webhook 內「正常 event + 重複 webhookEventId」→ 只計量 +1。
 
 全離線：SpyTranslator(包 StubTranslator) + FakeLineReplyClient，無金鑰、無網路、無 sleep。
 """
@@ -116,13 +116,16 @@ def _sign(body: bytes, secret: str = _CHANNEL_SECRET) -> str:
 
 
 def _text_event(text: str, reply_token: str = "rt", line_user_id: str = "Uq001",
-                redelivery: bool = False) -> dict:
+                redelivery: bool = False,
+                webhook_event_id: str | None = None) -> dict:
     ev = {
         "type": "message",
         "replyToken": reply_token,
         "source": {"type": "user", "userId": line_user_id},
         "message": {"type": "text", "text": text},
     }
+    if webhook_event_id is not None:
+        ev["webhookEventId"] = webhook_event_id
     if redelivery:
         ev["deliveryContext"] = {"isRedelivery": True}
     return ev
@@ -283,19 +286,31 @@ class TestOverQuotaNoTranslateNoCharge:
         assert _used(tid) == limit                        # +1 達上限
 
 
-# ── 邊界：同 webhook 內正常 event + redelivery event → 只 +1 ──────────────────
+# ── 邊界：同 webhook 內正常 event + duplicate event → 只 +1 ──────────────────
 
 class TestRedeliveryMixedExactlyOne:
-    def test_normal_plus_redelivery_increments_by_one_only(self, client):
+    def test_normal_plus_duplicate_id_increments_by_one_only(self, client):
         tid = _new_tenant(client)
-        # 第一則正常、第二則 isRedelivery=true（應略過不翻不扣）
+        seed = _payload(
+            _text_event("dup", reply_token="rt0", webhook_event_id="evt-meter-dup")
+        )
+        r0 = client.post(f"/line/webhook/{tid}", content=seed, headers=_headers(seed))
+        assert r0.status_code == 200
+        _fake_line_client.reset()
+        _spy_translator.reset()
+
         body = _payload(
-            _text_event("real", reply_token="rt1"),
-            _text_event("dup", reply_token="rt2", redelivery=True),
+            _text_event("real", reply_token="rt1", webhook_event_id="evt-meter-new"),
+            _text_event(
+                "dup",
+                reply_token="rt2",
+                redelivery=True,
+                webhook_event_id="evt-meter-dup",
+            ),
         )
         r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
 
         assert r.status_code == 200
         assert _spy_translator.call_count == 1            # 只翻譯正常那則
         assert _spy_translator.calls[0][0] == "real"
-        assert _used(tid) == 1                            # 恰好 +1，redelivery 不計量
+        assert _used(tid) == 2                            # seed + normal，duplicate 不計量

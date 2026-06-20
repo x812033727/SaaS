@@ -5,8 +5,8 @@
 * raw body 用 Request.body() 取得，再 JSON decode，確保 HMAC 比對用原始 bytes。
 * X-Line-Signature 驗章失敗 → 400（符合 LINE 文件建議）。
 * 非文字事件靜默略過，回 200 OK。
-* 重送去重：deliveryContext.isRedelivery=true 的 event 一律略過（不翻譯、不計量、回 200），
-  避免 LINE 重投造成重複翻譯與重複扣 quota。判定採無狀態旗標，缺欄位視為首投。
+* 重送去重：以 webhookEventId 持久化 claim 狀態；重複 ID 一律略過
+  （不翻譯、不回覆、不計量）。deliveryContext.isRedelivery 僅作診斷 log。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
 * quota 計費點後移：先做非遞增檢查放行，待 translate 與 reply 皆成功後才
   increment_usage(+1)；下游任一失敗則不計量，消除「白扣」。increment_usage
@@ -81,6 +81,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import hmac
 import json
@@ -88,6 +89,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from saas_mvp.db import get_db
@@ -97,6 +99,11 @@ from saas_mvp.models.line_channel_config import (
     LineChannelConfig,
     LineConfigDecryptionError,
     validate_target_lang,
+)
+from saas_mvp.models.line_webhook_event import (
+    LineWebhookEvent,
+    LineWebhookEventStage,
+    LineWebhookEventStatus,
 )
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
@@ -260,7 +267,7 @@ async def line_webhook(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
 
     # ── 6. 把 events 處理鏈丟背景，handler 立即回 200 ─────────────────────────
-    # 把 for-loop 整段（redelivery 去重 + 雙閘 quota + translate + reply +
+    # 把 for-loop 整段（webhookEventId claim + 雙閘 quota + translate + reply +
     # increment_usage）原封搬入 _process_events；handler 自身**不再同步**
     # 執行任何 translate / reply。Starlette TestClient 內部 await
     # self.background() 才 return response，測試端可繼續用既有 spy 斷言
@@ -302,10 +309,10 @@ def _process_events(
     line_client: LineReplyClient,
     bind,
 ) -> None:
-    """在 background 內依序處理每個 event（行為與順序與背景化前完全一致）。
+    """在 background 內依序處理每個 event，並以 webhookEventId 做冪等去重。
 
-    從 line_webhook handler 同步段整段剪下、零行為改動：
-      redelivery 去重 → event type 過濾 → /lang 解析 → 雙閘 quota
+    處理順序：
+      webhookEventId claim → event type 過濾 → /lang 解析 → 雙閘 quota
       → translate → same-language skip → reply → increment_usage
 
     DB session 自管：每個 event 進入處理邊界時以
@@ -328,130 +335,32 @@ def _process_events(
     """
     for event_idx, event in enumerate(events):
         with Session(bind=bind) as db:
+            event_row_id: int | None = None
+            stage = LineWebhookEventStage.CLAIMED.value
+            stage_holder = [stage]
             try:
-                # 重送去重：LINE 在前次未收到 2xx 時會重投同一 event，
-                # deliveryContext.isRedelivery=true。對重送 event 一律略過——不翻譯、
-                # 不回覆、不計 quota——避免重複翻譯與重複扣量。判定鍵採無狀態旗標。
-                # 缺 deliveryContext（或為 null）/isRedelivery 非 True 時，視為首投，行為不變。
-                delivery_ctx = event.get("deliveryContext") or {}
-                if delivery_ctx.get("isRedelivery") is True:
-                    _log.info(
-                        "skip redelivered LINE event for tenant %d (isRedelivery=true)",
-                        tenant_id,
-                    )
+                event_row, should_process = _claim_webhook_event(db, tenant_id, event)
+                if not should_process:
                     continue
+                event_row_id = event_row.id if event_row is not None else None
 
-                event_type = event.get("type")
-
-                # 非 message event → 略過
-                if event_type != "message":
-                    continue
-
-                message = event.get("message", {})
-                # 非文字訊息 → 略過
-                if message.get("type") != "text":
-                    continue
-
-                text = message.get("text", "")
-                reply_token = event.get("replyToken", "")
-                line_user_id = event.get("source", {}).get("userId", "")
-
-                # 解析 /lang 指令
-                lang_code, remaining_text = parse_lang_command(text)
-
-                if lang_code:
-                    # BCP-47 格式驗證（防注入，已明確拒絕含特殊字元的惡意輸入）
-                    try:
-                        validate_target_lang(lang_code)
-                    except InvalidTargetLangError:
-                        line_client.reply(
-                            reply_token,
-                            f"無效的語言代碼：{lang_code!r}，請使用 BCP-47 格式（例如：ja、en、zh-TW）",
-                            access_token=access_token,
-                        )
-                        continue
-
-                    if not remaining_text:
-                        # 純 /lang xx 指令 → 持久化偏好 + 回覆確認，不計 quota
-                        if line_user_id:
-                            upsert_user_lang(db, tenant_id, line_user_id, lang_code)
-                        line_client.reply(
-                            reply_token,
-                            f"語言已切換為：{lang_code}",
-                            access_token=access_token,
-                        )
-                        continue
-
-                # 決定翻譯目標語言
-                # 優先序：/lang 行內指定 > 使用者持久化偏好 > channel 預設
-                if lang_code:
-                    target_lang = lang_code  # 同一則訊息含 /lang xx + 文字
-                elif line_user_id:
-                    target_lang = (
-                        get_user_lang(db, tenant_id, line_user_id) or default_target_lang
-                    )
-                else:
-                    target_lang = default_target_lang
-
-                translate_text = remaining_text if lang_code else text
-
-                # ── 6a-1. 次數配額檢查（非遞增；超量 → 回覆明確訊息，不翻譯、不計量） ─
-                # 計費點後移：此處僅「檢查」不「遞增」，避免下游翻譯／回覆失敗時白扣。
-                if not has_quota(db, tenant_id, plan):
-                    line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
-                    continue
-
-                # ── 6a-2. 字數配額檢查（譯文字數，與次數軸並列；任一不通即擋下） ─────
-                # 採譯文字數（len(result.text)），理由：譯文是後端可控、語意單一的字串點，
-                # 與後扣骨架自然對齊，源文多語混雜與表情字元歧義可避開。
-                # 兩道閘各自獨立查詢、獨立擋下，沿用既有「單次溢出可接受」語意。
-                if not has_char_quota(db, tenant_id, plan):
-                    line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
-                    continue
-
-                # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-                # 為何 sync 直呼：見步驟 6c 註解（BackgroundTasks 自動
-                # run_in_threadpool 已將 I/O 移出 event loop；不需要再包
-                # asyncio.to_thread，否則只是冗餘雙重包裝）。
-                result = _translate_sync(translator, translate_text, target_lang)
-                if result.skipped:
-                    _log.info(
-                        "skip same-language LINE event for tenant %d event_idx=%d detected=%s target=%s",
-                        tenant_id,
-                        event_idx,
-                        result.detected_lang,
-                        target_lang,
-                    )
-                    continue
-
-                # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
-                # 為何 sync 直呼：reply 為阻塞 I/O（urllib.request.urlopen），但
-                # _process_events 是 sync 函式、由 BackgroundTasks 自動
-                # run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果。
-                # sync 函式內亦無法 await，再包一層 asyncio.to_thread 屬冗餘雙重
-                # 包裝（anyio 反模式，淨效果為零、反而多佔一條 thread）。本註解
-                # 是「sync 函式無需 to_thread 包裝」的 canonical 說明位置——模組
-                # docstring M2 段、_translate_sync helper 與 6b 步驟都指向這裡。
-                # threadpool 線程佔用改善路徑見模組 docstring M2 段。
-                line_client.reply(reply_token, result.text, access_token=access_token)
-
-                # ── 6d. 翻譯與回覆皆成功後才計量（消除下游失敗白扣） ─────────────────
-                # 單一 ``increment_usage(plan, chars=N)`` 一次 SELECT FOR UPDATE、
-                # 一次 commit 完成 ``count += 1; char_count += len(result.text)``——
-                # 翻案自舊版「兩並列函式各自鎖 + 各自 commit」：少一輪 DB 往返 +
-                # 少一次 commit，鎖窗口由兩次壓成一次。
-                #
-                # 重驗語意（翻案重點）：count 達 limit 不 +1（沿用舊邏輯，極罕見
-                # TOCTOU）；char_count 達/超 char_limit 時**真實累計**寫入
-                # ``current + chars``（不 saturate、停在原值）——避免舊版
-                # ``saturate + 嚴格 <`` 造成的結構性死閘：下次 has_char_quota
-                # 在「達/超 limit」時正確擋下，閘真實有效。代價是「單次溢出」
-                # ——同次數軸「單次溢出可接受」語意對齊，舊版「永不超賣計費」
-                # 期待被明確捨棄（PR 描述點名）。
-                increment_usage(db, tenant_id, plan, chars=len(result.text))
-            except Exception:
+                stage = _handle_line_event(
+                    db,
+                    tenant_id,
+                    plan,
+                    default_target_lang,
+                    access_token,
+                    event,
+                    event_idx,
+                    translator,
+                    line_client,
+                    stage_holder,
+                )
+                _mark_webhook_event_processed(db, event_row_id, stage)
+            except Exception as exc:
                 # 單筆 event 失敗不可污染同批後續 event；rollback 必須先於 log。
                 db.rollback()
+                _mark_webhook_event_failed(db, event_row_id, stage_holder[0], exc)
                 _log.exception(
                     "background _process_events failed for tenant %d event_idx=%d (events=%d)",
                     tenant_id,
@@ -459,6 +368,196 @@ def _process_events(
                     len(events),
                 )
                 continue
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _claim_webhook_event(
+    db: Session,
+    tenant_id: int,
+    event: dict,
+) -> tuple[LineWebhookEvent | None, bool]:
+    """以 webhookEventId claim 單筆 event；缺 ID 時退化為直接處理。"""
+    webhook_event_id = event.get("webhookEventId")
+    if not webhook_event_id:
+        return None, True
+
+    row = LineWebhookEvent(
+        tenant_id=tenant_id,
+        webhook_event_id=webhook_event_id,
+        status=LineWebhookEventStatus.PENDING.value,
+        last_stage=LineWebhookEventStage.CLAIMED.value,
+    )
+    db.add(row)
+    try:
+        db.commit()
+        db.refresh(row)
+        return row, True
+    except IntegrityError:
+        db.rollback()
+        existing = db.execute(
+            select(LineWebhookEvent).where(
+                LineWebhookEvent.tenant_id == tenant_id,
+                LineWebhookEvent.webhook_event_id == webhook_event_id,
+            )
+        ).scalar_one_or_none()
+        _log.info(
+            "skip duplicate LINE webhook event tenant=%d webhook_event_id=%s status=%s",
+            tenant_id,
+            webhook_event_id,
+            existing.status if existing is not None else "unknown",
+        )
+        return existing, False
+
+
+def _mark_webhook_event_processed(
+    db: Session,
+    event_row_id: int | None,
+    stage: str,
+) -> None:
+    if event_row_id is None:
+        return
+    row = db.get(LineWebhookEvent, event_row_id)
+    if row is None:  # pragma: no cover - defensive only
+        return
+    now = _utcnow()
+    row.status = LineWebhookEventStatus.PROCESSED.value
+    row.last_stage = stage
+    row.last_error = None
+    row.processed_at = now
+    row.updated_at = now
+    db.commit()
+
+
+def _mark_webhook_event_failed(
+    db: Session,
+    event_row_id: int | None,
+    stage: str,
+    exc: Exception,
+) -> None:
+    if event_row_id is None:
+        return
+    row = db.get(LineWebhookEvent, event_row_id)
+    if row is None:  # pragma: no cover - defensive only
+        return
+    now = _utcnow()
+    row.status = LineWebhookEventStatus.FAILED.value
+    row.last_stage = stage
+    row.last_error = type(exc).__name__
+    row.updated_at = now
+    db.commit()
+
+
+def _handle_line_event(
+    db: Session,
+    tenant_id: int,
+    plan: str,
+    default_target_lang: str,
+    access_token: str,
+    event: dict,
+    event_idx: int,
+    translator: Translator,
+    line_client: LineReplyClient,
+    stage_holder: list[str] | None = None,
+) -> str:
+    """處理單筆 LINE event，回傳最後完成的處理階段。"""
+    stage = LineWebhookEventStage.CLAIMED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+
+    delivery_ctx = event.get("deliveryContext") or {}
+    if delivery_ctx.get("isRedelivery") is True:
+        _log.info(
+            "LINE event redelivery flag observed for tenant %d event_idx=%d; using webhookEventId for idempotency",
+            tenant_id,
+            event_idx,
+        )
+
+    event_type = event.get("type")
+    if event_type != "message":
+        return stage
+
+    message = event.get("message", {})
+    if message.get("type") != "text":
+        return stage
+
+    text = message.get("text", "")
+    reply_token = event.get("replyToken", "")
+    line_user_id = event.get("source", {}).get("userId", "")
+
+    lang_code, remaining_text = parse_lang_command(text)
+
+    if lang_code:
+        try:
+            validate_target_lang(lang_code)
+        except InvalidTargetLangError:
+            line_client.reply(
+                reply_token,
+                f"無效的語言代碼：{lang_code!r}，請使用 BCP-47 格式（例如：ja、en、zh-TW）",
+                access_token=access_token,
+            )
+            return stage
+
+        if not remaining_text:
+            if line_user_id:
+                upsert_user_lang(db, tenant_id, line_user_id, lang_code)
+            line_client.reply(
+                reply_token,
+                f"語言已切換為：{lang_code}",
+                access_token=access_token,
+            )
+            return stage
+
+    if lang_code:
+        target_lang = lang_code
+    elif line_user_id:
+        target_lang = get_user_lang(db, tenant_id, line_user_id) or default_target_lang
+    else:
+        target_lang = default_target_lang
+
+    translate_text = remaining_text if lang_code else text
+
+    stage = LineWebhookEventStage.QUOTA_CHECKED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+    if not has_quota(db, tenant_id, plan):
+        line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
+        return stage
+
+    if not has_char_quota(db, tenant_id, plan):
+        line_client.reply(reply_token, _QUOTA_EXCEEDED_MSG, access_token=access_token)
+        return stage
+
+    result = _translate_sync(translator, translate_text, target_lang)
+    stage = LineWebhookEventStage.TRANSLATED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+    if result.skipped:
+        _log.info(
+            "skip same-language LINE event for tenant %d event_idx=%d detected=%s target=%s",
+            tenant_id,
+            event_idx,
+            result.detected_lang,
+            target_lang,
+        )
+        return stage
+
+    # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
+    # reply 是阻塞 I/O，但 _process_events 是 sync 函式，BackgroundTasks 會透過
+    # run_in_threadpool 放到 threadpool 執行，已移出 event loop；不需要再包
+    # asyncio.to_thread。sync 函式內再包一層屬冗餘雙重包裝，反而多佔 thread。
+    line_client.reply(reply_token, result.text, access_token=access_token)
+    stage = LineWebhookEventStage.REPLY_SENT.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+
+    increment_usage(db, tenant_id, plan, chars=len(result.text))
+    stage = LineWebhookEventStage.USAGE_INCREMENTED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+    return stage
 
 
 def _translate_sync(
