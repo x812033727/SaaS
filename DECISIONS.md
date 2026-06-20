@@ -529,3 +529,31 @@
 - 理由：維持開發與測試流程的環境可攜性，符合本地沙箱執行安全規範。
 - 否決方案：要求使用者或 CI 環境提供 `BypassSandbox: true` 權限來跑測試。
 
+## 將 `Translator.translate` 的回傳型別從 `str` 改為 `TranslationResult` 物件，不採用新舊介面並存方式。
+- 時間：2026-06-20 10:22
+- 理由：保護介面依賴方向的單一性與一致性。雖然此破壞性變更需要修改現有測試與 fake/spy translator 的簽章，但它徹底消除了殭屍代碼的隱患，提供乾淨的控制邊界。
+- 否決方案：在 `Translator` 額外宣告 `translate_with_meta` 方法並保留舊 `translate` 簽章的方案。
+
+## 在 [base.py](file:///opt/ti/workspaces/project-bbe384041201/src/saas_mvp/translation/base.py) 以 `@dataclass(frozen=True, slots=True)` 定義 `TranslationResult`，欄位包含 `text: str`、`detected_lang: str | None` 與 `skipped: bool`。
+- 時間：2026-06-20 10:22
+- 理由：藉由 `frozen=True` 保證回傳結果的不可變性（Immutability），防止在傳遞過程中被修改；不使用 `NamedTuple` 是為防止呼叫端依賴位置索引（Position Index），未來擴充欄位時不會因為解構 unpack 而導致代碼崩潰。
+- 否決方案：使用無型別的 Tuple 或使用 Python `NamedTuple` 作為資料傳遞結構。
+
+## 暫不定義 `skip_reason` 等列舉結構，僅使用 `skipped: bool` 來判定是否略過。
+- 時間：2026-06-20 10:22
+- 理由：避免過度設計。當前需求僅需決定「是否略過」，且未來若需演進為列舉或詳細原因，dataclass 的欄位擴大對呼叫端而言是高可逆且不具破壞性的改動。
+- 否決方案：在此階段直接設計複雜的 `skip_reason` 列舉或 skipped 多狀態狀態機。
+
+## 保持 Quota 檢查（次數與字數）在翻譯（Translate）之前的呼叫順序。
+- 時間：2026-06-20 10:22
+- 理由：保護付費 API 的安全防禦邊界。我們**放棄了超額用戶在發送同語言訊息時能被「靜默忽略」的體驗**（超額用戶會直接收到配額不足通知，而非靜默跳過），但**保護了系統不受超額流量惡意調用付費 DeepL API 的資金耗損風險**。
+- 否決方案：將翻譯與語言偵測流程重排至 Quota 檢查之前。
+
+## 當偵測到的語言（`detected_lang`）為 `ZH`（中文）時，只要目標語言（`target_lang`）的前置首碼為 `ZH`（如 `ZH-HANT`、`ZH-HANS`、`ZH-TW`、`ZH-CN`），即判定為同語言（`skipped=True`）並傳回原文。
+- 時間：2026-06-20 10:22
+- 理由：中文繁簡在 DeepL 偵測中通常僅返回 `ZH`。為防止因偵測精度落差導致重複翻譯與額外扣額，我們採取寬鬆的同語言判定。我們**放棄了提供精確繁簡互轉的保證**，以換取最務實、能省下 API 額度的實作。
+
+## 測試覆蓋必須包含對 skip 邏輯的負向測試，包括 `skipped=True` 時不 `reply` 且不 `increment_usage`、`skipped=False` 時正常執行、DeepL 偵測語言為空時不 skip、以及中文變體（`ZH` 對 `ZH-HANT`）的判定。
+- 時間：2026-06-20 10:22
+- 理由：測試是設計可逆性與防止型別/行為漂移的最後防線，必須明確防範 regression。
+
