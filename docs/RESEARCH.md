@@ -1076,3 +1076,39 @@ Sources:
 
 **建議: 下一步可對齊藍圖 P1 尚未實作的部分**，例如 quota 計量、`credential_status` 暴露到 PUT response（前次調研已有具體建議），而非重複投入已完成的任務。
 
+## 2026-06-20 17:11
+
+我會先掃既有 webhook/DB 實作，再只查 LINE 官方對 `webhookEventId`、redelivery 與重試語意的文件，補上冪等處理依據。
+現況看起來已有背景化、quota、destination 防護與舊 `isRedelivery` 跳過測試；我再讀關鍵檔確認目前狀態該落在哪一層，不重查已定案的 webhook 基礎。
+LINE 官方文件直接指出重送不是唯一重複來源，應以 `webhookEventId` 去重；這正好反駁目前只看 `isRedelivery` 的做法。我再補 SQLAlchemy/冪等表的實作依據與本 repo 的落點。
+本 repo 沒有 Alembic，既有 schema 演進是在 `init_db()` 後用輕量 migration 補欄；新增 webhook event 表要跟這個風格一致，不能假設外部 migration 工具。
+重點: LINE 官方明說重複投遞不只來自 redelivery；要用 `webhookEventId` 偵測 duplicate，不能只看 `deliveryContext.isRedelivery`。來源: https://developers.line.biz/en/docs/messaging-api/receiving-messages/
+
+重點: redelivery 時 `webhookEventId` 與 `replyToken` 會維持不變，只有 `isRedelivery` 改變；`webhookEventId` 是 ULID 格式的事件唯一 ID。來源: https://developers.line.biz/en/reference/messaging-api/index.html.md
+
+重點: 一個 webhook payload 可包含多個 event，所以冪等表必須是「每 event 一筆」，不是每 HTTP request 一筆。來源: https://developers.line.biz/en/reference/messaging-api/index.html.md
+
+重點: 目前程式仍在 `_process_events()` 看到 `isRedelivery=true` 就直接 `continue`，沒有 `pending/processed/failed` 狀態。來源: [line_webhook.py](/opt/ti/workspaces/project-bbe384041201/src/saas_mvp/routers/line_webhook.py:337)
+
+重點: LINE 只在 bot server 未回 `2xx` 時 redeliver；現有 handler 丟 `BackgroundTasks` 後先回 200，所以背景處理失敗不會自動靠 LINE 補送。來源: https://developers.line.biz/en/docs/messaging-api/receiving-messages/
+
+重點: 若想讓 `failed/pending` 之後可重跑，必須存 event payload；LINE 文件說文字內容收到 webhook 後沒有 API 可再取回。來源: https://developers.line.biz/en/docs/messaging-api/receiving-messages/
+
+重點: reply token 可能因「已使用」或「過期」失效；若失敗發生在 `line_client.reply()` 成功之後，不能盲目重送同一 event。來源: https://developers.line.biz/en/reference/messaging-api/index.html.md
+
+重點: 業界做法是持久化 event ID、用唯一約束擋重複、用狀態欄追蹤處理中/已處理；Stripe/Hookdeck 都是這個方向。來源: https://docs.stripe.com/webhooks 、https://hookdeck.com/webhooks/guides/implement-webhook-idempotency
+
+建議: 新增 `line_webhook_events` 表：`id`, `tenant_id`, `webhook_event_id`, `status`, `attempt_count`, `last_error`, `last_stage`, `created_at`, `updated_at`, `processed_at`；唯一約束用 `(tenant_id, webhook_event_id)`。
+
+建議: 不新增 Redis/Celery/line-bot-sdk；本輪用既有 SQLAlchemy 2.0 足夠，`UniqueConstraint` + 捕捉 `IntegrityError` 後 `rollback()` 是跨 SQLite/PostgreSQL 的保守做法。來源: https://docs.sqlalchemy.org/en/20/core/constraints.html 、https://docs.sqlalchemy.org/en/20/orm/session_basics.html
+
+建議: 驗章、JSON parse、destination check 通過後，丟背景前先逐 event 建立/claim `pending`；`processed` 或新鮮 `pending` 直接不 enqueue，避免並發重送重複處理。
+
+建議: 不再用 `isRedelivery=true` 當 skip 條件；它只保留作 log/診斷。若首次看到某 `webhookEventId` 時 `isRedelivery=true`，仍應處理，因為原始投遞可能沒成功送達。
+
+建議: `_process_events()` 的所有 `continue` 路徑都要標成 `processed`，包含非文字、同語言 skip、quota exceeded、`/lang` 指令成功；否則會留下永久 `pending`。
+
+建議: 例外時標 `failed` 並記 `last_stage`；若 stage 已過 `reply_sent`，後續不要自動重送 LINE reply，改由人工或修補流程處理 quota/usage 不一致。
+
+建議: 測試改成以 `webhookEventId` 為核心：同 ID 重送不重覆回覆/計量、同 ID 但 `isRedelivery=false` 也要 skip、`isRedelivery=true` 但新 ID 要處理、多 event payload 要逐筆獨立判斷。
+
