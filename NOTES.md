@@ -4013,3 +4013,11 @@ I will view `tests/test_line_task2_translator.py` to examine the unit tests for 
 
 ## 任務 #5 完成：redelivery 去重、quota 超額擋下、翻譯失敗等既有 skip/錯誤路徑行為不變，原測試全綠。
 
+## 任務 #1 完成：AC1：`base.py` 存在 `TranslationResult`，裝飾為 `frozen=True`，欄位完整為 `text: str`、`detected_lang: str | None`、`skipped: bool`。（現況 ✅，另含加分項 `slots=True`）
+
+## 任務 #2 完成：AC2：`Translator.translate` 簽章為 `-> TranslationResult`；`stub.py`、`http.py` 兩後端回傳皆為 `TranslationResult` 物件。（現況 ✅）
+
+## 任務 #3 完成：AC3：全 `src/` 無任何把 `translate()` 結果當純字串使用的呼叫端；消費端均改用 `.text`/`.skipped`/`.detected_lang`。（現況 ✅）
+
+## 任務 #4 完成：AC4：`.venv/bin/pytest tests/test_line_task2_translator.py` 全數通過。（現況 ✅ 36 passed）
+
