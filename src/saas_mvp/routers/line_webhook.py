@@ -101,7 +101,7 @@ from saas_mvp.models.line_channel_config import (
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.quota import has_char_quota, has_quota, increment_usage
-from saas_mvp.translation import Translator, get_translator
+from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 
 _log = logging.getLogger(__name__)
@@ -411,8 +411,16 @@ def _process_events(
 
                 # ── 6b. 翻譯（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
                 # 為何 sync 直呼：見步驟 6c 註解（BackgroundTasks 自動
-                # run_in_threadpool 已將 I/O 移出 event loop，無需 to_thread）。
-                translated = _translate_sync(translator, translate_text, target_lang)
+                # run_in_threadpool 已將 I/O 移出 event loop，asyncio.to_thread 冗餘）。
+                translation = _translate_sync(translator, translate_text, target_lang)
+                if translation.skipped:
+                    _log.info(
+                        "skip same-language LINE event for tenant %d detected=%s",
+                        tenant_id,
+                        translation.detected_lang,
+                    )
+                    continue
+                translated = translation.text
 
                 # ── 6c. 回覆（失敗會向上拋；此時尚未計量，不會白扣） ────────────────────
                 # 為何 sync 直呼：reply 為阻塞 I/O（urllib.request.urlopen），但
@@ -451,10 +459,12 @@ def _process_events(
                 continue
 
 
-def _translate_sync(translator: Translator, text: str, target_lang: str) -> str:
+def _translate_sync(
+    translator: Translator, text: str, target_lang: str
+) -> TranslationResult:
     """同步呼叫翻譯介面（背景任務內執行）。
 
     helper 封裝是為了維持單一翻譯呼叫點，未來換 async SDK 只改這裡。
     為何可 sync 直呼：見步驟 6c 註解（canonical 說明位置）。
     """
-    return translator.translate(text, target_lang).text
+    return translator.translate(text, target_lang)

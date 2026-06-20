@@ -8,9 +8,9 @@ class TranslationError(Exception):
     """Raised when a translation backend fails (network error, API error, etc.)."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TranslationResult:
-    """Result returned by a translation backend."""
+    """Translation output plus metadata needed by callers."""
 
     text: str
     detected_lang: str | None
@@ -33,8 +33,8 @@ class Translator(ABC):
             target_lang: BCP-47 language tag or API-specific code (e.g. 'JA', 'ZH-TW').
 
         Returns:
-            Translation result including output text, detected source language,
-            and whether translation was skipped.
+            Translation result containing output text, detected source language,
+            and whether translation was skipped because source and target matched.
 
         Raises:
             TranslationError: if the backend is unavailable or returns an error.

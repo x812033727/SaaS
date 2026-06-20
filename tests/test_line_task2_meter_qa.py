@@ -216,6 +216,27 @@ class TestNormalPathExactlyOne:
         assert _fake_line_client.last_text == "[ZH-TW] hello"  # reply 是譯文
         assert _used(tid) == 1                            # 恰好 +1，非 +2/+0
 
+    def test_same_language_skip_no_reply_no_increment(self, client):
+        tid = _new_tenant(client)
+        before = _used(tid)
+
+        app = client.app
+        original_override = app.dependency_overrides[get_translator]
+        app.dependency_overrides[get_translator] = lambda: StubTranslator(
+            source_lang="zh-TW"
+        )
+        try:
+            body = _payload(_text_event("已是中文", "rt-skip"))
+            r = client.post(
+                f"/line/webhook/{tid}", content=body, headers=_headers(body)
+            )
+        finally:
+            app.dependency_overrides[get_translator] = original_override
+
+        assert r.status_code == 200
+        assert _fake_line_client.call_count == 0
+        assert _used(tid) == before
+
     def test_two_messages_increment_by_two(self, client):
         tid = _new_tenant(client)
         body = _payload(_text_event("a"), _text_event("b"))

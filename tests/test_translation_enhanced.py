@@ -161,6 +161,7 @@ class TestDeepLSameLanguageSkip:
         with mock.patch("urllib.request.urlopen", _fake):
             result = t.translate("原文text", "JA")
         assert result.text == "原文text"
+        assert result.detected_lang == "ja"
         assert result.skipped is True
 
     def test_zh_detect_skips_zh_hant(self):
@@ -175,6 +176,7 @@ class TestDeepLSameLanguageSkip:
         with mock.patch("urllib.request.urlopen", _fake):
             result = t.translate("中文原文", "zh-TW")
         assert result.text == "中文原文"  # skip → 回原文
+        assert result.detected_lang == "ZH"
         assert result.skipped is True
 
     def test_zh_detect_skips_zh_hans(self):
@@ -189,6 +191,22 @@ class TestDeepLSameLanguageSkip:
         with mock.patch("urllib.request.urlopen", _fake):
             result = t.translate("简体原文", "zh-CN")
         assert result.text == "简体原文"
+        assert result.detected_lang == "ZH"
+        assert result.skipped is True
+
+    def test_zh_detect_skips_plain_zh_target(self):
+        """DeepL 回 ZH，target=zh（正規化 ZH）→ 同語言 skip，回原文。"""
+        t = DeepLTranslator(api_key="k")
+
+        def _fake(req, timeout=None):
+            return _fake_urlopen(
+                {"translations": [{"detected_source_language": "ZH", "text": "x"}]}
+            )
+
+        with mock.patch("urllib.request.urlopen", _fake):
+            result = t.translate("中文原文", "zh")
+        assert result.text == "中文原文"
+        assert result.detected_lang == "ZH"
         assert result.skipped is True
 
     def test_zh_detect_does_not_skip_non_zh_target(self):
@@ -203,6 +221,7 @@ class TestDeepLSameLanguageSkip:
         with mock.patch("urllib.request.urlopen", _fake):
             result = t.translate("中文原文", "ja")
         assert result.text == "翻訳"  # 未 skip
+        assert result.detected_lang == "ZH"
         assert result.skipped is False
 
     def test_missing_detected_field_returns_api_text(self):
@@ -260,7 +279,10 @@ class TestDeepLSameLanguageSkip:
 class TestStubTranslatorSkip:
     def test_default_wraps_with_tag(self):
         s = StubTranslator()
-        assert s.translate("hi", "ja").text == "[JA] hi"
+        result = s.translate("hi", "ja")
+        assert result.text == "[JA] hi"
+        assert result.detected_lang is None
+        assert result.skipped is False
 
     def test_same_lang_returns_original(self):
         s = StubTranslator(source_lang="ja")
@@ -271,7 +293,10 @@ class TestStubTranslatorSkip:
 
     def test_same_lang_case_insensitive(self):
         s = StubTranslator(source_lang="JA")
-        assert s.translate("これ", "ja").text == "これ"
+        result = s.translate("これ", "ja")
+        assert result.text == "これ"
+        assert result.detected_lang == "JA"
+        assert result.skipped is True
 
     def test_different_lang_still_wraps(self):
         s = StubTranslator(source_lang="ja")
@@ -282,7 +307,10 @@ class TestStubTranslatorSkip:
 
     def test_none_source_never_skips(self):
         s = StubTranslator(source_lang=None)
-        assert s.translate("hi", "ja").text == "[JA] hi"
+        result = s.translate("hi", "ja")
+        assert result.text == "[JA] hi"
+        assert result.detected_lang is None
+        assert result.skipped is False
 
     def test_is_available(self):
         assert StubTranslator().is_available() is True
