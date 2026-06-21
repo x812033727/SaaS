@@ -109,7 +109,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
     if not actions:
         return None, {}
     action = actions[0]
-    if action not in {"book", "slots", "my", "cancel", "help"}:
+    if action not in {"book", "pick_slot", "slots", "my", "cancel", "help"}:
         return None, {}
 
     params: dict = {}
@@ -120,6 +120,12 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
                 params["slot_id"] = slot_id
         party = _to_int(qs["party"][0]) if "party" in qs else None
         params["party_size"] = party or 1
+    elif action == "pick_slot":
+        # 引導式第二步：使用者已選時段，待選人數
+        if "slot_id" in qs:
+            slot_id = _to_int(qs["slot_id"][0])
+            if slot_id is not None:
+                params["slot_id"] = slot_id
     elif action == "cancel":
         if "reservation_id" in qs:
             rid = _to_int(qs["reservation_id"][0])

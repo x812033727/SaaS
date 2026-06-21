@@ -18,6 +18,7 @@ class SentReply:
     reply_token: str
     text: str
     access_token: str
+    quick_reply: list[tuple[str, str]] | None = None
 
 
 @dataclass
@@ -51,12 +52,20 @@ class FakeLineReplyClient(LineReplyClient):
         self.sent: list[SentReply] = []
         self._available = available
 
-    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
+    def reply(
+        self,
+        reply_token: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
         """捕捉回覆（不發網路請求）。"""
         self.sent.append(SentReply(
             reply_token=reply_token,
             text=text,
             access_token=access_token,
+            quick_reply=quick_reply,
         ))
 
     def is_available(self) -> bool:

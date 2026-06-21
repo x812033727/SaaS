@@ -653,11 +653,15 @@ def _handle_line_event(
 
 _BOOKING_HELP = (
     "可用指令：\n"
-    "・時段 — 查看可預約時段\n"
-    "・預約 <時段編號> <人數> — 例：預約 12 2\n"
+    "・時段 — 查看並選擇可預約時段\n"
+    "・預約 — 引導式預約（或：預約 <時段編號> <人數>）\n"
     "・我的預約 — 查看我的預約\n"
     "・取消 <預約編號> — 例：取消 7"
 )
+# 引導式人數上限（quick-reply 按鈕數）
+_PARTY_CHOICES_MAX = 6
+# 列給使用者選的時段上限（LINE quick-reply 最多 13 筆）
+_SLOT_CHOICES_MAX = 12
 
 
 def _booking_intent(event: dict) -> tuple[str | None, dict]:
@@ -670,12 +674,36 @@ def _booking_intent(event: dict) -> tuple[str | None, dict]:
     return None, {}
 
 
-def _format_slot_lines(slots: list) -> str:
-    lines = []
-    for s in slots:
-        when = s.slot_start.strftime("%m/%d %H:%M")
-        lines.append(f"#{s.id} {when}（剩 {s.online_available} 位）")
-    return "\n".join(lines)
+def _available_slots(db: Session, tenant_id: int) -> list:
+    return [
+        s
+        for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True)
+        if s.online_available > 0
+    ][:_SLOT_CHOICES_MAX]
+
+
+def _slot_choice_buttons(slots: list) -> list[tuple[str, str]]:
+    """時段 → quick-reply 按鈕（postback action=pick_slot）。"""
+    return [
+        (s.slot_start.strftime("%m/%d %H:%M"), f"action=pick_slot&slot_id={s.id}")
+        for s in slots
+    ]
+
+
+def _party_choice_buttons(slot_id: int, max_party: int) -> list[tuple[str, str]]:
+    """人數 → quick-reply 按鈕（postback action=book）。"""
+    upper = max(1, min(_PARTY_CHOICES_MAX, max_party))
+    return [
+        (f"{n} 位", f"action=book&slot_id={slot_id}&party={n}")
+        for n in range(1, upper + 1)
+    ]
+
+
+def _prompt_choose_slot(db: Session, tenant_id: int) -> tuple[str, list | None]:
+    slots = _available_slots(db, tenant_id)
+    if not slots:
+        return "目前沒有可預約的時段。", None
+    return "請選擇時段：", _slot_choice_buttons(slots)
 
 
 def _dispatch_booking(
@@ -684,22 +712,30 @@ def _dispatch_booking(
     action: str | None,
     params: dict,
     line_user_id: str,
-) -> str:
-    """執行預約指令並回傳要回覆的文字（預期錯誤都轉成友善訊息，不外拋）。"""
-    if action == "slots":
-        slots = [
-            s
-            for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True)
-            if s.online_available > 0
-        ][:10]
-        if not slots:
-            return "目前沒有可預約的時段。"
-        return "可預約時段：\n" + _format_slot_lines(slots) + "\n\n預約請輸入：預約 <編號> <人數>"
+) -> tuple[str, list | None]:
+    """執行預約指令；回傳 (回覆文字, quick_reply 按鈕或 None)。預期錯誤轉友善訊息。"""
+    # 引導式第一步：選時段（「時段」或「預約」無參數）
+    if action == "slots" or (action == "book" and params.get("slot_id") is None):
+        return _prompt_choose_slot(db, tenant_id)
 
+    # 引導式第二步：已選時段，選人數
+    if action == "pick_slot":
+        slot_id = params.get("slot_id")
+        slot = None
+        if slot_id is not None:
+            slot = next(
+                (s for s in _available_slots(db, tenant_id) if s.id == slot_id), None
+            )
+        if slot is None:
+            return _prompt_choose_slot(db, tenant_id)
+        return (
+            f"時段 {slot.slot_start.strftime('%m/%d %H:%M')}，請選擇人數：",
+            _party_choice_buttons(slot_id, slot.online_available),
+        )
+
+    # 第三步 / 一次性：建單
     if action == "book":
         slot_id = params.get("slot_id")
-        if slot_id is None:
-            return "請指定時段編號，例：預約 12 2（先輸入「時段」查看編號）"
         party_size = params.get("party_size", 1)
         try:
             resv = booking_svc.book_slot(
@@ -710,12 +746,13 @@ def _dispatch_booking(
                 line_user_id=line_user_id,
             )
         except booking_svc.SlotNotFoundError:
-            return f"找不到時段 #{slot_id}，請重新輸入「時段」查看。"
+            return f"找不到時段 #{slot_id}，請重新輸入「時段」查看。", None
         except booking_svc.SlotFullError:
-            return f"時段 #{slot_id} 已額滿，請改選其他時段。"
+            return f"時段 #{slot_id} 已額滿，請改選其他時段。", None
         return (
             f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
-            f"如需取消請輸入：取消 {resv.id}"
+            f"如需取消請輸入：取消 {resv.id}",
+            None,
         )
 
     if action == "my":
@@ -723,15 +760,15 @@ def _dispatch_booking(
             db, tenant_id=tenant_id, line_user_id=line_user_id
         )
         if not rows:
-            return "你目前沒有預約。輸入「時段」開始預約。"
+            return "你目前沒有預約。輸入「時段」開始預約。", None
         return "你的預約：\n" + "\n".join(
             f"#{r.id} {r.party_size} 位" for r in rows
-        )
+        ), None
 
     if action == "cancel":
         reservation_id = params.get("reservation_id")
         if reservation_id is None:
-            return "請指定預約編號，例：取消 7"
+            return "請指定預約編號，例：取消 7", None
         try:
             booking_svc.cancel_reservation(
                 db,
@@ -740,13 +777,13 @@ def _dispatch_booking(
                 line_user_id=line_user_id,
             )
         except booking_svc.ReservationNotFoundError:
-            return f"找不到預約 #{reservation_id}。"
+            return f"找不到預約 #{reservation_id}。", None
         except booking_svc.ReservationPermissionError:
-            return "無法取消其他人的預約。"
-        return f"預約 #{reservation_id} 已取消。"
+            return "無法取消其他人的預約。", None
+        return f"預約 #{reservation_id} 已取消。", None
 
     # help 或無法辨識
-    return _BOOKING_HELP
+    return _BOOKING_HELP, None
 
 
 def _handle_booking_event(
@@ -757,7 +794,7 @@ def _handle_booking_event(
     line_client: LineReplyClient,
     stage_holder: list[str] | None = None,
 ) -> str:
-    """booking 模式事件處理：解析指令 → 執行 → reply。
+    """booking 模式事件處理：解析指令 → 執行 → reply（含引導式 quick-reply 按鈕）。
 
     冪等性：mutating 動作（book/cancel）在 _dispatch_booking 內 commit 後，
     才把 stage 標到 REPLY_SENT 並 reply；若 reply 失敗，event 記 FAILED@REPLY_SENT
@@ -773,14 +810,18 @@ def _handle_booking_event(
 
     action, params = _booking_intent(event)
     # message 但非文字（圖片/貼圖）→ action 為 None；回說明
-    reply_text = _dispatch_booking(db, tenant_id, action, params, line_user_id)
+    reply_text, quick_reply = _dispatch_booking(
+        db, tenant_id, action, params, line_user_id
+    )
 
     # 副作用（若有）已於 _dispatch_booking 內 commit；標記不可重試後再 reply。
     stage = LineWebhookEventStage.REPLY_SENT.value
     if stage_holder is not None:
         stage_holder[0] = stage
     if reply_token:
-        line_client.reply(reply_token, reply_text, access_token=access_token)
+        line_client.reply(
+            reply_token, reply_text, access_token=access_token, quick_reply=quick_reply
+        )
     return stage
 
 

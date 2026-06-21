@@ -166,11 +166,41 @@ class TestBookingMode:
         _post(client, tid, _postback_event(f"action=book&slot_id={sid}&party=1"))
         assert len(_reservations(tid)) == 1
 
-    def test_slots_query_lists(self, app_client):
+    def test_slots_query_offers_quick_reply_buttons(self, app_client):
+        """「時段」→ 引導式：回「請選擇時段」+ pick_slot quick-reply 按鈕。"""
         client, line_client = app_client
         tid, sid = _seed("booking", with_slot=True)
         _post(client, tid, _text_event("時段"))
-        assert f"#{sid}" in (line_client.last_text or "")
+        last = line_client.sent[-1]
+        assert "請選擇時段" in last.text
+        assert last.quick_reply is not None
+        datas = [data for _label, data in last.quick_reply]
+        assert any(f"slot_id={sid}" in d and "pick_slot" in d for d in datas)
+
+    def test_guided_pick_slot_offers_party_buttons(self, app_client):
+        """postback pick_slot → 回「請選擇人數」+ book quick-reply 按鈕。"""
+        client, line_client = app_client
+        tid, sid = _seed("booking", with_slot=True)
+        _post(client, tid, _postback_event(f"action=pick_slot&slot_id={sid}", eid="g1"))
+        last = line_client.sent[-1]
+        assert "請選擇人數" in last.text
+        assert last.quick_reply is not None
+        datas = [data for _label, data in last.quick_reply]
+        # party 按鈕帶 slot_id + party，且 action=book
+        assert any(f"action=book&slot_id={sid}&party=" in d for d in datas)
+        # 尚未建單
+        assert _reservations(tid) == []
+
+    def test_guided_full_flow_books(self, app_client):
+        """預約(無參數) → pick_slot → 選人數 → 建單。"""
+        client, line_client = app_client
+        tid, sid = _seed("booking", with_slot=True)
+        _post(client, tid, _text_event("預約", eid="g1"))  # 選時段
+        _post(client, tid, _postback_event(f"action=pick_slot&slot_id={sid}", eid="g2"))  # 選人數
+        _post(client, tid, _postback_event(f"action=book&slot_id={sid}&party=2", eid="g3"))  # 建單
+        rows = _reservations(tid)
+        assert len(rows) == 1 and rows[0].party_size == 2
+        assert "預約成功" in (line_client.last_text or "")
 
     def test_full_slot_friendly_reject(self, app_client):
         client, line_client = app_client

@@ -30,6 +30,28 @@ _LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 # LINE userId 規格：U 後接 32 個 hex 字元。防禦性驗證，非法值當 None 處理。
 _LINE_USER_ID_RE = re.compile(r"^U[0-9a-f]{32}$")
 
+# LINE quick-reply 限制：最多 13 筆、label 上限 20 字。
+_QR_MAX_ITEMS = 13
+_QR_LABEL_MAX = 20
+
+
+def _quick_reply_items(items: list[tuple[str, str]]) -> list[dict]:
+    """把 `(label, postback_data)` 清單轉為 LINE quickReply items（postback action）。"""
+    out: list[dict] = []
+    for label, data in items[:_QR_MAX_ITEMS]:
+        out.append(
+            {
+                "type": "action",
+                "action": {
+                    "type": "postback",
+                    "label": label[:_QR_LABEL_MAX],
+                    "data": data,
+                    "displayText": label[:_QR_LABEL_MAX],
+                },
+            }
+        )
+    return out
+
 
 class HttpLineReplyClient(LineReplyClient):
     """呼叫真實 LINE Messaging API 的 reply client。
@@ -51,16 +73,26 @@ class HttpLineReplyClient(LineReplyClient):
         """HTTP client 一律視為可用（連線能力由 reply() 的例外反映）。"""
         return True
 
-    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
-        """呼叫 LINE reply API，送出單則文字訊息。
+    def reply(
+        self,
+        reply_token: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
+        """呼叫 LINE reply API，送出單則文字訊息（可附 quick-reply 按鈕）。
 
         Raises:
             LineReplyError: 任何網路或 API 錯誤。
         """
+        message: dict = {"type": "text", "text": text}
+        if quick_reply:
+            message["quickReply"] = {"items": _quick_reply_items(quick_reply)}
         payload = json.dumps(
             {
                 "replyToken": reply_token,
-                "messages": [{"type": "text", "text": text}],
+                "messages": [message],
             }
         ).encode()
 
