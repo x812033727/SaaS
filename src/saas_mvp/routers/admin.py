@@ -28,6 +28,27 @@ router = APIRouter(
 class TenantPatchBody(BaseModel):
     is_active: Optional[bool] = None
     plan: Optional[str] = None
+    # store_type 為標籤；max_length 對齊 Tenant.store_type 欄位上限。
+    # 是否「有提供」由 model_fields_set 判斷（送 null = 清空、不送 = 不動）。
+    store_type: Optional[str] = Field(default=None, max_length=32)
+
+
+class AdminLineBotRow(BaseModel):
+    """跨店家 LINE bot 總覽單列（遮罩憑證）。"""
+
+    tenant_id: int
+    name: str
+    store_type: str | None = None
+    plan: str
+    is_active: bool
+    has_line_config: bool
+    has_channel_secret: bool
+    has_access_token: bool
+    credential_status: str | None = None
+    line_bot_user_id: str | None = None
+    default_target_lang: str | None = None
+    today_count: int
+    today_chars: int
 
 
 @router.get("/tenants", summary="列出所有租戶（分頁）")
@@ -37,6 +58,29 @@ def list_tenants(
     db: Session = Depends(get_db),
 ):
     return admin_svc.list_tenants(db, skip=skip, limit=limit)
+
+
+@router.get(
+    "/line-bots",
+    response_model=list[AdminLineBotRow],
+    summary="跨店家 LINE bot 總覽（遮罩、可依類型/狀態篩選）",
+)
+def list_line_bots(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    store_type: Optional[str] = Query(None, description="依店家類型篩選"),
+    is_active: Optional[bool] = Query(None, description="依啟用狀態篩選"),
+    uncategorized: bool = Query(False, description="僅列出未分類（store_type 為 NULL）"),
+    db: Session = Depends(get_db),
+):
+    return admin_svc.list_line_bots(
+        db,
+        skip=skip,
+        limit=limit,
+        store_type=store_type,
+        is_active=is_active,
+        uncategorized=uncategorized,
+    )
 
 
 @router.get("/tenants/{tenant_id}/usage", summary="租戶今日用量 + per-key 明細")
@@ -61,6 +105,8 @@ def patch_tenant(
         is_active=body.is_active,
         plan=body.plan,
         actor_user_id=actor.user.id,
+        store_type=body.store_type,
+        store_type_provided="store_type" in body.model_fields_set,
     )
 
 
@@ -122,6 +168,23 @@ def upsert_line_config(
         channel_secret=body.channel_secret,
         access_token=body.access_token,
         default_target_lang=body.default_target_lang,
+        bot_info_client=bot_info_client,
+    )
+
+
+@router.post(
+    "/line-configs/{tenant_id}/verify",
+    response_model=AdminLineConfigResponse,
+    summary="測試租戶 LINE bot 連線（重新驗證憑證）",
+)
+def verify_line_config(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
+):
+    return line_config_svc.verify_line_config(
+        db,
+        tenant_id,
         bot_info_client=bot_info_client,
     )
 

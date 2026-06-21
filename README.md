@@ -33,7 +33,14 @@ python -m saas_mvp        # 或 saas-mvp
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/tenants/me` | 取得當前租戶資訊（含 plan） |
+| GET | `/tenants/me` | 取得當前租戶資訊（含 plan、`store_type`） |
+| PUT | `/tenants/me` | 自助更新租戶（目前僅 `store_type` 標籤；plan/is_active 歸 admin/billing） |
+| GET | `/tenants/me/dashboard` | 店家自助總覽：租戶資訊 + LINE bot 狀態（遮罩）+ 今日用量 |
+| POST | `/tenants/me/line-config/verify` | 測試自己 LINE bot 連線（重新驗證憑證） |
+
+> `store_type` 為「分類標籤 + 篩選」用途，**不影響任何 bot 行為**。採軟驗證：
+> 值會 strip + lowercase，空字串轉 NULL（未分類），未知值仍接受（自由標籤），
+> 僅上限 32 字元。建議值：`restaurant` / `retail` / `service` / `other`。
 
 ### 筆記 `/notes`（受 quota 管控）
 
@@ -215,6 +222,10 @@ curl http://localhost:8000/admin/line-configs/{tenant_id} \
 # DELETE：刪除設定
 curl -X DELETE http://localhost:8000/admin/line-configs/{tenant_id} \
   -H "Authorization: Bearer <admin_token>"
+
+# POST verify：測試 bot 連線（重新驗證憑證，回填 credential_status / line_bot_user_id）
+curl -X POST http://localhost:8000/admin/line-configs/{tenant_id}/verify \
+  -H "Authorization: Bearer <admin_token>"
 ```
 
 **回應範例**（secret/token 不含明文）：
@@ -224,10 +235,60 @@ curl -X DELETE http://localhost:8000/admin/line-configs/{tenant_id} \
   "has_channel_secret": true,
   "has_access_token": true,
   "default_target_lang": "zh-TW",
+  "credential_status": "valid",
   "created_at": "2026-06-14T10:00:00+00:00",
   "updated_at": "2026-06-14T10:00:00+00:00"
 }
 ```
+
+### 跨店家 LINE bot 總覽（Admin 端點）
+
+平台營運方可一站式總覽所有店家的 LINE bot 狀態與今日用量，並依店家類型 / 啟用狀態篩選：
+
+```bash
+# 列出所有店家 bot（遮罩憑證，永不回傳明文 secret/token）
+curl "http://localhost:8000/admin/line-bots" \
+  -H "Authorization: Bearer <admin_token>"
+
+# 依店家類型篩選 + 僅啟用中
+curl "http://localhost:8000/admin/line-bots?store_type=restaurant&is_active=true" \
+  -H "Authorization: Bearer <admin_token>"
+
+# 僅列出未分類（store_type 為 NULL）
+curl "http://localhost:8000/admin/line-bots?uncategorized=true" \
+  -H "Authorization: Bearer <admin_token>"
+```
+
+| 查詢參數 | 說明 |
+|------|------|
+| `skip` / `limit` | 分頁（預設 0 / 50，limit 上限 200） |
+| `store_type` | 依店家類型篩選 |
+| `is_active` | 依啟用狀態篩選 |
+| `uncategorized` | `true` 時僅列出未分類（`store_type` 為 NULL）的店家 |
+
+**單列回應**（遮罩，僅 `has_*` 布林 + 狀態，無明文憑證）：
+```json
+{
+  "tenant_id": 1,
+  "name": "acme",
+  "store_type": "restaurant",
+  "plan": "free",
+  "is_active": true,
+  "has_line_config": true,
+  "has_channel_secret": true,
+  "has_access_token": true,
+  "credential_status": "valid",
+  "line_bot_user_id": "Uxxxxxxxx...",
+  "default_target_lang": "zh-TW",
+  "today_count": 12,
+  "today_chars": 340
+}
+```
+
+> 尚未設定 LINE bot 的店家也會出現在列表中：`has_line_config=false`、`credential_status=null`。
+
+此外 `PATCH /admin/tenants/{tenant_id}` 可順帶設定店家類型（`store_type`）：
+送 `{"store_type": "retail"}` 設定、送 `{"store_type": null}` 清空、不送則不動。
 
 ### 租戶自助設定 LINE Channel（租戶端點）
 
@@ -251,6 +312,14 @@ curl http://localhost:8000/tenants/me/line-config \
 
 # DELETE：刪除自己的設定（成功回 204 No Content）
 curl -X DELETE http://localhost:8000/tenants/me/line-config \
+  -H "Authorization: Bearer <tenant_token>"
+
+# POST verify：測試自己 bot 連線（重新驗證憑證）
+curl -X POST http://localhost:8000/tenants/me/line-config/verify \
+  -H "Authorization: Bearer <tenant_token>"
+
+# GET dashboard：一站式總覽（租戶資訊 + bot 狀態 + 今日用量）
+curl http://localhost:8000/tenants/me/dashboard \
   -H "Authorization: Bearer <tenant_token>"
 ```
 

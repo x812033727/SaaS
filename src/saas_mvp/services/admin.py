@@ -13,11 +13,11 @@ import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from saas_mvp.models.api_key import ApiKey
 from saas_mvp.models.api_key_usage import ApiKeyUsage
-from saas_mvp.models.tenant import Tenant
+from saas_mvp.models.tenant import Tenant, normalize_store_type
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import PLAN_DAILY_LIMITS
 
@@ -39,6 +39,72 @@ def list_tenants(db: Session, skip: int = 0, limit: int = 50) -> list[dict]:
         }
         for t in rows
     ]
+
+
+def list_line_bots(
+    db: Session,
+    *,
+    skip: int = 0,
+    limit: int = 50,
+    store_type: str | None = None,
+    is_active: bool | None = None,
+    uncategorized: bool = False,
+) -> list[dict]:
+    """跨店家 LINE bot 總覽（遮罩憑證，永不輸出明文 secret/token）。
+
+    每列彙整：租戶資訊 + 是否已設定 LINE + 憑證狀態 + 今日用量。
+    篩選（store_type / is_active / uncategorized）在 offset/limit 之前套用。
+    LINE config 以 selectinload 一次撈齊、今日用量以單一 IN 查詢取得，
+    兩者皆避免 per-tenant N+1。
+    """
+    stmt = select(Tenant).options(selectinload(Tenant.line_channel_config))
+    if uncategorized:
+        stmt = stmt.where(Tenant.store_type.is_(None))
+    elif store_type is not None:
+        stmt = stmt.where(Tenant.store_type == store_type)
+    if is_active is not None:
+        stmt = stmt.where(Tenant.is_active == is_active)
+
+    tenants = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
+    if not tenants:
+        return []
+
+    # 今日用量：單一批次查（避免 N+1），用 dict 以 tenant_id 索引。
+    today = datetime.date.today()
+    tenant_ids = [t.id for t in tenants]
+    usage_rows = db.execute(
+        select(ApiUsage).where(
+            ApiUsage.tenant_id.in_(tenant_ids),
+            ApiUsage.period == today,
+        )
+    ).scalars().all()
+    usage_by_tenant = {u.tenant_id: u for u in usage_rows}
+
+    result: list[dict] = []
+    for t in tenants:
+        cfg = t.line_channel_config  # 一對一 relationship；未設定時為 None
+        usage = usage_by_tenant.get(t.id)
+        result.append(
+            {
+                "tenant_id": t.id,
+                "name": t.name,
+                "store_type": t.store_type,
+                "plan": t.plan,
+                "is_active": t.is_active,
+                "has_line_config": cfg is not None,
+                "has_channel_secret": bool(cfg.channel_secret_enc) if cfg else False,
+                "has_access_token": bool(cfg.access_token_enc) if cfg else False,
+                # 無 config 時回 None，以區分「尚未設定」與「設定但未驗證(unchecked)」。
+                "credential_status": (
+                    (cfg.credential_status or "unchecked") if cfg else None
+                ),
+                "line_bot_user_id": cfg.line_bot_user_id if cfg else None,
+                "default_target_lang": cfg.default_target_lang if cfg else None,
+                "today_count": usage.count if usage else 0,
+                "today_chars": (usage.char_count or 0) if usage else 0,
+            }
+        )
+    return result
 
 
 def get_tenant_usage(db: Session, tenant_id: int) -> dict:
@@ -96,11 +162,15 @@ def patch_tenant(
     is_active: bool | None,
     plan: str | None,
     actor_user_id: int,
+    store_type: str | None = None,
+    store_type_provided: bool = False,
 ) -> dict:
-    """停/啟用租戶 or 改方案（兩者可同時）。
+    """停/啟用租戶 or 改方案 or 設定店家類型（可同時）。
 
     改方案複用 billing service（含 FOR UPDATE + 歷程記錄）。
     停用/啟用直接寫 is_active，不產生 PlanChangeHistory。
+    store_type 用 ``store_type_provided`` 旗標區分「未提供＝不動」與
+    「提供 null＝清空為未分類」。
     """
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
@@ -122,16 +192,24 @@ def patch_tenant(
         # billing 函式已 commit；refresh tenant 讓後續讀到最新 plan
         db.refresh(tenant)
 
-    # 停用/啟用
+    # 停用/啟用 + 店家類型（同一交易寫入）
+    dirty = False
     if is_active is not None:
         tenant.is_active = is_active
+        dirty = True
+    if store_type_provided:
+        tenant.store_type = normalize_store_type(store_type)
+        dirty = True
+    if dirty:
         db.commit()
+        db.refresh(tenant)
 
     return {
         "id": tenant.id,
         "name": tenant.name,
         "plan": tenant.plan,
         "is_active": tenant.is_active,
+        "store_type": tenant.store_type,
     }
 
 

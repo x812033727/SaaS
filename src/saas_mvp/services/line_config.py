@@ -257,6 +257,43 @@ def upsert_line_config(
     return _to_response(cfg)
 
 
+def verify_line_config(
+    db: Session,
+    tenant_id: int,
+    *,
+    bot_info_client: LineBotInfoClient,
+) -> dict:
+    """重新驗證租戶 LINE 憑證並回填狀態；回傳遮罩版 response。
+
+    複用 ``_verify_and_mark_bot_info``：呼叫 LINE ``GET /v2/bot/info`` 取
+    bot userId，更新 ``credential_status`` / ``line_bot_user_id``。任何
+    credential / network / conflict 錯誤皆由該函式吸收並寫入 credential_status，
+    不向外拋 5xx。
+
+    Raises
+    ------
+    404 tenant or line config not found
+    """
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+
+    cfg = tenant.line_channel_config
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="line channel config not found for this tenant",
+        )
+
+    _verify_and_mark_bot_info(
+        db,
+        cfg,
+        tenant_id=tenant_id,
+        bot_info_client=bot_info_client,
+    )
+    return _to_response(cfg)
+
+
 def delete_line_config(db: Session, tenant_id: int) -> dict:
     """刪除租戶 LINE 設定；找不到回 404。"""
     tenant = db.get(Tenant, tenant_id)
