@@ -191,6 +191,23 @@ def cancel_reservation(
     return reservation
 
 
+def mark_attendance(
+    db: Session, *, tenant_id: int, reservation_id: int, attended: bool
+) -> Reservation:
+    """店家標記預約到場與否（供報表算爽約率）；查無/跨租戶拋 ReservationNotFoundError。"""
+    reservation = (
+        tenant_query(db, Reservation, tenant_id)
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    reservation.attended = attended
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
 def get_reservation(
     db: Session, *, tenant_id: int, reservation_id: int
 ) -> Reservation:

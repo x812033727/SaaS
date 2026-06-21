@@ -76,6 +76,7 @@ def init_db() -> None:
     _migrate_add_line_bot_mode()
     _migrate_add_rich_menu_fields()
     _migrate_add_customer_membership()
+    _migrate_add_reservation_attended()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -279,6 +280,30 @@ def _migrate_add_customer_membership() -> None:
         _log.warning(
             "schema migration for %s membership fields skipped due to error: %s",
             table, type(exc).__name__,
+        )
+
+
+def _migrate_add_reservation_attended() -> None:
+    """為既有 booking_reservations 表補上 attended 欄位（nullable，向後相容）。
+
+    NULL = 未標記到場；只 ADD COLUMN、不回填。失敗僅記 warning。
+    """
+    table = "booking_reservations"
+    column = "attended"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} BOOLEAN"))
+        _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
         )
 
 

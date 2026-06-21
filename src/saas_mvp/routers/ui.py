@@ -38,6 +38,7 @@ from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import admin as admin_svc
+from saas_mvp.services import analytics as analytics_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import customers as customers_svc
@@ -568,6 +569,47 @@ def booking_cancel_reservation(
         pass
     return templates.TemplateResponse(
         "_booking_reservations.html", _booking_ctx(request, actor, db)
+    )
+
+
+@router.post("/booking/reservations/{reservation_id}/attendance", response_class=HTMLResponse)
+def booking_mark_attendance(
+    request: Request,
+    reservation_id: int,
+    attended: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        booking_svc.mark_attendance(
+            db, tenant_id=tid, reservation_id=reservation_id,
+            attended=(attended == "true"),
+        )
+    except booking_svc.ReservationNotFoundError:
+        pass
+    return templates.TemplateResponse(
+        "_booking_reservations.html", _booking_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：報表 ────────────────────────────────────────────────────────────
+
+@router.get("/reports", response_class=HTMLResponse)
+def reports_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    return templates.TemplateResponse(
+        "reports.html",
+        _ctx(
+            request, actor,
+            summary=analytics_svc.booking_summary(db, tenant_id=tid),
+            utilization=analytics_svc.slot_utilization(db, tenant_id=tid),
+            top=analytics_svc.top_customers(db, tenant_id=tid, limit=10),
+        ),
     )
 
 

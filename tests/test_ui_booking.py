@@ -178,3 +178,17 @@ class TestCouponsUI:
         })
         assert r.status_code == 200
         assert "error" in r.text or "0-100" in r.text
+
+
+class TestReportsUI:
+    def test_reports_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/reports")
+        assert r.status_code == 200
+        assert "報表分析" in r.text and "取消率" in r.text
+        # CSV 下載連結與爽約率需標記說明
+        assert "export.csv" in r.text and "需標記到場" in r.text
+
+    def test_reports_unauth_redirect(self, client):
+        r = client.get("/ui/reports", follow_redirects=False)
+        assert r.status_code == 303

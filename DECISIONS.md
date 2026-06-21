@@ -762,3 +762,13 @@
 - 時間：2026-06-21
 - 理由：「建單 ⇔ 集點」需原子一致（book_slot 內 earn_points，不另 commit）；帳本保稽核軌跡；tier 純函式易測。
 - 實作：services/membership（earn/redeem/recompute_tier，TIER_THRESHOLDS 常數）；Customer 加 points_balance/tier（migration _migrate_add_customer_membership，既有列回填 0/regular）。設定 SAAS_POINTS_PER_BOOKING。
+
+## 【P5 報表】聚合於單一查詢取出後 Python 計算（時段使用率按小時 bucket），不用 DB 方言函式（strftime）。
+- 時間：2026-06-21
+- 理由：單租戶資料量適中、非平台級全表，Python bucket 可攜（SQLite/PostgreSQL 一致）、易測；避免 strftime 等方言相依。
+- 實作：services/analytics（booking_summary/slot_utilization/top_customers/reminder_effectiveness/export_rows）；CSV 用 stdlib csv + Response(text/csv)。
+
+## 【P5 爽約率】到場與否需店家標記（Reservation.attended，nullable）；未標記不宣稱精確 no-show。
+- 時間：2026-06-21
+- 理由：系統無法自動得知顧客是否到場；誠實呈現——未標記時 no_show_rate=None，以取消率為主指標。
+- 實作：booking.mark_attendance + POST /booking/reservations/{id}/attendance + UI 標記按鈕；migration _migrate_add_reservation_attended（既有列 NULL=未標記）。

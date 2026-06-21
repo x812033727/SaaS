@@ -566,3 +566,20 @@ python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
 | 環境變數 | 說明 | 預設 |
 |------|------|------|
 | `SAAS_POINTS_PER_BOOKING` | 每筆預約集點數（0=停用集點） | `10` |
+
+### 報表分析（P5）
+
+`/booking/analytics`（店家端）：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/booking/analytics/summary?date_from&date_to` | 總單/已確認/取消率/總人數/不重複顧客/爽約率 |
+| GET | `/booking/analytics/utilization` | 依「小時」聚合時段使用率（已訂/容量/使用率） |
+| GET | `/booking/analytics/customers?limit` | 常客排行（依訂位次數） |
+| GET | `/booking/analytics/export.csv` | 預約明細 CSV 匯出（stdlib `csv`） |
+
+- 聚合於單一查詢取出後 Python 計算（避免 DB 方言差異、無 N+1），租戶隔離。
+- **爽約率需標記到場**：`POST /booking/reservations/{id}/attendance`（`{attended: bool}`）標記到場/未到，
+  `Reservation.attended`（nullable）；未標記則 `no_show_rate` 回 `null`，報表以取消率為主並明示限制。
+- UI：`/ui/reports`（摘要卡 + 時段使用率表 + 常客 Top10 + CSV 下載）；`/ui/booking` 預約列加
+  「到場/未到」標記按鈕。導覽列加「報表」。

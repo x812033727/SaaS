@@ -2,7 +2,7 @@
 {% if reservations %}
 <table>
   <thead>
-    <tr><th>#</th><th>時段</th><th>人數</th><th>來源</th><th>狀態</th><th></th></tr>
+    <tr><th>#</th><th>時段</th><th>人數</th><th>來源</th><th>狀態</th><th>到場</th><th></th></tr>
   </thead>
   <tbody>
     {% for r in reservations %}
@@ -13,10 +13,21 @@
       <td>{% if r.line_user_id %}LINE{% else %}<span class="muted">店家</span>{% endif %}</td>
       <td><span class="badge {{ 'on' if r.status == 'confirmed' else 'off' }}">{{ '已確認' if r.status == 'confirmed' else '已取消' }}</span></td>
       <td>
+        {% if r.attended is none %}<span class="muted">未標記</span>
+        {% elif r.attended %}<span class="badge on">到場</span>
+        {% else %}<span class="badge off">未到</span>{% endif %}
+      </td>
+      <td>
         {% if r.status == 'confirmed' %}
         <button hx-post="/ui/booking/reservations/{{ r.id }}/cancel"
                 hx-target="#reservations-card" hx-swap="innerHTML"
                 hx-confirm="確定取消此預約？">取消</button>
+        <button hx-post="/ui/booking/reservations/{{ r.id }}/attendance"
+                hx-vals='{"attended": "true"}'
+                hx-target="#reservations-card" hx-swap="innerHTML">到場</button>
+        <button hx-post="/ui/booking/reservations/{{ r.id }}/attendance"
+                hx-vals='{"attended": "false"}'
+                hx-target="#reservations-card" hx-swap="innerHTML">未到</button>
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
     </tr>

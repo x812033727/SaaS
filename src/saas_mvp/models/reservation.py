@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -67,6 +68,8 @@ class Reservation(Base):
         server_default=RESERVATION_CONFIRMED,
     )
     note = Column(Text, nullable=True)
+    # 到場與否（P5 報表算爽約率用）；NULL=未標記，既有 DB 由 _migrate_add_reservation_attended() 補欄。
+    attended = Column(Boolean, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),
