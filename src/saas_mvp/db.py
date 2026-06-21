@@ -66,6 +66,7 @@ def init_db() -> None:
     _migrate_add_line_bot_user_id()
     _migrate_add_line_credential_status_fields()
     _migrate_backfill_char_count()
+    _migrate_add_tenant_store_type()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -145,6 +146,36 @@ def _migrate_add_line_credential_status_fields() -> None:
             "schema migration for %s credential fields skipped due to error: %s",
             table,
             type(exc).__name__,
+        )
+
+
+def _migrate_add_tenant_store_type() -> None:
+    """為既有 tenants 表補上 store_type 欄位（向後相容）。
+
+    - 新環境：create_all 已建好欄位 → inspect 偵測到存在 → 直接略過。
+    - 既有 DB（無 Alembic）：欄位不存在 → ALTER TABLE 補欄。
+    - store_type 為分類標籤，**不建 unique index**；新欄位初始全為 NULL（未分類）。
+    - 整段以 try/except 包住，任何失敗僅記 warning，不阻擋服務啟動。
+    """
+    table = "tenants"
+    column = "store_type"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return  # 表尚未建立（理論上 create_all 已建），無需遷移
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return  # 欄位已存在（新環境或先前已遷移），冪等略過
+
+        with engine.begin() as conn:
+            conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(32)")
+            )
+        _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
         )
 
 

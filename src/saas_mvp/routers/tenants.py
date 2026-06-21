@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
-from saas_mvp.models.tenant import Tenant
+from saas_mvp.models.tenant import Tenant, normalize_store_type
 from saas_mvp.models.user import User
+from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import line_config as line_config_svc
 
@@ -20,8 +21,15 @@ class TenantInfo(BaseModel):
     id: int
     name: str
     plan: str
+    store_type: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class TenantUpdateBody(BaseModel):
+    """租戶自助更新；目前僅開放 store_type（標籤）。plan/is_active 仍歸 admin/billing。"""
+
+    store_type: str | None = Field(default=None, max_length=32)
 
 
 class TenantLineConfigResponse(BaseModel):
@@ -39,6 +47,15 @@ class TenantLineConfigResponse(BaseModel):
     updated_at: str | None = None
     # 相對路徑；租戶需自行拼接 host 後填入 LINE Console
     webhook_url: str
+
+
+class MyDashboardResponse(BaseModel):
+    """店家自助總覽：租戶資訊 + bot 狀態 + 今日用量（一站式）。"""
+
+    tenant: TenantInfo
+    has_line_config: bool
+    line_config: TenantLineConfigResponse | None = None
+    usage: dict
 
 
 class TenantLineConfigUpsertBody(BaseModel):
@@ -62,6 +79,65 @@ def get_my_tenant(
             detail="Tenant not found",
         )
     return TenantInfo.model_validate(tenant)
+
+
+@router.put("/me", response_model=TenantInfo, dependencies=[Depends(require_rate_limit)])
+def update_my_tenant(
+    body: TenantUpdateBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TenantInfo:
+    """租戶自助更新（目前僅 store_type 標籤）；plan/is_active 仍歸 admin/billing。
+
+    用 model_fields_set 區分「未提供＝不動」與「提供 null＝清空」，與
+    admin PATCH 行為一致：空 body ``{}`` 不會誤清既有 store_type。
+    """
+    tenant = db.get(Tenant, current_user.tenant_id)
+    if tenant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+    if "store_type" in body.model_fields_set:
+        tenant.store_type = normalize_store_type(body.store_type)
+        db.commit()
+        db.refresh(tenant)
+    return TenantInfo.model_validate(tenant)
+
+
+@router.get("/me/dashboard", response_model=MyDashboardResponse)
+def get_my_dashboard(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MyDashboardResponse:
+    """店家自助總覽：租戶資訊 + bot 狀態 + 今日用量。
+
+    尚未設定 LINE bot 的店家也能正常檢視（line_config 回 null，不 404）。
+    tenant_id 唯一來源為 current_user.tenant_id，結構性保證租戶隔離。
+    """
+    tid = current_user.tenant_id
+    tenant = db.get(Tenant, tid)
+    if tenant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+
+    # bot 狀態：吞掉「未設定」的 404，讓尚未設定 bot 的店家也能看 dashboard。
+    line_config: TenantLineConfigResponse | None = None
+    try:
+        svc_dict = line_config_svc.get_line_config(db, tid)
+        line_config = _line_config_response(svc_dict, tid)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+
+    return MyDashboardResponse(
+        tenant=TenantInfo.model_validate(tenant),
+        has_line_config=line_config is not None,
+        line_config=line_config,
+        usage=get_quota_status(db, tid, tenant.plan),
+    )
 
 
 # ── 租戶自助 LINE Channel Config 端點 ─────────────────────────────────────────
@@ -112,6 +188,26 @@ def upsert_my_line_config(
         channel_secret=body.channel_secret,
         access_token=body.access_token,
         default_target_lang=body.default_target_lang,
+        bot_info_client=bot_info_client,
+    )
+    return _line_config_response(svc_dict, tid)
+
+
+@router.post(
+    "/me/line-config/verify",
+    response_model=TenantLineConfigResponse,
+    dependencies=[Depends(require_rate_limit)],
+)
+def verify_my_line_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
+) -> TenantLineConfigResponse:
+    """測試當前租戶 LINE bot 連線（重新驗證憑證）；未設定回 404。"""
+    tid = current_user.tenant_id
+    svc_dict = line_config_svc.verify_line_config(
+        db,
+        tid,
         bot_info_client=bot_info_client,
     )
     return _line_config_response(svc_dict, tid)
