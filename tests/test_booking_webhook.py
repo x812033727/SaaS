@@ -225,6 +225,54 @@ class TestBookingMode:
             db.close()
 
 
+class TestCouponsAndPoints:
+    def _add_coupon(self, tid, code="SAVE10", max_redemptions=None):
+        from saas_mvp.models.coupon import Coupon
+        db = _Session()
+        try:
+            c = Coupon(
+                tenant_id=tid, code=code, name="折扣", discount_type="percent",
+                discount_value=10, max_redemptions=max_redemptions, is_active=True,
+            )
+            db.add(c)
+            db.commit()
+        finally:
+            db.close()
+
+    def test_coupons_list_offers_redeem_buttons(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        self._add_coupon(tid, code="SUMMER")
+        _post(client, tid, _text_event("優惠券"))
+        last = line_client.sent[-1]
+        assert "SUMMER" in last.text
+        assert last.quick_reply is not None
+        assert any("action=redeem&code=SUMMER" in d for _l, d in last.quick_reply)
+
+    def test_redeem_success_then_already(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        self._add_coupon(tid, code="ONCE")
+        _post(client, tid, _text_event("兌換 ONCE", eid="r1"))
+        assert "兌換成功" in (line_client.last_text or "")
+        _post(client, tid, _text_event("兌換 ONCE", eid="r2"))
+        assert "已兌換過" in (line_client.last_text or "")
+
+    def test_redeem_unknown_code(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        _post(client, tid, _text_event("兌換 NOPE"))
+        assert "找不到券碼" in (line_client.last_text or "")
+
+    def test_points_after_booking(self, app_client):
+        client, line_client = app_client
+        tid, sid = _seed("booking", with_slot=True)
+        _post(client, tid, _text_event(f"預約 {sid} 1", eid="b1"))
+        _post(client, tid, _text_event("點數", eid="p1"))
+        assert "點數" in (line_client.last_text or "")
+        assert "10" in (line_client.last_text or "")
+
+
 class TestTranslationRegression:
     def test_translation_mode_still_translates(self, app_client):
         """bot_mode 預設 translation → 仍走翻譯，不建立預約（回歸保護）。"""

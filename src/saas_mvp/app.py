@@ -20,6 +20,7 @@ from saas_mvp.routers import line_webhook as line_webhook_router
 from saas_mvp.routers import slots as slots_router
 from saas_mvp.routers import reservations as reservations_router
 from saas_mvp.routers import customers as customers_router
+from saas_mvp.routers import coupons as coupons_router
 
 _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(slots_router.router)
     app.include_router(reservations_router.router)
     app.include_router(customers_router.router)
+    app.include_router(coupons_router.router)
 
     # ── 伺服器渲染管理 UI（同源）：靜態檔 + UI 路由 + UI 例外 → HTML 行為 ──
     app.mount("/static", StaticFiles(directory=str(_PKG_DIR / "static")), name="static")

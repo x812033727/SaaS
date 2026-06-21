@@ -113,6 +113,7 @@ from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import slots as slots_svc
 
 _log = logging.getLogger(__name__)
@@ -782,8 +783,65 @@ def _dispatch_booking(
             return "無法取消其他人的預約。", None
         return f"預約 #{reservation_id} 已取消。", None
 
+    if action == "coupons":
+        return _list_coupons_reply(db, tenant_id)
+
+    if action == "redeem":
+        return _redeem_coupon_reply(db, tenant_id, params.get("code"), line_user_id), None
+
+    if action == "points":
+        return _points_reply(db, tenant_id, line_user_id), None
+
     # help 或無法辨識
     return _BOOKING_HELP, None
+
+
+def _list_coupons_reply(db: Session, tenant_id: int) -> tuple[str, list | None]:
+    """列出有效券，附 quick-reply 兌換按鈕。"""
+    from saas_mvp.models.coupon import Coupon
+
+    coupons = [c for c in coupons_svc.list_coupons(db, tenant_id=tenant_id) if c.is_active][:12]
+    if not coupons:
+        return "目前沒有可用的優惠券。", None
+    buttons = [(f"兌換 {c.name}"[:20], f"action=redeem&code={c.code}") for c in coupons]
+    return "可用優惠券：\n" + "\n".join(f"・{c.name}（{c.code}）" for c in coupons), buttons
+
+
+def _redeem_coupon_reply(
+    db: Session, tenant_id: int, code: str | None, line_user_id: str
+) -> str:
+    if not code:
+        return "請輸入券碼，例：兌換 ABC123"
+    if not line_user_id:
+        return "無法識別使用者，請從 LINE 操作。"
+    try:
+        coupons_svc.redeem_coupon(
+            db, tenant_id=tenant_id, code=code, line_user_id=line_user_id
+        )
+    except coupons_svc.CouponNotFound:
+        return f"找不到券碼 {code}。"
+    except coupons_svc.CouponInactive:
+        return f"券碼 {code} 已停用。"
+    except coupons_svc.CouponExpired:
+        return f"券碼 {code} 不在有效期間。"
+    except coupons_svc.CouponExhausted:
+        return f"券碼 {code} 已被領完。"
+    except coupons_svc.AlreadyRedeemed:
+        return f"你已兌換過券碼 {code}。"
+    return f"兌換成功！券碼 {code} 已套用。"
+
+
+def _points_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
+    from saas_mvp.models.customer import Customer
+
+    customer = (
+        db.query(Customer)
+        .filter(Customer.tenant_id == tenant_id, Customer.line_user_id == line_user_id)
+        .first()
+    )
+    if customer is None:
+        return "你目前沒有會員資料，完成預約後即可累積點數。"
+    return f"你的點數：{customer.points_balance or 0}\n會員等級：{customer.tier or 'regular'}"
 
 
 def _handle_booking_event(

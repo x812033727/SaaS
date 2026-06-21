@@ -39,6 +39,7 @@ from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -619,6 +620,71 @@ def rich_menu_apply(
         error = str(exc.detail)
     return templates.TemplateResponse(
         "_rich_menu_status.html", _rich_menu_ctx(request, actor, db, error=error)
+    )
+
+
+# ── 店家自助：優惠券 ──────────────────────────────────────────────────────────
+
+def _coupons_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        coupons=coupons_svc.list_coupons(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/coupons", response_class=HTMLResponse)
+def coupons_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse("coupons.html", _coupons_ctx(request, actor, db))
+
+
+@router.post("/coupons", response_class=HTMLResponse)
+def coupons_create(
+    request: Request,
+    code: str = Form(...),
+    name: str = Form(...),
+    discount_type: str = Form(...),
+    discount_value: int = Form(...),
+    max_redemptions: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        coupons_svc.create_coupon(
+            db, tenant_id=tid, code=code, name=name,
+            discount_type=discount_type, discount_value=discount_value,
+            max_redemptions=int(max_redemptions) if max_redemptions.strip() else None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "兌換上限需為整數"
+    return templates.TemplateResponse(
+        "_coupons_list.html", _coupons_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/coupons/{coupon_id}/deactivate", response_class=HTMLResponse)
+def coupons_deactivate(
+    request: Request,
+    coupon_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        coupons_svc.deactivate_coupon(db, tenant_id=tid, coupon_id=coupon_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_coupons_list.html", _coupons_ctx(request, actor, db)
     )
 
 

@@ -28,6 +28,14 @@ _TEXT_ALIASES: dict[str, str] = {
     "取消": "cancel",
     "/help": "help",
     "說明": "help",
+    # P3 優惠券 / 會員
+    "/coupons": "coupons",
+    "優惠券": "coupons",
+    "/redeem": "redeem",
+    "兌換": "redeem",
+    "/points": "points",
+    "點數": "points",
+    "我的點數": "points",
 }
 
 
@@ -84,7 +92,12 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
             if rid is not None:
                 params["reservation_id"] = rid
         return action, params
-    # slots / my / help 無參數
+    if action == "redeem":
+        params = {}
+        if args:
+            params["code"] = args[0]  # 券碼為字串
+        return action, params
+    # slots / my / help / coupons / points 無參數
     return action, {}
 
 
@@ -109,7 +122,10 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
     if not actions:
         return None, {}
     action = actions[0]
-    if action not in {"book", "pick_slot", "slots", "my", "cancel", "help"}:
+    if action not in {
+        "book", "pick_slot", "slots", "my", "cancel", "help",
+        "coupons", "redeem", "points",
+    }:
         return None, {}
 
     params: dict = {}
@@ -126,6 +142,9 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
             slot_id = _to_int(qs["slot_id"][0])
             if slot_id is not None:
                 params["slot_id"] = slot_id
+    elif action == "redeem":
+        if "code" in qs:
+            params["code"] = qs["code"][0]
     elif action == "cancel":
         if "reservation_id" in qs:
             rid = _to_int(qs["reservation_id"][0])

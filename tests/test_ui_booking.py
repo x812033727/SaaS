@@ -151,3 +151,30 @@ class TestRichMenuUI:
         r = client.post("/ui/rich-menu/apply", data={"template": "booking3", "theme": "neon"})
         assert r.status_code == 200
         assert "error" in r.text or "Unknown theme" in r.text
+
+
+class TestCouponsUI:
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/coupons")
+        assert r.status_code == 200
+        assert "優惠券" in r.text
+
+    def test_create_and_deactivate(self, client):
+        _login(client)
+        import uuid as _uuid
+        code = f"UI{_uuid.uuid4().hex[:6]}"
+        r = client.post("/ui/coupons", data={
+            "code": code, "name": "UI券", "discount_type": "percent",
+            "discount_value": "20", "max_redemptions": "50",
+        })
+        assert r.status_code == 200
+        assert code in r.text and "UI券" in r.text
+
+    def test_create_invalid_percent_shows_error(self, client):
+        _login(client)
+        r = client.post("/ui/coupons", data={
+            "code": "BADUI", "name": "x", "discount_type": "percent", "discount_value": "200",
+        })
+        assert r.status_code == 200
+        assert "error" in r.text or "0-100" in r.text

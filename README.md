@@ -537,3 +537,32 @@ python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
 
 > 預約管理與圖文選單皆已整合進伺服器渲染管理 UI（見上方「管理 UI」），
 > 導覽列新增「預約管理」「圖文選單」。
+
+### 優惠券 + 會員集點/等級（P3）
+
+**優惠券** `/booking/coupons`（店家端 CRUD）：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/booking/coupons/` | 建券（`code`,`name`,`discount_type`=percent/amount,`discount_value`,`max_redemptions?`,有效期?） |
+| GET | `/booking/coupons/` `· /{id}` | 列出 / 單一 |
+| PUT | `/booking/coupons/{id}` | 改名/上限/有效期/停用 |
+| DELETE | `/booking/coupons/{id}` | 停用（軟刪） |
+| GET | `/booking/coupons/{id}/redemptions` | 核銷紀錄 |
+
+- **核銷原子性**：`SELECT … FOR UPDATE` 鎖券列、鎖內重驗（啟用/有效期/`redeemed_count < max_redemptions`）後遞增。
+- **一人一券**：`UNIQUE(coupon_id, line_user_id)` 於 DB 層擋重複核銷。
+- LINE 指令：`優惠券`（列券 + quick-reply 兌換鈕）、`兌換 <券碼>`（postback `action=redeem&code=X`）。
+- UI：`/ui/coupons` 建立/停用。
+
+**會員集點/等級**：
+
+- 每完成一筆預約自動集點（`SAAS_POINTS_PER_BOOKING`，預設 10），集點與建單**同一交易**。
+- 點數彙總於 `Customer.points_balance`，每筆異動寫 `PointTransaction`（append-only 帳本）。
+- 等級由點數即時重算：`regular`(0) / `silver`(100) / `gold`(500)。
+- REST：`GET /booking/customers/{id}/points`（帳本）、`POST /booking/customers/{id}/points`（店家手動加/扣點，扣點不足回 409）；`CustomerResponse` 含 `points_balance`/`tier`。
+- LINE 指令：`點數` / `我的點數`（顯示點數與等級）。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_POINTS_PER_BOOKING` | 每筆預約集點數（0=停用集點） | `10` |

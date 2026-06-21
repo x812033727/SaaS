@@ -752,3 +752,13 @@
 ## 【預約 UI】預約管理與圖文選單接進既有伺服器渲染 /ui（cookie 認證、HTMX partial），bot_mode 以 line_config.set_bot_mode() 輕量切換（不需重輸憑證）。
 - 時間：2026-06-21
 - 理由：合併進來的 /ui 已涵蓋 LINE 設定/admin，但未涵蓋預約；補齊使 P1 API 真正可用。沿用 require_ui_user/require_ui_admin 與 _ctx/HTMX 慣例。
+
+## 【P3 優惠券】核銷採 SELECT … FOR UPDATE 鎖券列 + 鎖內重驗額度，一人一券靠 UNIQUE(coupon_id, line_user_id)。
+- 時間：2026-06-21
+- 理由：與 quota/booking 同一防超發鎖法；一人一券交給 DB 唯一約束（捕 IntegrityError 轉 AlreadyRedeemed），免應用層 race。
+- 實作：services/coupons.redeem_coupon；REST 與 webhook 共用同一服務（REST 轉 HTTP、webhook 轉友善訊息）。
+
+## 【P3 會員】集點與建單同一交易；點數彙總於 Customer + append-only PointTransaction 帳本；等級由點數純函式重算。
+- 時間：2026-06-21
+- 理由：「建單 ⇔ 集點」需原子一致（book_slot 內 earn_points，不另 commit）；帳本保稽核軌跡；tier 純函式易測。
+- 實作：services/membership（earn/redeem/recompute_tier，TIER_THRESHOLDS 常數）；Customer 加 points_balance/tier（migration _migrate_add_customer_membership，既有列回填 0/regular）。設定 SAAS_POINTS_PER_BOOKING。

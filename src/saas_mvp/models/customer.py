@@ -48,6 +48,13 @@ class Customer(Base):
     )
     last_booked_at = Column(DateTime(timezone=True), nullable=True)
     note = Column(Text, nullable=True)
+    # 會員集點/等級（P3）；既有 DB 由 _migrate_add_customer_membership() 補欄。
+    points_balance = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    tier = Column(
+        String(16), nullable=False, default="regular", server_default="regular"
+    )
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

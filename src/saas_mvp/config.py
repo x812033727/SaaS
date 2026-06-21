@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     reminder_day_of_lead_minutes: int = 180
     reminder_max_per_run: int = 500
 
+    # 會員集點（P3）：每完成一筆預約給的點數（0 = 停用集點）
+    points_per_booking: int = 10
+
+    # 商品銷售（P4）
+    currency: str = "TWD"
+    payment_provider: str = "stub"
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。

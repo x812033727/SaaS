@@ -20,7 +20,7 @@
   {% if customers %}
   <table>
     <thead>
-      <tr><th>#</th><th>名稱</th><th>電話</th><th>訂位次數</th><th>最後訂位</th></tr>
+      <tr><th>#</th><th>名稱</th><th>電話</th><th>訂位次數</th><th>點數</th><th>等級</th><th>最後訂位</th></tr>
     </thead>
     <tbody>
       {% for c in customers %}
@@ -29,6 +29,8 @@
         <td>{{ c.display_name or '—' }}</td>
         <td>{{ c.phone or '—' }}</td>
         <td>{{ c.booking_count }}</td>
+        <td>{{ c.points_balance }}</td>
+        <td><span class="badge">{{ c.tier }}</span></td>
         <td>{% if c.last_booked_at %}{{ c.last_booked_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
