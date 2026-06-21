@@ -733,3 +733,22 @@
 - 理由：沿用最小依賴哲學與既有 `ops/backfill_line_bot_user_id.py` 同形；out-of-process、單實例天然去重，避免 app 內 asyncio loop 在多 worker 下重送。
 - 冪等三層：`UNIQUE(reservation_id, kind)` + 逐筆 `SELECT … FOR UPDATE` 重驗 pending + 推播成功後才標 sent。
 - 新增能力：LINE push（`LinePushClient` ABC + Http/Fake 實作），reply 無法用於非即時提醒（reply_token 5 分鐘時效）。
+
+## 【Rich Menu P2】圖文選單背景以純 stdlib（zlib）產生純色 PNG，不引入 PIL/影像函式庫。
+- 時間：2026-06-21
+- 理由：沿用最小依賴哲學；主題配色只需純色背景，zlib + struct 即可產生合法 PNG（color type 2 RGB），避免為單一功能加重依賴。
+- 實作：services/rich_menu.solid_png()；row = filter byte + width*RGB，row*height 後 zlib 壓縮（純色壓縮率極高）。店家自訂背景圖未來可改傳上傳 bytes 取代。
+
+## 【Rich Menu P2】Rich Menu 按鈕 action 直接對應既有預約 dispatcher（book/my/slots/help），選單與引導式對話共用同一條 postback 路徑。
+- 時間：2026-06-21
+- 理由：避免為選單另立一套處理邏輯；按鈕 postback data 與引導式對話完全一致，點按鈕等同輸入指令。
+- 實作：LineRichMenuClient（ABC/Http/Fake）四步 create→upload_image→set_default→delete；richMenuId/template/theme 存 LineChannelConfig（migration _migrate_add_rich_menu_fields）。LINE API 失敗 → 502。
+
+## 【引導式預約 P1 fast-follow】多步預約對話採「postback 攜帶上下文」無狀態設計，不建對話狀態表。
+- 時間：2026-06-21
+- 理由：選時段→選人數的上下文可由 postback data（slot_id → slot_id+party）逐步攜帶，免伺服器 session 表，較原規劃的最小狀態表更簡單、無清理負擔、天然冪等。
+- 實作：reply client 新增 quick_reply（base/Http/Fake）；webhook pick_slot → 人數按鈕 → book。保留一次性文字指令。
+
+## 【預約 UI】預約管理與圖文選單接進既有伺服器渲染 /ui（cookie 認證、HTMX partial），bot_mode 以 line_config.set_bot_mode() 輕量切換（不需重輸憑證）。
+- 時間：2026-06-21
+- 理由：合併進來的 /ui 已涵蓋 LINE 設定/admin，但未涵蓋預約；補齊使 P1 API 真正可用。沿用 require_ui_user/require_ui_admin 與 _ctx/HTMX 慣例。

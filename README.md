@@ -491,12 +491,15 @@ webhook 接受文字指令與 postback（Rich Menu／quick-reply 按鈕）：
 
 | 輸入 | 行為 |
 |------|------|
-| `時段` / `/slots` | 列出可預約時段（含編號與剩餘名額） |
-| `預約 <時段編號> <人數>` / `/book 12 2` | 建單；額滿婉拒 |
-| postback `action=book&slot_id=12&party=2` | 同上（按鈕路徑） |
+| `預約` / `時段` | **引導式**：回時段 quick-reply 按鈕（點選即進入下一步） |
+| 點時段按鈕（postback `action=pick_slot&slot_id=N`） | 回人數 quick-reply 按鈕 |
+| 點人數按鈕（postback `action=book&slot_id=N&party=K`） | 建單；額滿婉拒 |
+| `預約 <時段編號> <人數>` / `/book 12 2` | 一次性文字建單（不需逐步點選） |
 | `我的預約` / `/my` | 列出自己的預約 |
 | `取消 <預約編號>` / `/cancel 7` | 取消（驗證 line_user_id） |
 
+> **引導式對話**全靠 postback 攜帶上下文（slot_id → slot_id+party），無需伺服器
+> 對話狀態表。顧客不必記時段編號，逐步點按即可完成。
 > 預約互動與回覆**不計入翻譯 quota**（quota 為翻譯字數/次數計量表）。
 
 ### 自動提醒（cron + ops 腳本）
@@ -520,3 +523,17 @@ python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
 | `SAAS_REMINDER_ENABLED` | 建單是否入列提醒 | `true` |
 | `SAAS_REMINDER_DAY_OF_LEAD_MINUTES` | 當天提醒提前分鐘數 | `180` |
 | `SAAS_REMINDER_MAX_PER_RUN` | ops 單次最多派送筆數 | `500` |
+
+### 圖文選單（Rich Menu）
+
+店家可在 `/ui/rich-menu` 一鍵套用預設圖文選單模板 + 主題配色，選單按鈕直接對應預約指令
+（預約／我的預約／時段／說明），顧客點按即觸發對話流程。
+
+- **模板**：`booking3`（三宮格）、`booking4`（四宮格含說明）。
+- **主題配色**：`line_green`、`ocean_blue`、`royal_purple`、`sunset_orange`、`dark`。
+- **背景圖**：以**純 stdlib（zlib）產生純色 PNG**，零影像函式庫依賴。
+- **套用流程**：（刪舊）→ 建立選單結構 → 上傳背景圖 → 設為預設；`richMenuId` 存回
+  `LineChannelConfig`。LINE API 經 `LineRichMenuClient`（ABC / Http / Fake）。
+
+> 預約管理與圖文選單皆已整合進伺服器渲染管理 UI（見上方「管理 UI」），
+> 導覽列新增「預約管理」「圖文選單」。

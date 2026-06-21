@@ -24,7 +24,12 @@ import saas_mvp.models.line_channel_config as _lcm  # noqa: F401,E402
 
 from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
-from saas_mvp.line_client import StubLineBotInfoClient, get_bot_info_client  # noqa: E402
+from saas_mvp.line_client import (  # noqa: E402
+    FakeLineRichMenuClient,
+    StubLineBotInfoClient,
+    get_bot_info_client,
+    get_rich_menu_client,
+)
 
 _engine = create_engine(
     "sqlite:///:memory:",
@@ -48,6 +53,7 @@ _app.dependency_overrides[get_db] = _override_get_db
 _app.dependency_overrides[get_bot_info_client] = (
     lambda: StubLineBotInfoClient("U" + uuid.uuid4().hex)
 )
+_app.dependency_overrides[get_rich_menu_client] = lambda: FakeLineRichMenuClient()
 
 
 @pytest.fixture()
@@ -118,3 +124,30 @@ class TestBookingUI:
         r = client.get("/ui/booking", follow_redirects=False)
         assert r.status_code == 303
         assert r.headers["location"] == "/ui/login"
+
+
+class TestRichMenuUI:
+    def test_page_requires_line_config(self, client):
+        _login(client)
+        r = client.get("/ui/rich-menu")
+        assert r.status_code == 200
+        assert "尚未設定 LINE Bot" in r.text
+
+    def test_apply_and_clear(self, client):
+        _login(client)
+        _setup_line_config(client)
+        r = client.post("/ui/rich-menu/apply", data={"template": "booking3", "theme": "line_green"})
+        assert r.status_code == 200
+        assert "已套用" in r.text
+        assert "booking3" in r.text
+        # 移除
+        r2 = client.post("/ui/rich-menu/clear", data={})
+        assert r2.status_code == 200
+        assert "尚未套用" in r2.text
+
+    def test_apply_invalid_theme_shows_error(self, client):
+        _login(client)
+        _setup_line_config(client)
+        r = client.post("/ui/rich-menu/apply", data={"template": "booking3", "theme": "neon"})
+        assert r.status_code == 200
+        assert "error" in r.text or "Unknown theme" in r.text

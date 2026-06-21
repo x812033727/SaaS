@@ -27,7 +27,12 @@ from saas_mvp.config import settings
 from saas_mvp.deps import Actor, get_db, require_ui_admin, require_ui_user
 from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
 from saas_mvp.auth.security import create_access_token, hash_password, verify_password
-from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
+from saas_mvp.line_client import (
+    LineBotInfoClient,
+    LineRichMenuClient,
+    get_bot_info_client,
+    get_rich_menu_client,
+)
 from saas_mvp.models.tenant import Tenant, normalize_store_type
 from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
@@ -36,6 +41,7 @@ from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import line_config as line_config_svc
+from saas_mvp.services import rich_menu as rich_menu_svc
 from saas_mvp.services import slots as slots_svc
 from fastapi import HTTPException
 
@@ -561,4 +567,74 @@ def booking_cancel_reservation(
         pass
     return templates.TemplateResponse(
         "_booking_reservations.html", _booking_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：Rich Menu 圖文選單 ──────────────────────────────────────────────
+
+def _rich_menu_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    cfg = _line_config_or_none(db, tid)
+    status_dict = None
+    if cfg is not None:
+        status_dict = rich_menu_svc.get_rich_menu_status(db, tid)
+    return _ctx(
+        request,
+        actor,
+        has_line_config=cfg is not None,
+        status=status_dict,
+        templates_opts=rich_menu_svc.TEMPLATES,
+        themes_opts=list(rich_menu_svc.THEMES.keys()),
+        **extra,
+    )
+
+
+@router.get("/rich-menu", response_class=HTMLResponse)
+def rich_menu_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "rich_menu.html", _rich_menu_ctx(request, actor, db)
+    )
+
+
+@router.post("/rich-menu/apply", response_class=HTMLResponse)
+def rich_menu_apply(
+    request: Request,
+    template: str = Form(...),
+    theme: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    rich_menu_client: LineRichMenuClient = Depends(get_rich_menu_client),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        rich_menu_svc.apply_rich_menu(
+            db, tid, template=template, theme=theme, client=rich_menu_client
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_rich_menu_status.html", _rich_menu_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/rich-menu/clear", response_class=HTMLResponse)
+def rich_menu_clear(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    rich_menu_client: LineRichMenuClient = Depends(get_rich_menu_client),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        rich_menu_svc.clear_rich_menu(db, tid, client=rich_menu_client)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_rich_menu_status.html", _rich_menu_ctx(request, actor, db, error=error)
     )

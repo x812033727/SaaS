@@ -13,6 +13,10 @@ class LinePushError(Exception):
     """LINE push API 呼叫失敗（網路錯誤、HTTP 錯誤、回應格式異常）。"""
 
 
+class LineRichMenuError(Exception):
+    """LINE Rich Menu API 呼叫失敗（建立/上傳圖片/設預設/刪除）。"""
+
+
 class LineBotInfoError(Exception):
     """LINE bot/info 呼叫失敗的基底例外。"""
 
@@ -92,6 +96,36 @@ class LinePushClient(ABC):
         Raises:
             LinePushError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。
         """
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """回傳此 client 是否具備發送能力。"""
+
+
+class LineRichMenuClient(ABC):
+    """LINE Rich Menu API client 介面。
+
+    一次「套用圖文選單」需四步：建立選單結構 → 上傳背景圖 → 設為預設 →
+    （可選）刪除舊選單。access_token 以 per-call 傳入，使同一實例服務不同 tenant。
+    """
+
+    @abstractmethod
+    def create(self, rich_menu: dict, *, access_token: str) -> str:
+        """建立 rich menu 結構，回傳 richMenuId。"""
+
+    @abstractmethod
+    def upload_image(
+        self, rich_menu_id: str, image: bytes, content_type: str, *, access_token: str
+    ) -> None:
+        """上傳 rich menu 背景圖（PNG/JPEG）。"""
+
+    @abstractmethod
+    def set_default(self, rich_menu_id: str, *, access_token: str) -> None:
+        """將指定 rich menu 設為所有使用者的預設選單。"""
+
+    @abstractmethod
+    def delete(self, rich_menu_id: str, *, access_token: str) -> None:
+        """刪除指定 rich menu。"""
 
     @abstractmethod
     def is_available(self) -> bool:

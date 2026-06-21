@@ -72,6 +72,7 @@ def init_db() -> None:
     _migrate_backfill_char_count()
     _migrate_add_tenant_store_type()
     _migrate_add_line_bot_mode()
+    _migrate_add_rich_menu_fields()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -214,6 +215,37 @@ def _migrate_add_line_bot_mode() -> None:
         _log.warning(
             "schema migration for %s.%s skipped due to error: %s",
             table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_rich_menu_fields() -> None:
+    """為既有 line_channel_configs 表補上 Rich Menu 欄位（皆 nullable，向後相容）。
+
+    只做 ADD COLUMN，不回填；未套用 rich menu 的列為 NULL。
+    任何失敗僅記 warning，不阻擋服務啟動。
+    """
+    table = "line_channel_configs"
+    columns = {
+        "rich_menu_id": "VARCHAR(64)",
+        "rich_menu_template": "VARCHAR(32)",
+        "rich_menu_theme": "VARCHAR(32)",
+    }
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        missing = {n: t for n, t in columns.items() if n not in existing}
+        if not missing:
+            return
+        with engine.begin() as conn:
+            for name, col_type in missing.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+        _log.info("migrated: added %s columns to %s", ", ".join(sorted(missing)), table)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s rich menu fields skipped due to error: %s",
+            table, type(exc).__name__,
         )
 
 
