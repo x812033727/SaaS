@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}跨店總覽 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>跨店家 LINE Bot 總覽</h1>
+
+<div class="card">
+  <form hx-get="/ui/admin/bots" hx-target="#bots-table" hx-swap="innerHTML" hx-trigger="change, submit">
+    <div class="row">
+      <div>
+        <label for="store_type">店家類型</label>
+        <input id="store_type" name="store_type" type="text" value="{{ filters.store_type }}" placeholder="全部">
+      </div>
+      <div>
+        <label for="is_active">啟用狀態</label>
+        <select id="is_active" name="is_active">
+          <option value="">全部</option>
+          <option value="true" {% if filters.is_active == true %}selected{% endif %}>啟用中</option>
+          <option value="false" {% if filters.is_active == false %}selected{% endif %}>已停用</option>
+        </select>
+      </div>
+      <div>
+        <label for="uncategorized">僅未分類</label>
+        <select id="uncategorized" name="uncategorized">
+          <option value="false">否</option>
+          <option value="true" {% if filters.uncategorized %}selected{% endif %}>是</option>
+        </select>
+      </div>
+    </div>
+    <button type="submit" class="secondary">套用篩選</button>
+  </form>
+</div>
+
+<div class="card">
+  <div id="bots-table">
+    {% include "admin/_bots_table.html" %}
+  </div>
+</div>
+{% endblock %}

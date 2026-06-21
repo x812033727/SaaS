@@ -19,6 +19,7 @@ dependencies = [
     "pydantic==2.10.3",
     "pydantic-settings==2.7.0",
     "email-validator==2.3.0",
+    "jinja2==3.1.4",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,9 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.setuptools.package-data]
+"saas_mvp" = ["templates/**", "static/**"]
 
 [tool.pytest.ini_options]
 # pythonpath 讓 pytest 在 sys.path 最前面插入 src/，

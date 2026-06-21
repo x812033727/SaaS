@@ -8,6 +8,14 @@ from fastapi import Depends, HTTPException, status
 from saas_mvp.auth.dependencies import Actor as Actor  # noqa: F401
 from saas_mvp.auth.dependencies import get_current_actor as get_current_actor  # noqa: F401
 from saas_mvp.auth.dependencies import get_current_user as get_current_user  # noqa: F401
+from saas_mvp.auth.dependencies import (  # noqa: F401
+    UIForbidden as UIForbidden,
+    UILoginRequired as UILoginRequired,
+    UITenantDisabled as UITenantDisabled,
+    get_ui_actor_optional as get_ui_actor_optional,
+    require_ui_admin as require_ui_admin,
+    require_ui_user as require_ui_user,
+)
 from saas_mvp.db import get_db as get_db  # noqa: F401
 from saas_mvp.db import get_session_factory as get_session_factory  # noqa: F401
 from saas_mvp.quota import require_quota as require_quota  # noqa: F401

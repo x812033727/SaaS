@@ -1,0 +1,15 @@
+{% set base = action_base or '/ui/line-config' %}
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if cfg %}
+  <p>憑證狀態：<span class="badge {{ cfg.credential_status }}">{{ cfg.credential_status }}</span></p>
+  {% if cfg.credential_last_error %}<p class="muted">最後錯誤：{{ cfg.credential_last_error }}</p>{% endif %}
+  <p class="muted">Channel secret：{{ '已設定' if cfg.has_channel_secret else '未設定' }} ·
+     Access token：{{ '已設定' if cfg.has_access_token else '未設定' }} ·
+     預設語言：<code>{{ cfg.default_target_lang }}</code></p>
+  {% if webhook_url %}<p class="muted">Webhook URL：<code>{{ webhook_url }}</code>（填入 LINE Console，前面補上你的網域）</p>{% endif %}
+  <button hx-post="{{ base }}/verify" hx-target="#line-status" hx-swap="innerHTML">重新測試連線</button>
+  <button class="danger" hx-post="{{ base }}/delete" hx-target="#line-status" hx-swap="innerHTML"
+          hx-confirm="確定要刪除 LINE 設定嗎？">刪除設定</button>
+{% else %}
+  <p class="muted">尚未設定 LINE Bot 憑證。</p>
+{% endif %}

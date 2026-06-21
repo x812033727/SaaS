@@ -16,7 +16,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -132,3 +132,76 @@ def get_current_user(
 ) -> User:
     """向下相容包裝：從 Actor 中取出 User，現有 router 零改動。"""
     return actor.user
+
+
+# ─────────────────── 伺服器渲染 UI 的 cookie 認證（與 API 路徑隔離） ───────────────────
+# 設計：刻意「不」碰 get_current_actor（安全敏感、已窮舉測試）。UI 改用獨立的
+# cookie 讀取 dependency，僅重用相同基礎元件（decode_access_token、同一套 User
+# 查詢、租戶停用檢查）。如此 API 路徑仍只認 header（cookie-only 請求一律 401），
+# 不會把瀏覽器的 CSRF 面引入 API。
+#
+# 例外用於把「需登入 / 無權限 / 租戶停用」轉成 HTML 行為（重導 / 403 頁），
+# 而非 API 的 JSON 401/403；對應的 handler 在 app.py 註冊。
+
+_UI_COOKIE_NAME = "access_token"
+
+
+class UILoginRequired(Exception):
+    """UI 路由未帶有效 cookie → 由 app 層 handler 重導至 /ui/login（303）。"""
+
+
+class UIForbidden(Exception):
+    """已登入但無權限（例如非 admin）→ app 層 handler 回 403 HTML 頁。"""
+
+
+class UITenantDisabled(Exception):
+    """cookie 有效但租戶已停用 → app 層 handler 回 403 停用頁（非重導登入）。"""
+
+
+def get_ui_actor_optional(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Optional[Actor]:
+    """從 cookie 讀 JWT 解析 Actor；缺失/無效/過期一律回 None（永不拋認證錯）。
+
+    重用 get_current_actor 的 JWT 分支同款 User 查詢（joinedload tenant）。
+    租戶停用為「憑證有效但不可用」，故以 UITenantDisabled 表達（非 None）。
+    """
+    token = request.cookies.get(_UI_COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+        user_id_str: str | None = payload.get("sub")
+        if not user_id_str:
+            return None
+        user_id = int(user_id_str)
+    except (PyJWTError, ValueError):
+        return None
+
+    user = db.execute(
+        select(User).where(User.id == user_id).options(joinedload(User.tenant))
+    ).scalar_one_or_none()
+    if user is None:
+        return None
+    if user.tenant and not user.tenant.is_active:
+        raise UITenantDisabled()
+    return Actor(user=user, api_key_id=None)
+
+
+def require_ui_user(
+    actor: Optional[Actor] = Depends(get_ui_actor_optional),
+) -> Actor:
+    """受保護 UI 頁：無有效 cookie → UILoginRequired（→ 303 /ui/login）。"""
+    if actor is None:
+        raise UILoginRequired()
+    return actor
+
+
+def require_ui_admin(
+    actor: Actor = Depends(require_ui_user),
+) -> Actor:
+    """管理 UI 頁：未登入 → 重導登入；已登入但非 admin → 403 HTML 頁。"""
+    if not actor.user.is_admin:
+        raise UIForbidden()
+    return actor

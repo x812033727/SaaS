@@ -1,0 +1,30 @@
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th>店家</th><th>類型</th><th>方案</th><th>狀態</th>
+      <th>LINE</th><th>憑證</th><th>今日呼叫</th><th>今日字元</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td>{% if r.store_type %}{{ r.store_type }}{% else %}<span class="muted">未分類</span>{% endif %}</td>
+      <td>{{ r.plan }}</td>
+      <td><span class="badge {{ 'on' if r.is_active else 'off' }}">{{ '啟用' if r.is_active else '停用' }}</span></td>
+      <td>{{ '✓' if r.has_line_config else '—' }}</td>
+      <td>
+        {% if r.credential_status %}<span class="badge {{ r.credential_status }}">{{ r.credential_status }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>{{ r.today_count }}</td>
+      <td>{{ r.today_chars }}</td>
+      <td><a href="/ui/admin/tenants/{{ r.tenant_id }}">管理</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">沒有符合條件的店家。</p>
+{% endif %}
