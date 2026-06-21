@@ -792,3 +792,14 @@
 - 時間：2026-06-21
 - 理由：訂閱/退訂/admin 覆寫需稽核 who/when/source；entitlement 與歷史分離（一張現況表 + 一張歷史表）。真實月費扣款待接真實金流（同 P4 caveat）。
 - 實作：billing.subscribe_feature/unsubscribe_feature；/billing/features/*；/admin/tenants/{id}/features；/tenants/me/features；UI /ui/features。
+
+## 【金流 ECPay】CheckMacValue 以純 stdlib 逐位元組移植綠界官方 Python SDK generate_check_value（quote_plus(safe='-_.!*()').lower()→SHA256 大寫），不引入 ECPay SDK 當 runtime 依賴。
+- 時間：2026-06-21
+- 理由：簽章為資安關鍵，必須與官方完全一致才會被綠界接受；官方 SDK 不在可用套件索引，故抓官方原始碼逐行移植並以官方演算法產的 golden 向量鎖定測試（SDK 僅一次性，不進 runtime/CI）。沿用最小依賴。
+- 實作：services/payment_ecpay.EcpayClient.check_mac_value/verify/build_order_form；排除 CheckMacValue 自身、支援 EncryptType 0/1。
+
+## 【金流 ECPay】回調先驗 CheckMacValue 再交叉驗金額才標記已付；端點公開（無 JWT/rate-limit），冪等回 1|OK。
+- 時間：2026-06-21
+- 理由：只看 RtnCode 不驗簽會被偽造（任何人 POST 即可假裝付款成功）；綠界會重送直到收到 1|OK，故 mark_order_paid 已付為 no-op 仍回 1|OK。
+- 實作：routers/payments（GET checkout 自動 submit 表單、POST callback）；Order 加 merchant_trade_no（唯一，migration _migrate_add_order_merchant_trade_no）對應回調；shop.get_order_by_trade_no。
+- 範圍：只接商品訂單一次性付款；進階功能月費訂閱維持 stub（定期定額為後續）。金鑰/商店代號由 SAAS_ECPAY_* 環境變數提供（預設為綠界公開測試值）。

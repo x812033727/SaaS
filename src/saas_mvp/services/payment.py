@@ -41,7 +41,7 @@ def get_payment_provider() -> PaymentProvider:
     """
     from saas_mvp.config import settings
 
-    if settings.payment_provider == "stub":
-        return StubPaymentProvider()
-    # 未來：elif settings.payment_provider == "ecpay": return EcpayProvider(...)
+    if settings.payment_provider == "ecpay":
+        from saas_mvp.services.payment_ecpay import EcpayPaymentProvider
+        return EcpayPaymentProvider()
     return StubPaymentProvider()
