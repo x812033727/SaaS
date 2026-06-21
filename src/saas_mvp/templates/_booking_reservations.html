@@ -1,0 +1,28 @@
+<h2>預約</h2>
+{% if reservations %}
+<table>
+  <thead>
+    <tr><th>#</th><th>時段</th><th>人數</th><th>來源</th><th>狀態</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for r in reservations %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>#{{ r.slot_id }}</td>
+      <td>{{ r.party_size }}</td>
+      <td>{% if r.line_user_id %}LINE{% else %}<span class="muted">店家</span>{% endif %}</td>
+      <td><span class="badge {{ 'on' if r.status == 'confirmed' else 'off' }}">{{ '已確認' if r.status == 'confirmed' else '已取消' }}</span></td>
+      <td>
+        {% if r.status == 'confirmed' %}
+        <button hx-post="/ui/booking/reservations/{{ r.id }}/cancel"
+                hx-target="#reservations-card" hx-swap="innerHTML"
+                hx-confirm="確定取消此預約？">取消</button>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無預約。</p>
+{% endif %}

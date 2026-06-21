@@ -312,6 +312,36 @@ def verify_line_config(
     return _to_response(cfg)
 
 
+def set_bot_mode(db: Session, tenant_id: int, bot_mode: str) -> dict:
+    """僅切換 bot_mode（不需重輸憑證）；回傳遮罩版 response。
+
+    Raises
+    ------
+    404 tenant or line config not found
+    400 invalid bot_mode
+    """
+    try:
+        validate_bot_mode(bot_mode)
+    except InvalidBotModeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    cfg = tenant.line_channel_config
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="line channel config not found for this tenant",
+        )
+    cfg.bot_mode = bot_mode
+    db.commit()
+    db.refresh(cfg)
+    return _to_response(cfg)
+
+
 def delete_line_config(db: Session, tenant_id: int) -> dict:
     """刪除租戶 LINE 設定；找不到回 404。"""
     tenant = db.get(Tenant, tenant_id)

@@ -15,6 +15,7 @@ CSRF（已知限制）：MVP 僅靠 SameSite=Lax + 同源，未實作 per-reques
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
@@ -32,7 +33,10 @@ from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import admin as admin_svc
+from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import line_config as line_config_svc
+from saas_mvp.services import slots as slots_svc
 from fastapi import HTTPException
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
@@ -437,4 +441,124 @@ def admin_line_config_delete(
         "_line_config_status.html",
         _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
              action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
+    )
+
+
+# ── 店家自助：預約管理 ────────────────────────────────────────────────────────
+
+def _parse_slot_start(value: str) -> datetime.datetime:
+    """解析 datetime-local 表單字串（無時區）→ 視為 UTC 的 tz-aware datetime。"""
+    dt = datetime.datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
+def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    """組預約頁 context：bot_mode、時段、預約、顧客。"""
+    tid = actor.user.tenant_id
+    cfg = _line_config_or_none(db, tid)
+    return _ctx(
+        request,
+        actor,
+        cfg=cfg,
+        bot_mode=(cfg or {}).get("bot_mode", "translation"),
+        has_line_config=cfg is not None,
+        slots=slots_svc.list_slots(db, tenant_id=tid),
+        reservations=booking_svc.list_reservations(db, tenant_id=tid),
+        customers=customers_svc.list_customers(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/booking", response_class=HTMLResponse)
+def booking_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "booking.html", _booking_ctx(request, actor, db)
+    )
+
+
+@router.post("/booking/bot-mode", response_class=HTMLResponse)
+def booking_set_bot_mode(
+    request: Request,
+    bot_mode: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        line_config_svc.set_bot_mode(db, tid, bot_mode)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_booking_botmode.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/booking/slots", response_class=HTMLResponse)
+def booking_create_slot(
+    request: Request,
+    slot_start: str = Form(...),
+    max_capacity: int = Form(...),
+    walkin_reserved: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        slots_svc.create_slot(
+            db,
+            tenant_id=tid,
+            slot_start=_parse_slot_start(slot_start),
+            max_capacity=max_capacity,
+            walkin_reserved=walkin_reserved,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "時段時間格式錯誤"
+    return templates.TemplateResponse(
+        "_booking_slots.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/booking/slots/{slot_id}/deactivate", response_class=HTMLResponse)
+def booking_deactivate_slot(
+    request: Request,
+    slot_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        slots_svc.deactivate_slot(db, tenant_id=tid, slot_id=slot_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_booking_slots.html", _booking_ctx(request, actor, db)
+    )
+
+
+@router.post("/booking/reservations/{reservation_id}/cancel", response_class=HTMLResponse)
+def booking_cancel_reservation(
+    request: Request,
+    reservation_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        booking_svc.cancel_reservation(
+            db, tenant_id=tid, reservation_id=reservation_id
+        )
+    except booking_svc.ReservationNotFoundError:
+        pass
+    return templates.TemplateResponse(
+        "_booking_reservations.html", _booking_ctx(request, actor, db)
     )
