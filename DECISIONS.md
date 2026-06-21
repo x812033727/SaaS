@@ -772,3 +772,13 @@
 - 時間：2026-06-21
 - 理由：系統無法自動得知顧客是否到場；誠實呈現——未標記時 no_show_rate=None，以取消率為主指標。
 - 實作：booking.mark_attendance + POST /booking/reservations/{id}/attendance + UI 標記按鈕；migration _migrate_add_reservation_attended（既有列 NULL=未標記）。
+
+## 【P4 商品】下單原子性：依 product_id 排序後逐一 SELECT … FOR UPDATE 鎖商品（固定順序避免死鎖），鎖內驗庫存+扣減；OrderItem 快照單價。
+- 時間：2026-06-21
+- 理由：多商品下單需固定鎖定順序避免死鎖；快照單價使商品改價/改名不影響既有訂單。金額一律整數 cents（不用 float）。
+- 實作：services/shop.create_order；cancel_order 回補庫存（已取消 no-op）；mark_order_paid。
+
+## 【P4 金流】PaymentProvider 抽象，本輪只實作 StubPaymentProvider；真實 provider 待使用者指定。
+- 時間：2026-06-21
+- 理由：比照 translator/line_client「先 stub、後接真實」；真實金流涉及帳號/合約/回調驗簽，需使用者拍板 provider（綠界/Stripe/LINE Pay），不在本輪硬接。
+- 實作：services/payment（PaymentProvider ABC + StubPaymentProvider + get_payment_provider）；設定 SAAS_PAYMENT_PROVIDER（預設 stub）、SAAS_CURRENCY（預設 TWD）。

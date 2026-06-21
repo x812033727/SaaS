@@ -192,3 +192,27 @@ class TestReportsUI:
     def test_reports_unauth_redirect(self, client):
         r = client.get("/ui/reports", follow_redirects=False)
         assert r.status_code == 303
+
+
+class TestShopUI:
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/shop")
+        assert r.status_code == 200
+        assert "商品銷售" in r.text
+
+    def test_create_product_and_deactivate(self, client):
+        _login(client)
+        r = client.post("/ui/shop/products", data={
+            "name": "UI商品", "price_cents": "250", "stock": "5",
+        })
+        assert r.status_code == 200
+        assert "UI商品" in r.text and "250" in r.text
+
+    def test_create_invalid_price_error(self, client):
+        _login(client)
+        r = client.post("/ui/shop/products", data={
+            "name": "x", "price_cents": "-5", "stock": "",
+        })
+        assert r.status_code == 200
+        assert "error" in r.text or ">= 0" in r.text

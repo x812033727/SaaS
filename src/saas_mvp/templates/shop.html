@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}商品 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>商品銷售</h1>
+<div class="card" id="shop-card">
+  {% include "_shop.html" %}
+</div>
+<p class="muted">顧客可在 LINE 輸入「商品」瀏覽、點按或「購買 &lt;編號&gt;」下單（回傳付款連結）。
+金流目前為測試 Stub；接真實金流需另指定 provider。</p>
+{% endblock %}

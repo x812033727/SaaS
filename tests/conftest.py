@@ -52,6 +52,9 @@ import saas_mvp.models.reservation_reminder as _rem  # noqa: F401, E402
 import saas_mvp.models.coupon as _coupon  # noqa: F401, E402
 import saas_mvp.models.coupon_redemption as _credeem  # noqa: F401, E402
 import saas_mvp.models.point_transaction as _ptx  # noqa: F401, E402
+import saas_mvp.models.product as _prod  # noqa: F401, E402
+import saas_mvp.models.order as _order  # noqa: F401, E402
+import saas_mvp.models.order_item as _oitem  # noqa: F401, E402
 
 # ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login
 # 測試累積使全套逼近 60s self-test 逾時。測試環境把 rounds 降到合法最低值 4，

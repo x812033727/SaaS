@@ -44,6 +44,7 @@ from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
+from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
 from fastapi import HTTPException
 
@@ -591,6 +592,95 @@ def booking_mark_attendance(
     return templates.TemplateResponse(
         "_booking_reservations.html", _booking_ctx(request, actor, db)
     )
+
+
+# ── 店家自助：商品銷售 ────────────────────────────────────────────────────────
+
+def _shop_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        products=shop_svc.list_products(db, tenant_id=tid),
+        orders=shop_svc.list_orders(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/shop", response_class=HTMLResponse)
+def shop_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse("shop.html", _shop_ctx(request, actor, db))
+
+
+@router.post("/shop/products", response_class=HTMLResponse)
+def shop_create_product(
+    request: Request,
+    name: str = Form(...),
+    price_cents: int = Form(...),
+    stock: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        shop_svc.create_product(
+            db, tenant_id=tid, name=name, price_cents=price_cents,
+            stock=int(stock) if stock.strip() else None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "庫存需為整數"
+    return templates.TemplateResponse("_shop.html", _shop_ctx(request, actor, db, error=error))
+
+
+@router.post("/shop/products/{product_id}/deactivate", response_class=HTMLResponse)
+def shop_deactivate_product(
+    request: Request,
+    product_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        shop_svc.deactivate_product(db, tenant_id=tid, product_id=product_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_shop.html", _shop_ctx(request, actor, db))
+
+
+@router.post("/shop/orders/{order_id}/pay", response_class=HTMLResponse)
+def shop_pay_order(
+    request: Request,
+    order_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        shop_svc.mark_order_paid(db, tenant_id=tid, order_id=order_id)
+    except shop_svc.OrderNotFound:
+        pass
+    return templates.TemplateResponse("_shop.html", _shop_ctx(request, actor, db))
+
+
+@router.post("/shop/orders/{order_id}/cancel", response_class=HTMLResponse)
+def shop_cancel_order(
+    request: Request,
+    order_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        shop_svc.cancel_order(db, tenant_id=tid, order_id=order_id)
+    except shop_svc.OrderNotFound:
+        pass
+    return templates.TemplateResponse("_shop.html", _shop_ctx(request, actor, db))
 
 
 # ── 店家自助：報表 ────────────────────────────────────────────────────────────

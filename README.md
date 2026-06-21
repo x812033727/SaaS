@@ -583,3 +583,29 @@ python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
   `Reservation.attended`（nullable）；未標記則 `no_show_rate` 回 `null`，報表以取消率為主並明示限制。
 - UI：`/ui/reports`（摘要卡 + 時段使用率表 + 常客 Top10 + CSV 下載）；`/ui/booking` 預約列加
   「到場/未到」標記按鈕。導覽列加「報表」。
+
+### 商品銷售（P4）
+
+**商品** `/booking/products`（店家 CRUD）、**訂單** `/booking/orders`：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST/GET/PUT/DELETE | `/booking/products[/{id}]` | 商品 CRUD（價格 `price_cents` 整數、`stock` NULL=不限） |
+| POST | `/booking/orders/` | 下單（`items=[{product_id,qty}]`），回單 + **stub 付款連結** |
+| GET | `/booking/orders[/{id}]` | 列出/單一（含明細） |
+| POST | `/booking/orders/{id}/pay` | 標記已付 |
+| POST | `/booking/orders/{id}/cancel` | 取消並回補庫存 |
+
+- **下單原子性**：依 `product_id` 排序後逐一 `SELECT … FOR UPDATE` 鎖商品（固定順序避免死鎖），
+  鎖內驗 `is_active`/`stock`、扣庫存、**快照單價**（`OrderItem.unit_price_cents`，商品改價不影響舊單）。
+- 金額一律整數 cents。LINE 指令：`商品`（列商品 + quick-reply 購買鈕）、`購買 <編號> [數量]`
+  （postback `action=buy&product_id=N&qty=K`）、`我的訂單`。
+- UI：`/ui/shop`（商品 CRUD + 訂單標付/取消）。導覽列加「商品」。
+
+> **金流**：目前為 `StubPaymentProvider`（回傳測試付款連結）。接真實金流（綠界 ECPay /
+> Stripe / LINE Pay…）需指定 provider 與帳號，以同一 `PaymentProvider` 介面接上。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_CURRENCY` | 預設幣別 | `TWD` |
+| `SAAS_PAYMENT_PROVIDER` | 金流 provider | `stub` |

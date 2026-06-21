@@ -65,6 +65,8 @@ def init_db() -> None:
     from saas_mvp.models import reservation, reservation_reminder  # noqa: F401
     # P3 優惠券/會員
     from saas_mvp.models import coupon, coupon_redemption, point_transaction  # noqa: F401
+    # P4 商品銷售
+    from saas_mvp.models import product, order, order_item  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。

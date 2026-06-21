@@ -273,6 +273,59 @@ class TestCouponsAndPoints:
         assert "10" in (line_client.last_text or "")
 
 
+class TestShop:
+    def _add_product(self, tid, *, name="珍奶", price=100, stock=None) -> int:
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            p = Product(tenant_id=tid, name=name, price_cents=price, stock=stock, currency="TWD")
+            db.add(p)
+            db.commit()
+            return p.id
+        finally:
+            db.close()
+
+    def test_shop_lists_products_with_buy_buttons(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, name="拿鐵")
+        _post(client, tid, _text_event("商品"))
+        last = line_client.sent[-1]
+        assert "拿鐵" in last.text
+        assert last.quick_reply is not None
+        assert any(f"action=buy&product_id={pid}&qty=1" in d for _l, d in last.quick_reply)
+
+    def test_buy_creates_order_with_checkout(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, price=150, stock=10)
+        _post(client, tid, _postback_event(f"action=buy&product_id={pid}&qty=2", eid="o1"))
+        assert "已建立訂單" in (line_client.last_text or "")
+        assert "付款連結" in (line_client.last_text or "")
+        # 庫存扣減
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            assert db.get(Product, pid).stock == 8
+        finally:
+            db.close()
+
+    def test_buy_out_of_stock(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, stock=1)
+        _post(client, tid, _postback_event(f"action=buy&product_id={pid}&qty=5", eid="o1"))
+        assert "庫存不足" in (line_client.last_text or "")
+
+    def test_my_orders(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, stock=10)
+        _post(client, tid, _postback_event(f"action=buy&product_id={pid}&qty=1", eid="o1"))
+        _post(client, tid, _text_event("我的訂單", eid="o2"))
+        assert "你的訂單" in (line_client.last_text or "")
+
+
 class TestTranslationRegression:
     def test_translation_mode_still_translates(self, app_client):
         """bot_mode 預設 translation → 仍走翻譯，不建立預約（回歸保護）。"""

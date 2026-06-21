@@ -114,7 +114,9 @@ from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
+from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
+from saas_mvp.services.payment import get_payment_provider
 
 _log = logging.getLogger(__name__)
 
@@ -792,6 +794,15 @@ def _dispatch_booking(
     if action == "points":
         return _points_reply(db, tenant_id, line_user_id), None
 
+    if action == "shop":
+        return _list_products_reply(db, tenant_id)
+
+    if action == "buy":
+        return _buy_reply(db, tenant_id, params.get("product_id"), params.get("qty", 1), line_user_id), None
+
+    if action == "my_orders":
+        return _my_orders_reply(db, tenant_id, line_user_id), None
+
     # help 或無法辨識
     return _BOOKING_HELP, None
 
@@ -842,6 +853,59 @@ def _points_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
     if customer is None:
         return "你目前沒有會員資料，完成預約後即可累積點數。"
     return f"你的點數：{customer.points_balance or 0}\n會員等級：{customer.tier or 'regular'}"
+
+
+def _list_products_reply(db: Session, tenant_id: int) -> tuple[str, list | None]:
+    products = shop_svc.list_products(db, tenant_id=tenant_id, active_only=True)
+    products = [p for p in products if p.stock is None or p.stock > 0][:12]
+    if not products:
+        return "目前沒有可購買的商品。", None
+    buttons = [
+        (f"購買 {p.name}"[:20], f"action=buy&product_id={p.id}&qty=1") for p in products
+    ]
+    lines = "\n".join(f"・{p.name}（{p.price_cents} {p.currency}）" for p in products)
+    return "可購買商品：\n" + lines, buttons
+
+
+def _buy_reply(
+    db: Session, tenant_id: int, product_id: int | None, qty: int, line_user_id: str
+) -> str:
+    if product_id is None:
+        return "請指定商品，例：購買 1 2（先輸入「商品」查看）"
+    try:
+        order = shop_svc.create_order(
+            db,
+            tenant_id=tenant_id,
+            items=[(product_id, qty)],
+            line_user_id=line_user_id or None,
+        )
+    except shop_svc.ProductNotFound:
+        return f"找不到商品 #{product_id}。"
+    except shop_svc.ProductInactive:
+        return f"商品 #{product_id} 已下架。"
+    except shop_svc.OutOfStock:
+        return f"商品 #{product_id} 庫存不足。"
+    checkout = get_payment_provider().create_checkout(
+        order_id=order.id, amount_cents=order.total_cents, currency=order.currency
+    )
+    return (
+        f"已建立訂單 #{order.id}\n金額：{order.total_cents} {order.currency}\n"
+        f"付款連結：{checkout}"
+    )
+
+
+def _my_orders_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
+    if not line_user_id:
+        return "無法識別使用者。"
+    orders = [
+        o for o in shop_svc.list_orders(db, tenant_id=tenant_id)
+        if o.line_user_id == line_user_id
+    ]
+    if not orders:
+        return "你目前沒有訂單。輸入「商品」開始購買。"
+    return "你的訂單：\n" + "\n".join(
+        f"#{o.id} {o.total_cents} {o.currency}（{o.status}）" for o in orders
+    )
 
 
 def _handle_booking_event(
