@@ -1,0 +1,128 @@
+"""LINE 預約對話指令解析（純函式、離線可測，仿 translation/commands.py）。
+
+支援兩種輸入：
+  * 文字訊息：英文 slash 指令 + 中文關鍵字。
+  * postback：querystring（Rich Menu / quick-reply 按鈕回傳 event.postback.data）。
+
+統一輸出 ``(action, params)``：
+  action ∈ {"book", "slots", "my", "cancel", "help", None}
+  params 為已解析的 dict（slot_id / party_size / reservation_id 為 int）。
+  action=None 代表非預約指令（handler 回說明）。
+"""
+
+from __future__ import annotations
+
+import urllib.parse
+
+# 文字指令 → action 對照（英文 slash + 中文關鍵字）。
+# 以「開頭比對」處理帶參數指令（如 "/book 12 4"、"預約 12 4"）。
+_TEXT_ALIASES: dict[str, str] = {
+    "/book": "book",
+    "預約": "book",
+    "/slots": "slots",
+    "時段": "slots",
+    "查詢時段": "slots",
+    "/my": "my",
+    "我的預約": "my",
+    "/cancel": "cancel",
+    "取消": "cancel",
+    "/help": "help",
+    "說明": "help",
+}
+
+
+def _to_int(value: str) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_booking_command(text: str) -> tuple[str | None, dict]:
+    """解析文字訊息為 (action, params)。
+
+    Examples::
+
+        >>> parse_booking_command("/slots")
+        ('slots', {})
+        >>> parse_booking_command("/book 12 4")
+        ('book', {'slot_id': 12, 'party_size': 4})
+        >>> parse_booking_command("預約 12")
+        ('book', {'slot_id': 12, 'party_size': 1})
+        >>> parse_booking_command("/cancel 7")
+        ('cancel', {'reservation_id': 7})
+        >>> parse_booking_command("我的預約")
+        ('my', {})
+        >>> parse_booking_command("隨便打字")
+        (None, {})
+    """
+    if not text:
+        return None, {}
+    stripped = text.strip()
+    parts = stripped.split()
+    if not parts:
+        return None, {}
+
+    head = parts[0]
+    action = _TEXT_ALIASES.get(head)
+    if action is None:
+        return None, {}
+
+    args = parts[1:]
+    if action == "book":
+        params: dict = {}
+        if args:
+            slot_id = _to_int(args[0])
+            if slot_id is not None:
+                params["slot_id"] = slot_id
+        params["party_size"] = (_to_int(args[1]) if len(args) > 1 else None) or 1
+        return action, params
+    if action == "cancel":
+        params = {}
+        if args:
+            rid = _to_int(args[0])
+            if rid is not None:
+                params["reservation_id"] = rid
+        return action, params
+    # slots / my / help 無參數
+    return action, {}
+
+
+def parse_postback_data(data: str) -> tuple[str | None, dict]:
+    """解析 postback querystring 為 (action, params)。
+
+    Examples::
+
+        >>> parse_postback_data("action=book&slot_id=42&party=2")
+        ('book', {'slot_id': 42, 'party_size': 2})
+        >>> parse_postback_data("action=cancel&reservation_id=7")
+        ('cancel', {'reservation_id': 7})
+        >>> parse_postback_data("action=slots")
+        ('slots', {})
+        >>> parse_postback_data("garbage")
+        (None, {})
+    """
+    if not data:
+        return None, {}
+    qs = urllib.parse.parse_qs(data, keep_blank_values=False)
+    actions = qs.get("action")
+    if not actions:
+        return None, {}
+    action = actions[0]
+    if action not in {"book", "slots", "my", "cancel", "help"}:
+        return None, {}
+
+    params: dict = {}
+    if action == "book":
+        if "slot_id" in qs:
+            slot_id = _to_int(qs["slot_id"][0])
+            if slot_id is not None:
+                params["slot_id"] = slot_id
+        party = _to_int(qs["party"][0]) if "party" in qs else None
+        params["party_size"] = party or 1
+    elif action == "cancel":
+        if "reservation_id" in qs:
+            rid = _to_int(qs["reservation_id"][0])
+            if rid is not None:
+                params["reservation_id"] = rid
+    return action, params

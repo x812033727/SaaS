@@ -18,15 +18,23 @@ from saas_mvp.line_client.base import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LinePushClient,
+    LinePushError,
     LineReplyClient,
     LineReplyError,
 )
 from saas_mvp.line_client.fake import (
+    FakeLinePushClient,
     FakeLineReplyClient,
+    SentPush,
     SentReply,
     StubLineBotInfoClient,
 )
-from saas_mvp.line_client.http import HttpLineBotInfoClient, HttpLineReplyClient
+from saas_mvp.line_client.http import (
+    HttpLineBotInfoClient,
+    HttpLinePushClient,
+    HttpLineReplyClient,
+)
 
 
 def get_line_client() -> LineReplyClient:
@@ -56,6 +64,16 @@ def get_bot_info_client() -> LineBotInfoClient:
     return HttpLineBotInfoClient()
 
 
+def get_push_client() -> LinePushClient:
+    """FastAPI dependency：回傳可注入的 LINE push client。
+
+    預設回傳 :class:`HttpLinePushClient`（真實 HTTP）。
+    測試中透過 ``app.dependency_overrides[get_push_client]`` 或直接傳入
+    :class:`FakeLinePushClient`（ops 腳本）替換。
+    """
+    return HttpLinePushClient()
+
+
 __all__ = [
     "LineReplyClient",
     "LineReplyError",
@@ -71,4 +89,10 @@ __all__ = [
     "HttpLineBotInfoClient",
     "StubLineBotInfoClient",
     "get_bot_info_client",
+    "LinePushClient",
+    "LinePushError",
+    "HttpLinePushClient",
+    "FakeLinePushClient",
+    "SentPush",
+    "get_push_client",
 ]

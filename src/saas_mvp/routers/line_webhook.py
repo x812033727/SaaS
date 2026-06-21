@@ -111,6 +111,9 @@ from saas_mvp.models.tenant import Tenant
 from saas_mvp.quota import has_char_quota, has_quota, increment_usage
 from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
+from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
+from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import slots as slots_svc
 
 _log = logging.getLogger(__name__)
 
@@ -284,6 +287,8 @@ async def line_webhook(
     # 取 bind 的時機是 request session 還活著的「現在」，response 後
     # db 已關閉、bind 屬性依然可讀（engine 物件獨立於 session 生命週期）。
     bind = db.get_bind()
+    # bot_mode 為純字串，現在（request session 仍活）讀出後當資料傳入背景。
+    bot_mode = cfg.bot_mode or "translation"
     background_tasks.add_task(
         _process_events,
         tenant_id,
@@ -294,6 +299,7 @@ async def line_webhook(
         translator,
         line_client,
         bind,
+        bot_mode,
     )
 
     return {"status": "ok"}
@@ -309,6 +315,7 @@ def _process_events(
     translator: Translator,
     line_client: LineReplyClient,
     bind,
+    bot_mode: str = "translation",
 ) -> None:
     """在 background 內依序處理每個 event，並以 webhookEventId 做冪等去重。
 
@@ -356,6 +363,7 @@ def _process_events(
                     translator,
                     line_client,
                     stage_holder,
+                    bot_mode,
                 )
                 _mark_webhook_event_processed(db, event_row_id, stage)
             except Exception as exc:
@@ -532,6 +540,7 @@ def _handle_line_event(
     translator: Translator,
     line_client: LineReplyClient,
     stage_holder: list[str] | None = None,
+    bot_mode: str = "translation",
 ) -> str:
     """處理單筆 LINE event，回傳最後完成的處理階段。"""
     stage = LineWebhookEventStage.CLAIMED.value
@@ -544,6 +553,17 @@ def _handle_line_event(
             "LINE event redelivery flag observed for tenant %d event_idx=%d; using webhookEventId for idempotency",
             tenant_id,
             event_idx,
+        )
+
+    # ── bot_mode 分流：booking 走預約對話，translation（預設）維持現狀 ───────────
+    if bot_mode == "booking":
+        return _handle_booking_event(
+            db,
+            tenant_id,
+            access_token,
+            event,
+            line_client,
+            stage_holder,
         )
 
     event_type = event.get("type")
@@ -628,6 +648,139 @@ def _handle_line_event(
     stage = LineWebhookEventStage.USAGE_INCREMENTED.value
     if stage_holder is not None:
         stage_holder[0] = stage
+    return stage
+
+
+_BOOKING_HELP = (
+    "可用指令：\n"
+    "・時段 — 查看可預約時段\n"
+    "・預約 <時段編號> <人數> — 例：預約 12 2\n"
+    "・我的預約 — 查看我的預約\n"
+    "・取消 <預約編號> — 例：取消 7"
+)
+
+
+def _booking_intent(event: dict) -> tuple[str | None, dict]:
+    """由 message(text) 或 postback 取出 (action, params)。"""
+    etype = event.get("type")
+    if etype == "message" and event.get("message", {}).get("type") == "text":
+        return parse_booking_command(event["message"].get("text", ""))
+    if etype == "postback":
+        return parse_postback_data(event.get("postback", {}).get("data", ""))
+    return None, {}
+
+
+def _format_slot_lines(slots: list) -> str:
+    lines = []
+    for s in slots:
+        when = s.slot_start.strftime("%m/%d %H:%M")
+        lines.append(f"#{s.id} {when}（剩 {s.online_available} 位）")
+    return "\n".join(lines)
+
+
+def _dispatch_booking(
+    db: Session,
+    tenant_id: int,
+    action: str | None,
+    params: dict,
+    line_user_id: str,
+) -> str:
+    """執行預約指令並回傳要回覆的文字（預期錯誤都轉成友善訊息，不外拋）。"""
+    if action == "slots":
+        slots = [
+            s
+            for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True)
+            if s.online_available > 0
+        ][:10]
+        if not slots:
+            return "目前沒有可預約的時段。"
+        return "可預約時段：\n" + _format_slot_lines(slots) + "\n\n預約請輸入：預約 <編號> <人數>"
+
+    if action == "book":
+        slot_id = params.get("slot_id")
+        if slot_id is None:
+            return "請指定時段編號，例：預約 12 2（先輸入「時段」查看編號）"
+        party_size = params.get("party_size", 1)
+        try:
+            resv = booking_svc.book_slot(
+                db,
+                tenant_id=tenant_id,
+                slot_id=slot_id,
+                party_size=party_size,
+                line_user_id=line_user_id,
+            )
+        except booking_svc.SlotNotFoundError:
+            return f"找不到時段 #{slot_id}，請重新輸入「時段」查看。"
+        except booking_svc.SlotFullError:
+            return f"時段 #{slot_id} 已額滿，請改選其他時段。"
+        return (
+            f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
+            f"如需取消請輸入：取消 {resv.id}"
+        )
+
+    if action == "my":
+        rows = booking_svc.list_my_reservations(
+            db, tenant_id=tenant_id, line_user_id=line_user_id
+        )
+        if not rows:
+            return "你目前沒有預約。輸入「時段」開始預約。"
+        return "你的預約：\n" + "\n".join(
+            f"#{r.id} {r.party_size} 位" for r in rows
+        )
+
+    if action == "cancel":
+        reservation_id = params.get("reservation_id")
+        if reservation_id is None:
+            return "請指定預約編號，例：取消 7"
+        try:
+            booking_svc.cancel_reservation(
+                db,
+                tenant_id=tenant_id,
+                reservation_id=reservation_id,
+                line_user_id=line_user_id,
+            )
+        except booking_svc.ReservationNotFoundError:
+            return f"找不到預約 #{reservation_id}。"
+        except booking_svc.ReservationPermissionError:
+            return "無法取消其他人的預約。"
+        return f"預約 #{reservation_id} 已取消。"
+
+    # help 或無法辨識
+    return _BOOKING_HELP
+
+
+def _handle_booking_event(
+    db: Session,
+    tenant_id: int,
+    access_token: str,
+    event: dict,
+    line_client: LineReplyClient,
+    stage_holder: list[str] | None = None,
+) -> str:
+    """booking 模式事件處理：解析指令 → 執行 → reply。
+
+    冪等性：mutating 動作（book/cancel）在 _dispatch_booking 內 commit 後，
+    才把 stage 標到 REPLY_SENT 並 reply；若 reply 失敗，event 記 FAILED@REPLY_SENT
+    → 不重試 → 不會因重送而重複建單/取消（與翻譯路徑「已送出不重扣」同類語意）。
+    """
+    stage = LineWebhookEventStage.CLAIMED.value
+    etype = event.get("type")
+    if etype not in ("message", "postback"):
+        return stage  # 其他事件靜默略過（follow/unfollow 等）
+
+    reply_token = event.get("replyToken", "")
+    line_user_id = event.get("source", {}).get("userId", "")
+
+    action, params = _booking_intent(event)
+    # message 但非文字（圖片/貼圖）→ action 為 None；回說明
+    reply_text = _dispatch_booking(db, tenant_id, action, params, line_user_id)
+
+    # 副作用（若有）已於 _dispatch_booking 內 commit；標記不可重試後再 reply。
+    stage = LineWebhookEventStage.REPLY_SENT.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+    if reply_token:
+        line_client.reply(reply_token, reply_text, access_token=access_token)
     return stage
 
 

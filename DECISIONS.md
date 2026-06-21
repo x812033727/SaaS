@@ -710,3 +710,26 @@
 ## `AdminLineConfigResponse` 與 `TenantLineConfigResponse` 在 API 輸出時嚴格禁止明文憑證，一律只回傳遮罩布林值。
 - 時間：2026-06-20 21:38
 
+
+## 【預約系統 P1】在 `LineChannelConfig` 新增 `bot_mode`（translation 預設 / booking）讓翻譯與預約並存，webhook 依模式分流。
+- 時間：2026-06-21
+- 理由：既有店家為翻譯 bot，預約為新功能；以 per-tenant 模式旗標並存，避免硬切換破壞既有行為。
+- 實作：欄位 `nullable=False, default/server_default="translation"`；migration `_migrate_add_line_bot_mode()` 對既有列回填 translation；`_handle_line_event` 開頭依 `bot_mode` 分流，translation 路徑零行為改動。
+- 否決方案：預約完全取代翻譯（失去既有功能）；以獨立服務部署（增運維成本、無法共用租戶/認證/LINE 設定）。
+
+## 【預約系統 P1】預約管理端點與預約 LINE 回覆**不計入既有翻譯 quota**（`ApiUsage`/`require_quota`）。
+- 時間：2026-06-21
+- 理由：`ApiUsage`/`require_quota` 專指翻譯次數/字數（綁 free/pro 每日上限）；掛到預約會汙染翻譯指標。
+- 實作：`/booking/*` router 只掛 `require_rate_limit`，不掛 `require_quota`；webhook 預約分支不呼叫 `increment_usage`。
+- 後續：若要對預約計量/計費，另設獨立計數器（橫向 feature-flag 階段），不複用翻譯 quota。
+
+## 【預約系統 P1】容量控管以 `BookingSlot.booked_count` denormalized 計數 + `SELECT … FOR UPDATE` 鎖該列、鎖內重驗，消除超賣競態。
+- 時間：2026-06-21
+- 理由：比照 `quota._get_or_create_usage_locked` 既有鎖法；計數放單列即可只鎖一列。
+- 實作：`services/booking.book_slot` 鎖 slot → 重驗 `max_capacity - walkin_reserved - booked_count >= party_size` → 遞增 + INSERT + 入列提醒，單一 commit。`walkin_reserved` 以減法保留現場名額（不另建表）。
+
+## 【預約系統 P1】自動提醒採「due-reminder 表 + cron 執行 ops 腳本」，不引入 Celery/Redis/APScheduler。
+- 時間：2026-06-21
+- 理由：沿用最小依賴哲學與既有 `ops/backfill_line_bot_user_id.py` 同形；out-of-process、單實例天然去重，避免 app 內 asyncio loop 在多 worker 下重送。
+- 冪等三層：`UNIQUE(reservation_id, kind)` + 逐筆 `SELECT … FOR UPDATE` 重驗 pending + 推播成功後才標 sent。
+- 新增能力：LINE push（`LinePushClient` ABC + Http/Fake 實作），reply 無法用於非即時提醒（reply_token 5 分鐘時效）。

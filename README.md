@@ -412,3 +412,92 @@ summary total=1 updated=1 skipped=0 failed=0 conflict=0
 | 設定 `SAAS_DEEPL_API_KEY` | 使用真實 DeepL API |
 
 StubTranslator 輸出範例：`[ZH-TW] Hello` → 供開發測試用，不需外部 API。
+
+---
+
+## LINE 預約系統（Booking）
+
+比照 VibeAI 的 LINE 預約 SaaS 功能：時段容量管理、顧客自助預約/查詢/取消、顧客 CRM 自動建檔、
+預約前自動提醒。**與翻譯並存**——每店家以 `bot_mode` 切換 bot 行為。
+
+### bot 模式切換（`bot_mode`）
+
+`LineChannelConfig.bot_mode`：`translation`（預設）/ `booking`。webhook 依此分流；
+既有翻譯店家不受影響（migration 對既有列回填 `translation`）。可於 admin 或自助 line-config
+端點設定：
+
+```bash
+curl -X PUT http://localhost:8000/tenants/me/line-config \
+  -H "Authorization: Bearer <tenant_token>" -H "Content-Type: application/json" \
+  -d '{"channel_secret":"...","access_token":"...","bot_mode":"booking"}'
+```
+
+> 不送 `bot_mode` 時維持既有值；送無效值回 400。
+
+### 時段／容量 `/booking/slots`
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/booking/slots/` | 建時段（`slot_start`,`slot_end?`,`max_capacity`,`walkin_reserved?`） |
+| GET | `/booking/slots/` | 列出（可帶 `date_from`/`date_to`/`active_only`）；回傳含 `online_available` |
+| GET | `/booking/slots/{id}` | 取得單一（跨租戶 404） |
+| PUT | `/booking/slots/{id}` | 調 `max_capacity`/`walkin_reserved`/`is_active`；下修低於已訂量 → 409 |
+| DELETE | `/booking/slots/{id}` | 軟刪（`is_active=False`，保留既有預約） |
+
+> 線上可用名額 = `max_capacity - walkin_reserved - booked_count`。
+> `walkin_reserved` 保留現場名額（例：20 桌保留 5 → `max_capacity=20, walkin_reserved=5`，線上最多 15）。
+
+### 預約 `/booking/reservations`
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/booking/reservations/` | 建單（容量不足 409、時段不存在 404）；原子容量控管 |
+| GET | `/booking/reservations/` | 列出（可帶 `status`/`slot_id`） |
+| GET | `/booking/reservations/{id}` | 取得單一（跨租戶 404） |
+| POST | `/booking/reservations/{id}/cancel` | 取消（回補容量、待發提醒標 skipped） |
+
+### 顧客 CRM `/booking/customers`
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/booking/customers/` | 列出（含 `booking_count`、`last_booked_at`） |
+| GET | `/booking/customers/{id}` | 取得單一 |
+| PATCH | `/booking/customers/{id}` | 補 `phone`/`note` |
+
+> 顧客檔由 LINE 預約流程自動建立／更新（唯一鍵 `(tenant_id, line_user_id)`）。
+
+### LINE 預約對話（`bot_mode=booking` 時）
+
+webhook 接受文字指令與 postback（Rich Menu／quick-reply 按鈕）：
+
+| 輸入 | 行為 |
+|------|------|
+| `時段` / `/slots` | 列出可預約時段（含編號與剩餘名額） |
+| `預約 <時段編號> <人數>` / `/book 12 2` | 建單；額滿婉拒 |
+| postback `action=book&slot_id=12&party=2` | 同上（按鈕路徑） |
+| `我的預約` / `/my` | 列出自己的預約 |
+| `取消 <預約編號>` / `/cancel 7` | 取消（驗證 line_user_id） |
+
+> 預約互動與回覆**不計入翻譯 quota**（quota 為翻譯字數/次數計量表）。
+
+### 自動提醒（cron + ops 腳本）
+
+建單時自動入列 `day_before`（前一天）與 `day_of`（當天提前 `SAAS_REMINDER_DAY_OF_LEAD_MINUTES`
+分鐘）兩筆提醒。由 cron 定時跑 ops 腳本派送（LINE push）：
+
+```bash
+# 每 10–15 分鐘跑一次、單一實例（避免多 worker 重送）
+*/10 * * * * python -m saas_mvp.ops.send_due_reminders --apply
+
+# 先 dry-run 預覽（不推播、不寫入）
+python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
+```
+
+冪等三層：`UNIQUE(reservation_id, kind)` + 逐筆 `SELECT … FOR UPDATE` 重驗 pending + 推播成功後才標 sent。
+取消的預約、非 booking 模式或無 LINE 設定的租戶一律跳過。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_REMINDER_ENABLED` | 建單是否入列提醒 | `true` |
+| `SAAS_REMINDER_DAY_OF_LEAD_MINUTES` | 當天提醒提前分鐘數 | `180` |
+| `SAAS_REMINDER_MAX_PER_RUN` | ops 單次最多派送筆數 | `500` |

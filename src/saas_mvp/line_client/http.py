@@ -17,11 +17,14 @@ from saas_mvp.line_client.base import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LinePushClient,
+    LinePushError,
     LineReplyClient,
     LineReplyError,
 )
 
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+_LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 _LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 
 # LINE userId 規格：U 後接 32 個 hex 字元。防禦性驗證，非法值當 None 處理。
@@ -84,6 +87,66 @@ class HttpLineReplyClient(LineReplyClient):
             raise LineReplyError(f"LINE reply request failed: {exc}") from exc
         except Exception as exc:
             raise LineReplyError(f"Unexpected LINE reply error: {exc}") from exc
+
+
+class HttpLinePushClient(LinePushClient):
+    """呼叫真實 LINE Messaging API 的 push client。
+
+    僅用 stdlib urllib。任何失敗一律包成 LinePushError。
+
+    Args:
+        api_url: push endpoint（預設官方 URL，測試時可替換）。
+        timeout: HTTP timeout（秒）。
+    """
+
+    def __init__(
+        self,
+        api_url: str = _LINE_PUSH_URL,
+        timeout: int = 10,
+    ) -> None:
+        self._api_url = api_url
+        self._timeout = timeout
+
+    def is_available(self) -> bool:
+        """HTTP client 一律視為可用（連線能力由 push() 的例外反映）。"""
+        return True
+
+    def push(self, to_user_id: str, text: str, *, access_token: str) -> None:
+        """呼叫 LINE push API，主動推播單則文字訊息。
+
+        Raises:
+            LinePushError: 任何網路或 API 錯誤。
+        """
+        payload = json.dumps(
+            {
+                "to": to_user_id,
+                "messages": [{"type": "text", "text": text}],
+            }
+        ).encode()
+
+        req = urllib.request.Request(
+            self._api_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                # LINE API 成功時回 200，body 為 `{}`
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace") if exc.fp else ""
+            raise LinePushError(
+                f"LINE push API HTTP {exc.code}: {exc.reason} — {body[:200]}"
+            ) from exc
+        except OSError as exc:
+            raise LinePushError(f"LINE push request failed: {exc}") from exc
+        except Exception as exc:
+            raise LinePushError(f"Unexpected LINE push error: {exc}") from exc
 
 
 class HttpLineBotInfoClient(LineBotInfoClient):

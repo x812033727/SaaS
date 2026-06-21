@@ -45,6 +45,10 @@ from saas_mvp.models import user as _u  # noqa: F401, E402
 import saas_mvp.models.line_channel_config as _lcm  # noqa: F401, E402
 import saas_mvp.models.line_user_lang as _lul  # noqa: F401, E402
 import saas_mvp.models.line_webhook_event as _lwe  # noqa: F401, E402
+import saas_mvp.models.customer as _cust  # noqa: F401, E402
+import saas_mvp.models.booking_slot as _bslot  # noqa: F401, E402
+import saas_mvp.models.reservation as _resv  # noqa: F401, E402
+import saas_mvp.models.reservation_reminder as _rem  # noqa: F401, E402
 
 # ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login
 # 測試累積使全套逼近 60s self-test 逾時。測試環境把 rounds 降到合法最低值 4，

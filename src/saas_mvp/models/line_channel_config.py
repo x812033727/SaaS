@@ -23,6 +23,11 @@ from saas_mvp.db import Base
 # 僅允許合法字元，防止下游 API 注入。
 _BCP47_RE = re.compile(r"^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8})*$")
 
+# bot 行為模式：translation（現狀翻譯，預設）/ booking（預約）。
+# 並存設計——webhook 依此值分流，既有翻譯店家不受影響。
+VALID_BOT_MODES: frozenset[str] = frozenset({"translation", "booking"})
+DEFAULT_BOT_MODE = "translation"
+
 
 class LineConfigDecryptionError(RuntimeError):
     """金鑰輪換或資料損壞導致 Fernet 解密失敗。"""
@@ -30,6 +35,10 @@ class LineConfigDecryptionError(RuntimeError):
 
 class InvalidTargetLangError(ValueError):
     """`default_target_lang` 不符合 BCP-47 格式。"""
+
+
+class InvalidBotModeError(ValueError):
+    """`bot_mode` 不在 VALID_BOT_MODES。"""
 
 
 # ── 加密工具 ────────────────────────────────────────────────────────────────
@@ -80,6 +89,16 @@ def validate_target_lang(lang: str) -> str:
     return lang
 
 
+def validate_bot_mode(value: str) -> str:
+    """驗證 bot_mode 並回傳原字串；不在白名單拋 InvalidBotModeError。"""
+    if value not in VALID_BOT_MODES:
+        raise InvalidBotModeError(
+            f"Invalid bot_mode: {value!r}. "
+            f"Must be one of {sorted(VALID_BOT_MODES)}."
+        )
+    return value
+
+
 # ── ORM Model ───────────────────────────────────────────────────────────────
 
 class LineChannelConfig(Base):
@@ -112,6 +131,16 @@ class LineChannelConfig(Base):
     # 預設翻譯目標語言（BCP-47 tag，如 "zh-TW", "en", "ja"）
     default_target_lang = Column(String(16), nullable=False, default="zh-TW")
 
+    # bot 行為模式：translation（預設）/ booking。
+    # 雙 default/server_default：server_default 讓 ALTER TABLE 對既有列回填
+    # 'translation'，避免 NOT NULL 無預設失敗或殘留 NULL 打到 @validates。
+    bot_mode = Column(
+        String(16),
+        nullable=False,
+        default=DEFAULT_BOT_MODE,
+        server_default=DEFAULT_BOT_MODE,
+    )
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -132,6 +161,11 @@ class LineChannelConfig(Base):
     def _validate_lang(self, key: str, value: str) -> str:
         """BCP-47 格式強制——setter/constructor 賦值皆觸發。"""
         return validate_target_lang(value)
+
+    @validates("bot_mode")
+    def _validate_bot_mode(self, key: str, value: str) -> str:
+        """bot_mode 白名單強制——setter/constructor 賦值皆觸發。"""
+        return validate_bot_mode(value)
 
     # ── 便利屬性：透明加解密 ────────────────────────────────────────────────
 

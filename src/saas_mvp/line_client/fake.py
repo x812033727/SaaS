@@ -4,13 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from saas_mvp.line_client.base import LineBotInfoClient, LineReplyClient
+from saas_mvp.line_client.base import (
+    LineBotInfoClient,
+    LinePushClient,
+    LinePushError,
+    LineReplyClient,
+)
 
 
 @dataclass
 class SentReply:
     """一筆捕捉到的回覆記錄。"""
     reply_token: str
+    text: str
+    access_token: str
+
+
+@dataclass
+class SentPush:
+    """一筆捕捉到的推播記錄。"""
+    to_user_id: str
     text: str
     access_token: str
 
@@ -70,6 +83,50 @@ class FakeLineReplyClient(LineReplyClient):
     def texts(self) -> list[str]:
         """所有回覆文字（按呼叫順序）。"""
         return [r.text for r in self.sent]
+
+
+class FakeLinePushClient(LinePushClient):
+    """離線 fake push client，將所有 push() 呼叫累積在 ``sent`` list 供斷言。
+
+    使用方式::
+
+        fake = FakeLinePushClient()
+        send_due_reminders(..., push_client=fake)
+        assert fake.call_count == 1
+
+    Args:
+        available: 控制 ``is_available()`` 回傳值，預設 True。
+        fail: 設為 True 時 push() 拋 LinePushError，模擬推播失敗分支。
+    """
+
+    def __init__(self, *, available: bool = True, fail: bool = False) -> None:
+        self.sent: list[SentPush] = []
+        self._available = available
+        self._fail = fail
+
+    def push(self, to_user_id: str, text: str, *, access_token: str) -> None:
+        """捕捉推播（不發網路請求）；fail=True 時拋 LinePushError。"""
+        if self._fail:
+            raise LinePushError("fake push failure")
+        self.sent.append(SentPush(
+            to_user_id=to_user_id,
+            text=text,
+            access_token=access_token,
+        ))
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def reset(self) -> None:
+        self.sent.clear()
+
+    @property
+    def call_count(self) -> int:
+        return len(self.sent)
+
+    @property
+    def texts(self) -> list[str]:
+        return [p.text for p in self.sent]
 
 
 class StubLineBotInfoClient(LineBotInfoClient):
