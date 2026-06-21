@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}儀表板 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>{{ tenant.name }} 的儀表板</h1>
+
+<div class="card">
+  <h2>今日用量（方案：{{ usage.plan }}）</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">API 呼叫</div><div class="value">{{ usage.used }} / {{ usage.limit }}</div></div>
+    <div class="stat"><div class="label">剩餘呼叫</div><div class="value">{{ usage.remaining }}</div></div>
+    <div class="stat"><div class="label">翻譯字元</div><div class="value">{{ usage.used_chars }} / {{ usage.char_limit }}</div></div>
+    <div class="stat"><div class="label">剩餘字元</div><div class="value">{{ usage.remaining_chars }}</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>LINE Bot 狀態</h2>
+  {% if line_config %}
+    <p>憑證狀態：<span class="badge {{ line_config.credential_status }}">{{ line_config.credential_status }}</span></p>
+    <p class="muted">Channel secret：{{ '已設定' if line_config.has_channel_secret else '未設定' }} ·
+       Access token：{{ '已設定' if line_config.has_access_token else '未設定' }} ·
+       預設語言：<code>{{ line_config.default_target_lang }}</code></p>
+    <a class="btn" href="/ui/line-config">管理 LINE 設定</a>
+  {% else %}
+    <p class="muted">尚未設定 LINE Bot。</p>
+    <a class="btn" href="/ui/line-config">立即設定</a>
+  {% endif %}
+</div>
+
+<div class="card" id="settings-card">
+  {% include "_settings.html" %}
+</div>
+{% endblock %}

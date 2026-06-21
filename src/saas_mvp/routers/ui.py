@@ -1,0 +1,440 @@
+"""伺服器渲染管理 UI（Jinja2 + HTMX，同源伺服）。
+
+兩個使用層級：
+  - 店家自助（require_ui_user）：dashboard、LINE 設定、連線測試、店家類型。
+  - 平台管理（require_ui_admin）：跨店家 bot 總覽、單一租戶管理。
+
+認證：登入後把 JWT 放進 httpOnly cookie（SameSite=Lax）；UI 路由用獨立的
+`require_ui_user` / `require_ui_admin`（cookie 路徑），完全不碰 API 的
+`get_current_actor`（仍只認 header）。所有資料一律走既有 service 層，回應永不
+輸出明文 channel_secret / access_token，只揭露 has_* 布林與 credential_status。
+
+CSRF（已知限制）：MVP 僅靠 SameSite=Lax + 同源，未實作 per-request CSRF token。
+若日後將 UI 暴露給不可信的同源來源，應加上 double-submit cookie token。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Form, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+
+from saas_mvp.config import settings
+from saas_mvp.deps import Actor, get_db, require_ui_admin, require_ui_user
+from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
+from saas_mvp.auth.security import create_access_token, hash_password, verify_password
+from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
+from saas_mvp.models.tenant import Tenant, normalize_store_type
+from saas_mvp.models.user import User
+from saas_mvp.quota import get_quota_status
+from saas_mvp.routers.line_webhook import webhook_url_for
+from saas_mvp.services import admin as admin_svc
+from saas_mvp.services import line_config as line_config_svc
+from fastapi import HTTPException
+
+_PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
+templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
+
+router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
+
+
+# ── 共用工具 ────────────────────────────────────────────────────────────────
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    """把 JWT 寫入 httpOnly cookie；prod 加 Secure，dev/test 不加（方便本機/測試）。"""
+    response.set_cookie(
+        key=_UI_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.env not in ("dev", "test"),
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+    )
+
+
+def _ctx(request: Request, actor: Actor | None = None, **extra) -> dict:
+    """組 template context；Jinja2Templates 需要 request。"""
+    base = {
+        "request": request,
+        "current_user": actor.user if actor else None,
+        "is_admin": bool(actor and actor.user.is_admin),
+    }
+    base.update(extra)
+    return base
+
+
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("HX-Request", "").lower() == "true"
+
+
+def _line_config_or_none(db: Session, tenant_id: int) -> dict | None:
+    """取 LINE 設定（遮罩 dict）；未設定回 None（吞 404，與 dashboard 一致）。"""
+    try:
+        return line_config_svc.get_line_config(db, tenant_id)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            return None
+        raise
+
+
+# ── 公開：登入 / 註冊 / 登出 ───────────────────────────────────────────────────
+
+@router.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    return templates.TemplateResponse("login.html", _ctx(request))
+
+
+@router.post("/login", response_class=HTMLResponse)
+def login_submit(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(password, user.hashed_password):
+        # 統一錯誤訊息，避免帳號列舉
+        return templates.TemplateResponse(
+            "login.html",
+            _ctx(request, error="電子郵件或密碼錯誤"),
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+    _set_auth_cookie(resp, token)
+    return resp
+
+
+@router.get("/register", response_class=HTMLResponse)
+def register_form(request: Request):
+    return templates.TemplateResponse("register.html", _ctx(request))
+
+
+@router.post("/register", response_class=HTMLResponse)
+def register_submit(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    tenant_name: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    # 與 auth.register 同款守衛：重複 email、租戶名唯一、密碼長度
+    def _err(msg: str):
+        return templates.TemplateResponse(
+            "register.html",
+            _ctx(request, error=msg, email=email, tenant_name=tenant_name),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if len(password) < 8:
+        return _err("密碼至少需 8 個字元")
+    if db.query(User).filter(User.email == email).first():
+        return _err("此電子郵件已註冊")
+    if db.query(Tenant).filter(Tenant.name == tenant_name).first():
+        return _err("店家名稱已被使用，請換一個唯一名稱")
+
+    tenant = Tenant(name=tenant_name, plan="free")
+    db.add(tenant)
+    db.flush()
+    user = User(email=email, hashed_password=hash_password(password), tenant_id=tenant.id)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+    _set_auth_cookie(resp, token)
+    return resp
+
+
+@router.get("/logout")
+def logout():
+    resp = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+    resp.delete_cookie(_UI_COOKIE_NAME, path="/")
+    return resp
+
+
+# ── 店家自助 ────────────────────────────────────────────────────────────────
+
+@router.get("/", response_class=HTMLResponse)
+def dashboard(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    tenant = db.get(Tenant, tid)
+    line_config = _line_config_or_none(db, tid)
+    usage = get_quota_status(db, tid, tenant.plan)
+    return templates.TemplateResponse(
+        "dashboard.html",
+        _ctx(request, actor, tenant=tenant, line_config=line_config, usage=usage),
+    )
+
+
+@router.get("/line-config", response_class=HTMLResponse)
+def line_config_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    cfg = _line_config_or_none(db, tid)
+    return templates.TemplateResponse(
+        "line_config.html",
+        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
+    )
+
+
+@router.post("/line-config", response_class=HTMLResponse)
+def line_config_save(
+    request: Request,
+    channel_secret: str = Form(..., max_length=64),
+    access_token: str = Form(..., max_length=1024),
+    default_target_lang: str = Form("zh-TW"),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
+):
+    tid = actor.user.tenant_id
+    try:
+        cfg = line_config_svc.upsert_line_config(
+            db, tid,
+            channel_secret=channel_secret,
+            access_token=access_token,
+            default_target_lang=default_target_lang,
+            bot_info_client=bot_info_client,
+        )
+    except HTTPException as exc:
+        return templates.TemplateResponse(
+            "_line_config_status.html",
+            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid), error=str(exc.detail)),
+            status_code=exc.status_code,
+        )
+    return templates.TemplateResponse(
+        "_line_config_status.html",
+        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
+    )
+
+
+@router.post("/line-config/verify", response_class=HTMLResponse)
+def line_config_verify(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
+):
+    tid = actor.user.tenant_id
+    try:
+        cfg = line_config_svc.verify_line_config(db, tid, bot_info_client=bot_info_client)
+    except HTTPException as exc:
+        return templates.TemplateResponse(
+            "_line_config_status.html",
+            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid), error=str(exc.detail)),
+            status_code=exc.status_code,
+        )
+    return templates.TemplateResponse(
+        "_line_config_status.html",
+        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
+    )
+
+
+@router.post("/line-config/delete", response_class=HTMLResponse)
+def line_config_delete(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        line_config_svc.delete_line_config(db, tid)
+    except HTTPException:
+        pass  # 不存在即視為已刪除
+    return templates.TemplateResponse(
+        "_line_config_status.html",
+        _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid)),
+    )
+
+
+@router.post("/settings", response_class=HTMLResponse)
+def settings_save(
+    request: Request,
+    store_type: str = Form("", max_length=32),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    tenant.store_type = normalize_store_type(store_type)
+    db.commit()
+    db.refresh(tenant)
+    return templates.TemplateResponse(
+        "_settings.html",
+        _ctx(request, actor, tenant=tenant, saved=True),
+    )
+
+
+# ── 平台管理 ────────────────────────────────────────────────────────────────
+
+@router.get("/admin/bots", response_class=HTMLResponse)
+def admin_bots(
+    request: Request,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    store_type: str | None = Query(None),
+    is_active: bool | None = Query(None),
+    uncategorized: bool = Query(False),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    # 空字串 store_type 視為「未指定」
+    store_type = store_type or None
+    rows = admin_svc.list_line_bots(
+        db, skip=skip, limit=limit,
+        store_type=store_type, is_active=is_active, uncategorized=uncategorized,
+    )
+    filters = {
+        "store_type": store_type or "",
+        "is_active": is_active,
+        "uncategorized": uncategorized,
+        "skip": skip,
+        "limit": limit,
+    }
+    ctx = _ctx(request, actor, rows=rows, filters=filters)
+    # HTMX 篩選請求只回表格 partial
+    template = "admin/_bots_table.html" if _is_htmx(request) else "admin/bots.html"
+    return templates.TemplateResponse(template, ctx)
+
+
+@router.get("/admin/tenants/{tenant_id}", response_class=HTMLResponse)
+def admin_tenant_detail(
+    request: Request,
+    tenant_id: int,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        return templates.TemplateResponse(
+            "admin/tenant_detail.html",
+            _ctx(request, actor, tenant=None, not_found=True, tenant_id=tenant_id),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    usage = get_quota_status(db, tenant_id, tenant.plan)
+    cfg = _line_config_or_none(db, tenant_id)
+    return templates.TemplateResponse(
+        "admin/tenant_detail.html",
+        _ctx(request, actor, tenant=tenant, usage=usage, cfg=cfg,
+             action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
+    )
+
+
+@router.post("/admin/tenants/{tenant_id}/patch", response_class=HTMLResponse)
+def admin_tenant_patch(
+    request: Request,
+    tenant_id: int,
+    plan: str = Form(...),
+    is_active: str = Form(...),
+    store_type: str = Form("", max_length=32),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        result = admin_svc.patch_tenant(
+            db, tenant_id,
+            is_active=(is_active == "true"),
+            plan=plan,
+            actor_user_id=actor.user.id,
+            store_type=store_type,
+            store_type_provided=True,  # 表單一律帶 store_type 欄位
+        )
+    except HTTPException as exc:
+        tenant = db.get(Tenant, tenant_id)
+        return templates.TemplateResponse(
+            "admin/_tenant_summary.html",
+            _ctx(request, actor, tenant=tenant, error=str(exc.detail)),
+            status_code=exc.status_code,
+        )
+    tenant = db.get(Tenant, tenant_id)
+    return templates.TemplateResponse(
+        "admin/_tenant_summary.html",
+        _ctx(request, actor, tenant=tenant, saved=True),
+    )
+
+
+@router.post("/admin/tenants/{tenant_id}/line-config", response_class=HTMLResponse)
+def admin_line_config_save(
+    request: Request,
+    tenant_id: int,
+    channel_secret: str = Form(..., max_length=64),
+    access_token: str = Form(..., max_length=1024),
+    default_target_lang: str = Form("zh-TW"),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
+):
+    try:
+        cfg = line_config_svc.upsert_line_config(
+            db, tenant_id,
+            channel_secret=channel_secret,
+            access_token=access_token,
+            default_target_lang=default_target_lang,
+            bot_info_client=bot_info_client,
+        )
+    except HTTPException as exc:
+        return templates.TemplateResponse(
+            "_line_config_status.html",
+            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
+                 action_base=f"/ui/admin/tenants/{tenant_id}/line-config", error=str(exc.detail)),
+            status_code=exc.status_code,
+        )
+    return templates.TemplateResponse(
+        "_line_config_status.html",
+        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tenant_id),
+             action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
+    )
+
+
+@router.post("/admin/tenants/{tenant_id}/line-config/verify", response_class=HTMLResponse)
+def admin_line_config_verify(
+    request: Request,
+    tenant_id: int,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+    bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
+):
+    try:
+        cfg = line_config_svc.verify_line_config(db, tenant_id, bot_info_client=bot_info_client)
+    except HTTPException as exc:
+        return templates.TemplateResponse(
+            "_line_config_status.html",
+            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
+                 action_base=f"/ui/admin/tenants/{tenant_id}/line-config", error=str(exc.detail)),
+            status_code=exc.status_code,
+        )
+    return templates.TemplateResponse(
+        "_line_config_status.html",
+        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tenant_id),
+             action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
+    )
+
+
+@router.post("/admin/tenants/{tenant_id}/line-config/delete", response_class=HTMLResponse)
+def admin_line_config_delete(
+    request: Request,
+    tenant_id: int,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        line_config_svc.delete_line_config(db, tenant_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_line_config_status.html",
+        _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
+             action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
+    )

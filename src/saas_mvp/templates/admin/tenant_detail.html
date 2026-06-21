@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}租戶管理 · LINE Bot 管理{% endblock %}
+{% block content %}
+{% if not_found %}
+  <h1>找不到租戶 #{{ tenant_id }}</h1>
+  <a class="btn secondary" href="/ui/admin/bots">返回總覽</a>
+{% else %}
+<h1>管理：{{ tenant.name }} <span class="muted">#{{ tenant.id }}</span></h1>
+<p><a href="/ui/admin/bots">← 返回總覽</a></p>
+
+<div class="card" id="tenant-summary">
+  {% include "admin/_tenant_summary.html" %}
+</div>
+
+<div class="card">
+  <h2>調整租戶</h2>
+  <form hx-post="/ui/admin/tenants/{{ tenant.id }}/patch" hx-target="#tenant-summary" hx-swap="innerHTML">
+    <div class="row">
+      <div>
+        <label for="plan">方案</label>
+        <select id="plan" name="plan">
+          <option value="free" {% if tenant.plan == 'free' %}selected{% endif %}>free</option>
+          <option value="pro" {% if tenant.plan == 'pro' %}selected{% endif %}>pro</option>
+        </select>
+      </div>
+      <div>
+        <label for="is_active">啟用狀態</label>
+        <select id="is_active" name="is_active">
+          <option value="true" {% if tenant.is_active %}selected{% endif %}>啟用</option>
+          <option value="false" {% if not tenant.is_active %}selected{% endif %}>停用</option>
+        </select>
+      </div>
+      <div>
+        <label for="store_type">店家類型</label>
+        <input id="store_type" name="store_type" type="text" maxlength="32" value="{{ tenant.store_type or '' }}">
+      </div>
+    </div>
+    <button type="submit">儲存變更</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>LINE Bot 設定</h2>
+  <div id="line-status">
+    {% include "_line_config_status.html" %}
+  </div>
+  <h2 style="margin-top:20px">更新憑證</h2>
+  <form hx-post="/ui/admin/tenants/{{ tenant.id }}/line-config" hx-target="#line-status" hx-swap="innerHTML">
+    <label for="channel_secret">Channel secret</label>
+    <input id="channel_secret" name="channel_secret" type="password" required maxlength="64">
+    <label for="access_token">Channel access token</label>
+    <input id="access_token" name="access_token" type="password" required maxlength="1024">
+    <label for="default_target_lang">預設翻譯語言</label>
+    <input id="default_target_lang" name="default_target_lang" type="text"
+           value="{{ cfg.default_target_lang if cfg else 'zh-TW' }}">
+    <button type="submit">儲存並驗證</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

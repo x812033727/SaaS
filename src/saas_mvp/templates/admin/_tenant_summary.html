@@ -1,0 +1,12 @@
+<h2>租戶概況</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if saved %}<div class="success">已儲存。</div>{% endif %}
+<div class="grid">
+  <div class="stat"><div class="label">方案</div><div class="value">{{ tenant.plan }}</div></div>
+  <div class="stat"><div class="label">狀態</div><div class="value">
+    <span class="badge {{ 'on' if tenant.is_active else 'off' }}">{{ '啟用' if tenant.is_active else '停用' }}</span>
+  </div></div>
+  <div class="stat"><div class="label">店家類型</div><div class="value">
+    {% if tenant.store_type %}{{ tenant.store_type }}{% else %}<span class="muted">未分類</span>{% endif %}
+  </div></div>
+</div>

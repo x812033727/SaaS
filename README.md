@@ -10,6 +10,25 @@ python -m saas_mvp        # 或 saas-mvp
 # 預設 http://127.0.0.1:8000
 ```
 
+## 管理 UI（`/ui`）
+
+伺服器渲染的管理介面（Jinja2 + HTMX，與 API 同源），啟動後瀏覽
+`http://127.0.0.1:8000/ui/login`。涵蓋兩個層級：
+
+- **店家自助**：註冊/登入、儀表板（bot 狀態 + 今日用量）、LINE 憑證設定與
+  連線測試、店家類型設定。
+- **平台管理員**（`is_admin=True`）：跨店家 bot 總覽（依類型/狀態篩選）、
+  單一租戶管理（方案、停啟用、店家類型、代管 LINE 設定與驗證）。
+
+設計重點：
+
+- 登入後 JWT 存於 **httpOnly cookie**（`SameSite=Lax`，prod 加 `Secure`）。
+  UI 路由用獨立的 cookie 認證，**不影響 API 路徑**（API 仍只認 header；
+  cookie-only 請求一律 401）。
+- HTML 永不輸出明文 `channel_secret` / `access_token`，只揭露 `has_*` 與
+  `credential_status`。
+- CSRF 目前僅依賴 `SameSite=Lax` + 同源（見 `KNOWN_LIMITATIONS.md`）。
+
 ## 認證方式
 
 所有受保護端點支援以下三種認證（互斥選一）：

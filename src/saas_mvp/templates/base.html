@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}LINE Bot 管理{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {% if current_user %}
+  <header class="nav">
+    <span class="brand">LINE Bot 管理</span>
+    <a href="/ui/">儀表板</a>
+    <a href="/ui/line-config">LINE 設定</a>
+    {% if is_admin %}
+    <a href="/ui/admin/bots">跨店總覽</a>
+    {% endif %}
+    <span class="spacer"></span>
+    <span class="who">{{ current_user.email }}{% if is_admin %} · 管理員{% endif %}</span>
+    <a href="/ui/logout">登出</a>
+  </header>
+  {% endif %}
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

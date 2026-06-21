@@ -1,0 +1,13 @@
+<h2>店家設定</h2>
+{% if saved %}<div class="success">已儲存。</div>{% endif %}
+<form hx-post="/ui/settings" hx-target="#settings-card" hx-swap="innerHTML">
+  <label for="store_type">店家類型（分類標籤，可留空）</label>
+  <input id="store_type" name="store_type" type="text" maxlength="32"
+         value="{{ tenant.store_type or '' }}"
+         list="store-type-options" placeholder="例如 restaurant / retail / service">
+  <datalist id="store-type-options">
+    <option value="restaurant"><option value="retail">
+    <option value="service"><option value="other">
+  </datalist>
+  <button type="submit">儲存設定</button>
+</form>

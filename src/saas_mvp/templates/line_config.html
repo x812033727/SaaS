@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}LINE 設定 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>LINE Bot 設定</h1>
+
+<div class="card">
+  <h2>連線狀態</h2>
+  <div id="line-status">
+    {% include "_line_config_status.html" %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>更新憑證</h2>
+  <p class="muted">填入 LINE Developers Console 的 Channel secret 與 Channel access token。儲存後會自動驗證連線。</p>
+  <form hx-post="/ui/line-config" hx-target="#line-status" hx-swap="innerHTML">
+    <label for="channel_secret">Channel secret</label>
+    <input id="channel_secret" name="channel_secret" type="password" required maxlength="64">
+    <label for="access_token">Channel access token</label>
+    <input id="access_token" name="access_token" type="password" required maxlength="1024">
+    <label for="default_target_lang">預設翻譯語言（BCP-47）</label>
+    <input id="default_target_lang" name="default_target_lang" type="text"
+           value="{{ cfg.default_target_lang if cfg else 'zh-TW' }}">
+    <button type="submit">儲存並驗證</button>
+  </form>
+</div>
+{% endblock %}
