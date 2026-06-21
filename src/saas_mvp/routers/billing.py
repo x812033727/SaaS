@@ -16,7 +16,13 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import Actor, get_current_actor, get_db
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.quota import PLAN_DAILY_LIMITS
-from saas_mvp.services.billing import downgrade_plan, upgrade_plan
+from saas_mvp.services import features as features_svc
+from saas_mvp.services.billing import (
+    downgrade_plan,
+    subscribe_feature,
+    unsubscribe_feature,
+    upgrade_plan,
+)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -112,3 +118,59 @@ def downgrade(
 
     payment_id = downgrade_plan(db, tenant, body.plan, actor.user.id)
     return BillingResponse(ok=True, plan=body.plan, payment_id=payment_id)
+
+
+# ── 進階功能訂閱 / 退訂 ───────────────────────────────────────────────────────
+
+class FeatureResponse(BaseModel):
+    key: str
+    label: str
+    monthly_price_cents: int
+    enabled: bool
+
+
+class FeatureSubscribeResponse(BaseModel):
+    ok: bool
+    feature: str
+    enabled: bool
+    payment_id: str | None = None
+
+
+def _validate_feature_or_400(feature: str) -> None:
+    try:
+        features_svc.validate_feature(feature)
+    except features_svc.UnknownFeatureError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/features", response_model=list[FeatureResponse])
+def list_features(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[FeatureResponse]:
+    """自家進階功能清單（開通狀態 + 月費）。"""
+    return [FeatureResponse(**f) for f in features_svc.list_for_tenant(db, actor.user.tenant_id)]
+
+
+@router.post("/features/{feature}/subscribe", response_model=FeatureSubscribeResponse)
+def subscribe(
+    feature: str,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> FeatureSubscribeResponse:
+    _validate_feature_or_400(feature)
+    tenant = _get_tenant(actor, db)
+    payment_id = subscribe_feature(db, tenant, feature, actor.user.id)
+    return FeatureSubscribeResponse(ok=True, feature=feature, enabled=True, payment_id=payment_id)
+
+
+@router.post("/features/{feature}/unsubscribe", response_model=FeatureSubscribeResponse)
+def unsubscribe(
+    feature: str,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> FeatureSubscribeResponse:
+    _validate_feature_or_400(feature)
+    tenant = _get_tenant(actor, db)
+    unsubscribe_feature(db, tenant, feature, actor.user.id)
+    return FeatureSubscribeResponse(ok=True, feature=feature, enabled=False)

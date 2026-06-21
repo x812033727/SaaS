@@ -782,3 +782,13 @@
 - 時間：2026-06-21
 - 理由：比照 translator/line_client「先 stub、後接真實」；真實金流涉及帳號/合約/回調驗簽，需使用者拍板 provider（綠界/Stripe/LINE Pay），不在本輪硬接。
 - 實作：services/payment（PaymentProvider ABC + StubPaymentProvider + get_payment_provider）；設定 SAAS_PAYMENT_PROVIDER（預設 stub）、SAAS_CURRENCY（預設 TWD）。
+
+## 【橫向 feature flags】is_enabled 為唯一真相來源，REST/webhook/ops/UI 全走它；無 TenantFeature 列時回 settings.features_default_enabled（預設 True＝向後相容）。
+- 時間：2026-06-21
+- 理由：閘門一致避免某條路徑漏接；預設 True 使既有 P3/P4/P5 與已上線租戶零影響，嚴格 freemium 由 SAAS_FEATURES_DEFAULT_ENABLED=false 切換。
+- 實作：services/features（is_enabled/set_enabled/list_for_tenant/require_feature dependency）；閘門掛 coupons/products/orders router、book_slot enqueue、ops _process_one、webhook dispatch、UI 頁。
+
+## 【橫向 feature flags】訂閱＝stub 付款→啟用；TenantFeature(entitlement) + FeatureChangeHistory(append-only 稽核，仿 PlanChangeHistory)。
+- 時間：2026-06-21
+- 理由：訂閱/退訂/admin 覆寫需稽核 who/when/source；entitlement 與歷史分離（一張現況表 + 一張歷史表）。真實月費扣款待接真實金流（同 P4 caveat）。
+- 實作：billing.subscribe_feature/unsubscribe_feature；/billing/features/*；/admin/tenants/{id}/features；/tenants/me/features；UI /ui/features。

@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     currency: str = "TWD"
     payment_provider: str = "stub"
 
+    # 進階功能旗標 + 訂閱（橫向）
+    # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列時的預設。
+    #   True  = 向後相容（進階功能預設開，不破壞既有/dev 易用）
+    #   False = 嚴格 freemium（預設關，需訂閱才開）
+    features_default_enabled: bool = True
+    feature_monthly_price_cents: int = 20000  # NT$200
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。

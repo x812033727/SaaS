@@ -39,8 +39,10 @@ from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import analytics as analytics_svc
+from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -341,7 +343,32 @@ def admin_tenant_detail(
     return templates.TemplateResponse(
         "admin/tenant_detail.html",
         _ctx(request, actor, tenant=tenant, usage=usage, cfg=cfg,
+             features=features_svc.list_for_tenant(db, tenant_id),
              action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
+    )
+
+
+@router.post("/admin/tenants/{tenant_id}/features/{feature}", response_class=HTMLResponse)
+def admin_set_feature(
+    request: Request,
+    tenant_id: int,
+    feature: str,
+    enabled: str = Form(...),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        features_svc.validate_feature(feature)
+        features_svc.set_enabled(
+            db, tenant_id, feature, enabled == "true",
+            actor_user_id=actor.user.id, source="admin",
+        )
+    except features_svc.UnknownFeatureError:
+        pass
+    return templates.TemplateResponse(
+        "admin/_tenant_features.html",
+        _ctx(request, actor, tenant_id=tenant_id,
+             features=features_svc.list_for_tenant(db, tenant_id)),
     )
 
 
@@ -606,12 +633,21 @@ def _shop_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     )
 
 
+def _feature_locked(request: Request, actor: Actor, feature: str, label: str):
+    return templates.TemplateResponse(
+        "feature_locked.html",
+        _ctx(request, actor, feature=feature, feature_label=label),
+    )
+
+
 @router.get("/shop", response_class=HTMLResponse)
 def shop_page(
     request: Request,
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not features_svc.is_enabled(db, actor.user.tenant_id, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     return templates.TemplateResponse("shop.html", _shop_ctx(request, actor, db))
 
 
@@ -772,6 +808,8 @@ def coupons_page(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not features_svc.is_enabled(db, actor.user.tenant_id, features_svc.COUPON_SYSTEM):
+        return _feature_locked(request, actor, features_svc.COUPON_SYSTEM, "優惠券／會員")
     return templates.TemplateResponse("coupons.html", _coupons_ctx(request, actor, db))
 
 
@@ -818,6 +856,57 @@ def coupons_deactivate(
     return templates.TemplateResponse(
         "_coupons_list.html", _coupons_ctx(request, actor, db)
     )
+
+
+# ── 店家自助：進階功能訂閱 ────────────────────────────────────────────────────
+
+def _features_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    return _ctx(
+        request, actor,
+        features=features_svc.list_for_tenant(db, actor.user.tenant_id),
+        **extra,
+    )
+
+
+@router.get("/features", response_class=HTMLResponse)
+def features_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse("features.html", _features_ctx(request, actor, db))
+
+
+@router.post("/features/{feature}/subscribe", response_class=HTMLResponse)
+def features_subscribe(
+    request: Request,
+    feature: str,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    try:
+        features_svc.validate_feature(feature)
+        billing_svc.subscribe_feature(db, tenant, feature, actor.user.id)
+    except features_svc.UnknownFeatureError:
+        pass
+    return templates.TemplateResponse("_features_list.html", _features_ctx(request, actor, db))
+
+
+@router.post("/features/{feature}/unsubscribe", response_class=HTMLResponse)
+def features_unsubscribe(
+    request: Request,
+    feature: str,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    try:
+        features_svc.validate_feature(feature)
+        billing_svc.unsubscribe_feature(db, tenant, feature, actor.user.id)
+    except features_svc.UnknownFeatureError:
+        pass
+    return templates.TemplateResponse("_features_list.html", _features_ctx(request, actor, db))
 
 
 @router.post("/rich-menu/clear", response_class=HTMLResponse)

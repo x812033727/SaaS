@@ -12,9 +12,30 @@ from saas_mvp.models.tenant import Tenant, normalize_store_type
 from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import line_config as line_config_svc
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
+
+
+class FeatureRow(BaseModel):
+    key: str
+    label: str
+    monthly_price_cents: int
+    enabled: bool
+
+
+@router.get(
+    "/me/features",
+    response_model=list[FeatureRow],
+    dependencies=[Depends(require_rate_limit)],
+)
+def my_features(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[FeatureRow]:
+    """自家進階功能開通狀態（唯讀）。"""
+    return [FeatureRow(**f) for f in features_svc.list_for_tenant(db, current_user.tenant_id)]
 
 
 class TenantInfo(BaseModel):

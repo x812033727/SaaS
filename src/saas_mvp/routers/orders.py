@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
+from saas_mvp.services.features import PRODUCT_SALES, require_feature
 from saas_mvp.services.payment import get_payment_provider
 from saas_mvp.services.shop import (
     OrderNotFound,
@@ -30,7 +31,7 @@ from saas_mvp.services.shop import (
 router = APIRouter(
     prefix="/booking/orders",
     tags=["booking-orders"],
-    dependencies=[Depends(require_rate_limit)],
+    dependencies=[Depends(require_rate_limit), Depends(require_feature(PRODUCT_SALES))],
 )
 
 

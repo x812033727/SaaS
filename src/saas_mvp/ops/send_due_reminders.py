@@ -39,6 +39,7 @@ from saas_mvp.models.reservation_reminder import (
     ReservationReminder,
 )
 from saas_mvp.models.tenant import Tenant
+from saas_mvp.services import features as features_svc
 from saas_mvp.services.reminders import build_reminder_text
 
 
@@ -122,6 +123,13 @@ def _process_one(
             rem.updated_at = now
             db.commit()
             return ReminderResult(reminder_id, "skipped", "not_booking_mode")
+
+        # 進階功能閘門：租戶若關閉 AUTO_REMINDER（含已入列後退訂），不再派送。
+        if not features_svc.is_enabled(db, rem.tenant_id, features_svc.AUTO_REMINDER):
+            rem.status = REMINDER_SKIPPED
+            rem.updated_at = now
+            db.commit()
+            return ReminderResult(reminder_id, "skipped", "feature_disabled")
 
         slot = db.get(BookingSlot, resv.slot_id)
         tenant = db.get(Tenant, rem.tenant_id)

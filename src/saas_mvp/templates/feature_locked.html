@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ feature_label }} · 尚未開通{% endblock %}
+{% block content %}
+<h1>{{ feature_label }}</h1>
+<div class="card">
+  <p>此功能尚未開通。</p>
+  <p class="muted">「{{ feature_label }}」屬進階功能，需先訂閱才能使用。</p>
+  <a class="btn" href="/ui/features">前往訂閱</a>
+</div>
+{% endblock %}
