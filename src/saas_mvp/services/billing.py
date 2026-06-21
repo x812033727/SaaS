@@ -116,3 +116,33 @@ def downgrade_plan(
     _insert_history(db, tenant, from_plan, new_plan, actor_user_id, reason="downgrade")
     db.commit()
     return _generate_payment_id()
+
+
+# ── 進階功能訂閱 / 退訂（橫向 feature flags） ─────────────────────────────────
+
+def subscribe_feature(
+    db: Session, tenant: Tenant, feature: str, actor_user_id: int
+) -> str:
+    """訂閱進階功能：stub 付款 → 啟用 feature（含稽核）；回模擬 payment_id。"""
+    from saas_mvp.services import features as features_svc
+
+    features_svc.validate_feature(feature)
+    payment_id = _generate_payment_id()  # stub 付款（真實金流待接）
+    features_svc.set_enabled(
+        db, tenant.id, feature, True,
+        actor_user_id=actor_user_id, source="subscribe", reason=payment_id,
+    )
+    return payment_id
+
+
+def unsubscribe_feature(
+    db: Session, tenant: Tenant, feature: str, actor_user_id: int
+) -> None:
+    """退訂進階功能：關閉 feature（含稽核）。"""
+    from saas_mvp.services import features as features_svc
+
+    features_svc.validate_feature(feature)
+    features_svc.set_enabled(
+        db, tenant.id, feature, False,
+        actor_user_id=actor_user_id, source="unsubscribe",
+    )

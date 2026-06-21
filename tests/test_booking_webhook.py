@@ -326,6 +326,31 @@ class TestShop:
         assert "你的訂單" in (line_client.last_text or "")
 
 
+class TestFeatureGatingWebhook:
+    def _disable(self, tid, feature):
+        from saas_mvp.models.tenant_feature import TenantFeature
+        db = _Session()
+        try:
+            db.add(TenantFeature(tenant_id=tid, feature=feature, enabled=False))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_coupons_disabled_message(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        self._disable(tid, "COUPON_SYSTEM")
+        _post(client, tid, _text_event("優惠券"))
+        assert "尚未開放優惠券" in (line_client.last_text or "")
+
+    def test_shop_disabled_message(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        self._disable(tid, "PRODUCT_SALES")
+        _post(client, tid, _text_event("商品"))
+        assert "尚未開放商品" in (line_client.last_text or "")
+
+
 class TestTranslationRegression:
     def test_translation_mode_still_translates(self, app_client):
         """bot_mode 預設 translation → 仍走翻譯，不建立預約（回歸保護）。"""

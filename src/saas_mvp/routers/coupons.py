@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
+from saas_mvp.services.features import COUPON_SYSTEM, require_feature
 from saas_mvp.services.coupons import (
     create_coupon,
     deactivate_coupon,
@@ -25,7 +26,7 @@ from saas_mvp.services.coupons import (
 router = APIRouter(
     prefix="/booking/coupons",
     tags=["booking-coupons"],
-    dependencies=[Depends(require_rate_limit)],
+    dependencies=[Depends(require_rate_limit), Depends(require_feature(COUPON_SYSTEM))],
 )
 
 

@@ -114,6 +114,7 @@ from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
 from saas_mvp.services.payment import get_payment_provider
@@ -785,22 +786,23 @@ def _dispatch_booking(
             return "無法取消其他人的預約。", None
         return f"預約 #{reservation_id} 已取消。", None
 
-    if action == "coupons":
-        return _list_coupons_reply(db, tenant_id)
-
-    if action == "redeem":
+    if action in ("coupons", "redeem"):
+        if not features_svc.is_enabled(db, tenant_id, features_svc.COUPON_SYSTEM):
+            return "本店尚未開放優惠券功能。", None
+        if action == "coupons":
+            return _list_coupons_reply(db, tenant_id)
         return _redeem_coupon_reply(db, tenant_id, params.get("code"), line_user_id), None
 
     if action == "points":
         return _points_reply(db, tenant_id, line_user_id), None
 
-    if action == "shop":
-        return _list_products_reply(db, tenant_id)
-
-    if action == "buy":
-        return _buy_reply(db, tenant_id, params.get("product_id"), params.get("qty", 1), line_user_id), None
-
-    if action == "my_orders":
+    if action in ("shop", "buy", "my_orders"):
+        if not features_svc.is_enabled(db, tenant_id, features_svc.PRODUCT_SALES):
+            return "本店尚未開放商品購買功能。", None
+        if action == "shop":
+            return _list_products_reply(db, tenant_id)
+        if action == "buy":
+            return _buy_reply(db, tenant_id, params.get("product_id"), params.get("qty", 1), line_user_id), None
         return _my_orders_reply(db, tenant_id, line_user_id), None
 
     # help 或無法辨識

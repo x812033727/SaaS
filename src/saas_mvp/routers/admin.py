@@ -10,10 +10,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from fastapi import HTTPException, status
+
 from saas_mvp.deps import get_db, get_current_actor, require_admin
 from saas_mvp.auth.dependencies import Actor
 from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
+from saas_mvp.models.tenant import Tenant
 from saas_mvp.services import admin as admin_svc
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import line_config as line_config_svc
 from pydantic import BaseModel, Field
 
@@ -198,3 +202,60 @@ def delete_line_config(
     db: Session = Depends(get_db),
 ):
     return line_config_svc.delete_line_config(db, tenant_id)
+
+
+# ── 進階功能覆寫（平台 admin） ────────────────────────────────────────────────
+
+class AdminFeatureRow(BaseModel):
+    key: str
+    label: str
+    monthly_price_cents: int
+    enabled: bool
+
+
+class AdminFeaturePatch(BaseModel):
+    enabled: bool
+
+
+def _tenant_or_404(db: Session, tenant_id: int) -> Tenant:
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    return tenant
+
+
+@router.get(
+    "/tenants/{tenant_id}/features",
+    response_model=list[AdminFeatureRow],
+    summary="查詢租戶進階功能開通狀態",
+)
+def list_tenant_features(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+):
+    _tenant_or_404(db, tenant_id)
+    return [AdminFeatureRow(**f) for f in features_svc.list_for_tenant(db, tenant_id)]
+
+
+@router.put(
+    "/tenants/{tenant_id}/features/{feature}",
+    response_model=list[AdminFeatureRow],
+    summary="平台覆寫租戶進階功能開關",
+)
+def set_tenant_feature(
+    tenant_id: int,
+    feature: str,
+    body: AdminFeaturePatch,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _tenant_or_404(db, tenant_id)
+    try:
+        features_svc.validate_feature(feature)
+    except features_svc.UnknownFeatureError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    features_svc.set_enabled(
+        db, tenant_id, feature, body.enabled,
+        actor_user_id=actor.user.id, source="admin",
+    )
+    return [AdminFeatureRow(**f) for f in features_svc.list_for_tenant(db, tenant_id)]

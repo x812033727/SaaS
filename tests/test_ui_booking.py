@@ -216,3 +216,29 @@ class TestShopUI:
         })
         assert r.status_code == 200
         assert "error" in r.text or ">= 0" in r.text
+
+
+class TestFeaturesUI:
+    def test_features_page_lists(self, client):
+        _login(client)
+        r = client.get("/ui/features")
+        assert r.status_code == 200
+        assert "進階功能訂閱" in r.text and "優惠券" in r.text
+
+    def test_unsubscribe_then_locked_page(self, client):
+        _login(client)
+        # 退訂優惠券 → /ui/coupons 顯示 upsell
+        r = client.post("/ui/features/COUPON_SYSTEM/unsubscribe")
+        assert r.status_code == 200
+        assert "未開通" in r.text
+        locked = client.get("/ui/coupons")
+        assert "尚未開通" in locked.text and "前往訂閱" in locked.text
+        # 重新訂閱 → 可進入管理頁
+        client.post("/ui/features/COUPON_SYSTEM/subscribe")
+        assert client.get("/ui/coupons").status_code == 200
+
+    def test_shop_locked_when_disabled(self, client):
+        _login(client)
+        client.post("/ui/features/PRODUCT_SALES/unsubscribe")
+        locked = client.get("/ui/shop")
+        assert "尚未開通" in locked.text

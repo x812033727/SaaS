@@ -24,6 +24,7 @@ from saas_mvp.models.reservation import (
     RESERVATION_CONFIRMED,
     Reservation,
 )
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.reminders import (
     cancel_reminders_for_reservation,
@@ -120,12 +121,16 @@ def book_slot(
     slot.booked_count = (slot.booked_count or 0) + party_size
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
 
+    # 自動提醒為進階功能：需 tenant 開通 AUTO_REMINDER 且全域 reminder_enabled。
     enqueue_reminders(
         db,
         reservation=reservation,
         slot=slot,
         day_of_lead_minutes=settings.reminder_day_of_lead_minutes,
-        enabled=settings.reminder_enabled,
+        enabled=(
+            settings.reminder_enabled
+            and features_svc.is_enabled(db, tenant_id, features_svc.AUTO_REMINDER)
+        ),
     )
 
     # 會員集點（同一交易；customer 為 None（店家手動建單無 line_user_id）時略過）

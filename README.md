@@ -609,3 +609,36 @@ python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
 |------|------|------|
 | `SAAS_CURRENCY` | 預設幣別 | `TWD` |
 | `SAAS_PAYMENT_PROVIDER` | 金流 provider | `stub` |
+
+### 進階功能旗標 + 訂閱（freemium）
+
+基本預約功能免費；**自動提醒 / 優惠券會員 / 商品銷售**為進階功能，per-tenant 可隨時訂閱／退訂
+（付款目前為 stub 模擬月費）。`services/features.is_enabled` 為**唯一真相來源**，REST / webhook /
+ops / UI 全部走它。
+
+| 功能 key | 內容 | 月費 |
+|------|------|------|
+| `AUTO_REMINDER` | 自動提醒（LINE push） | NT$200/月 |
+| `COUPON_SYSTEM` | 優惠券 + 會員集點 | NT$200/月 |
+| `PRODUCT_SALES` | 商品銷售 | NT$200/月 |
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/billing/features` `· /tenants/me/features` | 自家開通狀態 + 月費 |
+| POST | `/billing/features/{feature}/subscribe` | 訂閱（stub 付款 → 啟用，回 `payment_id`） |
+| POST | `/billing/features/{feature}/unsubscribe` | 退訂（關閉） |
+| GET/PUT | `/admin/tenants/{id}/features[/{feature}]` | 平台 admin 查詢/覆寫 |
+
+- **閘門**：`/booking/coupons`、`/booking/products`、`/booking/orders` 未開通 → 403；
+  `book_slot` 未開通 AUTO_REMINDER → 不入列提醒；ops 派送前再檢查（已入列後退訂也不送）；
+  LINE「優惠券／商品」未開通 → 回「本店尚未開放此功能」。
+- **稽核**：每次訂閱/退訂/admin 覆寫寫 `FeatureChangeHistory`（append-only，記 who/when/source）。
+- UI：`/ui/features` 訂閱/退訂；受閘門頁（`/ui/coupons`、`/ui/shop`）未開通顯示「前往訂閱」；
+  admin 租戶詳情可逐功能開關。導覽列加「進階功能」。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_FEATURES_DEFAULT_ENABLED` | 無設定列時的預設（True=向後相容預設開；False=嚴格 freemium 預設關需訂閱） | `true` |
+| `SAAS_FEATURE_MONTHLY_PRICE_CENTS` | 進階功能月費（分） | `20000` |
+
+> **付款仍是 stub**：訂閱模擬月費；真實扣款需接真實金流 provider（見 P4 待辦）。
