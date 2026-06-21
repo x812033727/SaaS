@@ -25,9 +25,12 @@ from saas_mvp.line_client import (
 )
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.line_channel_config import (
+    DEFAULT_BOT_MODE,
+    InvalidBotModeError,
     InvalidTargetLangError,
     LineChannelConfig,
     LineConfigDecryptionError,
+    validate_bot_mode,
     validate_target_lang,
 )
 
@@ -60,6 +63,7 @@ def _to_response(cfg: LineChannelConfig) -> dict:
         "has_channel_secret": bool(cfg.channel_secret_enc),
         "has_access_token": bool(cfg.access_token_enc),
         "default_target_lang": cfg.default_target_lang,
+        "bot_mode": cfg.bot_mode or DEFAULT_BOT_MODE,
         "credential_status": _normalize_credential_status(cfg.credential_status),
         "credential_last_error": cfg.credential_last_error,
         "credential_checked_at": (
@@ -203,6 +207,7 @@ def upsert_line_config(
     channel_secret: str,
     access_token: str,
     default_target_lang: str = "zh-TW",
+    bot_mode: str | None = None,
     bot_info_client: LineBotInfoClient | None = None,
 ) -> dict:
     """新建或覆寫租戶 LINE 設定；回傳遮罩版 response。
@@ -212,10 +217,12 @@ def upsert_line_config(
     bot/info 失敗或 userId 已被他租戶佔用時，不阻擋 upsert，而是寫入
     credential_status 供 API 回應揭露。
 
+    ``bot_mode``：None 時不更動（新建留預設 translation）；提供時驗證白名單。
+
     Raises
     ------
     404 tenant not found
-    400 invalid target_lang
+    400 invalid target_lang / bot_mode
     """
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
@@ -226,6 +233,15 @@ def upsert_line_config(
         validate_target_lang(default_target_lang)
     except InvalidTargetLangError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # bot_mode 白名單驗證（提供時）
+    if bot_mode is not None:
+        try:
+            validate_bot_mode(bot_mode)
+        except InvalidBotModeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
 
     cfg = tenant.line_channel_config
     if cfg is None:
@@ -238,6 +254,8 @@ def upsert_line_config(
     cfg.channel_secret = channel_secret
     cfg.access_token = access_token
     cfg.default_target_lang = default_target_lang
+    if bot_mode is not None:
+        cfg.bot_mode = bot_mode
     if token_changed:
         _set_unchecked_for_token_change(cfg)
     elif cfg.credential_status is None:

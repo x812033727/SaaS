@@ -125,6 +125,7 @@ class LineConfigUpsertBody(BaseModel):
     channel_secret: str = Field(..., min_length=1, max_length=64)
     access_token: str = Field(..., min_length=1, max_length=1024)
     default_target_lang: str = "zh-TW"
+    bot_mode: str | None = None
 
 
 class AdminLineConfigResponse(BaseModel):
@@ -132,6 +133,7 @@ class AdminLineConfigResponse(BaseModel):
     has_channel_secret: bool
     has_access_token: bool
     default_target_lang: str
+    bot_mode: str = "translation"
     credential_status: str = "unchecked"
     credential_last_error: str | None = None
     credential_checked_at: str | None = None
@@ -168,6 +170,7 @@ def upsert_line_config(
         channel_secret=body.channel_secret,
         access_token=body.access_token,
         default_target_lang=body.default_target_lang,
+        bot_mode=body.bot_mode,
         bot_info_client=bot_info_client,
     )
 

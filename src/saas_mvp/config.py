@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     deepl_api_key: str = ""
     deepl_api_url: str = "https://api-free.deepl.com/v2/translate"
 
+    # 預約提醒（booking reminders）
+    # SAAS_REMINDER_ENABLED:           入列開關（false 時建單不入列提醒）
+    # SAAS_REMINDER_DAY_OF_LEAD_MINUTES: 當天提醒提前的分鐘數（預設 180 = 3 小時）
+    # SAAS_REMINDER_MAX_PER_RUN:       ops 腳本單次最多派送筆數（防推播暴衝）
+    reminder_enabled: bool = True
+    reminder_day_of_lead_minutes: int = 180
+    reminder_max_per_run: int = 500
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。

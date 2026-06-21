@@ -9,6 +9,10 @@ class LineReplyError(Exception):
     """LINE reply API 呼叫失敗（網路錯誤、HTTP 錯誤、回應格式異常）。"""
 
 
+class LinePushError(Exception):
+    """LINE push API 呼叫失敗（網路錯誤、HTTP 錯誤、回應格式異常）。"""
+
+
 class LineBotInfoError(Exception):
     """LINE bot/info 呼叫失敗的基底例外。"""
 
@@ -55,6 +59,33 @@ class LineReplyClient(ABC):
         True：已正確設定、可發送。
         False：缺設定或明確停用（如 FakeLineReplyClient 被設為 unavailable 時）。
         """
+
+
+class LinePushClient(ABC):
+    """LINE Messaging API push client 介面 — 主動推播訊息給指定使用者。
+
+    與 reply 的差異：push 用 `to`（使用者 userId）而非一次性 reply_token，
+    不受 5 分鐘時效限制，供「預約提醒」等非即時回覆場景使用。
+
+    access_token 以 per-call 傳入，使同一實例可服務不同 tenant。
+    """
+
+    @abstractmethod
+    def push(self, to_user_id: str, text: str, *, access_token: str) -> None:
+        """透過 LINE push API 推播文字訊息給指定使用者。
+
+        Args:
+            to_user_id: 接收者的 LINE userId。
+            text: 要推播的文字內容。
+            access_token: 該 LINE channel 的 channel access token（Bearer）。
+
+        Raises:
+            LinePushError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。
+        """
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """回傳此 client 是否具備發送能力。"""
 
 
 class LineBotInfoClient(ABC):

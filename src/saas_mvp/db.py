@@ -59,6 +59,10 @@ def init_db() -> None:
     from saas_mvp.models import plan_change_history  # noqa: F401
     from saas_mvp.models import line_channel_config  # noqa: F401
     from saas_mvp.models import line_webhook_event  # noqa: F401
+    from saas_mvp.models import line_user_lang  # noqa: F401
+    # 預約（booking）相關模型：customer 先於 reservation（FK 依賴）。
+    from saas_mvp.models import customer, booking_slot  # noqa: F401
+    from saas_mvp.models import reservation, reservation_reminder  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
@@ -67,6 +71,7 @@ def init_db() -> None:
     _migrate_add_line_credential_status_fields()
     _migrate_backfill_char_count()
     _migrate_add_tenant_store_type()
+    _migrate_add_line_bot_mode()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -170,6 +175,39 @@ def _migrate_add_tenant_store_type() -> None:
         with engine.begin() as conn:
             conn.execute(
                 text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(32)")
+            )
+        _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_line_bot_mode() -> None:
+    """為既有 line_channel_configs 表補上 bot_mode 欄位（向後相容）。
+
+    - 新環境：create_all 已建好欄位 → inspect 偵測到存在 → 直接略過。
+    - 既有 DB（無 Alembic）：欄位不存在 → ALTER TABLE 補欄，**帶 NOT NULL
+      DEFAULT 'translation'**，既有列自動回填 translation（既有翻譯店家零影響）。
+    - 整段以 try/except 包住，任何失敗僅記 warning，不阻擋服務啟動。
+    """
+    table = "line_channel_configs"
+    column = "bot_mode"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return  # 表尚未建立（理論上 create_all 已建），無需遷移
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return  # 欄位已存在（新環境或先前已遷移），冪等略過
+
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(16) "
+                    "NOT NULL DEFAULT 'translation'"
+                )
             )
         _log.info("migrated: added %s.%s column", table, column)
     except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動

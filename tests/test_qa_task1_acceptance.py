@@ -577,15 +577,21 @@ class TestNoRuntimeChange:
     """
 
     def test_reply_call_count_unchanged_in_line_webhook(self):
-        """line_webhook.py 內 ``line_client.reply`` 呼叫數量 = 5（既有）。"""
+        """line_webhook.py 內 ``line_client.reply`` 呼叫數量 = 6。
+
+        歷史值為 5（翻譯路徑既有呼叫點：配額超量訊息、純 /lang 確認、無效語言碼、
+        /lang 持久化確認、6c 翻譯回覆）。預約（booking）功能在**全新獨立路徑**
+        ``_handle_booking_event`` 新增 1 個 reply 呼叫點 → 6。翻譯路徑的 5 個
+        呼叫點維持不變（bot_mode != "booking" 時走原邏輯，零行為改動）。
+        """
         source = _read_source()
         # 排除註解、docstring
         # 簡化：以行內 ``line_client.reply(`` 計數
         reply_calls = re.findall(r"\bline_client\.reply\s*\(", source)
-        # 既有：5 個呼叫點（已被工程師的註解改寫保留）
-        assert len(reply_calls) == 5, (
+        # 5 翻譯路徑（不變）+ 1 預約路徑（新增）= 6
+        assert len(reply_calls) == 6, (
             f"line_webhook.py 內 line_client.reply( 呼叫數量 = {len(reply_calls)}，"
-            f"應 = 5（既有）。新增呼叫 = 邏輯改動、違反本輪零邏輯改動約束。"
+            f"應 = 6（5 翻譯既有 + 1 預約新增）。"
         )
 
     def test_pyproject_does_not_add_httpx_runtime_dep(self):
