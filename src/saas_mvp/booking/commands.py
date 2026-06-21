@@ -28,6 +28,21 @@ _TEXT_ALIASES: dict[str, str] = {
     "取消": "cancel",
     "/help": "help",
     "說明": "help",
+    # P3 優惠券 / 會員
+    "/coupons": "coupons",
+    "優惠券": "coupons",
+    "/redeem": "redeem",
+    "兌換": "redeem",
+    "/points": "points",
+    "點數": "points",
+    "我的點數": "points",
+    # P4 商品銷售
+    "/shop": "shop",
+    "商品": "shop",
+    "/buy": "buy",
+    "購買": "buy",
+    "/orders": "my_orders",
+    "我的訂單": "my_orders",
 }
 
 
@@ -84,7 +99,20 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
             if rid is not None:
                 params["reservation_id"] = rid
         return action, params
-    # slots / my / help 無參數
+    if action == "redeem":
+        params = {}
+        if args:
+            params["code"] = args[0]  # 券碼為字串
+        return action, params
+    if action == "buy":
+        params = {}
+        if args:
+            pid = _to_int(args[0])
+            if pid is not None:
+                params["product_id"] = pid
+        params["qty"] = (_to_int(args[1]) if len(args) > 1 else None) or 1
+        return action, params
+    # slots / my / help / coupons / points / shop / my_orders 無參數
     return action, {}
 
 
@@ -109,7 +137,11 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
     if not actions:
         return None, {}
     action = actions[0]
-    if action not in {"book", "slots", "my", "cancel", "help"}:
+    if action not in {
+        "book", "pick_slot", "slots", "my", "cancel", "help",
+        "coupons", "redeem", "points",
+        "shop", "buy", "my_orders",
+    }:
         return None, {}
 
     params: dict = {}
@@ -120,6 +152,22 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
                 params["slot_id"] = slot_id
         party = _to_int(qs["party"][0]) if "party" in qs else None
         params["party_size"] = party or 1
+    elif action == "pick_slot":
+        # 引導式第二步：使用者已選時段，待選人數
+        if "slot_id" in qs:
+            slot_id = _to_int(qs["slot_id"][0])
+            if slot_id is not None:
+                params["slot_id"] = slot_id
+    elif action == "redeem":
+        if "code" in qs:
+            params["code"] = qs["code"][0]
+    elif action == "buy":
+        if "product_id" in qs:
+            pid = _to_int(qs["product_id"][0])
+            if pid is not None:
+                params["product_id"] = pid
+        qty = _to_int(qs["qty"][0]) if "qty" in qs else None
+        params["qty"] = qty or 1
     elif action == "cancel":
         if "reservation_id" in qs:
             rid = _to_int(qs["reservation_id"][0])

@@ -75,6 +75,12 @@ class TestParsePostback:
     def test_slots(self):
         assert parse_postback_data("action=slots") == ("slots", {})
 
+    def test_pick_slot(self):
+        assert parse_postback_data("action=pick_slot&slot_id=9") == (
+            "pick_slot",
+            {"slot_id": 9},
+        )
+
     def test_unknown_action(self):
         assert parse_postback_data("action=explode") == (None, {})
 

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}優惠券 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>優惠券</h1>
+<div class="card" id="coupons-card">
+  {% include "_coupons_list.html" %}
+</div>
+<p class="muted">顧客可在 LINE 輸入「優惠券」查看、「兌換 &lt;券碼&gt;」核銷（一人一券）。</p>
+{% endblock %}

@@ -733,3 +733,52 @@
 - 理由：沿用最小依賴哲學與既有 `ops/backfill_line_bot_user_id.py` 同形；out-of-process、單實例天然去重，避免 app 內 asyncio loop 在多 worker 下重送。
 - 冪等三層：`UNIQUE(reservation_id, kind)` + 逐筆 `SELECT … FOR UPDATE` 重驗 pending + 推播成功後才標 sent。
 - 新增能力：LINE push（`LinePushClient` ABC + Http/Fake 實作），reply 無法用於非即時提醒（reply_token 5 分鐘時效）。
+
+## 【Rich Menu P2】圖文選單背景以純 stdlib（zlib）產生純色 PNG，不引入 PIL/影像函式庫。
+- 時間：2026-06-21
+- 理由：沿用最小依賴哲學；主題配色只需純色背景，zlib + struct 即可產生合法 PNG（color type 2 RGB），避免為單一功能加重依賴。
+- 實作：services/rich_menu.solid_png()；row = filter byte + width*RGB，row*height 後 zlib 壓縮（純色壓縮率極高）。店家自訂背景圖未來可改傳上傳 bytes 取代。
+
+## 【Rich Menu P2】Rich Menu 按鈕 action 直接對應既有預約 dispatcher（book/my/slots/help），選單與引導式對話共用同一條 postback 路徑。
+- 時間：2026-06-21
+- 理由：避免為選單另立一套處理邏輯；按鈕 postback data 與引導式對話完全一致，點按鈕等同輸入指令。
+- 實作：LineRichMenuClient（ABC/Http/Fake）四步 create→upload_image→set_default→delete；richMenuId/template/theme 存 LineChannelConfig（migration _migrate_add_rich_menu_fields）。LINE API 失敗 → 502。
+
+## 【引導式預約 P1 fast-follow】多步預約對話採「postback 攜帶上下文」無狀態設計，不建對話狀態表。
+- 時間：2026-06-21
+- 理由：選時段→選人數的上下文可由 postback data（slot_id → slot_id+party）逐步攜帶，免伺服器 session 表，較原規劃的最小狀態表更簡單、無清理負擔、天然冪等。
+- 實作：reply client 新增 quick_reply（base/Http/Fake）；webhook pick_slot → 人數按鈕 → book。保留一次性文字指令。
+
+## 【預約 UI】預約管理與圖文選單接進既有伺服器渲染 /ui（cookie 認證、HTMX partial），bot_mode 以 line_config.set_bot_mode() 輕量切換（不需重輸憑證）。
+- 時間：2026-06-21
+- 理由：合併進來的 /ui 已涵蓋 LINE 設定/admin，但未涵蓋預約；補齊使 P1 API 真正可用。沿用 require_ui_user/require_ui_admin 與 _ctx/HTMX 慣例。
+
+## 【P3 優惠券】核銷採 SELECT … FOR UPDATE 鎖券列 + 鎖內重驗額度，一人一券靠 UNIQUE(coupon_id, line_user_id)。
+- 時間：2026-06-21
+- 理由：與 quota/booking 同一防超發鎖法；一人一券交給 DB 唯一約束（捕 IntegrityError 轉 AlreadyRedeemed），免應用層 race。
+- 實作：services/coupons.redeem_coupon；REST 與 webhook 共用同一服務（REST 轉 HTTP、webhook 轉友善訊息）。
+
+## 【P3 會員】集點與建單同一交易；點數彙總於 Customer + append-only PointTransaction 帳本；等級由點數純函式重算。
+- 時間：2026-06-21
+- 理由：「建單 ⇔ 集點」需原子一致（book_slot 內 earn_points，不另 commit）；帳本保稽核軌跡；tier 純函式易測。
+- 實作：services/membership（earn/redeem/recompute_tier，TIER_THRESHOLDS 常數）；Customer 加 points_balance/tier（migration _migrate_add_customer_membership，既有列回填 0/regular）。設定 SAAS_POINTS_PER_BOOKING。
+
+## 【P5 報表】聚合於單一查詢取出後 Python 計算（時段使用率按小時 bucket），不用 DB 方言函式（strftime）。
+- 時間：2026-06-21
+- 理由：單租戶資料量適中、非平台級全表，Python bucket 可攜（SQLite/PostgreSQL 一致）、易測；避免 strftime 等方言相依。
+- 實作：services/analytics（booking_summary/slot_utilization/top_customers/reminder_effectiveness/export_rows）；CSV 用 stdlib csv + Response(text/csv)。
+
+## 【P5 爽約率】到場與否需店家標記（Reservation.attended，nullable）；未標記不宣稱精確 no-show。
+- 時間：2026-06-21
+- 理由：系統無法自動得知顧客是否到場；誠實呈現——未標記時 no_show_rate=None，以取消率為主指標。
+- 實作：booking.mark_attendance + POST /booking/reservations/{id}/attendance + UI 標記按鈕；migration _migrate_add_reservation_attended（既有列 NULL=未標記）。
+
+## 【P4 商品】下單原子性：依 product_id 排序後逐一 SELECT … FOR UPDATE 鎖商品（固定順序避免死鎖），鎖內驗庫存+扣減；OrderItem 快照單價。
+- 時間：2026-06-21
+- 理由：多商品下單需固定鎖定順序避免死鎖；快照單價使商品改價/改名不影響既有訂單。金額一律整數 cents（不用 float）。
+- 實作：services/shop.create_order；cancel_order 回補庫存（已取消 no-op）；mark_order_paid。
+
+## 【P4 金流】PaymentProvider 抽象，本輪只實作 StubPaymentProvider；真實 provider 待使用者指定。
+- 時間：2026-06-21
+- 理由：比照 translator/line_client「先 stub、後接真實」；真實金流涉及帳號/合約/回調驗簽，需使用者拍板 provider（綠界/Stripe/LINE Pay），不在本輪硬接。
+- 實作：services/payment（PaymentProvider ABC + StubPaymentProvider + get_payment_provider）；設定 SAAS_PAYMENT_PROVIDER（預設 stub）、SAAS_CURRENCY（預設 TWD）。

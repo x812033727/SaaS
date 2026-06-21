@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}報表 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>報表分析</h1>
+
+<div class="card">
+  <h2>預約摘要</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">總預約</div><div class="value">{{ summary.total }}</div></div>
+    <div class="stat"><div class="label">已確認</div><div class="value">{{ summary.confirmed }}</div></div>
+    <div class="stat"><div class="label">取消率</div><div class="value">{{ (summary.cancel_rate * 100) | round(1) }}%</div></div>
+    <div class="stat"><div class="label">總人數</div><div class="value">{{ summary.total_covers }}</div></div>
+    <div class="stat"><div class="label">不重複顧客</div><div class="value">{{ summary.distinct_customers }}</div></div>
+    <div class="stat"><div class="label">爽約率</div>
+      <div class="value">{% if summary.no_show_rate is none %}<span class="muted">需標記到場</span>{% else %}{{ (summary.no_show_rate * 100) | round(1) }}%{% endif %}</div>
+    </div>
+  </div>
+  <p class="muted">爽約率需於「預約管理」標記到場/未到後才精確；未標記期間以取消率為主要指標。</p>
+  <a class="btn" href="/booking/analytics/export.csv">下載預約明細 CSV</a>
+</div>
+
+<div class="card">
+  <h2>時段使用率（依小時）</h2>
+  {% if utilization %}
+  <table>
+    <thead><tr><th>時段（時）</th><th>已訂</th><th>容量</th><th>使用率</th></tr></thead>
+    <tbody>
+      {% for u in utilization %}
+      <tr><td>{{ '%02d:00' | format(u.hour) }}</td><td>{{ u.booked }}</td><td>{{ u.capacity }}</td>
+          <td>{{ (u.utilization * 100) | round(1) }}%</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無時段資料。</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>常客 Top 10</h2>
+  {% if top %}
+  <table>
+    <thead><tr><th>#</th><th>名稱</th><th>訂位次數</th><th>點數</th><th>等級</th></tr></thead>
+    <tbody>
+      {% for c in top %}
+      <tr><td>{{ c.id }}</td><td>{{ c.display_name or c.line_user_id }}</td>
+          <td>{{ c.booking_count }}</td><td>{{ c.points_balance }}</td>
+          <td><span class="badge">{{ c.tier }}</span></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無顧客資料。</p>{% endif %}
+</div>
+{% endblock %}

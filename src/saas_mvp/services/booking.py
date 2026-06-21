@@ -24,6 +24,7 @@ from saas_mvp.models.reservation import (
     RESERVATION_CONFIRMED,
     Reservation,
 )
+from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.reminders import (
     cancel_reminders_for_reservation,
     enqueue_reminders,
@@ -95,6 +96,7 @@ def book_slot(
         )
 
     # 顧客建檔（LINE 來源才有 line_user_id）
+    customer = None
     customer_id = None
     if line_user_id:
         customer = upsert_customer_from_line(
@@ -116,7 +118,7 @@ def book_slot(
     )
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size
-    db.flush()  # 取得 reservation.id 供提醒入列
+    db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
 
     enqueue_reminders(
         db,
@@ -125,6 +127,17 @@ def book_slot(
         day_of_lead_minutes=settings.reminder_day_of_lead_minutes,
         enabled=settings.reminder_enabled,
     )
+
+    # 會員集點（同一交易；customer 為 None（店家手動建單無 line_user_id）時略過）
+    if customer is not None and settings.points_per_booking > 0:
+        membership_svc.earn_points(
+            db,
+            tenant_id=tenant_id,
+            customer=customer,
+            delta=settings.points_per_booking,
+            reason="booking",
+            reservation_id=reservation.id,
+        )
 
     db.commit()
     db.refresh(reservation)
@@ -173,6 +186,23 @@ def cancel_reservation(
     reservation.cancelled_at = _utcnow()
     cancel_reminders_for_reservation(db, reservation_id=reservation_id)
 
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+def mark_attendance(
+    db: Session, *, tenant_id: int, reservation_id: int, attended: bool
+) -> Reservation:
+    """店家標記預約到場與否（供報表算爽約率）；查無/跨租戶拋 ReservationNotFoundError。"""
+    reservation = (
+        tenant_query(db, Reservation, tenant_id)
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    reservation.attended = attended
     db.commit()
     db.refresh(reservation)
     return reservation

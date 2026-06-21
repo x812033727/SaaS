@@ -166,11 +166,41 @@ class TestBookingMode:
         _post(client, tid, _postback_event(f"action=book&slot_id={sid}&party=1"))
         assert len(_reservations(tid)) == 1
 
-    def test_slots_query_lists(self, app_client):
+    def test_slots_query_offers_quick_reply_buttons(self, app_client):
+        """「時段」→ 引導式：回「請選擇時段」+ pick_slot quick-reply 按鈕。"""
         client, line_client = app_client
         tid, sid = _seed("booking", with_slot=True)
         _post(client, tid, _text_event("時段"))
-        assert f"#{sid}" in (line_client.last_text or "")
+        last = line_client.sent[-1]
+        assert "請選擇時段" in last.text
+        assert last.quick_reply is not None
+        datas = [data for _label, data in last.quick_reply]
+        assert any(f"slot_id={sid}" in d and "pick_slot" in d for d in datas)
+
+    def test_guided_pick_slot_offers_party_buttons(self, app_client):
+        """postback pick_slot → 回「請選擇人數」+ book quick-reply 按鈕。"""
+        client, line_client = app_client
+        tid, sid = _seed("booking", with_slot=True)
+        _post(client, tid, _postback_event(f"action=pick_slot&slot_id={sid}", eid="g1"))
+        last = line_client.sent[-1]
+        assert "請選擇人數" in last.text
+        assert last.quick_reply is not None
+        datas = [data for _label, data in last.quick_reply]
+        # party 按鈕帶 slot_id + party，且 action=book
+        assert any(f"action=book&slot_id={sid}&party=" in d for d in datas)
+        # 尚未建單
+        assert _reservations(tid) == []
+
+    def test_guided_full_flow_books(self, app_client):
+        """預約(無參數) → pick_slot → 選人數 → 建單。"""
+        client, line_client = app_client
+        tid, sid = _seed("booking", with_slot=True)
+        _post(client, tid, _text_event("預約", eid="g1"))  # 選時段
+        _post(client, tid, _postback_event(f"action=pick_slot&slot_id={sid}", eid="g2"))  # 選人數
+        _post(client, tid, _postback_event(f"action=book&slot_id={sid}&party=2", eid="g3"))  # 建單
+        rows = _reservations(tid)
+        assert len(rows) == 1 and rows[0].party_size == 2
+        assert "預約成功" in (line_client.last_text or "")
 
     def test_full_slot_friendly_reject(self, app_client):
         client, line_client = app_client
@@ -193,6 +223,107 @@ class TestBookingMode:
             assert db.get(Reservation, rid).status == "cancelled"
         finally:
             db.close()
+
+
+class TestCouponsAndPoints:
+    def _add_coupon(self, tid, code="SAVE10", max_redemptions=None):
+        from saas_mvp.models.coupon import Coupon
+        db = _Session()
+        try:
+            c = Coupon(
+                tenant_id=tid, code=code, name="折扣", discount_type="percent",
+                discount_value=10, max_redemptions=max_redemptions, is_active=True,
+            )
+            db.add(c)
+            db.commit()
+        finally:
+            db.close()
+
+    def test_coupons_list_offers_redeem_buttons(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        self._add_coupon(tid, code="SUMMER")
+        _post(client, tid, _text_event("優惠券"))
+        last = line_client.sent[-1]
+        assert "SUMMER" in last.text
+        assert last.quick_reply is not None
+        assert any("action=redeem&code=SUMMER" in d for _l, d in last.quick_reply)
+
+    def test_redeem_success_then_already(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        self._add_coupon(tid, code="ONCE")
+        _post(client, tid, _text_event("兌換 ONCE", eid="r1"))
+        assert "兌換成功" in (line_client.last_text or "")
+        _post(client, tid, _text_event("兌換 ONCE", eid="r2"))
+        assert "已兌換過" in (line_client.last_text or "")
+
+    def test_redeem_unknown_code(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        _post(client, tid, _text_event("兌換 NOPE"))
+        assert "找不到券碼" in (line_client.last_text or "")
+
+    def test_points_after_booking(self, app_client):
+        client, line_client = app_client
+        tid, sid = _seed("booking", with_slot=True)
+        _post(client, tid, _text_event(f"預約 {sid} 1", eid="b1"))
+        _post(client, tid, _text_event("點數", eid="p1"))
+        assert "點數" in (line_client.last_text or "")
+        assert "10" in (line_client.last_text or "")
+
+
+class TestShop:
+    def _add_product(self, tid, *, name="珍奶", price=100, stock=None) -> int:
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            p = Product(tenant_id=tid, name=name, price_cents=price, stock=stock, currency="TWD")
+            db.add(p)
+            db.commit()
+            return p.id
+        finally:
+            db.close()
+
+    def test_shop_lists_products_with_buy_buttons(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, name="拿鐵")
+        _post(client, tid, _text_event("商品"))
+        last = line_client.sent[-1]
+        assert "拿鐵" in last.text
+        assert last.quick_reply is not None
+        assert any(f"action=buy&product_id={pid}&qty=1" in d for _l, d in last.quick_reply)
+
+    def test_buy_creates_order_with_checkout(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, price=150, stock=10)
+        _post(client, tid, _postback_event(f"action=buy&product_id={pid}&qty=2", eid="o1"))
+        assert "已建立訂單" in (line_client.last_text or "")
+        assert "付款連結" in (line_client.last_text or "")
+        # 庫存扣減
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            assert db.get(Product, pid).stock == 8
+        finally:
+            db.close()
+
+    def test_buy_out_of_stock(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, stock=1)
+        _post(client, tid, _postback_event(f"action=buy&product_id={pid}&qty=5", eid="o1"))
+        assert "庫存不足" in (line_client.last_text or "")
+
+    def test_my_orders(self, app_client):
+        client, line_client = app_client
+        tid, _ = _seed("booking")
+        pid = self._add_product(tid, stock=10)
+        _post(client, tid, _postback_event(f"action=buy&product_id={pid}&qty=1", eid="o1"))
+        _post(client, tid, _text_event("我的訂單", eid="o2"))
+        assert "你的訂單" in (line_client.last_text or "")
 
 
 class TestTranslationRegression:

@@ -63,6 +63,10 @@ def init_db() -> None:
     # 預約（booking）相關模型：customer 先於 reservation（FK 依賴）。
     from saas_mvp.models import customer, booking_slot  # noqa: F401
     from saas_mvp.models import reservation, reservation_reminder  # noqa: F401
+    # P3 優惠券/會員
+    from saas_mvp.models import coupon, coupon_redemption, point_transaction  # noqa: F401
+    # P4 商品銷售
+    from saas_mvp.models import product, order, order_item  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
@@ -72,6 +76,9 @@ def init_db() -> None:
     _migrate_backfill_char_count()
     _migrate_add_tenant_store_type()
     _migrate_add_line_bot_mode()
+    _migrate_add_rich_menu_fields()
+    _migrate_add_customer_membership()
+    _migrate_add_reservation_attended()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -209,6 +216,91 @@ def _migrate_add_line_bot_mode() -> None:
                     "NOT NULL DEFAULT 'translation'"
                 )
             )
+        _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_rich_menu_fields() -> None:
+    """為既有 line_channel_configs 表補上 Rich Menu 欄位（皆 nullable，向後相容）。
+
+    只做 ADD COLUMN，不回填；未套用 rich menu 的列為 NULL。
+    任何失敗僅記 warning，不阻擋服務啟動。
+    """
+    table = "line_channel_configs"
+    columns = {
+        "rich_menu_id": "VARCHAR(64)",
+        "rich_menu_template": "VARCHAR(32)",
+        "rich_menu_theme": "VARCHAR(32)",
+    }
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        missing = {n: t for n, t in columns.items() if n not in existing}
+        if not missing:
+            return
+        with engine.begin() as conn:
+            for name, col_type in missing.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+        _log.info("migrated: added %s columns to %s", ", ".join(sorted(missing)), table)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s rich menu fields skipped due to error: %s",
+            table, type(exc).__name__,
+        )
+
+
+def _migrate_add_customer_membership() -> None:
+    """為既有 booking_customers 表補上會員集點欄位（向後相容）。
+
+    points_balance 帶 NOT NULL DEFAULT 0、tier 帶 NOT NULL DEFAULT 'regular'，
+    既有列自動回填。失敗僅記 warning，不阻擋啟動。
+    """
+    table = "booking_customers"
+    columns = {
+        "points_balance": "INTEGER NOT NULL DEFAULT 0",
+        "tier": "VARCHAR(16) NOT NULL DEFAULT 'regular'",
+    }
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        missing = {n: t for n, t in columns.items() if n not in existing}
+        if not missing:
+            return
+        with engine.begin() as conn:
+            for name, col_type in missing.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+        _log.info("migrated: added %s columns to %s", ", ".join(sorted(missing)), table)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s membership fields skipped due to error: %s",
+            table, type(exc).__name__,
+        )
+
+
+def _migrate_add_reservation_attended() -> None:
+    """為既有 booking_reservations 表補上 attended 欄位（nullable，向後相容）。
+
+    NULL = 未標記到場；只 ADD COLUMN、不回填。失敗僅記 warning。
+    """
+    table = "booking_reservations"
+    column = "attended"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} BOOLEAN"))
         _log.info("migrated: added %s.%s column", table, column)
     except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
         _log.warning(

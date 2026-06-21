@@ -1,0 +1,36 @@
+<h2>圖文選單（Rich Menu）</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if not has_line_config %}
+  <p class="muted">尚未設定 LINE Bot，請先到「LINE 設定」完成憑證設定。</p>
+{% else %}
+  {% if status and status.applied %}
+    <div class="success">已套用：模板 <code>{{ status.template }}</code> · 主題 <code>{{ status.theme }}</code></div>
+  {% else %}
+    <p class="muted">尚未套用圖文選單。</p>
+  {% endif %}
+
+  <form hx-post="/ui/rich-menu/apply" hx-target="#richmenu-card" hx-swap="innerHTML" class="row">
+    <label>模板
+      <select name="template">
+        {% for name, t in templates_opts.items() %}
+        <option value="{{ name }}" {{ 'selected' if status and status.template == name else '' }}>{{ t.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>主題配色
+      <select name="theme">
+        {% for th in themes_opts %}
+        <option value="{{ th }}" {{ 'selected' if status and status.theme == th else '' }}>{{ th }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">套用選單</button>
+  </form>
+
+  {% if status and status.applied %}
+  <form hx-post="/ui/rich-menu/clear" hx-target="#richmenu-card" hx-swap="innerHTML">
+    <button type="submit" hx-confirm="確定移除圖文選單？">移除選單</button>
+  </form>
+  {% endif %}
+  <p class="muted">選單按鈕對應顧客預約指令（預約／我的預約／時段／說明），點按即觸發。</p>
+{% endif %}

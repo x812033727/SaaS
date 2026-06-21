@@ -491,12 +491,15 @@ webhook 接受文字指令與 postback（Rich Menu／quick-reply 按鈕）：
 
 | 輸入 | 行為 |
 |------|------|
-| `時段` / `/slots` | 列出可預約時段（含編號與剩餘名額） |
-| `預約 <時段編號> <人數>` / `/book 12 2` | 建單；額滿婉拒 |
-| postback `action=book&slot_id=12&party=2` | 同上（按鈕路徑） |
+| `預約` / `時段` | **引導式**：回時段 quick-reply 按鈕（點選即進入下一步） |
+| 點時段按鈕（postback `action=pick_slot&slot_id=N`） | 回人數 quick-reply 按鈕 |
+| 點人數按鈕（postback `action=book&slot_id=N&party=K`） | 建單；額滿婉拒 |
+| `預約 <時段編號> <人數>` / `/book 12 2` | 一次性文字建單（不需逐步點選） |
 | `我的預約` / `/my` | 列出自己的預約 |
 | `取消 <預約編號>` / `/cancel 7` | 取消（驗證 line_user_id） |
 
+> **引導式對話**全靠 postback 攜帶上下文（slot_id → slot_id+party），無需伺服器
+> 對話狀態表。顧客不必記時段編號，逐步點按即可完成。
 > 預約互動與回覆**不計入翻譯 quota**（quota 為翻譯字數/次數計量表）。
 
 ### 自動提醒（cron + ops 腳本）
@@ -520,3 +523,89 @@ python -m saas_mvp.ops.send_due_reminders --dry-run --limit 200
 | `SAAS_REMINDER_ENABLED` | 建單是否入列提醒 | `true` |
 | `SAAS_REMINDER_DAY_OF_LEAD_MINUTES` | 當天提醒提前分鐘數 | `180` |
 | `SAAS_REMINDER_MAX_PER_RUN` | ops 單次最多派送筆數 | `500` |
+
+### 圖文選單（Rich Menu）
+
+店家可在 `/ui/rich-menu` 一鍵套用預設圖文選單模板 + 主題配色，選單按鈕直接對應預約指令
+（預約／我的預約／時段／說明），顧客點按即觸發對話流程。
+
+- **模板**：`booking3`（三宮格）、`booking4`（四宮格含說明）。
+- **主題配色**：`line_green`、`ocean_blue`、`royal_purple`、`sunset_orange`、`dark`。
+- **背景圖**：以**純 stdlib（zlib）產生純色 PNG**，零影像函式庫依賴。
+- **套用流程**：（刪舊）→ 建立選單結構 → 上傳背景圖 → 設為預設；`richMenuId` 存回
+  `LineChannelConfig`。LINE API 經 `LineRichMenuClient`（ABC / Http / Fake）。
+
+> 預約管理與圖文選單皆已整合進伺服器渲染管理 UI（見上方「管理 UI」），
+> 導覽列新增「預約管理」「圖文選單」。
+
+### 優惠券 + 會員集點/等級（P3）
+
+**優惠券** `/booking/coupons`（店家端 CRUD）：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/booking/coupons/` | 建券（`code`,`name`,`discount_type`=percent/amount,`discount_value`,`max_redemptions?`,有效期?） |
+| GET | `/booking/coupons/` `· /{id}` | 列出 / 單一 |
+| PUT | `/booking/coupons/{id}` | 改名/上限/有效期/停用 |
+| DELETE | `/booking/coupons/{id}` | 停用（軟刪） |
+| GET | `/booking/coupons/{id}/redemptions` | 核銷紀錄 |
+
+- **核銷原子性**：`SELECT … FOR UPDATE` 鎖券列、鎖內重驗（啟用/有效期/`redeemed_count < max_redemptions`）後遞增。
+- **一人一券**：`UNIQUE(coupon_id, line_user_id)` 於 DB 層擋重複核銷。
+- LINE 指令：`優惠券`（列券 + quick-reply 兌換鈕）、`兌換 <券碼>`（postback `action=redeem&code=X`）。
+- UI：`/ui/coupons` 建立/停用。
+
+**會員集點/等級**：
+
+- 每完成一筆預約自動集點（`SAAS_POINTS_PER_BOOKING`，預設 10），集點與建單**同一交易**。
+- 點數彙總於 `Customer.points_balance`，每筆異動寫 `PointTransaction`（append-only 帳本）。
+- 等級由點數即時重算：`regular`(0) / `silver`(100) / `gold`(500)。
+- REST：`GET /booking/customers/{id}/points`（帳本）、`POST /booking/customers/{id}/points`（店家手動加/扣點，扣點不足回 409）；`CustomerResponse` 含 `points_balance`/`tier`。
+- LINE 指令：`點數` / `我的點數`（顯示點數與等級）。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_POINTS_PER_BOOKING` | 每筆預約集點數（0=停用集點） | `10` |
+
+### 報表分析（P5）
+
+`/booking/analytics`（店家端）：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/booking/analytics/summary?date_from&date_to` | 總單/已確認/取消率/總人數/不重複顧客/爽約率 |
+| GET | `/booking/analytics/utilization` | 依「小時」聚合時段使用率（已訂/容量/使用率） |
+| GET | `/booking/analytics/customers?limit` | 常客排行（依訂位次數） |
+| GET | `/booking/analytics/export.csv` | 預約明細 CSV 匯出（stdlib `csv`） |
+
+- 聚合於單一查詢取出後 Python 計算（避免 DB 方言差異、無 N+1），租戶隔離。
+- **爽約率需標記到場**：`POST /booking/reservations/{id}/attendance`（`{attended: bool}`）標記到場/未到，
+  `Reservation.attended`（nullable）；未標記則 `no_show_rate` 回 `null`，報表以取消率為主並明示限制。
+- UI：`/ui/reports`（摘要卡 + 時段使用率表 + 常客 Top10 + CSV 下載）；`/ui/booking` 預約列加
+  「到場/未到」標記按鈕。導覽列加「報表」。
+
+### 商品銷售（P4）
+
+**商品** `/booking/products`（店家 CRUD）、**訂單** `/booking/orders`：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST/GET/PUT/DELETE | `/booking/products[/{id}]` | 商品 CRUD（價格 `price_cents` 整數、`stock` NULL=不限） |
+| POST | `/booking/orders/` | 下單（`items=[{product_id,qty}]`），回單 + **stub 付款連結** |
+| GET | `/booking/orders[/{id}]` | 列出/單一（含明細） |
+| POST | `/booking/orders/{id}/pay` | 標記已付 |
+| POST | `/booking/orders/{id}/cancel` | 取消並回補庫存 |
+
+- **下單原子性**：依 `product_id` 排序後逐一 `SELECT … FOR UPDATE` 鎖商品（固定順序避免死鎖），
+  鎖內驗 `is_active`/`stock`、扣庫存、**快照單價**（`OrderItem.unit_price_cents`，商品改價不影響舊單）。
+- 金額一律整數 cents。LINE 指令：`商品`（列商品 + quick-reply 購買鈕）、`購買 <編號> [數量]`
+  （postback `action=buy&product_id=N&qty=K`）、`我的訂單`。
+- UI：`/ui/shop`（商品 CRUD + 訂單標付/取消）。導覽列加「商品」。
+
+> **金流**：目前為 `StubPaymentProvider`（回傳測試付款連結）。接真實金流（綠界 ECPay /
+> Stripe / LINE Pay…）需指定 provider 與帳號，以同一 `PaymentProvider` 介面接上。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_CURRENCY` | 預設幣別 | `TWD` |
+| `SAAS_PAYMENT_PROVIDER` | 金流 provider | `stub` |

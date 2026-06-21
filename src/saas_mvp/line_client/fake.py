@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import itertools
+
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
     LinePushClient,
     LinePushError,
     LineReplyClient,
+    LineRichMenuClient,
+    LineRichMenuError,
 )
 
 
@@ -18,6 +22,7 @@ class SentReply:
     reply_token: str
     text: str
     access_token: str
+    quick_reply: list[tuple[str, str]] | None = None
 
 
 @dataclass
@@ -51,12 +56,20 @@ class FakeLineReplyClient(LineReplyClient):
         self.sent: list[SentReply] = []
         self._available = available
 
-    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
+    def reply(
+        self,
+        reply_token: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
         """捕捉回覆（不發網路請求）。"""
         self.sent.append(SentReply(
             reply_token=reply_token,
             text=text,
             access_token=access_token,
+            quick_reply=quick_reply,
         ))
 
     def is_available(self) -> bool:
@@ -127,6 +140,52 @@ class FakeLinePushClient(LinePushClient):
     @property
     def texts(self) -> list[str]:
         return [p.text for p in self.sent]
+
+
+class FakeLineRichMenuClient(LineRichMenuClient):
+    """離線 fake rich menu client，記錄各步呼叫供斷言。
+
+    Args:
+        fail_on: 設為步驟名（"create"/"upload"/"set_default"/"delete"）時，
+            該步拋 LineRichMenuError，用來測失敗分支。
+    """
+
+    _ids = itertools.count(1)
+
+    def __init__(self, *, available: bool = True, fail_on: str | None = None) -> None:
+        self.created: list[dict] = []
+        self.uploaded: list[tuple[str, int, str]] = []  # (rich_menu_id, len(image), content_type)
+        self.defaulted: list[str] = []
+        self.deleted: list[str] = []
+        self._available = available
+        self._fail_on = fail_on
+
+    def _maybe_fail(self, step: str) -> None:
+        if self._fail_on == step:
+            raise LineRichMenuError(f"fake rich menu failure at {step}")
+
+    def create(self, rich_menu: dict, *, access_token: str) -> str:
+        self._maybe_fail("create")
+        rich_menu_id = f"richmenu-{next(self._ids)}"
+        self.created.append(rich_menu)
+        return rich_menu_id
+
+    def upload_image(
+        self, rich_menu_id: str, image: bytes, content_type: str, *, access_token: str
+    ) -> None:
+        self._maybe_fail("upload")
+        self.uploaded.append((rich_menu_id, len(image), content_type))
+
+    def set_default(self, rich_menu_id: str, *, access_token: str) -> None:
+        self._maybe_fail("set_default")
+        self.defaulted.append(rich_menu_id)
+
+    def delete(self, rich_menu_id: str, *, access_token: str) -> None:
+        self._maybe_fail("delete")
+        self.deleted.append(rich_menu_id)
+
+    def is_available(self) -> bool:
+        return self._available
 
 
 class StubLineBotInfoClient(LineBotInfoClient):

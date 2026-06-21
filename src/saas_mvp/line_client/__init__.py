@@ -22,10 +22,13 @@ from saas_mvp.line_client.base import (
     LinePushError,
     LineReplyClient,
     LineReplyError,
+    LineRichMenuClient,
+    LineRichMenuError,
 )
 from saas_mvp.line_client.fake import (
     FakeLinePushClient,
     FakeLineReplyClient,
+    FakeLineRichMenuClient,
     SentPush,
     SentReply,
     StubLineBotInfoClient,
@@ -34,6 +37,7 @@ from saas_mvp.line_client.http import (
     HttpLineBotInfoClient,
     HttpLinePushClient,
     HttpLineReplyClient,
+    HttpLineRichMenuClient,
 )
 
 
@@ -74,6 +78,16 @@ def get_push_client() -> LinePushClient:
     return HttpLinePushClient()
 
 
+def get_rich_menu_client() -> LineRichMenuClient:
+    """FastAPI dependency：回傳可注入的 LINE Rich Menu client。
+
+    預設回傳 :class:`HttpLineRichMenuClient`（真實 HTTP）。
+    測試中以 ``app.dependency_overrides[get_rich_menu_client]`` 替換成
+    :class:`FakeLineRichMenuClient`。
+    """
+    return HttpLineRichMenuClient()
+
+
 __all__ = [
     "LineReplyClient",
     "LineReplyError",
@@ -95,4 +109,9 @@ __all__ = [
     "FakeLinePushClient",
     "SentPush",
     "get_push_client",
+    "LineRichMenuClient",
+    "LineRichMenuError",
+    "HttpLineRichMenuClient",
+    "FakeLineRichMenuClient",
+    "get_rich_menu_client",
 ]

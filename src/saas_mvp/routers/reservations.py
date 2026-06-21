@@ -22,6 +22,7 @@ from saas_mvp.services.booking import (
     cancel_reservation,
     get_reservation,
     list_reservations,
+    mark_attendance,
 )
 
 router = APIRouter(
@@ -50,10 +51,15 @@ class ReservationResponse(BaseModel):
     party_size: int
     status: str
     note: str | None
+    attended: bool | None
     created_at: datetime.datetime
     cancelled_at: datetime.datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class AttendanceBody(BaseModel):
+    attended: bool
 
 
 # ─────────────────────────────── Endpoints ───────────────────────────────────
@@ -110,6 +116,27 @@ def get_one(
     try:
         reservation = get_reservation(
             db, tenant_id=current_user.tenant_id, reservation_id=reservation_id
+        )
+    except ReservationNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Reservation not found"
+        )
+    return ReservationResponse.model_validate(reservation)
+
+
+@router.post("/{reservation_id}/attendance", response_model=ReservationResponse)
+def set_attendance(
+    reservation_id: int,
+    body: AttendanceBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReservationResponse:
+    try:
+        reservation = mark_attendance(
+            db,
+            tenant_id=current_user.tenant_id,
+            reservation_id=reservation_id,
+            attended=body.attended,
         )
     except ReservationNotFoundError:
         raise HTTPException(

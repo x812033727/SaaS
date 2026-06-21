@@ -1,0 +1,44 @@
+<h2>時段與容量</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-post="/ui/booking/slots" hx-target="#slots-card" hx-swap="innerHTML" class="row">
+  <label>時段開始
+    <input name="slot_start" type="datetime-local" required>
+  </label>
+  <label>總容量
+    <input name="max_capacity" type="number" min="0" value="10" required>
+  </label>
+  <label>保留現場
+    <input name="walkin_reserved" type="number" min="0" value="0">
+  </label>
+  <button type="submit">新增時段</button>
+</form>
+
+{% if slots %}
+<table>
+  <thead>
+    <tr><th>#</th><th>開始</th><th>容量</th><th>保留</th><th>已訂</th><th>線上可訂</th><th>狀態</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for s in slots %}
+    <tr>
+      <td>{{ s.id }}</td>
+      <td>{{ s.slot_start.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{{ s.max_capacity }}</td>
+      <td>{{ s.walkin_reserved }}</td>
+      <td>{{ s.booked_count }}</td>
+      <td>{{ s.online_available }}</td>
+      <td><span class="badge {{ 'on' if s.is_active else 'off' }}">{{ '啟用' if s.is_active else '停用' }}</span></td>
+      <td>
+        {% if s.is_active %}
+        <button hx-post="/ui/booking/slots/{{ s.id }}/deactivate"
+                hx-target="#slots-card" hx-swap="innerHTML"
+                hx-confirm="確定停用此時段？">停用</button>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無時段，請先新增。</p>
+{% endif %}

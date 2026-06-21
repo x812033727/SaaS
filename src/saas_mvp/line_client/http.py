@@ -21,14 +21,40 @@ from saas_mvp.line_client.base import (
     LinePushError,
     LineReplyClient,
     LineReplyError,
+    LineRichMenuClient,
+    LineRichMenuError,
 )
 
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 _LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
+_LINE_API_BASE = "https://api.line.me"
+_LINE_DATA_API_BASE = "https://api-data.line.me"
 
 # LINE userId 規格：U 後接 32 個 hex 字元。防禦性驗證，非法值當 None 處理。
 _LINE_USER_ID_RE = re.compile(r"^U[0-9a-f]{32}$")
+
+# LINE quick-reply 限制：最多 13 筆、label 上限 20 字。
+_QR_MAX_ITEMS = 13
+_QR_LABEL_MAX = 20
+
+
+def _quick_reply_items(items: list[tuple[str, str]]) -> list[dict]:
+    """把 `(label, postback_data)` 清單轉為 LINE quickReply items（postback action）。"""
+    out: list[dict] = []
+    for label, data in items[:_QR_MAX_ITEMS]:
+        out.append(
+            {
+                "type": "action",
+                "action": {
+                    "type": "postback",
+                    "label": label[:_QR_LABEL_MAX],
+                    "data": data,
+                    "displayText": label[:_QR_LABEL_MAX],
+                },
+            }
+        )
+    return out
 
 
 class HttpLineReplyClient(LineReplyClient):
@@ -51,16 +77,26 @@ class HttpLineReplyClient(LineReplyClient):
         """HTTP client 一律視為可用（連線能力由 reply() 的例外反映）。"""
         return True
 
-    def reply(self, reply_token: str, text: str, *, access_token: str) -> None:
-        """呼叫 LINE reply API，送出單則文字訊息。
+    def reply(
+        self,
+        reply_token: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
+        """呼叫 LINE reply API，送出單則文字訊息（可附 quick-reply 按鈕）。
 
         Raises:
             LineReplyError: 任何網路或 API 錯誤。
         """
+        message: dict = {"type": "text", "text": text}
+        if quick_reply:
+            message["quickReply"] = {"items": _quick_reply_items(quick_reply)}
         payload = json.dumps(
             {
                 "replyToken": reply_token,
-                "messages": [{"type": "text", "text": text}],
+                "messages": [message],
             }
         ).encode()
 
@@ -147,6 +183,95 @@ class HttpLinePushClient(LinePushClient):
             raise LinePushError(f"LINE push request failed: {exc}") from exc
         except Exception as exc:
             raise LinePushError(f"Unexpected LINE push error: {exc}") from exc
+
+
+class HttpLineRichMenuClient(LineRichMenuClient):
+    """呼叫真實 LINE Rich Menu API 的 client（僅用 stdlib urllib）。
+
+    Args:
+        api_base: 一般 API base（建立/設預設/刪除）。
+        data_api_base: data API base（上傳圖片）。
+        timeout: HTTP timeout（秒）。
+    """
+
+    def __init__(
+        self,
+        api_base: str = _LINE_API_BASE,
+        data_api_base: str = _LINE_DATA_API_BASE,
+        timeout: int = 10,
+    ) -> None:
+        self._api_base = api_base
+        self._data_api_base = data_api_base
+        self._timeout = timeout
+
+    def is_available(self) -> bool:
+        return True
+
+    def _request(
+        self,
+        url: str,
+        *,
+        method: str,
+        access_token: str,
+        data: bytes | None = None,
+        content_type: str | None = None,
+    ) -> bytes:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace") if exc.fp else ""
+            raise LineRichMenuError(
+                f"LINE Rich Menu API HTTP {exc.code}: {exc.reason} — {body[:200]}"
+            ) from exc
+        except OSError as exc:
+            raise LineRichMenuError(f"LINE Rich Menu request failed: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise LineRichMenuError(f"Unexpected LINE Rich Menu error: {exc}") from exc
+
+    def create(self, rich_menu: dict, *, access_token: str) -> str:
+        raw = self._request(
+            f"{self._api_base}/v2/bot/richmenu",
+            method="POST",
+            access_token=access_token,
+            data=json.dumps(rich_menu).encode(),
+            content_type="application/json",
+        )
+        try:
+            data = json.loads(raw)
+            rich_menu_id = data["richMenuId"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise LineRichMenuError("create did not return richMenuId") from exc
+        return rich_menu_id
+
+    def upload_image(
+        self, rich_menu_id: str, image: bytes, content_type: str, *, access_token: str
+    ) -> None:
+        self._request(
+            f"{self._data_api_base}/v2/bot/richmenu/{rich_menu_id}/content",
+            method="POST",
+            access_token=access_token,
+            data=image,
+            content_type=content_type,
+        )
+
+    def set_default(self, rich_menu_id: str, *, access_token: str) -> None:
+        self._request(
+            f"{self._api_base}/v2/bot/user/all/richmenu/{rich_menu_id}",
+            method="POST",
+            access_token=access_token,
+        )
+
+    def delete(self, rich_menu_id: str, *, access_token: str) -> None:
+        self._request(
+            f"{self._api_base}/v2/bot/richmenu/{rich_menu_id}",
+            method="DELETE",
+            access_token=access_token,
+        )
 
 
 class HttpLineBotInfoClient(LineBotInfoClient):

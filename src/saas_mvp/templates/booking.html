@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}預約管理 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>預約管理</h1>
+
+<div class="card" id="botmode-card">
+  {% include "_booking_botmode.html" %}
+</div>
+
+<div class="card" id="slots-card">
+  {% include "_booking_slots.html" %}
+</div>
+
+<div class="card" id="reservations-card">
+  {% include "_booking_reservations.html" %}
+</div>
+
+<div class="card">
+  <h2>顧客</h2>
+  {% if customers %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>名稱</th><th>電話</th><th>訂位次數</th><th>點數</th><th>等級</th><th>最後訂位</th></tr>
+    </thead>
+    <tbody>
+      {% for c in customers %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td>{{ c.display_name or '—' }}</td>
+        <td>{{ c.phone or '—' }}</td>
+        <td>{{ c.booking_count }}</td>
+        <td>{{ c.points_balance }}</td>
+        <td><span class="badge">{{ c.tier }}</span></td>
+        <td>{% if c.last_booked_at %}{{ c.last_booked_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">尚無顧客資料（顧客透過 LINE 預約後自動建檔）。</p>
+  {% endif %}
+</div>
+{% endblock %}

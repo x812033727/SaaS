@@ -141,6 +141,12 @@ class LineChannelConfig(Base):
         server_default=DEFAULT_BOT_MODE,
     )
 
+    # Rich Menu（圖文選單）套用狀態：LINE 回傳的 richMenuId + 選用的模板/主題。
+    # 皆 nullable（未套用為 NULL）；既有 DB 由 _migrate_add_rich_menu_fields() 補欄。
+    rich_menu_id = Column(String(64), nullable=True)
+    rich_menu_template = Column(String(32), nullable=True)
+    rich_menu_theme = Column(String(32), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

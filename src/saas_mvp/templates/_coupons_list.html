@@ -1,0 +1,41 @@
+<h2>優惠券</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-post="/ui/coupons" hx-target="#coupons-card" hx-swap="innerHTML" class="row">
+  <label>券碼<input name="code" maxlength="64" required></label>
+  <label>名稱<input name="name" maxlength="128" required></label>
+  <label>折扣類型
+    <select name="discount_type">
+      <option value="percent">百分比 %</option>
+      <option value="amount">折抵金額（分）</option>
+    </select>
+  </label>
+  <label>折扣值<input name="discount_value" type="number" min="0" value="10" required></label>
+  <label>兌換上限<input name="max_redemptions" type="number" min="1" placeholder="不限"></label>
+  <button type="submit">新增優惠券</button>
+</form>
+
+{% if coupons %}
+<table>
+  <thead><tr><th>#</th><th>券碼</th><th>名稱</th><th>折扣</th><th>已兌換/上限</th><th>狀態</th><th></th></tr></thead>
+  <tbody>
+    {% for c in coupons %}
+    <tr>
+      <td>{{ c.id }}</td>
+      <td><code>{{ c.code }}</code></td>
+      <td>{{ c.name }}</td>
+      <td>{% if c.discount_type == 'percent' %}{{ c.discount_value }}%{% else %}{{ c.discount_value }} 分{% endif %}</td>
+      <td>{{ c.redeemed_count }}{% if c.max_redemptions %} / {{ c.max_redemptions }}{% else %} / ∞{% endif %}</td>
+      <td><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
+      <td>
+        {% if c.is_active %}
+        <button hx-post="/ui/coupons/{{ c.id }}/deactivate" hx-target="#coupons-card" hx-swap="innerHTML"
+                hx-confirm="確定停用此券？">停用</button>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無優惠券。</p>
+{% endif %}
