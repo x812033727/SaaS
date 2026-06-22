@@ -689,6 +689,52 @@ def _available_slots(db: Session, tenant_id: int) -> list:
     ][:_SLOT_CHOICES_MAX]
 
 
+def _available_slots_on_date(db: Session, tenant_id: int, date: str | None) -> list:
+    """指定日期（'YYYY-MM-DD'）的可預約時段；date 缺/不合法時退回全部（安全降級）。"""
+    base = [
+        s
+        for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True)
+        if s.online_available > 0
+    ]
+    if date:
+        base = [s for s in base if s.slot_start.date().isoformat() == date]
+    return base[:_SLOT_CHOICES_MAX]
+
+
+def _available_dates(db: Session, tenant_id: int, limit: int = 10) -> list[str]:
+    """有可預約時段（online_available>0）的日期，去重 + 升冪排序 + 取前 limit 筆。"""
+    seen: set[str] = set()
+    dates: list[str] = []
+    for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True):
+        if s.online_available <= 0:
+            continue
+        d = s.slot_start.date().isoformat()
+        if d not in seen:
+            seen.add(d)
+            dates.append(d)
+    return sorted(dates)[:limit]
+
+
+# 日期 quick-reply 上限（LINE quick-reply 最多 13 筆）
+_DATE_CHOICES_MAX = 13
+
+
+def _date_choice_buttons(service_id: int, dates: list[str]) -> list[tuple[str, str]]:
+    """日期 → quick-reply 按鈕（postback action=pick_date，攜帶 service_id + date）。"""
+    _weekday_zh = ("一", "二", "三", "四", "五", "六", "日")
+    buttons: list[tuple[str, str]] = []
+    for d in dates[:_DATE_CHOICES_MAX]:
+        try:
+            dt = datetime.date.fromisoformat(d)
+            label = f"{dt.strftime('%m/%d')} (週{_weekday_zh[dt.weekday()]})"
+        except ValueError:
+            label = d
+        buttons.append(
+            (label, f"action=pick_date&service_id={service_id}&date={d}")
+        )
+    return buttons
+
+
 def _slot_choice_buttons(slots: list) -> list[tuple[str, str]]:
     """時段 → quick-reply 按鈕（postback action=pick_slot）。"""
     return [
@@ -713,7 +759,7 @@ def _prompt_choose_slot(db: Session, tenant_id: int) -> tuple[str, list | None]:
     return "請選擇時段：", _slot_choice_buttons(slots)
 
 
-# ── 引導式對話：服務 → 員工 → 時段 → 確認（stateless，狀態以 postback 攜帶） ──
+# ── 引導式對話：服務 → 日期 → 員工 → 時段 → 確認（stateless，狀態以 postback 攜帶） ──
 
 def _active_services(db: Session, tenant_id: int) -> list:
     """上架中的服務項目（供引導式第一步）。最多 12（carousel 上限）。"""
@@ -772,16 +818,23 @@ def _service_carousel(services: list) -> dict:
     }
 
 
-def _staff_choice_buttons(service_id: int, staff_list: list) -> list[tuple[str, str]]:
-    """員工 → quick-reply 按鈕（postback action=pick_staff）；首項為「不指定」。"""
+def _staff_choice_buttons(
+    service_id: int, staff_list: list, date: str | None = None
+) -> list[tuple[str, str]]:
+    """員工 → quick-reply 按鈕（postback action=pick_staff）；首項為「不指定」。
+
+    date（'YYYY-MM-DD'）若有則前向攜帶至每個按鈕（含「不指定」）。
+    """
+    suffix = f"&date={date}" if date else ""
     buttons: list[tuple[str, str]] = [
-        ("不指定", f"action=pick_staff&service_id={service_id}")
+        ("不指定", f"action=pick_staff&service_id={service_id}{suffix}")
     ]
     for st in staff_list:
         buttons.append(
             (
                 st.name[:20],
-                f"action=pick_staff&service_id={service_id}&staff_id={st.id}",
+                f"action=pick_staff&service_id={service_id}"
+                f"&staff_id={st.id}{suffix}",
             )
         )
     return buttons[:13]
@@ -849,7 +902,7 @@ def _try_conversational(
     params: dict,
     line_user_id: str,
 ) -> tuple[str | None, list | None, dict | None] | None:
-    """引導式對話步驟機（服務→員工→時段→確認），以 postback 攜帶狀態。
+    """引導式對話步驟機（服務→日期→員工→時段→確認），以 postback 攜帶狀態。
 
     回傳 (text, quick_reply, flex) 表示「已由本流程處理」；回 None 表示本流程
     不接手，交回既有 _dispatch_booking（向後相容：無服務時退回原始時段流程）。
@@ -876,7 +929,7 @@ def _try_conversational(
             return None  # 退回既有時段流程（優雅降級）
         return None, None, _service_carousel(services)
 
-    # 第二步：選定服務 → 員工 quick-reply（含「不指定」）。
+    # 第二步：選定服務 → 日期 quick-reply（只列有可預約時段的日期）。
     if action == "pick_service":
         service_id = params.get("service_id")
         if service_id is None:
@@ -885,22 +938,38 @@ def _try_conversational(
             catalog_svc.get_service(db, tenant_id=tenant_id, service_id=service_id)
         except Exception:  # noqa: BLE001 — 服務不存在/跨租戶
             return "找不到該服務，請重新輸入「預約」。", None, None
-        staff_list = _service_staff(db, tenant_id, service_id)
+        dates = _available_dates(db, tenant_id)
+        if not dates:
+            return "目前沒有可預約的日期。", None, None
         return (
-            "請選擇服務人員：",
-            _staff_choice_buttons(service_id, staff_list),
+            "請選擇日期：",
+            _date_choice_buttons(service_id, dates),
             None,
         )
 
-    # 第三步：選定（服務 + 員工）→ 可預約時段 quick-reply（攜帶狀態）。
+    # 第三步：選定（服務 + 日期）→ 員工 quick-reply（含「不指定」，攜帶日期）。
+    if action == "pick_date":
+        service_id = params.get("service_id")
+        if service_id is None:
+            return None
+        date = params.get("date")
+        staff_list = _service_staff(db, tenant_id, service_id)
+        return (
+            "請選擇服務人員：",
+            _staff_choice_buttons(service_id, staff_list, date),
+            None,
+        )
+
+    # 第四步：選定（服務 + 員工 + 日期）→ 該日期可預約時段 quick-reply（攜帶狀態）。
     if action == "pick_staff":
         service_id = params.get("service_id")
         if service_id is None:
             return None
         staff_id = params.get("staff_id")
-        slots = _available_slots(db, tenant_id)
+        date = params.get("date")
+        slots = _available_slots_on_date(db, tenant_id, date)
         if not slots:
-            return "目前沒有可預約的時段。", None, None
+            return "該日期目前沒有可預約的時段。", None, None
         return (
             "請選擇時段：",
             _slot_buttons_with_state(slots, service_id, staff_id),
@@ -1185,7 +1254,7 @@ def _handle_booking_event(
     if etype == "message" and event.get("message", {}).get("type") == "text":
         raw_text = event["message"].get("text", "")
 
-    # 引導式對話（服務→員工→時段→確認）優先攔截；未接手者交回既有 dispatcher。
+    # 引導式對話（服務→日期→員工→時段→確認）優先攔截；未接手者交回既有 dispatcher。
     conv = _try_conversational(db, tenant_id, action, params, line_user_id)
     if conv is not None:
         reply_text, quick_reply, flex = conv
