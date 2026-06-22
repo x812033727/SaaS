@@ -66,6 +66,30 @@ class LineReplyClient(ABC):
             LineReplyError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。
         """
 
+    def reply_flex(
+        self,
+        reply_token: str,
+        alt_text: str,
+        contents: dict,
+        *,
+        access_token: str,
+    ) -> None:
+        """透過 LINE reply API 回覆一則 Flex 訊息（carousel / bubble）。
+
+        Args:
+            reply_token: LINE 事件中的 replyToken。
+            alt_text: 不支援 Flex 的環境顯示的替代文字。
+            contents: Flex 訊息的 `contents`（carousel / bubble dict）。
+            access_token: 該 LINE channel 的 channel access token（Bearer）。
+
+        預設實作以子類覆寫；ABC 提供 NotImplementedError 防衛，使既有只實作
+        text reply 的測試替身（若有）不被強制改寫。內建 Http / Fake 皆已實作。
+
+        Raises:
+            LineReplyError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。
+        """
+        raise NotImplementedError("reply_flex not implemented by this client")
+
     @abstractmethod
     def is_available(self) -> bool:
         """回傳此 client 是否具備發送能力。

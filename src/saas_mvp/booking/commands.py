@@ -28,6 +28,9 @@ _TEXT_ALIASES: dict[str, str] = {
     "取消": "cancel",
     "/help": "help",
     "說明": "help",
+    # 圖文選單卡片（Flex carousel）
+    "/menu": "menu",
+    "選單": "menu",
     # P3 優惠券 / 會員
     "/coupons": "coupons",
     "優惠券": "coupons",
@@ -138,11 +141,15 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         return None, {}
     action = actions[0]
     if action not in {
-        "book", "pick_slot", "slots", "my", "cancel", "help",
+        "book", "pick_service", "pick_staff", "pick_slot",
+        "slots", "my", "cancel", "help", "menu",
         "coupons", "redeem", "points",
         "shop", "buy", "my_orders",
     }:
         return None, {}
+
+    def _qint(key: str) -> int | None:
+        return _to_int(qs[key][0]) if key in qs else None
 
     params: dict = {}
     if action == "book":
@@ -152,12 +159,36 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
                 params["slot_id"] = slot_id
         party = _to_int(qs["party"][0]) if "party" in qs else None
         params["party_size"] = party or 1
+    elif action == "pick_service":
+        # 引導式第一步結果：使用者選定服務項目。
+        sid = _qint("service_id")
+        if sid is not None:
+            params["service_id"] = sid
+    elif action == "pick_staff":
+        # 第二步結果：服務 + 員工（staff_id 可缺，代表「不指定」）。
+        sid = _qint("service_id")
+        if sid is not None:
+            params["service_id"] = sid
+        stid = _qint("staff_id")
+        if stid is not None:
+            params["staff_id"] = stid
     elif action == "pick_slot":
-        # 引導式第二步：使用者已選時段，待選人數
+        # 引導式：使用者已選時段（可帶 service_id / staff_id 前向狀態）。
         if "slot_id" in qs:
             slot_id = _to_int(qs["slot_id"][0])
             if slot_id is not None:
                 params["slot_id"] = slot_id
+        sid = _qint("service_id")
+        if sid is not None:
+            params["service_id"] = sid
+        stid = _qint("staff_id")
+        if stid is not None:
+            params["staff_id"] = stid
+        # party 僅在明確帶值時加入，維持既有 raw pick_slot 輸出形狀（{slot_id}）。
+        if "party" in qs:
+            party = _to_int(qs["party"][0])
+            if party is not None:
+                params["party_size"] = party
     elif action == "redeem":
         if "code" in qs:
             params["code"] = qs["code"][0]

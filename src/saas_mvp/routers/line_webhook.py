@@ -113,10 +113,13 @@ from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
+from saas_mvp.services import flex_menu as flex_menu_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
+from saas_mvp.services import staff as staff_svc
 from saas_mvp.services.payment import get_payment_provider
 
 _log = logging.getLogger(__name__)
@@ -710,6 +713,227 @@ def _prompt_choose_slot(db: Session, tenant_id: int) -> tuple[str, list | None]:
     return "請選擇時段：", _slot_choice_buttons(slots)
 
 
+# ── 引導式對話：服務 → 員工 → 時段 → 確認（stateless，狀態以 postback 攜帶） ──
+
+def _active_services(db: Session, tenant_id: int) -> list:
+    """上架中的服務項目（供引導式第一步）。最多 12（carousel 上限）。"""
+    return [
+        s
+        for s in catalog_svc.list_services(db, tenant_id=tenant_id)
+        if s.is_active
+    ][:flex_menu_svc.MAX_CARDS]
+
+
+def _service_carousel(services: list) -> dict:
+    """服務清單 → LINE Flex carousel（每張卡片一個「選擇」postback 按鈕）。"""
+    bubbles = []
+    for s in services:
+        subtitle_parts = []
+        if s.duration_minutes:
+            subtitle_parts.append(f"{s.duration_minutes} 分鐘")
+        if s.price_cents:
+            subtitle_parts.append(f"${s.price_cents}")
+        subtitle = "・".join(subtitle_parts) or "點選預約"
+        bubbles.append(
+            {
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "text", "text": s.name, "weight": "bold",
+                         "size": "lg", "wrap": True},
+                        {"type": "text", "text": subtitle, "size": "sm",
+                         "color": "#888888", "wrap": True},
+                    ],
+                },
+                "footer": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "primary",
+                            "action": {
+                                "type": "postback",
+                                "label": "選擇",
+                                "data": f"action=pick_service&service_id={s.id}",
+                                "displayText": f"選擇 {s.name}"[:300],
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+    return {
+        "type": "flex",
+        "altText": "請選擇服務項目",
+        "contents": {"type": "carousel", "contents": bubbles},
+    }
+
+
+def _staff_choice_buttons(service_id: int, staff_list: list) -> list[tuple[str, str]]:
+    """員工 → quick-reply 按鈕（postback action=pick_staff）；首項為「不指定」。"""
+    buttons: list[tuple[str, str]] = [
+        ("不指定", f"action=pick_staff&service_id={service_id}")
+    ]
+    for st in staff_list:
+        buttons.append(
+            (
+                st.name[:20],
+                f"action=pick_staff&service_id={service_id}&staff_id={st.id}",
+            )
+        )
+    return buttons[:13]
+
+
+def _service_staff(db: Session, tenant_id: int, service_id: int) -> list:
+    """指派到該服務的 active 員工清單。"""
+    links = catalog_svc.list_service_staff(
+        db, tenant_id=tenant_id, service_id=service_id
+    )
+    out = []
+    for link in links:
+        try:
+            st = staff_svc.get_staff(db, tenant_id=tenant_id, staff_id=link.staff_id)
+        except Exception:  # noqa: BLE001 — 指派但員工已刪：略過
+            continue
+        if st.is_active:
+            out.append(st)
+    return out
+
+
+def _slot_buttons_with_state(
+    slots: list, service_id: int, staff_id: int | None
+) -> list[tuple[str, str]]:
+    """時段 → quick-reply，data 攜帶 service_id / staff_id 前向狀態。"""
+    buttons = []
+    for s in slots:
+        data = f"action=pick_slot&service_id={service_id}&slot_id={s.id}"
+        if staff_id is not None:
+            data += f"&staff_id={staff_id}"
+        buttons.append((s.slot_start.strftime("%m/%d %H:%M"), data))
+    return buttons
+
+
+def _confirm_text(db: Session, tenant_id: int, resv, slot_id: int) -> str:
+    """建單成功確認文字 + 加入 Google 行事曆連結。"""
+    from saas_mvp.services import calendar_ics
+
+    base = (
+        f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
+        f"如需取消請輸入：取消 {resv.id}"
+    )
+    # 取時段時間組「加入 Google 行事曆」連結。
+    from saas_mvp.models.booking_slot import BookingSlot
+
+    slot_obj = (
+        db.query(BookingSlot)
+        .filter(BookingSlot.tenant_id == tenant_id, BookingSlot.id == slot_id)
+        .first()
+    )
+    if slot_obj is not None:
+        start = slot_obj.slot_start
+        end = slot_obj.slot_end or start
+        url = calendar_ics.google_calendar_url(
+            title="預約", start=start, end=end
+        )
+        base += f"\n加入 Google 行事曆：{url}"
+    return base
+
+
+def _try_conversational(
+    db: Session,
+    tenant_id: int,
+    action: str | None,
+    params: dict,
+    line_user_id: str,
+) -> tuple[str | None, list | None, dict | None] | None:
+    """引導式對話步驟機（服務→員工→時段→確認），以 postback 攜帶狀態。
+
+    回傳 (text, quick_reply, flex) 表示「已由本流程處理」；回 None 表示本流程
+    不接手，交回既有 _dispatch_booking（向後相容：無服務時退回原始時段流程）。
+
+    優雅降級：沒有任何上架服務時，'book'（無 slot_id）不接手，由既有
+    _prompt_choose_slot 處理，使既有 raw-slot 預約測試不受影響。
+    """
+    # /menu 或「選單」：推送租戶 active FlexMenu（圖文選單卡片）。
+    if action == "menu":
+        if not features_svc.is_enabled(db, tenant_id, features_svc.FLEX_MENU):
+            return "本店尚未開放圖文選單。", None, None
+        menu = flex_menu_svc.get_active_menu(db, tenant_id=tenant_id)
+        if menu is None:
+            return "目前沒有可用的選單。", None, None
+        cards = flex_menu_svc.list_cards(db, tenant_id=tenant_id, menu_id=menu.id)
+        if not cards:
+            return "目前沒有可用的選單。", None, None
+        return None, None, flex_menu_svc.build_flex_payload(menu, cards)
+
+    # 引導式第一步：'book'（無 slot_id）且有上架服務 → 服務 carousel。
+    if action == "book" and params.get("slot_id") is None:
+        services = _active_services(db, tenant_id)
+        if not services:
+            return None  # 退回既有時段流程（優雅降級）
+        return None, None, _service_carousel(services)
+
+    # 第二步：選定服務 → 員工 quick-reply（含「不指定」）。
+    if action == "pick_service":
+        service_id = params.get("service_id")
+        if service_id is None:
+            return None
+        try:
+            catalog_svc.get_service(db, tenant_id=tenant_id, service_id=service_id)
+        except Exception:  # noqa: BLE001 — 服務不存在/跨租戶
+            return "找不到該服務，請重新輸入「預約」。", None, None
+        staff_list = _service_staff(db, tenant_id, service_id)
+        return (
+            "請選擇服務人員：",
+            _staff_choice_buttons(service_id, staff_list),
+            None,
+        )
+
+    # 第三步：選定（服務 + 員工）→ 可預約時段 quick-reply（攜帶狀態）。
+    if action == "pick_staff":
+        service_id = params.get("service_id")
+        if service_id is None:
+            return None
+        staff_id = params.get("staff_id")
+        slots = _available_slots(db, tenant_id)
+        if not slots:
+            return "目前沒有可預約的時段。", None, None
+        return (
+            "請選擇時段：",
+            _slot_buttons_with_state(slots, service_id, staff_id),
+            None,
+        )
+
+    # 第四步：選定時段（帶 service_id）→ 建單 + 確認。
+    if action == "pick_slot" and params.get("service_id") is not None:
+        service_id = params.get("service_id")
+        staff_id = params.get("staff_id")
+        slot_id = params.get("slot_id")
+        party_size = params.get("party_size", 1)
+        if slot_id is None:
+            return _prompt_choose_slot(db, tenant_id) + (None,)
+        try:
+            resv = booking_svc.book_slot(
+                db,
+                tenant_id=tenant_id,
+                slot_id=slot_id,
+                party_size=party_size,
+                line_user_id=line_user_id,
+                staff_id=staff_id,
+                service_id=service_id,
+            )
+        except booking_svc.SlotNotFoundError:
+            return f"找不到時段 #{slot_id}，請重新輸入「預約」查看。", None, None
+        except booking_svc.SlotFullError:
+            return f"時段 #{slot_id} 已額滿，請改選其他時段。", None, None
+        return _confirm_text(db, tenant_id, resv, slot_id), None, None
+
+    return None
+
+
 def _dispatch_booking(
     db: Session,
     tenant_id: int,
@@ -958,19 +1182,37 @@ def _handle_booking_event(
     raw_text = ""
     if etype == "message" and event.get("message", {}).get("type") == "text":
         raw_text = event["message"].get("text", "")
-    # message 但非文字（圖片/貼圖）→ action 為 None；回說明
-    reply_text, quick_reply = _dispatch_booking(
-        db, tenant_id, action, params, line_user_id, raw_text
-    )
 
-    # 副作用（若有）已於 _dispatch_booking 內 commit；標記不可重試後再 reply。
+    # 引導式對話（服務→員工→時段→確認）優先攔截；未接手者交回既有 dispatcher。
+    conv = _try_conversational(db, tenant_id, action, params, line_user_id)
+    if conv is not None:
+        reply_text, quick_reply, flex = conv
+    else:
+        # message 但非文字（圖片/貼圖）→ action 為 None；回說明
+        reply_text, quick_reply = _dispatch_booking(
+            db, tenant_id, action, params, line_user_id, raw_text
+        )
+        flex = None
+
+    # 副作用（若有）已於 dispatcher 內 commit；標記不可重試後再 reply。
     stage = LineWebhookEventStage.REPLY_SENT.value
     if stage_holder is not None:
         stage_holder[0] = stage
     if reply_token:
-        line_client.reply(
-            reply_token, reply_text, access_token=access_token, quick_reply=quick_reply
-        )
+        if flex is not None:
+            line_client.reply_flex(
+                reply_token,
+                flex.get("altText", "選單"),
+                flex["contents"],
+                access_token=access_token,
+            )
+        else:
+            line_client.reply(
+                reply_token,
+                reply_text,
+                access_token=access_token,
+                quick_reply=quick_reply,
+            )
     return stage
 
 
