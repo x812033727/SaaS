@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from saas_mvp.auth.ratelimit import public_limiter
 from saas_mvp.db import get_db
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import coupons as coupons_svc
@@ -30,7 +31,12 @@ from saas_mvp.services.calendar_ics import google_calendar_url
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
 
-router = APIRouter(prefix="/p", tags=["public"], include_in_schema=False)
+router = APIRouter(
+    prefix="/p",
+    tags=["public"],
+    include_in_schema=False,
+    dependencies=[Depends(public_limiter)],
+)
 
 
 def _utcnow() -> datetime.datetime:

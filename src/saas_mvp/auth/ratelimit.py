@@ -132,6 +132,11 @@ class SlidingWindowRateLimiter:
 register_limiter = SlidingWindowRateLimiter(max_calls=20, window_seconds=60)
 token_limiter = SlidingWindowRateLimiter(max_calls=20, window_seconds=60)
 
+# 公開 / 無認證端點 IP 限制器（/p/{slug}、calendar .ics feeds、/pii/{token}）：
+# 60/min per IP — 防止匿名 slug / token 列舉枚舉，對正常瀏覽足夠寬鬆。
+# 與其他 IP 限制器一樣由 settings.rate_limit_enabled 控制（測試預設關閉）。
+public_limiter = SlidingWindowRateLimiter(max_calls=60, window_seconds=60)
+
 
 # ── Business endpoint limiter (per-key / per-tenant) ─────────────────────────
 

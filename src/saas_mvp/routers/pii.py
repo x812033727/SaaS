@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from saas_mvp.auth.ratelimit import public_limiter
 from saas_mvp.db import get_db
 from saas_mvp.services import pii as pii_svc
 from saas_mvp.services.pii import (
@@ -30,7 +31,12 @@ from saas_mvp.models.pii_request import PII_SUBMITTED
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
 
-router = APIRouter(prefix="/pii", tags=["pii"], include_in_schema=False)
+router = APIRouter(
+    prefix="/pii",
+    tags=["pii"],
+    include_in_schema=False,
+    dependencies=[Depends(public_limiter)],
+)
 
 
 def _state_for(req) -> str:

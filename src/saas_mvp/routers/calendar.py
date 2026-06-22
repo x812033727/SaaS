@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from saas_mvp.auth.ratelimit import public_limiter
 from saas_mvp.db import get_db
 from saas_mvp.models.booking_slot import BookingSlot
 from saas_mvp.models.customer import Customer
@@ -32,7 +33,12 @@ from saas_mvp.models.staff import Staff
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.services.calendar_ics import build_ics
 
-router = APIRouter(prefix="/calendar", tags=["calendar"], include_in_schema=False)
+router = APIRouter(
+    prefix="/calendar",
+    tags=["calendar"],
+    include_in_schema=False,
+    dependencies=[Depends(public_limiter)],
+)
 
 
 def _reservation_to_event(

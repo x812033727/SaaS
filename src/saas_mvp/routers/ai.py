@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.ai import AIError, get_assistant
-from saas_mvp.deps import get_current_user, get_db
+from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services.features import AI_ASSISTANT, require_feature
@@ -19,7 +19,10 @@ from saas_mvp.services.features import AI_ASSISTANT, require_feature
 router = APIRouter(
     prefix="/ai",
     tags=["ai"],
-    dependencies=[Depends(require_feature(AI_ASSISTANT))],
+    dependencies=[
+        Depends(require_rate_limit),
+        Depends(require_feature(AI_ASSISTANT)),
+    ],
 )
 
 
@@ -32,7 +35,8 @@ def _build_context(db: Session, tenant_id: int, question: str) -> str:
 # ── /ai/ask ──────────────────────────────────────────────────────────────────
 
 class AskRequest(BaseModel):
-    question: str = Field(min_length=1)
+    # max_length 防成本放大：超長 prompt 被送往付費 Anthropic API。
+    question: str = Field(min_length=1, max_length=2000)
 
 
 class AskResponse(BaseModel):

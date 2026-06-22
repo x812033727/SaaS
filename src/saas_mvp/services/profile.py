@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,15 @@ from saas_mvp.services.tenants import tenant_query
 
 class SlugTakenError(Exception):
     """slug 已被其他租戶使用（全域 unique 衝突）。"""
+
+
+class InvalidThemeColorError(ValueError):
+    """theme_color 不符合允許的色碼格式（防 CSS 注入）。"""
+
+
+# 只接受嚴格 hex 色碼（#RGB / #RGBA / #RRGGBB / #RRGGBBAA），防止公開頁
+# 以 theme_color 渲染 inline CSS 時被注入（如 '#000;}body{...'）。
+_THEME_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{3,8}$")
 
 
 # 可由 upsert 寫入的欄位白名單（slug 另外處理 unique）。
@@ -60,6 +71,11 @@ def upsert(db: Session, tenant_id: int, **fields) -> BusinessProfile:
     """
     profile = get_by_tenant(db, tenant_id)
     data = {k: v for k, v in fields.items() if k in _UPSERTABLE and v is not None}
+
+    # theme_color 防 CSS 注入：只放行嚴格 hex 色碼，違者拒絕。
+    theme_color = data.get("theme_color")
+    if theme_color is not None and not _THEME_COLOR_RE.match(str(theme_color)):
+        raise InvalidThemeColorError("色碼格式錯誤，請使用如 #1a2b3c 的十六進位色碼。")
 
     if profile is None:
         if not data.get("slug"):
