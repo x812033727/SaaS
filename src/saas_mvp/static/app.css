@@ -69,6 +69,8 @@ input, select {
 }
 .row { display: flex; gap: 12px; flex-wrap: wrap; }
 .row > * { flex: 1; min-width: 140px; }
+.col { display: flex; flex-direction: column; }
+.col > label { margin-top: 0; }
 
 button, .btn {
   display: inline-block; cursor: pointer; border: none; border-radius: 6px;
