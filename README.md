@@ -663,5 +663,28 @@ ops / UI 全部走它。
 | `SAAS_ECPAY_HASH_IV` | HashIV（預設測試值，正式請覆寫） | `v77hoKGq4kWxNNIS` |
 | `SAAS_ECPAY_ENV` | `stage`（測試）/ `prod`（正式） | `stage` |
 
-> **範圍**：本輪只接**商品訂單一次性付款**。進階功能月費訂閱仍為 stub（綠界定期定額 recurring 為後續）。
-> 正式上線需填入綠界**正式**金鑰、`SAAS_ECPAY_ENV=prod` 與對外可達的 `SAAS_PUBLIC_BASE_URL`。
+正式上線需填入綠界**正式**金鑰、`SAAS_ECPAY_ENV=prod` 與對外可達的 `SAAS_PUBLIC_BASE_URL`。
+
+### 定期定額訂閱月費（綠界信用卡定期定額）
+
+`SAAS_PAYMENT_PROVIDER=ecpay` 時，進階功能月費訂閱改走綠界**信用卡定期定額**真實每月自動扣款
+（`stub` 模式維持即時開通）。流程：
+
+1. 店家 `POST /billing/features/{feature}/subscribe`（或 `/ui/features`）→ 建立 pending 訂閱、
+   回 `checkout_url`（綠界付款頁）；**功能此時尚未開通**。
+2. 該頁自動 submit 定期定額表單（`ChoosePayment=Credit`、`PeriodType=M`、`Frequency=1`、
+   `ExecTimes=99`、`PeriodReturnURL`）到綠界 → 店家完成首期授權。
+3. 綠界回調 `POST /payments/ecpay/subscribe-callback`（首期 ReturnURL）：驗簽 → `RtnCode==1`
+   **才開通功能**。之後每月自動扣款並回調 `POST /payments/ecpay/period-callback`：成功維持開通、
+   失敗關閉。
+4. 退訂 `POST /billing/features/{feature}/unsubscribe`：**先呼叫綠界 `CreditCardPeriodAction`
+   (`Action=Cancel`) 真的停掉後續扣款**，再關閉功能；停扣 API 失敗時仍關功能但把訂閱標
+   `cancel_failed`（待 ops 重試），絕不放任繼續扣卡。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_FEATURE_MONTHLY_PRICE_CENTS` | 每期扣款金額（分） | `20000` |
+| `SAAS_ECPAY_PERIOD_EXEC_TIMES` | 定期定額執行次數（月扣上限 99≈長期） | `99` |
+
+> **範圍**：商品訂單為一次性付款；進階功能訂閱為定期定額。`ExecTimes=99` 屆滿（約 8 年）自動停、
+> 需重訂。`PeriodReturnURL` 須對外可達。CheckMacValue / 驗簽 / 停扣 API 皆沿用同一 `EcpayClient`。

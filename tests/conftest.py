@@ -57,6 +57,7 @@ import saas_mvp.models.order as _order  # noqa: F401, E402
 import saas_mvp.models.order_item as _oitem  # noqa: F401, E402
 import saas_mvp.models.tenant_feature as _tf  # noqa: F401, E402
 import saas_mvp.models.feature_change_history as _fch  # noqa: F401, E402
+import saas_mvp.models.feature_subscription as _fsub  # noqa: F401, E402
 import saas_mvp.models.location as _loc  # noqa: F401, E402
 import saas_mvp.models.staff as _staff  # noqa: F401, E402
 import saas_mvp.models.staff_shift as _sshift  # noqa: F401, E402

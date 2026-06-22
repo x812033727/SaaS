@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     ecpay_hash_key: str = "5294y06JbISpM5x9"
     ecpay_hash_iv: str = "v77hoKGq4kWxNNIS"
     ecpay_env: str = "stage"  # "stage"（測試）| "prod"（正式）
+    # 定期定額執行次數（月扣上限 99≈8 年，等同長期；屆滿自動停需重訂）
+    ecpay_period_exec_times: int = 99
 
     # 藍新金流 NewebPay（MPG 幕前；金鑰預設為空，正式環境由 SAAS_NEWEBPAY_* 覆寫）。
     # MerchantID + HashKey + HashIV 由藍新後台取得；env 決定送往測試/正式付款閘道。
