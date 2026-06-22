@@ -176,7 +176,8 @@ def segment_customers(
 
     if tag_ids:
         # 須擁有所有指定標籤：對每個 tag_id 做一次 EXISTS-style join filter。
-        for tag_id in tag_ids:
+        # 上限 20：每個 tag_id 增加一次 JOIN，無界清單會造成 JOIN 爆炸（DoS）。
+        for tag_id in tag_ids[:20]:
             link_alias = (
                 tenant_query(db, CustomerTagLink, tenant_id)
                 .filter(CustomerTagLink.tag_id == tag_id)

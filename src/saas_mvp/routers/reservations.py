@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
 from saas_mvp.services.booking import (
+    CrossTenantReferenceError,
     ReservationNotFoundError,
     SlotFullError,
     SlotNotFoundError,
@@ -90,6 +91,11 @@ def create(
             note=body.note,
             staff_id=body.staff_id,
             service_id=body.service_id,
+        )
+    except CrossTenantReferenceError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid staff_id or service_id",
         )
     except SlotNotFoundError:
         raise HTTPException(

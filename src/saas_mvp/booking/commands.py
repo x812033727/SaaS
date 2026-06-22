@@ -56,6 +56,14 @@ def _to_int(value: str) -> int | None:
         return None
 
 
+def _clamp_party(value: int | None) -> int:
+    """人數正規化：None/非正數一律夾為 1（防 party=-5 等惡意輸入打到 book_slot
+    的 ValueError → 500）。"""
+    if value is None or value < 1:
+        return 1
+    return value
+
+
 def parse_booking_command(text: str) -> tuple[str | None, dict]:
     """解析文字訊息為 (action, params)。
 
@@ -93,7 +101,7 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
             slot_id = _to_int(args[0])
             if slot_id is not None:
                 params["slot_id"] = slot_id
-        params["party_size"] = (_to_int(args[1]) if len(args) > 1 else None) or 1
+        params["party_size"] = _clamp_party(_to_int(args[1]) if len(args) > 1 else None)
         return action, params
     if action == "cancel":
         params = {}
@@ -158,7 +166,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
             if slot_id is not None:
                 params["slot_id"] = slot_id
         party = _to_int(qs["party"][0]) if "party" in qs else None
-        params["party_size"] = party or 1
+        params["party_size"] = _clamp_party(party)
     elif action == "pick_service":
         # 引導式第一步結果：使用者選定服務項目。
         sid = _qint("service_id")
@@ -188,7 +196,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         if "party" in qs:
             party = _to_int(qs["party"][0])
             if party is not None:
-                params["party_size"] = party
+                params["party_size"] = _clamp_party(party)
     elif action == "redeem":
         if "code" in qs:
             params["code"] = qs["code"][0]

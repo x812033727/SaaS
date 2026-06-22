@@ -37,6 +37,21 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _safe_http_url(value: str | None) -> str | None:
+    """只放行 http/https 連結；其餘 scheme（如 javascript:、data:）一律丟棄回 None。
+
+    防止公開頁把 social_links / banner_url 內的 javascript: 等危險 URI 直接
+    渲染成 href / src 造成 XSS。比對前 strip 並小寫化 scheme。
+    """
+    if not value:
+        return None
+    candidate = value.strip()
+    lowered = candidate.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return candidate
+    return None
+
+
 def _is_coupon_active(c, now: datetime.datetime) -> bool:
     """券是否在公開可見的有效狀態（啟用 + 在有效期間內）。"""
     if not c.is_active:
@@ -105,9 +120,16 @@ def public_profile(
         try:
             parsed = json.loads(profile.social_links)
             if isinstance(parsed, dict):
-                social = {str(k): str(v) for k, v in parsed.items()}
+                # 僅保留 http/https 連結；javascript: 等危險 scheme 丟棄（防 XSS）。
+                for k, v in parsed.items():
+                    safe = _safe_http_url(str(v))
+                    if safe is not None:
+                        social[str(k)] = safe
         except (json.JSONDecodeError, TypeError, ValueError):
             social = {}
+
+    # banner_url 同樣只放行 http/https（模板以此安全值渲染 <img src> / og:image）。
+    safe_banner_url = _safe_http_url(profile.banner_url)
 
     seo_title = profile.seo_title or display_name
     seo_description = profile.seo_description or (profile.intro or display_name)
@@ -123,6 +145,7 @@ def public_profile(
             "portfolio": portfolio,
             "coupons": coupons,
             "social": social,
+            "banner_url": safe_banner_url,
             "seo_title": seo_title,
             "seo_description": seo_description,
         },

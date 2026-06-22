@@ -8,10 +8,12 @@ LocationLimitError（router 轉 409）。
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
 from saas_mvp.models.location import Location
+from saas_mvp.models.tenant import Tenant
 from saas_mvp.services.tenants import tenant_query
 
 
@@ -49,6 +51,14 @@ def create_location(
     phone: str | None = None,
     timezone: str | None = None,
 ) -> Location:
+    # 鎖租戶列序列化「數量檢查→新增」：消除 unlocked check-then-act 競態
+    # （並發建店可同時通過 count 檢查、雙雙寫入而超過上限）。
+    # 比照 quota._get_or_create_usage_locked 的 SELECT … FOR UPDATE 鎖法
+    # （SQLite 升 connection-level lock、PG 行鎖）。
+    db.execute(
+        select(Tenant).where(Tenant.id == tenant_id).with_for_update()
+    ).scalar_one_or_none()
+
     active_count = (
         tenant_query(db, Location, tenant_id)
         .filter(Location.is_active.is_(True))

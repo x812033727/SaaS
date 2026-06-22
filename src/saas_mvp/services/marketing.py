@@ -66,17 +66,33 @@ def _parse_segment(campaign: Campaign) -> dict:
         return {}
 
 
+def _coerce_int(value: object) -> int | None:
+    """容錯整數轉換：非法（非數字字串等）回 None（視為該條件不存在）。"""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _segment_kwargs(filters: dict) -> dict:
-    """把 segment_json 的鍵正規化為 segment_customers 可接受的 kwargs。"""
+    """把 segment_json 的鍵正規化為 segment_customers 可接受的 kwargs。
+
+    int 轉換一律容錯（malformed 視為缺漏），避免使用者提供的 segment_json
+    讓 /campaigns/{id}/run 因 int('abc') 噴 500。
+    """
     out: dict = {}
     if filters.get("tag_ids"):
         out["tag_ids"] = list(filters["tag_ids"])
     if filters.get("tier"):
         out["tier"] = filters["tier"]
     if filters.get("min_bookings") is not None:
-        out["min_bookings"] = int(filters["min_bookings"])
+        mb = _coerce_int(filters["min_bookings"])
+        if mb is not None:
+            out["min_bookings"] = mb
     if filters.get("location_id") is not None:
-        out["location_id"] = int(filters["location_id"])
+        loc = _coerce_int(filters["location_id"])
+        if loc is not None:
+            out["location_id"] = loc
     return out
 
 

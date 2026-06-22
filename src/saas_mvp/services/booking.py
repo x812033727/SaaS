@@ -55,6 +55,10 @@ class ReservationPermissionError(BookingError):
     """LINE 來源取消時 line_user_id 與建單者不符。"""
 
 
+class CrossTenantReferenceError(BookingError):
+    """建單帶入的 staff_id / service_id 不屬於本租戶（偽造或跨租戶引用）。"""
+
+
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -102,6 +106,21 @@ def book_slot(
             f"slot {slot_id} full: available={available}, requested={party_size}"
         )
 
+    # 跨租戶/偽造引用防護：staff_id / service_id 若帶入，必須屬於本租戶，
+    # 否則拒絕建單（不靜默存入 raw 值）。比照其他服務的 tenant_query 隔離。
+    if service_id is not None:
+        from saas_mvp.models.service import Service
+
+        owned_service = (
+            tenant_query(db, Service, tenant_id)
+            .filter(Service.id == service_id)
+            .first()
+        )
+        if owned_service is None:
+            raise CrossTenantReferenceError(
+                f"service {service_id} not found for tenant {tenant_id}"
+            )
+
     # 一對一員工：鎖內檢查同時段同員工是否已被佔用（防一對一重訂）。
     if staff_id is not None:
         from saas_mvp.models.staff import STAFF_MODE_ONE_TO_ONE, Staff
@@ -111,7 +130,11 @@ def book_slot(
             .filter(Staff.id == staff_id)
             .first()
         )
-        if staff is not None and staff.booking_mode == STAFF_MODE_ONE_TO_ONE:
+        if staff is None:
+            raise CrossTenantReferenceError(
+                f"staff {staff_id} not found for tenant {tenant_id}"
+            )
+        if staff.booking_mode == STAFF_MODE_ONE_TO_ONE:
             existing = (
                 tenant_query(db, Reservation, tenant_id)
                 .filter(

@@ -8,6 +8,7 @@ build_flex_payload 為純函式、離線可測，產出合法 LINE Flex「carous
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from saas_mvp.models.flex_menu import FlexMenu
@@ -152,6 +153,13 @@ def add_card(
     """新增一張卡片；超過 12 張上限拋 422。"""
     _get_menu_or_404(db, tenant_id, menu_id)
     _validate_action_type(action_type)
+    # 鎖父選單列（FOR UPDATE）序列化「卡片數檢查→新增」：消除 unlocked
+    # check-then-act 競態（並發新增可同時通過 12 張檢查、雙雙寫入而超上限）。
+    db.execute(
+        select(FlexMenu)
+        .where(FlexMenu.id == menu_id, FlexMenu.tenant_id == tenant_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if _count_cards(db, tenant_id, menu_id) >= MAX_CARDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

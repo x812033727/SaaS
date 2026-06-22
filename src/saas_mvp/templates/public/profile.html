@@ -8,7 +8,7 @@
   <meta property="og:title" content="{{ seo_title }}">
   <meta property="og:description" content="{{ seo_description }}">
   <meta property="og:type" content="website">
-  {% if profile.banner_url %}<meta property="og:image" content="{{ profile.banner_url }}">{% endif %}
+  {% if banner_url %}<meta property="og:image" content="{{ banner_url }}">{% endif %}
   <style>
     :root { --theme: {{ profile.theme_color or '#0a7cff' }}; }
     body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
@@ -28,7 +28,7 @@
   </style>
 </head>
 <body>
-  {% if profile.banner_url %}<img class="banner" src="{{ profile.banner_url }}" alt="{{ display_name }}">{% endif %}
+  {% if banner_url %}<img class="banner" src="{{ banner_url }}" alt="{{ display_name }}">{% endif %}
   <header class="profile">
     <h1>{{ display_name }}</h1>
     {% if profile.intro %}<p>{{ profile.intro }}</p>{% endif %}

@@ -62,8 +62,10 @@ class StubOAuthProvider(OAuthProvider):
     無 client_id/secret 設定時為預設 provider，亦為測試的標準實作。
     """
 
-    def __init__(self, name: str = "stub") -> None:
+    def __init__(self, name: str = "stub", *, email_verified: bool = True) -> None:
         self._name = name
+        # 測試旋鈕：模擬 provider 回未驗證 email（email_verified=False）。
+        self._email_verified = email_verified
 
     def authorize_url(self, state: str, redirect_uri: str) -> str:
         params = urllib.parse.urlencode(
@@ -74,6 +76,9 @@ class StubOAuthProvider(OAuthProvider):
     def exchange_code(self, code: str, redirect_uri: str) -> dict:
         if not code:
             raise OAuthError("empty authorization code")
+        # 比照真實 provider：email 未驗證一律拒絕（不回 email、不允許登入）。
+        if not self._email_verified:
+            raise OAuthError("email not verified")
         return {
             "email": f"{code}@example.com",
             "subject": f"stub-{code}",
@@ -114,6 +119,20 @@ def _get_json(url: str, *, headers: dict, timeout: int = 10) -> dict:
         raise OAuthError(f"OAuth userinfo request failed: {exc}") from exc
     except Exception as exc:  # noqa: BLE001
         raise OAuthError(f"Unexpected OAuth userinfo error: {exc}") from exc
+
+
+def _email_verified_claim(claims: dict) -> bool:
+    """判斷 OIDC/userinfo 的 email_verified 宣告是否為真。
+
+    Google 可能回 boolean True 或字串 "true"（依端點而異）。一律須明確為真，
+    缺漏或 false 皆視為未驗證（保守拒絕，防帳號接管）。
+    """
+    val = claims.get("email_verified")
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() == "true"
+    return False
 
 
 def _decode_id_token_claims(id_token: str) -> dict:
@@ -176,6 +195,10 @@ class LineLoginProvider(OAuthProvider):
         subject = claims.get("sub")
         if not email or not subject:
             raise OAuthError("LINE id_token missing email/sub")
+        # 帳號接管防護：LINE id_token 的 email 僅在帶 email scope 且由 LINE 認證時
+        # 出現，視為已驗證；但若 provider 明確回 email_verified==False 仍拒絕。
+        if claims.get("email_verified") is False:
+            raise OAuthError("LINE email not verified")
         return {"email": email, "subject": subject, "name": claims.get("name")}
 
 
@@ -227,6 +250,10 @@ class GoogleOAuthProvider(OAuthProvider):
         subject = info.get("sub")
         if not email or not subject:
             raise OAuthError("Google userinfo missing email/sub")
+        # 帳號接管防護：未驗證 email 一律拒絕（不回 email、callback 不登入）。
+        # Google 以 email_verified 宣告（boolean，或字串 "true"/"false"）。
+        if not _email_verified_claim(info):
+            raise OAuthError("Google email not verified")
         return {"email": email, "subject": subject, "name": info.get("name")}
 
 

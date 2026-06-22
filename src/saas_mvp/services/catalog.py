@@ -9,11 +9,44 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from saas_mvp.models.location import Location
 from saas_mvp.models.service import Service
 from saas_mvp.models.service_category import ServiceCategory
 from saas_mvp.models.service_staff import ServiceStaff
 from saas_mvp.models.staff import Staff
 from saas_mvp.services.tenants import tenant_query
+
+
+def _assert_category_owned(db: Session, tenant_id: int, category_id: int | None) -> None:
+    """category_id 若帶入，須屬於本租戶，否則 422（防跨租戶引用）。"""
+    if category_id is None:
+        return
+    owned = (
+        tenant_query(db, ServiceCategory, tenant_id)
+        .filter(ServiceCategory.id == category_id)
+        .first()
+    )
+    if owned is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="category_id 不屬於本租戶",
+        )
+
+
+def _assert_location_owned(db: Session, tenant_id: int, location_id: int | None) -> None:
+    """location_id 若帶入，須屬於本租戶，否則 422（防跨租戶引用）。"""
+    if location_id is None:
+        return
+    owned = (
+        tenant_query(db, Location, tenant_id)
+        .filter(Location.id == location_id)
+        .first()
+    )
+    if owned is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="location_id 不屬於本租戶",
+        )
 
 
 # ── 分類 ──────────────────────────────────────────────────────────────────────
@@ -128,6 +161,8 @@ def create_service(
     price_cents: int = 0,
     location_id: int | None = None,
 ) -> Service:
+    _assert_category_owned(db, tenant_id, category_id)
+    _assert_location_owned(db, tenant_id, location_id)
     svc = Service(
         tenant_id=tenant_id,
         name=name,
@@ -158,12 +193,14 @@ def update_service(
     if name is not None:
         svc.name = name
     if category_id is not None:
+        _assert_category_owned(db, tenant_id, category_id)
         svc.category_id = category_id
     if duration_minutes is not None:
         svc.duration_minutes = duration_minutes
     if price_cents is not None:
         svc.price_cents = price_cents
     if location_id is not None:
+        _assert_location_owned(db, tenant_id, location_id)
         svc.location_id = location_id
     if is_active is not None:
         svc.is_active = is_active

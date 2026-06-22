@@ -114,6 +114,38 @@ class TestOAuthLogin:
         # 關鍵：未知 email 不得自動建立租戶
         assert after == before
 
+    def test_unverified_email_no_login(self, client, monkeypatch):
+        """H2 回歸：provider 回未驗證 email → exchange 拋 OAuthError → callback 拒登入：
+        不設 cookie、不建租戶。"""
+        # 先註冊一個既有 email，證明即使該 email 已存在、未驗證仍不得登入。
+        email = f"victim_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        code = email.split("@")[0]
+
+        db = _Session()
+        try:
+            tenants_before = db.query(Tenant).count()
+        finally:
+            db.close()
+
+        # 旋鈕：讓 get_provider 回 email_verified=False 的 stub。
+        def _unverified_provider(name, *, settings):
+            return oauth_svc.StubOAuthProvider(name=name, email_verified=False)
+
+        monkeypatch.setattr(oauth_svc, "get_provider", _unverified_provider)
+
+        state = _login_and_get_state(client, "google")
+        r = client.get(f"/auth/oauth/google/callback?code={code}&state={state}")
+        # exchange 失敗 → callback 轉 400，不登入。
+        assert r.status_code == 400
+        assert "access_token" not in r.headers.get("set-cookie", "")
+
+        db = _Session()
+        try:
+            assert db.query(Tenant).count() == tenants_before
+        finally:
+            db.close()
+
     def test_csrf_state_mismatch_rejected(self, client):
         _login_and_get_state(client, "google")
         # 故意送錯 state

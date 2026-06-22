@@ -317,15 +317,18 @@ async def newebpay_notify(
         _log.warning("newebpay notify rejected: bad TradeSha")
         return PlainTextResponse("0|TradeSha Error")
 
-    # 2) 解密 TradeInfo 取交易結果
+    # 2) 解密 TradeInfo 取交易結果。解析（含 Result 取值）一律包在 try 內：
+    #    真實藍新 JSON 回應的欄位巢狀在 Result 物件，若該物件型別異常（非 dict）
+    #    或缺欄，視為無效通知回 400，而非讓 .get() 噴 500。
     try:
         info = client.decrypt_trade_info(params.get("TradeInfo", ""))
-    except Exception:  # noqa: BLE001 — 解密失敗即視為無效通知
-        _log.warning("newebpay notify rejected: TradeInfo decrypt failed")
+        # 藍新可能將欄位包在 Result 內（JSON 形式）或攤平（舊 query-string 形式）。
+        result = info.get("Result") if isinstance(info.get("Result"), dict) else info
+        trade_no = result.get("MerchantOrderNo") or info.get("MerchantOrderNo") or ""
+    except Exception:  # noqa: BLE001 — 解密/解析失敗即視為無效通知
+        _log.warning("newebpay notify rejected: TradeInfo decrypt/parse failed")
         return PlainTextResponse("0|decrypt failed")
 
-    result = info.get("Result", info)  # 藍新可能將欄位包在 Result 內或攤平
-    trade_no = result.get("MerchantOrderNo") or info.get("MerchantOrderNo") or ""
     order = shop_svc.get_order_by_trade_no(db, trade_no) if trade_no else None
     if order is None:
         _log.warning("newebpay notify: order not found for trade_no=%s", trade_no)

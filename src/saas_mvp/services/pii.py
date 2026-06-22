@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import secrets
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,11 @@ from saas_mvp.models.pii_request import (
     PII_SUBMITTED,
     PiiRequest,
 )
+
+# 對齊 Customer 欄位長度（display_name String(128) / phone String(32)）：
+# 伺服器端先驗長度，超長回 422（避免 Postgres 寫入時 500、且不半寫顧客檔）。
+_NAME_MAX = 128
+_PHONE_MAX = 32
 
 
 def _utcnow() -> datetime.datetime:
@@ -129,6 +135,18 @@ def submit(
         raise PiiTokenAlreadyUsed("token already used")
     if _is_expired(req):
         raise PiiTokenExpired("token expired")
+
+    # 伺服器端長度上限：在任何 DB 寫入前先擋下，避免半寫顧客檔（DB 截斷/500）。
+    if name and len(name.strip()) > _NAME_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"姓名長度不可超過 {_NAME_MAX} 個字。",
+        )
+    if phone and len(phone.strip()) > _PHONE_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"電話長度不可超過 {_PHONE_MAX} 個字。",
+        )
 
     # 下游寫入一律 scope 到本請求的 tenant_id（防跨租戶污染）。
     customer = upsert_customer_from_line(
