@@ -11,17 +11,22 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
+import logging
 import secrets
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from saas_mvp.config import settings
 from saas_mvp.models.plan_change_history import PlanChangeHistory
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.usage import ApiUsage
 from saas_mvp.quota import PLAN_DAILY_LIMITS
+
+_log = logging.getLogger(__name__)
 
 
 def _generate_payment_id() -> str:
@@ -120,28 +125,90 @@ def downgrade_plan(
 
 # ── 進階功能訂閱 / 退訂（橫向 feature flags） ─────────────────────────────────
 
+@dataclasses.dataclass
+class SubscribeResult:
+    """訂閱結果：stub 立即開通回 payment_id；ecpay 待付款回 checkout_url。"""
+
+    mode: str  # "stub" | "ecpay"
+    enabled: bool
+    payment_id: str | None = None
+    checkout_url: str | None = None
+
+
 def subscribe_feature(
     db: Session, tenant: Tenant, feature: str, actor_user_id: int
-) -> str:
-    """訂閱進階功能：stub 付款 → 啟用 feature（含稽核）；回模擬 payment_id。"""
+) -> SubscribeResult:
+    """訂閱進階功能。
+
+    * stub（預設）：模擬付款 → 立即 set_enabled(True)，回 payment_id。
+    * ecpay：建立 pending 定期定額訂閱、**尚未開通**，回綠界 checkout 頁網址；
+      功能待首期授權回調成功才開通。
+    """
     from saas_mvp.services import features as features_svc
 
     features_svc.validate_feature(feature)
-    payment_id = _generate_payment_id()  # stub 付款（真實金流待接）
+
+    if settings.payment_provider == "ecpay":
+        from saas_mvp.services import subscriptions as subs_svc
+
+        sub = subs_svc.create_subscription(
+            db,
+            tenant_id=tenant.id,
+            feature=feature,
+            amount_cents=settings.feature_monthly_price_cents,
+            exec_times=settings.ecpay_period_exec_times,
+        )
+        base = settings.public_base_url.rstrip("/")
+        return SubscribeResult(
+            mode="ecpay",
+            enabled=False,
+            checkout_url=f"{base}/payments/ecpay/subscribe/{sub.id}",
+        )
+
+    payment_id = _generate_payment_id()  # stub 付款
     features_svc.set_enabled(
         db, tenant.id, feature, True,
         actor_user_id=actor_user_id, source="subscribe", reason=payment_id,
     )
-    return payment_id
+    return SubscribeResult(mode="stub", enabled=True, payment_id=payment_id)
 
 
 def unsubscribe_feature(
     db: Session, tenant: Tenant, feature: str, actor_user_id: int
 ) -> None:
-    """退訂進階功能：關閉 feature（含稽核）。"""
+    """退訂進階功能：關閉 feature（含稽核）。
+
+    ecpay 模式：先呼叫綠界 CreditCardPeriodAction **真的停掉後續扣款**，再關閉功能。
+    停扣 API 失敗時仍關閉功能，但把訂閱標 cancel_failed + log，避免關功能卻持續扣卡
+    （待 ops 重試），絕不靜默放任。
+    """
     from saas_mvp.services import features as features_svc
 
     features_svc.validate_feature(feature)
+
+    if settings.payment_provider == "ecpay":
+        from saas_mvp.services import subscriptions as subs_svc
+        from saas_mvp.services.payment_ecpay import EcpayClient
+
+        sub = subs_svc.latest_active_for(db, tenant.id, feature)
+        if sub is not None:
+            ok = False
+            try:
+                resp = EcpayClient().cancel_period(sub.merchant_trade_no)
+                ok = str(resp.get("RtnCode")) == "1"
+            except Exception:  # noqa: BLE001 — 網路/解析失敗不得阻擋退訂
+                _log.exception(
+                    "ecpay cancel_period raised for trade_no=%s", sub.merchant_trade_no
+                )
+                ok = False
+            subs_svc.mark_cancelled(db, sub, ok=ok)
+            if not ok:
+                _log.warning(
+                    "unsubscribe %s: ECPay stop-charge NOT confirmed (trade_no=%s); "
+                    "flagged cancel_failed for ops retry",
+                    feature, sub.merchant_trade_no,
+                )
+
     features_svc.set_enabled(
         db, tenant.id, feature, False,
         actor_user_id=actor_user_id, source="unsubscribe",

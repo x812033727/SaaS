@@ -134,6 +134,8 @@ class FeatureSubscribeResponse(BaseModel):
     feature: str
     enabled: bool
     payment_id: str | None = None
+    # ecpay 模式：導向綠界定期定額付款頁；功能待首期授權成功才開通。
+    checkout_url: str | None = None
 
 
 def _validate_feature_or_400(feature: str) -> None:
@@ -160,8 +162,14 @@ def subscribe(
 ) -> FeatureSubscribeResponse:
     _validate_feature_or_400(feature)
     tenant = _get_tenant(actor, db)
-    payment_id = subscribe_feature(db, tenant, feature, actor.user.id)
-    return FeatureSubscribeResponse(ok=True, feature=feature, enabled=True, payment_id=payment_id)
+    result = subscribe_feature(db, tenant, feature, actor.user.id)
+    return FeatureSubscribeResponse(
+        ok=True,
+        feature=feature,
+        enabled=result.enabled,
+        payment_id=result.payment_id,
+        checkout_url=result.checkout_url,
+    )
 
 
 @router.post("/features/{feature}/unsubscribe", response_model=FeatureSubscribeResponse)

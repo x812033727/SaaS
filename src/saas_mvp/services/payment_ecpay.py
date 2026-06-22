@@ -14,16 +14,36 @@ import copy
 import datetime
 import hashlib
 import hmac
+import logging
 import urllib.parse
+import urllib.request
+from typing import Callable
 
 from saas_mvp.config import settings
 from saas_mvp.services.payment import PaymentProvider
 
+_log = logging.getLogger(__name__)
+
 _AIO_STAGE = "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
 _AIO_PROD = "https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5"
+_PERIOD_ACTION_STAGE = "https://payment-stage.ecpay.com.tw/Cashier/CreditCardPeriodAction"
+_PERIOD_ACTION_PROD = "https://payment.ecpay.com.tw/Cashier/CreditCardPeriodAction"
 
 # 綠界官方 quote_plus 的 safe 字元集（與官方 SDK 相同）
 _SAFE = "-_.!*()"
+
+
+def _urllib_post(url: str, data: dict) -> str:
+    """以 application/x-www-form-urlencoded POST，回應文字（綠界 S2S API 用）。
+
+    抽成 module function 以便 EcpayClient 注入 fake，測試不打真實網路（仿 line_client/http.py）。
+    """
+    body = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 — 固定綠界網域
+        return resp.read().decode("utf-8", errors="replace")
 
 
 class EcpayClient:
@@ -36,15 +56,21 @@ class EcpayClient:
         hash_key: str | None = None,
         hash_iv: str | None = None,
         env: str | None = None,
+        http_post: Callable[[str, dict], str] | None = None,
     ) -> None:
         self.merchant_id = merchant_id if merchant_id is not None else settings.ecpay_merchant_id
         self.hash_key = hash_key if hash_key is not None else settings.ecpay_hash_key
         self.hash_iv = hash_iv if hash_iv is not None else settings.ecpay_hash_iv
         self.env = env if env is not None else settings.ecpay_env
+        self._http_post = http_post or _urllib_post
 
     @property
     def aio_url(self) -> str:
         return _AIO_PROD if self.env == "prod" else _AIO_STAGE
+
+    @property
+    def period_action_url(self) -> str:
+        return _PERIOD_ACTION_PROD if self.env == "prod" else _PERIOD_ACTION_STAGE
 
     # ── CheckMacValue（對齊官方 SDK generate_check_value） ────────────────────
     def check_mac_value(self, params: dict) -> str:
@@ -101,6 +127,74 @@ class EcpayClient:
             params["ClientBackURL"] = client_back_url
         params["CheckMacValue"] = self.check_mac_value(params)
         return params
+
+    # ── 信用卡定期定額（recurring） ─────────────────────────────────────────────
+    def build_period_form(
+        self,
+        *,
+        merchant_trade_no: str,
+        period_amount_twd: int,
+        item_name: str,
+        trade_desc: str,
+        return_url: str,
+        period_return_url: str,
+        exec_times: int = 99,
+        frequency: int = 1,
+        period_type: str = "M",
+        client_back_url: str | None = None,
+        now: datetime.datetime | None = None,
+    ) -> dict:
+        """組綠界信用卡定期定額 AIO 表單 + CheckMacValue。
+
+        在一次性表單基礎上：ChoosePayment=Credit、TotalAmount=PeriodAmount、加 Period* 欄位
+        與 PeriodReturnURL（每期授權結果回調）。
+        """
+        trade_date = (now or datetime.datetime.now()).strftime("%Y/%m/%d %H:%M:%S")
+        params: dict[str, str] = {
+            "MerchantID": self.merchant_id,
+            "MerchantTradeNo": merchant_trade_no,
+            "MerchantTradeDate": trade_date,
+            "PaymentType": "aio",
+            "TotalAmount": str(int(period_amount_twd)),
+            "TradeDesc": trade_desc,
+            "ItemName": item_name,
+            "ReturnURL": return_url,
+            "ChoosePayment": "Credit",  # 定期定額僅支援信用卡
+            "EncryptType": "1",
+            "PeriodAmount": str(int(period_amount_twd)),
+            "PeriodType": period_type,
+            "Frequency": str(int(frequency)),
+            "ExecTimes": str(int(exec_times)),
+            "PeriodReturnURL": period_return_url,
+        }
+        if client_back_url:
+            params["ClientBackURL"] = client_back_url
+        params["CheckMacValue"] = self.check_mac_value(params)
+        return params
+
+    def cancel_period(
+        self, merchant_trade_no: str, *, now: datetime.datetime | None = None
+    ) -> dict:
+        """呼叫綠界 CreditCardPeriodAction 停止後續定期定額扣款（Action=Cancel）。
+
+        回傳解析後的回應 dict（綠界以 query-string 回應）。網路/解析失敗會拋例外，
+        由呼叫端決定如何處理（退訂時不可放任繼續扣款）。
+        """
+        ts = int((now or datetime.datetime.now()).timestamp())
+        params: dict[str, str] = {
+            "MerchantID": self.merchant_id,
+            "MerchantTradeNo": merchant_trade_no,
+            "Action": "Cancel",
+            "TimeStamp": str(ts),
+        }
+        params["CheckMacValue"] = self.check_mac_value(params)
+        raw = self._http_post(self.period_action_url, params)
+        parsed = dict(urllib.parse.parse_qsl(raw))
+        _log.info(
+            "ecpay cancel_period trade_no=%s RtnCode=%s",
+            merchant_trade_no, parsed.get("RtnCode"),
+        )
+        return parsed
 
 
 class EcpayPaymentProvider(PaymentProvider):

@@ -21,8 +21,11 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
 from saas_mvp.db import get_db
+from saas_mvp.models.feature_subscription import SUB_PENDING
 from saas_mvp.models.order import ORDER_PENDING, Order
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import shop as shop_svc
+from saas_mvp.services import subscriptions as subs_svc
 from saas_mvp.services.payment_ecpay import EcpayClient
 
 _log = logging.getLogger(__name__)
@@ -127,6 +130,118 @@ async def ecpay_callback(
         return PlainTextResponse("1|OK")
 
     # RtnCode != 1：付款未成功，仍回 1|OK 收下通知（不改訂單）
+    return PlainTextResponse("1|OK")
+
+
+def _render_autosubmit(form: dict, action_url: str, title: str) -> HTMLResponse:
+    inputs = "\n".join(
+        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">'
+        for k, v in form.items()
+    )
+    page = (
+        f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title>"
+        "<body onload='document.forms[0].submit()'>"
+        f"<p>正在前往綠界…</p>"
+        f"<form method='post' action='{html.escape(action_url)}'>{inputs}"
+        "<noscript><button type='submit'>前往綠界</button></noscript></form></body>"
+    )
+    return HTMLResponse(page)
+
+
+# ── 進階功能定期定額訂閱（recurring） ──────────────────────────────────────────
+
+@router.get("/ecpay/subscribe/{subscription_id}", response_class=HTMLResponse)
+def ecpay_subscribe(
+    subscription_id: int,
+    db: Session = Depends(get_db),
+):
+    sub = subs_svc.get_subscription_by_id(db, subscription_id)
+    if sub is None:
+        return HTMLResponse("<h1>找不到訂閱</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    if sub.status != SUB_PENDING:
+        return HTMLResponse(f"<h1>訂閱狀態為 {html.escape(sub.status)}，無法重新付款。</h1>")
+    if sub.period_amount_cents % 100 != 0:
+        return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
+
+    base = settings.public_base_url.rstrip("/")
+    client = EcpayClient()
+    form = client.build_period_form(
+        merchant_trade_no=sub.merchant_trade_no,
+        period_amount_twd=sub.period_amount_cents // 100,
+        item_name=f"進階功能訂閱-{sub.feature}",
+        trade_desc="LINE SaaS 進階功能月費",
+        return_url=f"{base}/payments/ecpay/subscribe-callback",
+        period_return_url=f"{base}/payments/ecpay/period-callback",
+        exec_times=sub.exec_times,
+        frequency=sub.frequency,
+        period_type=sub.period_type,
+        client_back_url=f"{base}/payments/ecpay/done",
+    )
+    return _render_autosubmit(form, client.aio_url, "前往訂閱付款")
+
+
+@router.post("/ecpay/subscribe-callback", response_class=PlainTextResponse)
+async def ecpay_subscribe_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """首期授權結果（ReturnURL）：驗簽 → RtnCode==1 才開通功能。"""
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    client = EcpayClient()
+    if not client.verify(params):
+        _log.warning("ecpay subscribe-callback rejected: bad CheckMacValue")
+        return PlainTextResponse("0|CheckMacValue Error")
+
+    trade_no = params.get("MerchantTradeNo", "")
+    sub = subs_svc.get_subscription_by_trade_no(db, trade_no) if trade_no else None
+    if sub is None:
+        _log.warning("ecpay subscribe-callback: subscription not found %s", trade_no)
+        return PlainTextResponse("0|subscription not found")
+
+    if params.get("RtnCode") == "1":
+        subs_svc.activate(
+            db, sub, gwsr=params.get("Gwsr"), auth_code=params.get("AuthCode")
+        )
+        features_svc.set_enabled(
+            db, sub.tenant_id, sub.feature, True,
+            actor_user_id=None, source="subscribe", reason=trade_no,
+        )
+        return PlainTextResponse("1|OK")
+
+    subs_svc.mark_failed(db, sub)
+    return PlainTextResponse("1|OK")
+
+
+@router.post("/ecpay/period-callback", response_class=PlainTextResponse)
+async def ecpay_period_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """每期授權結果（PeriodReturnURL）：成功維持開通；失敗關閉。"""
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    client = EcpayClient()
+    if not client.verify(params):
+        _log.warning("ecpay period-callback rejected: bad CheckMacValue")
+        return PlainTextResponse("0|CheckMacValue Error")
+
+    trade_no = params.get("MerchantTradeNo", "")
+    sub = subs_svc.get_subscription_by_trade_no(db, trade_no) if trade_no else None
+    if sub is None:
+        _log.warning("ecpay period-callback: subscription not found %s", trade_no)
+        return PlainTextResponse("0|subscription not found")
+
+    success = params.get("RtnCode") == "1"
+    try:
+        total = int(params["TotalSuccessTimes"]) if params.get("TotalSuccessTimes") else None
+    except ValueError:
+        total = None
+    subs_svc.record_period(db, sub, success=success, total_success_times=total)
+    features_svc.set_enabled(
+        db, sub.tenant_id, sub.feature, success,
+        actor_user_id=None, source="period",
+    )
     return PlainTextResponse("1|OK")
 
 

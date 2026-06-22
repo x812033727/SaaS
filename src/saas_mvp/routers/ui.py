@@ -16,6 +16,7 @@ CSRF（已知限制）：MVP 僅靠 SameSite=Lax + 同源，未實作 per-reques
 from __future__ import annotations
 
 import datetime
+import html
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
@@ -887,9 +888,19 @@ def features_subscribe(
     tenant = db.get(Tenant, actor.user.tenant_id)
     try:
         features_svc.validate_feature(feature)
-        billing_svc.subscribe_feature(db, tenant, feature, actor.user.id)
+        result = billing_svc.subscribe_feature(db, tenant, feature, actor.user.id)
     except features_svc.UnknownFeatureError:
-        pass
+        result = None
+    # ecpay 模式：尚未開通，導向綠界定期定額付款頁（首期授權成功後自動開通）。
+    if result is not None and result.checkout_url:
+        url = html.escape(result.checkout_url)
+        return HTMLResponse(
+            '<div class="card success">'
+            f"<p>請完成綠界信用卡定期定額授權以開通「{html.escape(feature)}」。</p>"
+            f'<a class="btn" href="{url}" target="_blank" rel="noopener">前往綠界付款</a>'
+            "<p class=\"muted\">完成首期授權後，功能將自動開通；可重新整理本頁查看狀態。</p>"
+            "</div>"
+        )
     return templates.TemplateResponse("_features_list.html", _features_ctx(request, actor, db))
 
 
