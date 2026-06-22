@@ -38,6 +38,7 @@ from saas_mvp.models.booking_notification import (
 from saas_mvp.models.line_channel_config import LineChannelConfig
 from saas_mvp.models.reservation import Reservation
 from saas_mvp.services import features as features_svc
+from saas_mvp.services import push_quota as push_quota_svc
 
 
 def _utcnow() -> datetime.datetime:
@@ -142,6 +143,16 @@ def _process_one(
             db.rollback()
             return NotificationResult(notification_id, "would_send", "dry_run")
 
+        # 月度推播額度閘門：超出本月額度則跳過（不推播、標 skipped）。
+        if not push_quota_svc.has_push_quota(db, notif.tenant_id, now=now):
+            notif.status = NOTIFY_SKIPPED
+            notif.last_error = "push allowance exceeded"
+            notif.updated_at = now
+            db.commit()
+            return NotificationResult(
+                notification_id, "skipped", "push_allowance_exceeded"
+            )
+
         try:
             access_token = cfg.access_token  # Fernet 解密
             push_client.push(notif.line_user_id, text, access_token=access_token)
@@ -169,6 +180,8 @@ def _process_one(
         notif.attempt_count = (notif.attempt_count or 0) + 1
         notif.updated_at = now
         db.commit()
+        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
+        push_quota_svc.consume_push(db, notif.tenant_id, now=now)
         return NotificationResult(notification_id, "sent", "pushed")
 
 

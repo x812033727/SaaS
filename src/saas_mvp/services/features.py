@@ -41,6 +41,9 @@ PRIVACY_MODE = "PRIVACY_MODE"
 ADVANCED_REPORTING = "ADVANCED_REPORTING"
 # PHASE 5：Flex 圖文選單卡片（carousel）。
 FLEX_MENU = "FLEX_MENU"
+# 月度推播額度加購（vibeaico「Additional Push Notification Allowance」）：
+# 開通後該租戶每月推播額度 = push_allowance_base + push_allowance_boost。
+PUSH_BOOST = "PUSH_BOOST"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -57,6 +60,7 @@ _FEATURE_LABELS: dict[str, str] = {
     PRIVACY_MODE: "隱私保護",
     ADVANCED_REPORTING: "進階報表",
     FLEX_MENU: "圖文選單卡片",
+    PUSH_BOOST: "加購推播額度",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

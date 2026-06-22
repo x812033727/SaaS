@@ -88,6 +88,8 @@ def init_db() -> None:
     from saas_mvp.models import pii_request  # noqa: F401
     # PHASE 5：Flex 圖文選單卡片（menu 先於 card，FK 依賴）。
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
+    # 月度推播額度計量（跨提醒/異動通知/行銷 push 路徑共用）。
+    from saas_mvp.models import push_usage  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。

@@ -40,6 +40,7 @@ from saas_mvp.models.reservation_reminder import (
 )
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.services import features as features_svc
+from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services.reminders import build_reminder_text
 
 
@@ -142,6 +143,17 @@ def _process_one(
             db.rollback()
             return ReminderResult(reminder_id, "would_send", "dry_run")
 
+        # 月度推播額度閘門：超出本月額度則跳過（不推播、標 skipped），
+        # 同租戶超額不影響其他列（per-row isolation）。
+        if not push_quota_svc.has_push_quota(db, rem.tenant_id, now=now):
+            rem.status = REMINDER_SKIPPED
+            rem.last_error = "push allowance exceeded"
+            rem.updated_at = now
+            db.commit()
+            return ReminderResult(
+                reminder_id, "skipped", "push_allowance_exceeded"
+            )
+
         try:
             access_token = cfg.access_token  # Fernet 解密
             push_client.push(rem.line_user_id, text, access_token=access_token)
@@ -168,6 +180,8 @@ def _process_one(
         rem.attempt_count = (rem.attempt_count or 0) + 1
         rem.updated_at = now
         db.commit()
+        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
+        push_quota_svc.consume_push(db, rem.tenant_id, now=now)
         return ReminderResult(reminder_id, "sent", "pushed")
 
 
