@@ -21,13 +21,13 @@
   <tbody>
     {% for s in slots %}
     <tr>
-      <td>{{ s.id }}</td>
-      <td>{{ s.slot_start.strftime('%Y-%m-%d %H:%M') }}</td>
-      <td>{{ s.max_capacity }}</td>
-      <td>{{ s.walkin_reserved }}</td>
-      <td>{{ s.booked_count }}</td>
-      <td>{{ s.online_available }}</td>
-      <td><span class="badge {{ 'on' if s.is_active else 'off' }}">{{ '啟用' if s.is_active else '停用' }}</span></td>
+      <td data-label="#">{{ s.id }}</td>
+      <td data-label="開始">{{ s.slot_start.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td data-label="容量">{{ s.max_capacity }}</td>
+      <td data-label="保留">{{ s.walkin_reserved }}</td>
+      <td data-label="已訂">{{ s.booked_count }}</td>
+      <td data-label="線上可訂">{{ s.online_available }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if s.is_active else 'off' }}">{{ '啟用' if s.is_active else '停用' }}</span></td>
       <td>
         {% if s.is_active %}
         <button hx-post="/ui/booking/slots/{{ s.id }}/deactivate"

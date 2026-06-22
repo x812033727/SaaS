@@ -25,13 +25,13 @@
     <tbody>
       {% for c in customers %}
       <tr>
-        <td>{{ c.id }}</td>
-        <td>{{ c.display_name or '—' }}</td>
-        <td>{{ c.phone or '—' }}</td>
-        <td>{{ c.booking_count }}</td>
-        <td>{{ c.points_balance }}</td>
-        <td><span class="badge">{{ c.tier }}</span></td>
-        <td>{% if c.last_booked_at %}{{ c.last_booked_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
+        <td data-label="#">{{ c.id }}</td>
+        <td data-label="名稱">{{ c.display_name or '—' }}</td>
+        <td data-label="電話">{{ c.phone or '—' }}</td>
+        <td data-label="訂位次數">{{ c.booking_count }}</td>
+        <td data-label="點數">{{ c.points_balance }}</td>
+        <td data-label="等級"><span class="badge">{{ c.tier }}</span></td>
+        <td data-label="最後訂位">{% if c.last_booked_at %}{{ c.last_booked_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

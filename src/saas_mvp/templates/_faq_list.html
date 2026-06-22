@@ -13,10 +13,10 @@
   <tbody>
     {% for f in faqs %}
     <tr>
-      <td>{{ f.id }}</td>
-      <td>{{ f.question }}</td>
-      <td>{{ f.answer }}</td>
-      <td><span class="badge {{ 'on' if f.is_active else 'off' }}">{{ '啟用' if f.is_active else '停用' }}</span></td>
+      <td data-label="#">{{ f.id }}</td>
+      <td data-label="問題">{{ f.question }}</td>
+      <td data-label="答案">{{ f.answer }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if f.is_active else 'off' }}">{{ '啟用' if f.is_active else '停用' }}</span></td>
       <td><button hx-post="/ui/faq/{{ f.id }}/delete" hx-target="#faq-card" hx-swap="innerHTML"
                   hx-confirm="確定刪除此 FAQ？">刪除</button></td>
     </tr>

@@ -7,12 +7,12 @@
   <tbody>
     {% for r in reservations %}
     <tr>
-      <td>{{ r.id }}</td>
-      <td>#{{ r.slot_id }}</td>
-      <td>{{ r.party_size }}</td>
-      <td>{% if r.line_user_id %}LINE{% else %}<span class="muted">店家</span>{% endif %}</td>
-      <td><span class="badge {{ 'on' if r.status == 'confirmed' else 'off' }}">{{ '已確認' if r.status == 'confirmed' else '已取消' }}</span></td>
-      <td>
+      <td data-label="#">{{ r.id }}</td>
+      <td data-label="時段">#{{ r.slot_id }}</td>
+      <td data-label="人數">{{ r.party_size }}</td>
+      <td data-label="來源">{% if r.line_user_id %}LINE{% else %}<span class="muted">店家</span>{% endif %}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if r.status == 'confirmed' else 'off' }}">{{ '已確認' if r.status == 'confirmed' else '已取消' }}</span></td>
+      <td data-label="到場">
         {% if r.attended is none %}<span class="muted">未標記</span>
         {% elif r.attended %}<span class="badge on">到場</span>
         {% else %}<span class="badge off">未到</span>{% endif %}

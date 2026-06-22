@@ -9,17 +9,17 @@
   <tbody>
     {% for r in rows %}
     <tr>
-      <td>{{ r.name }}</td>
-      <td>{% if r.store_type %}{{ r.store_type }}{% else %}<span class="muted">未分類</span>{% endif %}</td>
-      <td>{{ r.plan }}</td>
-      <td><span class="badge {{ 'on' if r.is_active else 'off' }}">{{ '啟用' if r.is_active else '停用' }}</span></td>
-      <td>{{ '✓' if r.has_line_config else '—' }}</td>
-      <td>
+      <td data-label="店家">{{ r.name }}</td>
+      <td data-label="類型">{% if r.store_type %}{{ r.store_type }}{% else %}<span class="muted">未分類</span>{% endif %}</td>
+      <td data-label="方案">{{ r.plan }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if r.is_active else 'off' }}">{{ '啟用' if r.is_active else '停用' }}</span></td>
+      <td data-label="LINE">{{ '✓' if r.has_line_config else '—' }}</td>
+      <td data-label="憑證">
         {% if r.credential_status %}<span class="badge {{ r.credential_status }}">{{ r.credential_status }}</span>
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
-      <td>{{ r.today_count }}</td>
-      <td>{{ r.today_chars }}</td>
+      <td data-label="今日呼叫">{{ r.today_count }}</td>
+      <td data-label="今日字元">{{ r.today_chars }}</td>
       <td><a href="/ui/admin/tenants/{{ r.tenant_id }}">管理</a></td>
     </tr>
     {% endfor %}

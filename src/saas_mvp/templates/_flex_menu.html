@@ -33,10 +33,10 @@
   <tbody>
     {% for c in cards %}
     <tr>
-      <td>{{ c.id }}</td>
-      <td>{{ c.title }}</td>
-      <td>{{ c.subtitle or '—' }}</td>
-      <td>{{ c.action_type }}: {{ c.action_data }}</td>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="標題">{{ c.title }}</td>
+      <td data-label="副標">{{ c.subtitle or '—' }}</td>
+      <td data-label="動作">{{ c.action_type }}: {{ c.action_data }}</td>
       <td><button hx-post="/ui/flex-menu/cards/{{ c.id }}/delete" hx-target="#flex-card" hx-swap="innerHTML"
                   hx-confirm="確定刪除此卡片？">刪除</button></td>
     </tr>

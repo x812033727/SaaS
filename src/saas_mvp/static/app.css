@@ -159,12 +159,48 @@ code { background: #eef0f3; padding: 2px 6px; border-radius: 4px; font-size: 13p
   input, select { padding: 11px 12px; font-size: 16px; } /* 16px avoids iOS zoom-on-focus */
   button, .btn { padding: 11px 16px; }
 
-  /* Wide tables scroll horizontally instead of overflowing the viewport */
-  table {
-    display: block;
-    width: 100%;
-    overflow-x: auto;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
+  /* Wide tables collapse into stacked cards; each cell labelled via data-label */
+  table { display: block; }
+  table thead {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); border: 0;
   }
+  table tbody { display: block; }
+  table tr {
+    display: block;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    padding: 4px 14px;
+  }
+  table tr:hover td { background: transparent; }
+  table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    text-align: right;
+    padding: 9px 0;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    white-space: normal;
+  }
+  table td:last-child { border-bottom: none; }
+  table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--muted);
+    text-align: left;
+    white-space: nowrap;
+  }
+  /* Cells without a label (e.g. action buttons) drop the empty prefix
+     and group their controls to the left instead of spreading apart */
+  table td:not([data-label])::before,
+  table td[data-label=""]::before { content: none; }
+  table td:not([data-label]),
+  table td[data-label=""] { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
+  table td button, table td .btn { margin-top: 0; }
+  /* Inline edit form inside a labelled cell stacks full-width */
+  table td .inline { display: flex; flex-direction: column; gap: 6px; flex: 1; align-items: stretch; }
 }

@@ -4,9 +4,9 @@
   <tbody>
     {% for f in features %}
     <tr>
-      <td>{{ f.label }}</td>
-      <td>{{ (f.monthly_price_cents / 100) | round(0, 'floor') | int }} 元</td>
-      <td><span class="badge {{ 'on' if f.enabled else 'off' }}">{{ '開通' if f.enabled else '未開通' }}</span></td>
+      <td data-label="功能">{{ f.label }}</td>
+      <td data-label="月費">{{ (f.monthly_price_cents / 100) | round(0, 'floor') | int }} 元</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if f.enabled else 'off' }}">{{ '開通' if f.enabled else '未開通' }}</span></td>
       <td>
         {% if f.enabled %}
         <button hx-post="/ui/admin/tenants/{{ tenant_id }}/features/{{ f.key }}"
