@@ -57,7 +57,16 @@ class Settings(BaseSettings):
 
     # 商品銷售（P4）
     currency: str = "TWD"
-    payment_provider: str = "stub"
+    payment_provider: str = "stub"  # "stub" | "ecpay"
+
+    # 對外可達的網址（組綠界 ReturnURL / checkout 絕對網址用）；ecpay 模式必填。
+    public_base_url: str = ""
+
+    # 綠界 ECPay（金鑰預設為綠界公開測試值，正式環境由 SAAS_ECPAY_* 覆寫）
+    ecpay_merchant_id: str = "2000132"
+    ecpay_hash_key: str = "5294y06JbISpM5x9"
+    ecpay_hash_iv: str = "v77hoKGq4kWxNNIS"
+    ecpay_env: str = "stage"  # "stage"（測試）| "prod"（正式）
 
     # 進階功能旗標 + 訂閱（橫向）
     # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列時的預設。

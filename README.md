@@ -641,4 +641,27 @@ ops / UI 全部走它。
 | `SAAS_FEATURES_DEFAULT_ENABLED` | 無設定列時的預設（True=向後相容預設開；False=嚴格 freemium 預設關需訂閱） | `true` |
 | `SAAS_FEATURE_MONTHLY_PRICE_CENTS` | 進階功能月費（分） | `20000` |
 
-> **付款仍是 stub**：訂閱模擬月費；真實扣款需接真實金流 provider（見 P4 待辦）。
+### 真實金流：綠界 ECPay AIO
+
+商品訂單付款可接真實**綠界 ECPay**（`SAAS_PAYMENT_PROVIDER=ecpay`）。流程：
+
+1. 顧客 LINE「購買」→ 取得付款連結（指向 `/payments/ecpay/checkout/{order_id}`）。
+2. 該頁產生唯一 `MerchantTradeNo`（寫回訂單）+ CheckMacValue，**自動 submit** 表單到綠界付款頁。
+3. 顧客付款後，綠界 server 回調 `POST /payments/ecpay/callback`：系統**先驗 CheckMacValue 再交叉驗
+   金額**，通過才把訂單標記 `paid`，回純文字 `1|OK`（冪等：重送仍 `1|OK`）。
+
+- **CheckMacValue** 逐位元組對齊綠界官方 Python SDK（`quote_plus(safe='-_.!*()').lower()` → SHA256 大寫），
+  以官方演算法的 golden 向量鎖定測試；不引入 ECPay SDK 當 runtime 依賴。
+- 回調端點公開、無 JWT/rate-limit；**安全完全靠 CheckMacValue 驗簽 + 金額交叉驗證**。
+
+| 環境變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_PAYMENT_PROVIDER` | `stub`（預設）或 `ecpay` | `stub` |
+| `SAAS_PUBLIC_BASE_URL` | 對外網址（組綠界 ReturnURL/checkout 絕對網址）；ecpay 模式必填 | `""` |
+| `SAAS_ECPAY_MERCHANT_ID` | 商店代號（預設綠界公開測試值） | `2000132` |
+| `SAAS_ECPAY_HASH_KEY` | HashKey（預設測試值，正式請覆寫） | `5294y06JbISpM5x9` |
+| `SAAS_ECPAY_HASH_IV` | HashIV（預設測試值，正式請覆寫） | `v77hoKGq4kWxNNIS` |
+| `SAAS_ECPAY_ENV` | `stage`（測試）/ `prod`（正式） | `stage` |
+
+> **範圍**：本輪只接**商品訂單一次性付款**。進階功能月費訂閱仍為 stub（綠界定期定額 recurring 為後續）。
+> 正式上線需填入綠界**正式**金鑰、`SAAS_ECPAY_ENV=prod` 與對外可達的 `SAAS_PUBLIC_BASE_URL`。

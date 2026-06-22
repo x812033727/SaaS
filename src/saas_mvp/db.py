@@ -81,6 +81,7 @@ def init_db() -> None:
     _migrate_add_rich_menu_fields()
     _migrate_add_customer_membership()
     _migrate_add_reservation_attended()
+    _migrate_add_order_merchant_trade_no()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -304,6 +305,37 @@ def _migrate_add_reservation_attended() -> None:
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} BOOLEAN"))
         _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_order_merchant_trade_no() -> None:
+    """為既有 orders 表補上 merchant_trade_no 欄位 + unique index（向後相容）。
+
+    拆 ADD COLUMN 與 CREATE UNIQUE INDEX 兩步（SQLite 老版 inline UNIQUE 不穩）；
+    新欄初始全 NULL，SQLite unique index 允許多 NULL。失敗僅 warning。
+    """
+    table = "orders"
+    column = "merchant_trade_no"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(20)"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_orders_merchant_trade_no "
+                    f"ON {table} ({column})"
+                )
+            )
+        _log.info("migrated: added %s.%s column + unique index", table, column)
     except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
         _log.warning(
             "schema migration for %s.%s skipped due to error: %s",

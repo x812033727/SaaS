@@ -51,6 +51,9 @@ class Order(Base):
     )
     total_cents = Column(Integer, nullable=False, default=0, server_default=text("0"))
     currency = Column(String(8), nullable=False, default="TWD", server_default="TWD")
+    # 金流交易編號（綠界 MerchantTradeNo，唯一）；回調以此對應訂單。
+    # 既有 DB 由 _migrate_add_order_merchant_trade_no() 補欄。
+    merchant_trade_no = Column(String(20), nullable=True, unique=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

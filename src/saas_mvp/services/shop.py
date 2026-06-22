@@ -208,6 +208,13 @@ def get_order(db: Session, *, tenant_id: int, order_id: int) -> Order:
     return o
 
 
+def get_order_by_trade_no(db: Session, merchant_trade_no: str) -> Order | None:
+    """依金流唯一交易編號查訂單（金流回調用，不分租戶）；查無回 None。"""
+    return db.execute(
+        select(Order).where(Order.merchant_trade_no == merchant_trade_no)
+    ).scalar_one_or_none()
+
+
 def list_orders(
     db: Session, *, tenant_id: int, status_filter: str | None = None
 ) -> list[Order]:
