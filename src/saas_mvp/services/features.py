@@ -33,6 +33,9 @@ SERVICE_CATALOG = "SERVICE_CATALOG"
 BOOKING_NOTIFY = "BOOKING_NOTIFY"
 # PHASE 3：公開店家頁（含作品集）。
 PUBLIC_PROFILE = "PUBLIC_PROFILE"
+# PHASE 4-1：行銷自動化（生日/喚回/群發活動）+ AI 客服。
+MARKETING_AUTO = "MARKETING_AUTO"
+AI_ASSISTANT = "AI_ASSISTANT"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -44,6 +47,8 @@ _FEATURE_LABELS: dict[str, str] = {
     SERVICE_CATALOG: "服務項目",
     BOOKING_NOTIFY: "預約異動通知",
     PUBLIC_PROFILE: "公開店家頁",
+    MARKETING_AUTO: "行銷自動化",
+    AI_ASSISTANT: "AI 客服",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

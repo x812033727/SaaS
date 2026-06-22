@@ -34,6 +34,9 @@ from saas_mvp.routers import profile as profile_router
 from saas_mvp.routers import portfolio as portfolio_router
 from saas_mvp.routers import public as public_router
 from saas_mvp.routers import oauth as oauth_router
+from saas_mvp.routers import campaigns as campaigns_router
+from saas_mvp.routers import pos as pos_router
+from saas_mvp.routers import ai as ai_router
 
 _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 
@@ -80,6 +83,9 @@ def create_app() -> FastAPI:
     app.include_router(portfolio_router.router)
     app.include_router(public_router.router)
     app.include_router(oauth_router.router)
+    app.include_router(campaigns_router.router)
+    app.include_router(pos_router.router)
+    app.include_router(ai_router.router)
 
     # ── 伺服器渲染管理 UI（同源）：靜態檔 + UI 路由 + UI 例外 → HTML 行為 ──
     app.mount("/static", StaticFiles(directory=str(_PKG_DIR / "static")), name="static")

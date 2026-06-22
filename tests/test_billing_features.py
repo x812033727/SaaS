@@ -79,6 +79,7 @@ class TestSelfService:
             "AUTO_REMINDER", "COUPON_SYSTEM", "PRODUCT_SALES",
             "STAFF_SCHEDULING", "MULTI_LOCATION", "SERVICE_CATALOG",
             "BOOKING_NOTIFY", "PUBLIC_PROFILE",
+            "MARKETING_AUTO", "AI_ASSISTANT",
         }
 
     def test_subscribe_returns_payment_id(self, client):

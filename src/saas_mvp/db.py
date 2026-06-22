@@ -79,6 +79,9 @@ def init_db() -> None:
     # PHASE 3：公開店家頁、作品集、OAuth 登入。
     from saas_mvp.models import business_profile  # noqa: F401
     from saas_mvp.models import portfolio_category, portfolio_item  # noqa: F401
+    # PHASE 4-1：行銷自動化（活動 + 發送紀錄）+ AI 客服 FAQ。
+    from saas_mvp.models import campaign, campaign_send  # noqa: F401
+    from saas_mvp.models import faq_entry  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
@@ -98,6 +101,31 @@ def init_db() -> None:
     _migrate_add_tenant_ics_token()
     _migrate_add_customer_ics_token()
     _migrate_add_user_oauth()
+    _migrate_add_customer_birthday()
+
+
+def _migrate_add_customer_birthday() -> None:
+    """為既有 booking_customers 表補上 nullable birthday 欄位（PHASE 4-1，向後相容）。
+
+    只做 ADD COLUMN，不回填；未填生日的顧客為 NULL。失敗僅記 warning，不阻擋啟動。
+    """
+    table = "booking_customers"
+    column = "birthday"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} DATE"))
+        _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
 
 
 def _migrate_add_line_bot_user_id() -> None:

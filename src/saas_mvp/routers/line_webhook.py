@@ -716,6 +716,7 @@ def _dispatch_booking(
     action: str | None,
     params: dict,
     line_user_id: str,
+    raw_text: str = "",
 ) -> tuple[str, list | None]:
     """執行預約指令；回傳 (回覆文字, quick_reply 按鈕或 None)。預期錯誤轉友善訊息。"""
     # 引導式第一步：選時段（「時段」或「預約」無參數）
@@ -796,6 +797,13 @@ def _dispatch_booking(
     if action == "points":
         return _points_reply(db, tenant_id, line_user_id), None
 
+    # AI 客服 fallback：無法辨識的純文字訊息，若租戶開通 AI_ASSISTANT，
+    # 以 get_assistant() 回答（context 由 faq.match 注入）。surgical、behind flag。
+    if action is None and raw_text and features_svc.is_enabled(
+        db, tenant_id, features_svc.AI_ASSISTANT
+    ):
+        return _ai_reply(db, tenant_id, raw_text), None
+
     if action in ("shop", "buy", "my_orders"):
         if not features_svc.is_enabled(db, tenant_id, features_svc.PRODUCT_SALES):
             return "本店尚未開放商品購買功能。", None
@@ -807,6 +815,19 @@ def _dispatch_booking(
 
     # help 或無法辨識
     return _BOOKING_HELP, None
+
+
+def _ai_reply(db: Session, tenant_id: int, text: str) -> str:
+    """以 AI 助手回答自由文字（context 由 faq.match 注入）。失敗回退說明。"""
+    from saas_mvp.ai import AIError, get_assistant
+    from saas_mvp.services import faq as faq_svc
+
+    matched = faq_svc.match(db, tenant_id, text)
+    context = "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
+    try:
+        return get_assistant().answer(text, context).answer
+    except AIError:
+        return _BOOKING_HELP
 
 
 def _list_coupons_reply(db: Session, tenant_id: int) -> tuple[str, list | None]:
@@ -933,9 +954,13 @@ def _handle_booking_event(
     line_user_id = event.get("source", {}).get("userId", "")
 
     action, params = _booking_intent(event)
+    # 取出原始文字（供無法辨識時的 AI 客服 fallback）。
+    raw_text = ""
+    if etype == "message" and event.get("message", {}).get("type") == "text":
+        raw_text = event["message"].get("text", "")
     # message 但非文字（圖片/貼圖）→ action 為 None；回說明
     reply_text, quick_reply = _dispatch_booking(
-        db, tenant_id, action, params, line_user_id
+        db, tenant_id, action, params, line_user_id, raw_text
     )
 
     # 副作用（若有）已於 _dispatch_booking 內 commit；標記不可重試後再 reply。

@@ -12,6 +12,7 @@ import datetime
 
 from sqlalchemy import (
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -60,6 +61,9 @@ class Customer(Base):
     # 行事曆 ICS 訂閱憑證（顧客個人 feed）；token 即能力，NULL = 尚未產生。
     # 既有 DB 由 _migrate_add_customer_ics_token() 補欄 + unique index。
     ics_token = Column(String(64), nullable=True, unique=True)
+    # 生日（PHASE 4 行銷自動化：生日活動 targeting）；nullable = 未填。
+    # 既有 DB 由 _migrate_add_customer_birthday() 補欄。
+    birthday = Column(Date, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),
@@ -108,6 +112,9 @@ def upsert_customer_from_line(
         )
         db.add(row)
         db.flush()  # 取得 row.id 供 reservation FK 回填
+        # PHASE 4-1：全新顧客建檔即觸發 welcome 行銷（僅入列 pending，不同步發送）。
+        # 行為閘在 MARKETING_AUTO 之後；hook 失敗不得阻擋顧客建檔（建檔為主路徑）。
+        _maybe_enqueue_welcome(db, tenant_id, row)
         return row
 
     if display_name and not row.display_name:
@@ -116,3 +123,21 @@ def upsert_customer_from_line(
         row.booking_count = (row.booking_count or 0) + 1
         row.last_booked_at = now
     return row
+
+
+def _maybe_enqueue_welcome(db: Session, tenant_id: int, customer: Customer) -> None:
+    """全新顧客建檔時，若租戶開通 MARKETING_AUTO 則入列 welcome CampaignSend。
+
+    最小化、向後相容：feature 關閉或無 welcome 活動即 no-op；任何失敗吞掉
+    （顧客建檔是主路徑，行銷 hook 不得使其失敗）。lazy import 避免循環依賴。
+    """
+    try:
+        from saas_mvp.services import features as features_svc
+
+        if not features_svc.is_enabled(db, tenant_id, features_svc.MARKETING_AUTO):
+            return
+        from saas_mvp.services import marketing as marketing_svc
+
+        marketing_svc.create_welcome_send(db, customer)
+    except Exception:  # noqa: BLE001 - welcome hook must never block customer upsert
+        pass

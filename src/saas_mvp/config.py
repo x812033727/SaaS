@@ -91,6 +91,21 @@ class Settings(BaseSettings):
     # OAuth callback 絕對網址 base；留空時 fallback 到 public_base_url。
     oauth_redirect_base: str = ""
 
+    # 行銷自動化（PHASE 4-1）
+    # SAAS_REACTIVATION_DORMANT_DAYS: 久未回訪判定（last_booked_at 早於 N 天）。
+    # SAAS_REACTIVATION_CAP_PER_SHOP: 喚回活動每店單次發送上限（防推播暴衝）。
+    # SAAS_MARKETING_MAX_PER_RUN:     行銷活動單次發送上限（通用，broadcast/birthday）。
+    reactivation_dormant_days: int = 90
+    reactivation_cap_per_shop: int = 50
+    marketing_max_per_run: int = 500
+
+    # AI 客服（PHASE 4-1，Anthropic Claude）
+    # SAAS_ANTHROPIC_API_KEY: 設定後 get_assistant() 回 AnthropicAssistant；
+    #   留空（預設）回 StubAIAssistant（離線、決定性，供測試/dev）。
+    # SAAS_AI_MODEL: Claude 模型 ID（預設 Claude Sonnet 4.6）。
+    anthropic_api_key: str = ""
+    ai_model: str = "claude-sonnet-4-6"
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。
