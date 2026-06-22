@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import saas_mvp
 from saas_mvp.auth.dependencies import UIForbidden, UILoginRequired, UITenantDisabled
+from saas_mvp.config import settings
 from saas_mvp.db import init_db
+from saas_mvp.obs import ObservabilityMiddleware, configure_logging
 from saas_mvp.routers import auth, notes, tenants, ui
 from saas_mvp.routers import quota as quota_router
 from saas_mvp.routers import api_keys as api_keys_router
@@ -53,12 +55,18 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # 結構化日誌（JSON/text）：在建立 app、掛 middleware 之前先設定好 root logger。
+    configure_logging()
+
     app = FastAPI(
         title="SaaS MVP",
         description="Multi-tenant SaaS REST API",
         version=saas_mvp.__version__,
         lifespan=lifespan,
     )
+
+    # 可觀測性：request-id 串接 + 結構化存取日誌 + Prometheus HTTP 指標。
+    app.add_middleware(ObservabilityMiddleware, metrics_enabled=settings.metrics_enabled)
 
     app.include_router(auth.router)
     app.include_router(tenants.router)
@@ -158,6 +166,63 @@ def create_app() -> FastAPI:
         }
         status_code = 200 if db_status == "ok" else 503
         return JSONResponse(body, status_code=status_code)
+
+    @app.get("/readyz", tags=["root"])
+    def readyz():
+        """就緒探針（readiness）：相依檢查通過才回 200，否則 503。
+
+        與 ``/healthz`` 的差異：``/healthz`` 偏存活/輕量；``/readyz`` 是
+        「是否可接流量」的就緒判斷，逐項回報相依狀態（目前為 DB + 限流後端），
+        供 LB / k8s readiness probe 在相依未就緒時暫不導流。
+        """
+        from sqlalchemy import text
+
+        from saas_mvp.auth.ratelimit import effective_backend_name
+        from saas_mvp.db import SessionLocal
+
+        checks: dict[str, str] = {}
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            checks["db"] = "ok"
+        except Exception:  # noqa: BLE001 — 探針不得拋例外
+            checks["db"] = "error"
+        finally:
+            db.close()
+
+        ready = all(v == "ok" for v in checks.values())
+        body = {
+            "status": "ready" if ready else "not_ready",
+            "checks": checks,
+            "rate_limit_backend": effective_backend_name(),
+        }
+        return JSONResponse(body, status_code=200 if ready else 503)
+
+    @app.get("/metrics", tags=["root"])
+    def metrics_endpoint(request: Request):
+        """Prometheus 文字格式指標（per-worker）。
+
+        - ``SAAS_METRICS_ENABLED=false`` → 404（完全停用）。
+        - ``SAAS_METRICS_TOKEN`` 非空 → 需帶 ``Authorization: Bearer <token>``，
+          否則 401；留空代表不設限（僅應在內網曝露）。
+        """
+        from saas_mvp.obs import REGISTRY
+        from saas_mvp.obs.metrics import CONTENT_TYPE
+
+        if not settings.metrics_enabled:
+            return JSONResponse({"detail": "metrics disabled"}, status_code=404)
+
+        token = settings.metrics_token
+        if token:
+            auth_header = request.headers.get("authorization", "")
+            expected = f"Bearer {token}"
+            # 定長比較避免時序側信道
+            import hmac
+
+            if not hmac.compare_digest(auth_header, expected):
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+        return PlainTextResponse(REGISTRY.render(), media_type=CONTENT_TYPE)
 
     return app
 
