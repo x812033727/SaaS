@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     features_default_enabled: bool = True
     feature_monthly_price_cents: int = 20000  # NT$200
 
+    # 多分店（PHASE 1）：每租戶可建的「啟用中」分店數量上限。
+    max_locations_per_tenant: int = 5
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。

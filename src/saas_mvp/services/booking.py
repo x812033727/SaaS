@@ -67,11 +67,16 @@ def book_slot(
     line_user_id: str | None = None,
     display_name: str | None = None,
     note: str | None = None,
+    staff_id: int | None = None,
+    service_id: int | None = None,
 ) -> Reservation:
     """原子建單：鎖時段 → 重驗容量 → 建顧客檔 → INSERT 預約 → 遞增 booked_count
     → 入列提醒 → 單一 commit。
 
     容量不足拋 SlotFullError；時段不存在/停用拋 SlotNotFoundError。
+
+    staff_id（選填）：指定服務員工。若該員工 booking_mode == 'one_to_one'，
+    同一時段同一員工已有 confirmed 預約時拋 SlotFullError（一對一不可重訂）。
     """
     if party_size < 1:
         raise ValueError(f"party_size must be >= 1, got {party_size}")
@@ -96,6 +101,30 @@ def book_slot(
             f"slot {slot_id} full: available={available}, requested={party_size}"
         )
 
+    # 一對一員工：鎖內檢查同時段同員工是否已被佔用（防一對一重訂）。
+    if staff_id is not None:
+        from saas_mvp.models.staff import STAFF_MODE_ONE_TO_ONE, Staff
+
+        staff = (
+            tenant_query(db, Staff, tenant_id)
+            .filter(Staff.id == staff_id)
+            .first()
+        )
+        if staff is not None and staff.booking_mode == STAFF_MODE_ONE_TO_ONE:
+            existing = (
+                tenant_query(db, Reservation, tenant_id)
+                .filter(
+                    Reservation.slot_id == slot_id,
+                    Reservation.staff_id == staff_id,
+                    Reservation.status == RESERVATION_CONFIRMED,
+                )
+                .first()
+            )
+            if existing is not None:
+                raise SlotFullError(
+                    f"staff {staff_id} already booked for slot {slot_id}"
+                )
+
     # 顧客建檔（LINE 來源才有 line_user_id）
     customer = None
     customer_id = None
@@ -116,6 +145,8 @@ def book_slot(
         party_size=party_size,
         status=RESERVATION_CONFIRMED,
         note=note,
+        staff_id=staff_id,
+        service_id=service_id,
     )
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size

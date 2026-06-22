@@ -70,6 +70,10 @@ class Reservation(Base):
     note = Column(Text, nullable=True)
     # 到場與否（P5 報表算爽約率用）；NULL=未標記，既有 DB 由 _migrate_add_reservation_attended() 補欄。
     attended = Column(Boolean, nullable=True)
+    # PHASE 1：指派員工 / 服務項目（皆 nullable = 未指派 / 任意）；
+    # 既有 DB 由 _migrate_add_reservation_staff_id() / _migrate_add_reservation_service_id() 補欄。
+    staff_id = Column(Integer, nullable=True, index=True)
+    service_id = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

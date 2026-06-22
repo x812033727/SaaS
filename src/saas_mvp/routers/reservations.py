@@ -40,6 +40,8 @@ class ReservationCreate(BaseModel):
     line_user_id: str | None = Field(default=None, max_length=64)
     display_name: str | None = Field(default=None, max_length=128)
     note: str | None = Field(default=None, max_length=1024)
+    staff_id: int | None = Field(default=None)
+    service_id: int | None = Field(default=None)
 
 
 class ReservationResponse(BaseModel):
@@ -52,6 +54,8 @@ class ReservationResponse(BaseModel):
     status: str
     note: str | None
     attended: bool | None
+    staff_id: int | None
+    service_id: int | None
     created_at: datetime.datetime
     cancelled_at: datetime.datetime | None
 
@@ -79,6 +83,8 @@ def create(
             line_user_id=body.line_user_id,
             display_name=body.display_name,
             note=body.note,
+            staff_id=body.staff_id,
+            service_id=body.service_id,
         )
     except SlotNotFoundError:
         raise HTTPException(

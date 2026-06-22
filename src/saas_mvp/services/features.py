@@ -25,12 +25,19 @@ from saas_mvp.models.tenant_feature import TenantFeature
 AUTO_REMINDER = "AUTO_REMINDER"
 COUPON_SYSTEM = "COUPON_SYSTEM"
 PRODUCT_SALES = "PRODUCT_SALES"
+# PHASE 1：多分店 / 員工排班 / 服務項目。
+STAFF_SCHEDULING = "STAFF_SCHEDULING"
+MULTI_LOCATION = "MULTI_LOCATION"
+SERVICE_CATALOG = "SERVICE_CATALOG"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
     AUTO_REMINDER: "自動提醒",
     COUPON_SYSTEM: "優惠券／會員",
     PRODUCT_SALES: "商品銷售",
+    STAFF_SCHEDULING: "員工排班",
+    MULTI_LOCATION: "多分店",
+    SERVICE_CATALOG: "服務項目",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

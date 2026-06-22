@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>員工排班 — {{ staff.name }}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; color: #222; }
+    h1 { font-size: 1.3rem; }
+    h2 { font-size: 1.05rem; margin-top: 1.5rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+    th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; font-size: .9rem; }
+    .empty { color: #888; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <h1>{{ staff.name }}<span class="empty"> · {{ staff.role or "員工" }}</span></h1>
+
+  <h2>即將到來的預約</h2>
+  {% if bookings %}
+  <table>
+    <tr><th>預約編號</th><th>時段</th><th>人數</th></tr>
+    {% for b in bookings %}
+    <tr>
+      <td>#{{ b.id }}</td>
+      <td>{{ b.slot_start or "—" }}</td>
+      <td>{{ b.party_size }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">目前沒有即將到來的預約。</p>
+  {% endif %}
+
+  <h2>班表</h2>
+  {% if shifts %}
+  <table>
+    <tr><th>星期</th><th>起</th><th>訖</th><th>輪值</th></tr>
+    {% for s in shifts %}
+    <tr>
+      <td>{{ s.weekday if s.weekday is not none else "每日" }}</td>
+      <td>{{ s.start_time }}</td>
+      <td>{{ s.end_time }}</td>
+      <td>{{ s.rotation or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">尚未設定班表。</p>
+  {% endif %}
+
+  <h2>請假</h2>
+  {% if leaves %}
+  <table>
+    <tr><th>開始</th><th>結束</th><th>事由</th><th>狀態</th></tr>
+    {% for l in leaves %}
+    <tr>
+      <td>{{ l.start_at }}</td>
+      <td>{{ l.end_at }}</td>
+      <td>{{ l.reason or "—" }}</td>
+      <td>{{ l.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty">沒有請假紀錄。</p>
+  {% endif %}
+</body>
+</html>
