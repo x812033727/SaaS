@@ -55,7 +55,7 @@ class Staff(Base):
     name = Column(String(128), nullable=False)
     role = Column(String(64), nullable=True)
     is_active = Column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     # 員工自助入口憑證；NULL = 尚未發放。unique（SQLite 允許多 NULL）。
     access_token = Column(String(64), nullable=True, unique=True)

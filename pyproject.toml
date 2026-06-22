@@ -31,6 +31,10 @@ test = ["pytest>=8.0", "httpx>=0.27"]
 # 不安裝時 app 仍可正常 import / 啟動（_make_backend 自動 fallback in-memory）。
 # 安裝：pip install -e ".[redis]"
 redis = ["redis==5.2.1"]
+# 容器 / 多 worker 正式部署：gunicorn（UvicornWorker 管理多 worker）+ psycopg
+# （PostgreSQL 驅動，多 worker 必用 PG 才有真正的 FOR UPDATE 行鎖）+ redis 後端。
+# 安裝：pip install ".[prod]"
+prod = ["gunicorn==23.0.0", "psycopg[binary]==3.2.3", "redis==5.2.1"]
 
 [project.scripts]
 saas-mvp = "saas_mvp.__main__:main"

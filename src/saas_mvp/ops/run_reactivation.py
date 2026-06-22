@@ -21,7 +21,7 @@ from typing import TextIO
 from sqlalchemy.orm import sessionmaker
 
 from saas_mvp.config import settings
-from saas_mvp.db import SessionLocal
+from saas_mvp.db import SessionLocal, import_all_models
 from saas_mvp.line_client import LinePushClient
 from saas_mvp.models.campaign import CAMPAIGN_REACTIVATION
 from saas_mvp.ops.run_birthday_campaigns import (
@@ -63,6 +63,9 @@ def main(
     stdout: TextIO = sys.stdout,
 ) -> int:
     args = build_parser().parse_args(argv)
+    # 確保 SQLAlchemy registry 完整：standalone（python -m / cron）執行時
+    # 各 model 未必都被 import，relationship 字串（如 'Tenant'）會解析失敗。
+    import_all_models()
     cap = args.cap if args.cap is not None else settings.reactivation_cap_per_shop
     results = run_campaigns(
         campaign_type=CAMPAIGN_REACTIVATION,

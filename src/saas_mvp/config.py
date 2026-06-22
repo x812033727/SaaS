@@ -173,6 +173,10 @@ class Settings(BaseSettings):
         env_prefix = "SAAS_"
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # 忽略 .env / 環境中非 SAAS_ 的額外鍵：正式部署的 .env 常含部署層
+        # 變數（POSTGRES_USER、WEB_PORT、GUNICORN_WORKERS…，供 docker-compose 用），
+        # 這些不該讓 app 啟動時因 extra_forbidden 崩潰。
+        extra = "ignore"
 
 
 settings = Settings()

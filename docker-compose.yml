@@ -1,0 +1,69 @@
+# SaaS MVP — 正式部署堆疊：PostgreSQL + Redis + 多 worker API + ops 排程器。
+# 起動：cp .env.example .env（改密鑰）→ docker compose up -d --build
+# 首發灌示範資料：docker compose run --rm web seed
+#
+# 多 worker 安全性：API 以 gunicorn 多 worker 跑；跨 worker 共享狀態靠
+#  - PostgreSQL 行鎖（FOR UPDATE：quota / push 配額 / 預約容量 / webhook 冪等）
+#  - Redis 限流後端（SAAS_RATE_LIMIT_BACKEND=redis）
+# scheduler 只能單一實例（勿 scale）。
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-saas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-saas_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-saas}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-saas} -d ${POSTGRES_DB:-saas}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build: .
+    command: ["web"]
+    env_file: .env
+    environment:
+      SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
+      SAAS_RATE_LIMIT_BACKEND: redis
+      SAAS_REDIS_URL: redis://redis:6379/0
+      SAAS_HOST: 0.0.0.0
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+    ports:
+      - "${WEB_PORT:-8099}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scheduler:
+    build: .
+    command: ["scheduler"]
+    env_file: .env
+    environment:
+      SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
+      SAAS_RATE_LIMIT_BACKEND: redis
+      SAAS_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

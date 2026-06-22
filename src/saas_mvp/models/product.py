@@ -41,7 +41,7 @@ class Product(Base):
     price_cents = Column(Integer, nullable=False)
     currency = Column(String(8), nullable=False, default="TWD", server_default="TWD")
     stock = Column(Integer, nullable=True)  # NULL = 不限量
-    is_active = Column(Boolean, nullable=False, default=True, server_default=text("1"))
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),
