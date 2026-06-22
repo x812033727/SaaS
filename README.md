@@ -1,6 +1,13 @@
-# SaaS MVP — Multi-tenant REST API
+# SaaS — 多租戶 LINE 預約 / CRM / 行銷平台
 
-多租戶 SaaS REST API，支援帳號管理、資源 CRUD、配額計量與 API Key 認證。
+一套**多租戶 LINE 預約 SaaS**，鎖定美業（美髮／美甲／美容）與餐飲等預約型店家。
+每個店家以自己的 LINE 官方帳號接入，可一鍵將 bot 切換為**預約模式**（`bot_mode=booking`），
+在 LINE 對話內完成時段查詢、自助預約／改期／取消、優惠券兌換、商品購買與會員點數查詢；
+店家端則有伺服器渲染的管理後台（`/ui`）統管分店、員工排班、服務目錄、顧客 CRM／分眾、
+行銷自動化、AI 客服、公開店家頁與作品集、POS 結帳與金流（綠界 ECPay／藍新 NewebPay）、
+進階報表與圖文選單。多數進階模組為 **per-tenant 功能旗標**（freemium 訂閱制，
+`services/features.py` 為唯一真相來源）。原始的**多語翻譯機器人**能力仍保留，
+店家可選擇 `bot_mode=translation`，兩種模式並存於同一平台。
 
 ## 快速啟動
 
@@ -8,19 +15,112 @@
 pip install -e .
 python -m saas_mvp        # 或 saas-mvp
 # 預設 http://127.0.0.1:8000
+
+# 灌入示範店家（見下方「示範資料」），即可登入 /ui 點過每項功能
+python -m saas_mvp.ops.seed_demo
 ```
 
-## 管理 UI（`/ui`）
+## 功能總覽
 
-伺服器渲染的管理介面（Jinja2 + HTMX，與 API 同源），啟動後瀏覽
-`http://127.0.0.1:8000/ui/login`。涵蓋兩個層級：
+各模組以**功能旗標**（`services/features.py`，per-tenant 訂閱開關）控管，並對應 REST 端點前綴。
 
-- **店家自助**：註冊/登入、儀表板（bot 狀態 + 今日用量）、LINE 憑證設定與
-  連線測試、店家類型設定。
-- **平台管理員**（`is_admin=True`）：跨店家 bot 總覽（依類型/狀態篩選）、
-  單一租戶管理（方案、停啟用、店家類型、代管 LINE 設定與驗證）。
+| 功能領域 | 旗標 key | 主要端點前綴 | 摘要 |
+|----------|----------|--------------|------|
+| 預約核心（時段/容量、自助預約/改期/取消） | —（基本免費） | `/booking/slots`、`/booking/reservations` | 原子容量控管、walk-in 保留、LINE 引導式對話 |
+| 自動提醒 | `AUTO_REMINDER` | （cron `ops/`，無 REST CRUD） | 建單自動入列前一天/當天提醒，cron push |
+| 員工 / 排班 | `STAFF_SCHEDULING` | `/booking/staff` | 員工、週班表、休假、指派；衝突檢查 |
+| 服務目錄 | `SERVICE_CATALOG` | `/booking/services` | 服務分類 + 服務（價格/時長）+ 指派員工 |
+| 多分店 | `MULTI_LOCATION` | `/booking/locations` | 分店管理（上限 `SAAS_MAX_LOCATIONS_PER_TENANT`） |
+| 顧客 / CRM / 分眾 | —（CRM 基本）/ 分眾隨行銷 | `/booking/customers` | LINE 自動建檔、phone/note、標籤分眾 |
+| 優惠券 / 會員 / 點數 | `COUPON_SYSTEM` | `/booking/coupons` | percent/amount 券、原子核銷、集點 + 等級 |
+| 商品 / POS / 金流 | `PRODUCT_SALES` | `/booking/products`、`/booking/orders`、`/booking/pos`、`/payments` | 商品/訂單、POS 結帳；ECPay + NewebPay 真實金流 |
+| 行銷自動化 | `MARKETING_AUTO` | `/booking/campaigns` | 生日/喚回/群發活動，cron 派送 |
+| AI 客服 | `AI_ASSISTANT` | `/ai` | FAQ 比對 + LLM（Anthropic Claude）問答 |
+| 公開店家頁 / 作品集 | `PUBLIC_PROFILE` | `/booking/profile`、`/booking/portfolio`、`/p/{slug}` | 可發佈的店家頁 + 作品集 |
+| 行事曆同步 | —（隨預約） | `/calendar/*.ics` | 店家/員工/顧客 ICS 訂閱連結 |
+| Flex / Rich 選單 | `FLEX_MENU` | `/booking/flex-menu`、`/booking/rich-menu` | Flex 卡片選單、Rich Menu 模板套用 |
+| 進階報表 | `ADVANCED_REPORTING` | `/booking/analytics` | 摘要、時段使用率、常客、CSV 匯出 |
+| 隱私模式 | `PRIVACY_MODE` | `/pii/{token}` | tokenized PII 表單（公開、免登入） |
+| 推播額度 / 加量 | `PUSH_BOOST` | `/quota`、`/usage` | 月度推播額度計量，加購提升額度 |
 
-設計重點：
+## 管理後台 `/ui`
+
+伺服器渲染（Jinja2 + HTMX，與 API 同源）。登入後 JWT 存於 **httpOnly cookie**，
+與 API 的 header 認證隔離。瀏覽 `http://127.0.0.1:8000/ui/login`。頁面：
+
+| 路徑 | 頁面 |
+|------|------|
+| `/ui/login`、`/ui/register`、`/ui/logout` | 登入 / 註冊 / 登出 |
+| `/ui/` | 儀表板（bot 狀態 + 今日用量） |
+| `/ui/line-config` | LINE 憑證設定與連線測試 |
+| `/ui/locations` | 分店 |
+| `/ui/staff` | 員工（排班/休假） |
+| `/ui/services` | 服務項目 |
+| `/ui/booking` | 預約管理（含到場/未到標記） |
+| `/ui/campaigns` | 行銷活動 |
+| `/ui/flex-menu` | Flex 圖文選單 |
+| `/ui/rich-menu` | Rich Menu |
+| `/ui/portfolio` | 作品集 |
+| `/ui/profile` | 店家頁 |
+| `/ui/pos` | POS 結帳 |
+| `/ui/faq` | AI 客服 FAQ |
+| `/ui/shop` | 商品 |
+| `/ui/coupons` | 優惠券 |
+| `/ui/reports` | 進階報表 |
+| `/ui/features` | 進階功能訂閱 |
+| `/ui/admin/bots`、`/ui/admin/tenants/{id}` | 平台管理員：跨店家 bot 總覽 / 單一租戶管理 |
+
+## 公開 / 對外端點（免登入，`include_in_schema=False`）
+
+| 路徑 | 說明 |
+|------|------|
+| `GET /p/{slug}` | 公開店家頁（須 `BusinessProfile.is_published=true` 才解析） |
+| `GET /s/{token}` | 員工入口（以 `Staff.access_token` 換頁，看自己的班表/預約） |
+| `GET /calendar/shop/{token}.ics`、`/calendar/staff/{token}.ics`、`/calendar/customer/{token}.ics` | 行事曆 ICS 訂閱（店家/員工/顧客） |
+| `GET /pii/{token}`、`POST /pii/{token}` | 隱私模式 tokenized PII 表單 |
+| `POST /line/webhook/{tenant_id}` | LINE Webhook（須 `X-Line-Signature`） |
+
+## 排程作業（`ops/`）
+
+每支腳本均 `--dry-run`（預設）/`--apply`、單實例去重、session_factory 可注入。
+以 cron 定時觸發：
+
+| 腳本 | 建議排程 | 作用 |
+|------|----------|------|
+| `send_due_reminders` | 每 10–15 分鐘 | 派送到期預約提醒（LINE push） |
+| `send_due_notifications` | 每 10–15 分鐘 | 派送預約異動通知 |
+| `run_birthday_campaigns` | 每日 09:00 | 生日行銷活動 |
+| `run_reactivation` | 每日 14:00 | 沉睡顧客喚回活動 |
+| `run_scheduled_campaigns` | 每 5–15 分鐘 | 已排程的群發/限時活動 |
+
+```bash
+# 例：每 10 分鐘派送提醒（單實例，避免多 worker 重送）
+*/10 * * * * python -m saas_mvp.ops.send_due_reminders --apply
+```
+
+> 另有一次性維運腳本 `backfill_line_bot_user_id`（回填既有 bot userId，見文末）。
+
+## 示範資料
+
+`ops/seed_demo` 會建立一個開通**全部進階旗標**的示範店家，並灌入分店、員工（含班表/休假）、
+服務目錄、時段與預約、商品、優惠券、Flex 選單、作品集、已發佈店家頁（slug `demo`）、FAQ、
+生日行銷活動與一位有電話/生日/點數的顧客——讓人能登入 `/ui` 點過每一項功能。**冪等**：重跑不報錯、不重複。
+
+```bash
+# 預設帳密：demo@salon.tw / demo1234，租戶「示範美髮沙龍」
+python -m saas_mvp.ops.seed_demo
+
+# 自訂帳密 / 租戶名
+python -m saas_mvp.ops.seed_demo --email me@shop.tw --password mypass123 --tenant-name 我的沙龍
+
+# 指定 DB（否則用 SAAS_DATABASE_URL）
+SAAS_DATABASE_URL=sqlite:////tmp/demo.db python -m saas_mvp.ops.seed_demo
+```
+
+執行後會印出登入 URL、帳密、公開店家頁 `/p/demo` 與一條員工入口 `/s/{token}` 連結；
+以該帳密登入 `http://127.0.0.1:8000/ui/login` 即可瀏覽所有頁面。
+
+## 管理 UI 設計重點
 
 - 登入後 JWT 存於 **httpOnly cookie**（`SameSite=Lax`，prod 加 `Secure`）。
   UI 路由用獨立的 cookie 認證，**不影響 API 路徑**（API 仍只認 header；
@@ -168,6 +268,30 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 ```json
 {"detail": "Quota exceeded for today. Upgrade to pro for higher limits."}
 ```
+
+## 設定（環境變數，前綴 `SAAS_`）
+
+除既有的 LINE / quota / ECPay 設定（見各章節）外，預約 SaaS 新增以下值（皆有預設，正式環境視需要覆寫）：
+
+| 變數 | 說明 | 預設 |
+|------|------|------|
+| `SAAS_PUBLIC_BASE_URL` | 對外網址（組金流回呼、公開頁/員工入口/seed 連結絕對網址） | `""` |
+| `SAAS_MAX_LOCATIONS_PER_TENANT` | 每租戶可建分店上限 | `5` |
+| `SAAS_ANTHROPIC_API_KEY` | AI 客服 LLM 金鑰（空值時 AI 走 FAQ-only/stub） | `""` |
+| `SAAS_AI_MODEL` | AI 客服使用的 Claude 模型 | `claude-sonnet-4-6` |
+| `SAAS_PAYMENT_PROVIDER` | 金流 provider：`stub` / `ecpay` / `newebpay` | `stub` |
+| `SAAS_NEWEBPAY_MERCHANT_ID` | 藍新 NewebPay 商店代號 | `""` |
+| `SAAS_NEWEBPAY_HASH_KEY` | 藍新 HashKey | `""` |
+| `SAAS_NEWEBPAY_HASH_IV` | 藍新 HashIV | `""` |
+| `SAAS_NEWEBPAY_ENV` | 藍新環境 `stage` / `prod` | `stage` |
+| `SAAS_LINE_LOGIN_CHANNEL_ID` | LINE Login（OAuth 登入）channel id | `""` |
+| `SAAS_LINE_LOGIN_CHANNEL_SECRET` | LINE Login channel secret | `""` |
+| `SAAS_GOOGLE_OAUTH_CLIENT_ID` | Google OAuth 登入 client id | `""` |
+| `SAAS_GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret | `""` |
+| `SAAS_PUSH_ALLOWANCE_BASE` | 每月基礎推播額度（提醒/通知/行銷共用） | `200` |
+| `SAAS_PUSH_ALLOWANCE_BOOST` | 開通 `PUSH_BOOST` 後的額外推播額度 | `500` |
+| `SAAS_REACTIVATION_DORMANT_DAYS` | 喚回活動判定沉睡的閒置天數 | `90` |
+| `SAAS_REACTIVATION_CAP_PER_SHOP` | 喚回活動每店單次派送上限 | `50` |
 
 ## 執行測試
 

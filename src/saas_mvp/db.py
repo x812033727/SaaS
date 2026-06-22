@@ -50,9 +50,13 @@ def get_db():
         db.close()
 
 
-def init_db() -> None:
-    """Create all tables (idempotent)."""
-    # import models so their metadata is registered
+def import_all_models() -> None:
+    """Import every ORM model so SQLAlchemy's class registry is fully populated.
+
+    Standalone entrypoints（如 ops/ 腳本）在 app 未 import 全部 router 的情況下，
+    若只 import 部分 model，relationship 字串引用（例：Tenant→Note）會解析失敗。
+    呼叫此函式即可保證註冊表完整。不建表、無副作用，可重複呼叫。
+    """
     # 順序：被依賴者先——Tenant → User → Note/ApiKey → ApiKeyUsage/ApiUsage → PlanChangeHistory
     from saas_mvp.models import tenant, user, note  # noqa: F401
     from saas_mvp.models import api_key, api_key_usage, usage  # noqa: F401
@@ -90,6 +94,12 @@ def init_db() -> None:
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
     # 月度推播額度計量（跨提醒/異動通知/行銷 push 路徑共用）。
     from saas_mvp.models import push_usage  # noqa: F401
+
+
+def init_db() -> None:
+    """Create all tables (idempotent)."""
+    # import models so their metadata is registered
+    import_all_models()
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
