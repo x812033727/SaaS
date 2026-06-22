@@ -120,6 +120,14 @@ python -m saas_mvp.ops.seed_demo
 - `SAAS_METRICS_ENABLED=false` → `/metrics` 回 404（完全停用）。
 - `SAAS_METRICS_TOKEN` 非空 → `/metrics` 需 `Authorization: Bearer <token>`；留空代表不設限，**僅應在內網/受信任網段曝露**。
 
+**未捕捉例外：** 任何未被路由處理的例外會經集中式 handler 轉成**一致的 JSON envelope**，不外洩內部訊息/traceback：
+
+```json
+{"error": {"type": "InternalServerError", "message": "伺服器發生未預期錯誤…", "request_id": "abc123def456"}}
+```
+
+完整 traceback 連同 `request_id` 記在伺服器端 `saas_mvp.error` ERROR 日誌（用同一 id 對帳），並計入指標 `http_unhandled_exceptions_total{type=...}`。回應 header 亦帶 `X-Request-ID`。
+
 ```bash
 curl -s localhost:8000/readyz | jq        # 就緒檢查
 curl -s localhost:8000/metrics | head     # Prometheus 指標

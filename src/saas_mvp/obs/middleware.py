@@ -65,6 +65,9 @@ class ObservabilityMiddleware:
         headers = scope.get("headers") or []
         rid = _client_request_id(headers) or _new_request_id()
         token = request_id_var.set(rid)
+        # 同步寫進 scope：集中式例外 handler 在本 middleware 之外（ServerErrorMiddleware
+        # 最外層）執行，屆時 contextvar 可能已 reset，改從 scope 取 request_id。
+        scope["saas_request_id"] = rid
 
         method = scope.get("method", "GET")
         rid_bytes = rid.encode("latin-1")
