@@ -29,11 +29,20 @@ header.nav {
   gap: 18px;
   height: 56px;
 }
-header.nav .brand { font-weight: 700; color: var(--accent-dark); margin-right: 8px; }
+header.nav .brand { font-weight: 700; color: var(--accent-dark); margin-right: 8px; white-space: nowrap; }
 header.nav a { color: var(--text); text-decoration: none; font-size: 14px; }
 header.nav a:hover { color: var(--accent-dark); }
 header.nav .spacer { flex: 1; }
 header.nav .who { color: var(--muted); font-size: 13px; }
+
+.nav-links { display: flex; align-items: center; gap: 18px; flex: 1; min-width: 0; }
+/* Hamburger toggle — hidden on desktop, revealed via media query on mobile */
+.nav-toggle { display: none; }
+.nav-burger { display: none; cursor: pointer; padding: 8px; margin-left: auto; }
+.nav-burger span {
+  display: block; width: 22px; height: 2px; margin: 4px 0;
+  background: var(--text); border-radius: 2px; transition: transform .2s, opacity .2s;
+}
 
 main { max-width: 960px; margin: 28px auto; padding: 0 20px; }
 
@@ -60,6 +69,8 @@ input, select {
 }
 .row { display: flex; gap: 12px; flex-wrap: wrap; }
 .row > * { flex: 1; min-width: 140px; }
+.col { display: flex; flex-direction: column; }
+.col > label { margin-top: 0; }
 
 button, .btn {
   display: inline-block; cursor: pointer; border: none; border-radius: 6px;
@@ -94,3 +105,66 @@ code { background: #eef0f3; padding: 2px 6px; border-radius: 4px; font-size: 13p
 .auth-wrap { max-width: 380px; margin: 80px auto; }
 .auth-wrap .card { padding: 28px; }
 .center-link { text-align: center; margin-top: 14px; font-size: 13px; }
+
+/* ---- Responsive / mobile (<= 768px) ---- */
+@media (max-width: 768px) {
+  /* Collapsible navigation with hamburger toggle */
+  header.nav {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 56px;
+    padding: 0 14px;
+    row-gap: 0;
+  }
+  .nav-burger { display: block; }
+  .nav-toggle:checked + .nav-burger span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+  .nav-toggle:checked + .nav-burger span:nth-child(2) { opacity: 0; }
+  .nav-toggle:checked + .nav-burger span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+  .nav-links {
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 0;
+    flex-basis: 100%;
+    padding-bottom: 8px;
+  }
+  .nav-toggle:checked ~ .nav-links { display: flex; }
+  .nav-links a {
+    width: 100%;
+    padding: 12px 4px;
+    border-top: 1px solid var(--border);
+    font-size: 15px;
+  }
+  .nav-links .spacer { display: none; }
+  .nav-links .who {
+    padding: 10px 4px 4px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* Tighter page chrome on small screens */
+  main { margin: 16px auto; padding: 0 14px; }
+  h1 { font-size: 20px; margin-bottom: 14px; }
+  .card { padding: 16px; margin-bottom: 16px; }
+
+  /* Single-column stat grid feels less cramped on narrow phones */
+  .grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+
+  /* Stack form rows vertically so inputs get full width */
+  .row { flex-direction: column; gap: 0; }
+  .row > * { min-width: 0; }
+
+  /* Larger tap targets for inputs and buttons */
+  input, select { padding: 11px 12px; font-size: 16px; } /* 16px avoids iOS zoom-on-focus */
+  button, .btn { padding: 11px 16px; }
+
+  /* Wide tables scroll horizontally instead of overflowing the viewport */
+  table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+}
