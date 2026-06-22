@@ -10,6 +10,11 @@ set -uo pipefail
 MARKER_DIR="${SCHED_MARKER_DIR:-/tmp/sched}"
 mkdir -p "$MARKER_DIR"
 
+# 心跳檔：每輪迴圈結束更新一次；容器 healthcheck 以其新鮮度判斷排程迴圈是否還活著
+# （image 的預設 HTTP /healthz 探針只適用 web 容器，本排程容器沒有 HTTP server，
+# 會被誤判為 unhealthy）。
+HEARTBEAT="$MARKER_DIR/heartbeat"
+
 run() { echo "[scheduler] $(date -u +%FT%TZ) run: $*"; "$@" || echo "[scheduler] WARN: $* 失敗（已隔離，繼續）"; }
 
 ran_today() {  # $1=job name → 0 if already ran today
@@ -19,6 +24,7 @@ ran_today() {  # $1=job name → 0 if already ran today
 mark_today() { touch "$MARKER_DIR/$1-$(date -u +%F)"; }
 
 echo "[scheduler] 啟動（每分鐘輪詢；UTC 時間判斷每日任務）"
+touch "$HEARTBEAT"  # 啟動即先寫一次，避免 start_period 內被判 unhealthy
 while true; do
   HHMM="$(date -u +%H%M)"
   MM="$(date -u +%M)"
@@ -45,5 +51,6 @@ while true; do
     mark_today reactivation
   fi
 
+  touch "$HEARTBEAT"  # 一輪完成 → 更新心跳
   sleep 60
 done
