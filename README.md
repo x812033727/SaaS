@@ -164,6 +164,29 @@ SAAS_DATABASE_URL=sqlite:////tmp/demo.db python -m saas_mvp.ops.seed_demo
 | API Key（X-API-Key） | `X-API-Key: myapp_xxxxxxxx...` |
 | API Key（Bearer） | `Authorization: Bearer myapp_xxxxxxxx...` |
 
+## 平台管理員（`is_admin`）
+
+平台管理端點（`/admin/*`、後台 `/ui/admin/bots`、`/ui/admin/tenants/{id}`）以 `User.is_admin`
+為閘門。`/auth/register` **刻意不開放**設定此旗標（防自助提權），故管理員須由具 DB 權限者
+用 `ops/promote_admin` 設定：
+
+```bash
+# 提權既有帳號為管理員
+python -m saas_mvp.ops.promote_admin --email owner@shop.tw
+
+# 一次建立全新的專屬管理員帳號（含其租戶）
+python -m saas_mvp.ops.promote_admin --email admin@you.tw --password 'S3cret!!' --create
+
+# 取消管理員權限
+python -m saas_mvp.ops.promote_admin --email owner@shop.tw --demote
+```
+
+容器化部署時於 web 容器內執行（會自動讀 `.env` 連線正式 DB）：
+
+```bash
+docker-compose exec web python -m saas_mvp.ops.promote_admin --email admin@you.tw --password 'S3cret!!' --create
+```
+
 ## 主要端點
 
 ### 帳號 `/auth`
