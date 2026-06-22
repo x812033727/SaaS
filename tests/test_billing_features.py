@@ -78,6 +78,7 @@ class TestSelfService:
         assert keys == {
             "AUTO_REMINDER", "COUPON_SYSTEM", "PRODUCT_SALES",
             "STAFF_SCHEDULING", "MULTI_LOCATION", "SERVICE_CATALOG",
+            "BOOKING_NOTIFY",
         }
 
     def test_subscribe_returns_payment_id(self, client):

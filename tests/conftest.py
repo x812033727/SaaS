@@ -64,6 +64,9 @@ import saas_mvp.models.staff_leave as _sleave  # noqa: F401, E402
 import saas_mvp.models.service_category as _scat  # noqa: F401, E402
 import saas_mvp.models.service as _svc  # noqa: F401, E402
 import saas_mvp.models.service_staff as _svcstaff  # noqa: F401, E402
+import saas_mvp.models.customer_tag as _ctag  # noqa: F401, E402
+import saas_mvp.models.customer_tag_link as _ctaglink  # noqa: F401, E402
+import saas_mvp.models.booking_notification as _bnotif  # noqa: F401, E402
 
 # ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login
 # 測試累積使全套逼近 60s self-test 逾時。測試環境把 rounds 降到合法最低值 4，

@@ -23,6 +23,7 @@ from saas_mvp.services.booking import (
     get_reservation,
     list_reservations,
     mark_attendance,
+    reschedule_reservation,
 )
 
 router = APIRouter(
@@ -64,6 +65,10 @@ class ReservationResponse(BaseModel):
 
 class AttendanceBody(BaseModel):
     attended: bool
+
+
+class RescheduleBody(BaseModel):
+    new_slot_id: int
 
 
 # ─────────────────────────────── Endpoints ───────────────────────────────────
@@ -147,6 +152,35 @@ def set_attendance(
     except ReservationNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Reservation not found"
+        )
+    return ReservationResponse.model_validate(reservation)
+
+
+@router.post("/{reservation_id}/reschedule", response_model=ReservationResponse)
+def reschedule_one(
+    reservation_id: int,
+    body: RescheduleBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReservationResponse:
+    try:
+        reservation = reschedule_reservation(
+            db,
+            tenant_id=current_user.tenant_id,
+            reservation_id=reservation_id,
+            new_slot_id=body.new_slot_id,
+        )
+    except ReservationNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Reservation not found"
+        )
+    except SlotNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Slot not found"
+        )
+    except SlotFullError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Slot is full"
         )
     return ReservationResponse.model_validate(reservation)
 

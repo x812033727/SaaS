@@ -48,6 +48,8 @@ class Customer(Base):
     )
     last_booked_at = Column(DateTime(timezone=True), nullable=True)
     note = Column(Text, nullable=True)
+    # 分店綁定（PHASE 1，nullable = 不限分店）；既有 DB 由 _migrate_add_location_id() 補欄。
+    location_id = Column(Integer, nullable=True, index=True)
     # 會員集點/等級（P3）；既有 DB 由 _migrate_add_customer_membership() 補欄。
     points_balance = Column(
         Integer, nullable=False, default=0, server_default=text("0")
@@ -55,6 +57,9 @@ class Customer(Base):
     tier = Column(
         String(16), nullable=False, default="regular", server_default="regular"
     )
+    # 行事曆 ICS 訂閱憑證（顧客個人 feed）；token 即能力，NULL = 尚未產生。
+    # 既有 DB 由 _migrate_add_customer_ics_token() 補欄 + unique index。
+    ics_token = Column(String(64), nullable=True, unique=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

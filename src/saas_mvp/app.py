@@ -29,6 +29,7 @@ from saas_mvp.routers import locations as locations_router
 from saas_mvp.routers import staff as staff_router
 from saas_mvp.routers import staff_portal as staff_portal_router
 from saas_mvp.routers import services as services_router
+from saas_mvp.routers import calendar as calendar_router
 
 _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(staff_router.router)
     app.include_router(staff_portal_router.router)
     app.include_router(services_router.router)
+    app.include_router(calendar_router.router)
 
     # ── 伺服器渲染管理 UI（同源）：靜態檔 + UI 路由 + UI 例外 → HTML 行為 ──
     app.mount("/static", StaticFiles(directory=str(_PKG_DIR / "static")), name="static")

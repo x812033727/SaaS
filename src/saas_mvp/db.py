@@ -73,6 +73,9 @@ def init_db() -> None:
     from saas_mvp.models import location  # noqa: F401
     from saas_mvp.models import staff, staff_shift, staff_leave  # noqa: F401
     from saas_mvp.models import service_category, service, service_staff  # noqa: F401
+    # PHASE 2：顧客標籤/分眾、行事曆 ICS、預約異動通知。
+    from saas_mvp.models import customer_tag, customer_tag_link  # noqa: F401
+    from saas_mvp.models import booking_notification  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
@@ -89,6 +92,8 @@ def init_db() -> None:
     _migrate_add_location_id()
     _migrate_add_reservation_staff_id()
     _migrate_add_reservation_service_id()
+    _migrate_add_tenant_ics_token()
+    _migrate_add_customer_ics_token()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -436,6 +441,67 @@ def _migrate_add_reservation_service_id() -> None:
                 )
             )
         _log.info("migrated: added %s.%s column + index", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_tenant_ics_token() -> None:
+    """為既有 tenants 表補上 nullable ics_token 欄位 + unique index（行事曆 feed）。
+
+    拆 ADD COLUMN 與 CREATE UNIQUE INDEX 兩步（SQLite 老版 inline UNIQUE 不穩）；
+    新欄初始全 NULL，SQLite unique index 允許多 NULL。失敗僅 warning。
+    """
+    table = "tenants"
+    column = "ics_token"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(64)"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_tenants_ics_token "
+                    f"ON {table} ({column})"
+                )
+            )
+        _log.info("migrated: added %s.%s column + unique index", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_customer_ics_token() -> None:
+    """為既有 booking_customers 表補上 nullable ics_token 欄位 + unique index。
+
+    拆 ADD COLUMN 與 CREATE UNIQUE INDEX 兩步；新欄初始全 NULL。失敗僅 warning。
+    """
+    table = "booking_customers"
+    column = "ics_token"
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(64)"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_booking_customers_ics_token "
+                    f"ON {table} ({column})"
+                )
+            )
+        _log.info("migrated: added %s.%s column + unique index", table, column)
     except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
         _log.warning(
             "schema migration for %s.%s skipped due to error: %s",
