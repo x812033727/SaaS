@@ -812,3 +812,67 @@ ops / UI 全部走它。
 
 > **範圍**：商品訂單為一次性付款；進階功能訂閱為定期定額。`ExecTimes=99` 屆滿（約 8 年）自動停、
 > 需重訂。`PeriodReturnURL` 須對外可達。CheckMacValue / 驗簽 / 停扣 API 皆沿用同一 `EcpayClient`。
+
+## Production / 多 worker 部署（橫向擴展）
+
+預設單 process 即可跑；要承載更多流量時，用多 worker / 多機橫向擴展。以下三點是
+多 worker 安全的必要條件。
+
+### 1. 跑多 worker
+
+```bash
+# uvicorn 內建多 worker
+uvicorn saas_mvp.app:app --host 0.0.0.0 --port 8000 --workers 4
+
+# 或 gunicorn + uvicorn worker class（建議 production）
+gunicorn saas_mvp.app:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000
+```
+
+`--workers N` 會 fork N 個獨立 process，**不共享記憶體**。下面兩項就是為了讓
+跨 process 的共享狀態仍然正確。
+
+### 2. 用 PostgreSQL（多 worker 不要用 SQLite）
+
+所有並發臨界區（每日用量配額 `quota.py`、月度推播額度 `services/push_quota.py`、
+預約容量 `services/booking.book_slot`、優惠券核銷、訂單扣庫存）都靠
+**`SELECT … FOR UPDATE` 行鎖**序列化，消除 read-check-write 競態。SQLite 的鎖是
+**連線/檔案層級**（`FOR UPDATE` 實質被忽略、寫入互斥且易 `database is locked`），
+無法支撐多 worker 的行級並發。多 worker 部署**必須**用 PostgreSQL：
+
+```bash
+SAAS_DATABASE_URL=postgresql+psycopg://user:pass@db-host:5432/saas
+```
+
+LINE webhook 雖把事件處理丟進 Starlette `BackgroundTasks`（in-process），但跨
+worker 仍安全：每個事件以 `line_webhook_events` 的 `webhookEventId` 唯一鍵
+**INSERT-claim 去重**（撞鍵即視為已被別的 worker 認領；失敗重試走 `FOR UPDATE`），
+因此重送 / 多 worker 重複投遞都只會被處理一次。
+
+### 3. 用 Redis 限流後端（跨 worker 共享）
+
+限流器預設 in-memory（每 process 各一份計數，多 worker 下等於把限額放大 N 倍）。
+production 多 worker 請改用 Redis 後端，讓所有 worker 共享同一份滑動視窗：
+
+```bash
+SAAS_RATE_LIMIT_BACKEND=redis
+SAAS_REDIS_URL=redis://redis-host:6379/0
+pip install -e ".[redis]"     # 安裝選用的 redis 套件
+```
+
+Redis 後端以 sorted-set + Lua script（`EVAL`）做**原子**滑動視窗，跨 process /
+跨機共享、無 TOCTOU。若未裝 `redis` 套件、`SAAS_REDIS_URL` 留空或連不上，會記
+warning 並**自動 fallback 回 in-memory**（不會讓服務啟動失敗，但此時限額不跨
+worker 共享）。
+
+### 4. ops/ cron 腳本按「排程單實例」跑，不要每個 worker 跑
+
+提醒派送、預約異動通知、行銷活動等在 `ops/` 下是**獨立 cron 腳本**（見上方
+各章節），應由排程器（cron / k8s CronJob）**單一實例**觸發，**不要**綁進 web
+worker 生命週期——否則 N 個 worker 會各跑一次造成重複推播。各腳本自身也以
+`SELECT … FOR UPDATE` + 鎖內重驗 `status=='pending'` 做冪等去重。
+
+### 健康檢查 / 就緒探針
+
+`GET /healthz`（無認證、低成本）供 load balancer / k8s probe 使用：回
+`{"status","db","rate_limit_backend"}`，DB 跑一次 `SELECT 1`，不可用時回 `503`
+讓 LB 把該 worker 拉出輪替。既有 `GET /` root 端點契約不變。
