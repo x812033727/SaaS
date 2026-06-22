@@ -8,6 +8,7 @@
 """
 
 from saas_mvp.obs.context import get_request_id, request_id_var
+from saas_mvp.obs.errors import install_error_handlers
 from saas_mvp.obs.logging import configure_logging
 from saas_mvp.obs.metrics import CONTENT_TYPE, REGISTRY
 from saas_mvp.obs.middleware import ObservabilityMiddleware
@@ -15,6 +16,7 @@ from saas_mvp.obs.middleware import ObservabilityMiddleware
 __all__ = [
     "configure_logging",
     "ObservabilityMiddleware",
+    "install_error_handlers",
     "REGISTRY",
     "CONTENT_TYPE",
     "get_request_id",

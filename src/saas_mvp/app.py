@@ -11,7 +11,7 @@ import saas_mvp
 from saas_mvp.auth.dependencies import UIForbidden, UILoginRequired, UITenantDisabled
 from saas_mvp.config import settings
 from saas_mvp.db import init_db
-from saas_mvp.obs import ObservabilityMiddleware, configure_logging
+from saas_mvp.obs import ObservabilityMiddleware, configure_logging, install_error_handlers
 from saas_mvp.routers import auth, notes, tenants, ui
 from saas_mvp.routers import quota as quota_router
 from saas_mvp.routers import api_keys as api_keys_router
@@ -67,6 +67,9 @@ def create_app() -> FastAPI:
 
     # 可觀測性：request-id 串接 + 結構化存取日誌 + Prometheus HTTP 指標。
     app.add_middleware(ObservabilityMiddleware, metrics_enabled=settings.metrics_enabled)
+
+    # 集中式未捕捉例外 → 一致 JSON envelope + 錯誤追蹤（不外洩內部訊息）。
+    install_error_handlers(app)
 
     app.include_router(auth.router)
     app.include_router(tenants.router)
