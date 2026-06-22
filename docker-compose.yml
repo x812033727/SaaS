@@ -64,6 +64,14 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    # 覆寫 image 的預設 HTTP /healthz 探針（排程容器無 HTTP server）：
+    # 改判排程迴圈心跳檔新鮮度（<180s）——迴圈卡死即轉 unhealthy + 觸發 restart。
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/sched/heartbeat && [ $(($(date +%s) - $(stat -c %Y /tmp/sched/heartbeat))) -lt 180 ]"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
 
 volumes:
   pgdata:
