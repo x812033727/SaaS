@@ -1,0 +1,61 @@
+<h2>圖文選單（最多 {{ max_cards }} 張卡片）</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<form hx-post="/ui/flex-menu/title" hx-target="#flex-card" hx-swap="innerHTML" class="row">
+  <label>選單標題<input name="title" value="{{ menu.title or '' }}" maxlength="128"></label>
+  <button type="submit">儲存標題</button>
+</form>
+
+<h3>新增卡片（目前 {{ cards|length }} / {{ max_cards }}）</h3>
+{% if cards|length < max_cards %}
+<form hx-post="/ui/flex-menu/cards" hx-target="#flex-card" hx-swap="innerHTML" class="row">
+  <label>標題<input name="title" maxlength="128" required></label>
+  <label>副標<input name="subtitle" maxlength="256"></label>
+  <label>圖片網址<input name="image_url" maxlength="512"></label>
+  <label>背景色<input name="bg_color" maxlength="16" placeholder="#ffffff"></label>
+  <label>動作類型
+    <select name="action_type">
+      <option value="uri">開啟網址</option>
+      <option value="message">傳送訊息</option>
+      <option value="postback">postback</option>
+    </select>
+  </label>
+  <label>動作資料<input name="action_data" maxlength="512" required></label>
+  <button type="submit">新增卡片</button>
+</form>
+{% else %}
+<p class="muted">已達卡片數上限（{{ max_cards }}）。</p>
+{% endif %}
+
+{% if cards %}
+<table>
+  <thead><tr><th>#</th><th>標題</th><th>副標</th><th>動作</th><th></th></tr></thead>
+  <tbody>
+    {% for c in cards %}
+    <tr>
+      <td>{{ c.id }}</td>
+      <td>{{ c.title }}</td>
+      <td>{{ c.subtitle or '—' }}</td>
+      <td>{{ c.action_type }}: {{ c.action_data }}</td>
+      <td><button hx-post="/ui/flex-menu/cards/{{ c.id }}/delete" hx-target="#flex-card" hx-swap="innerHTML"
+                  hx-confirm="確定刪除此卡片？">刪除</button></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3>預覽</h3>
+<div class="flex-preview">
+  {% for b in preview.contents.contents %}
+  <div class="flex-bubble card">
+    {% if b.hero %}<div class="muted">[圖片] {{ b.hero.url }}</div>{% endif %}
+    {% for item in b.body.contents %}
+    <p>{{ item.text }}</p>
+    {% endfor %}
+    <button class="btn" disabled>{{ b.footer.contents[0].action.label }}</button>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">尚無卡片，請先新增。</p>
+{% endif %}

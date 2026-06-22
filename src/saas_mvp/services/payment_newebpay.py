@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
 import urllib.parse
 
@@ -67,15 +68,29 @@ class NewebPayClient:
         return ct.hex()
 
     def decrypt_trade_info(self, trade_info: str) -> dict:
-        """AES 解密 hex TradeInfo 後解析 query string，回 dict。"""
+        """AES 解密 hex TradeInfo，回 dict。
+
+        RespondType=JSON（本服務下單一律用 JSON）時，藍新回傳的解密明文為
+        JSON 物件，欄位包在 ``Result`` 內，例如::
+
+            {"Status": "SUCCESS",
+             "Result": {"MerchantOrderNo": "...", "Amt": 100, ...}}
+
+        故 payload 看起來像 JSON（以 ``{`` 開頭）時以 JSON 解析、回傳巢狀 dict；
+        否則回退到舊版 query-string（``a=b&c=d``）解析以維持向後相容。
+        """
         key, iv = self._key_iv()
         ct = bytes.fromhex(trade_info)
         decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
         padded = decryptor.update(ct) + decryptor.finalize()
         unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
-        plain = unpadder.update(padded) + unpadder.finalize()
-        # 解析 query string（藍新回傳同樣為 a=b&c=d 格式）
-        return dict(urllib.parse.parse_qsl(plain.decode("utf-8"), keep_blank_values=True))
+        plain = (unpadder.update(padded) + unpadder.finalize()).decode("utf-8")
+        stripped = plain.lstrip()
+        if stripped.startswith("{"):
+            # 真實藍新 JSON 回應：回傳巢狀 dict（含 Status / Result）。
+            return json.loads(stripped)
+        # 向後相容：舊版 query string 形式。
+        return dict(urllib.parse.parse_qsl(plain, keep_blank_values=True))
 
     # ── TradeSha（SHA256 大寫） ───────────────────────────────────────────────
     def trade_sha(self, trade_info: str) -> str:

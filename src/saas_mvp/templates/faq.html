@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}AI 客服 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>AI 客服</h1>
+<div class="card" id="faq-card">
+  {% include "_faq_list.html" %}
+</div>
+<div class="card" id="ai-test-card">
+  {% include "_ai_test.html" %}
+</div>
+{% endblock %}

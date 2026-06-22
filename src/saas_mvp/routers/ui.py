@@ -30,8 +30,10 @@ from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
 from saas_mvp.auth.security import create_access_token, hash_password, verify_password
 from saas_mvp.line_client import (
     LineBotInfoClient,
+    LinePushClient,
     LineRichMenuClient,
     get_bot_info_client,
+    get_push_client,
     get_rich_menu_client,
 )
 from saas_mvp.models.tenant import Tenant, normalize_store_type
@@ -49,6 +51,20 @@ from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
+from saas_mvp.services import locations as locations_svc
+from saas_mvp.services import staff as staff_svc
+from saas_mvp.services import catalog as catalog_svc
+from saas_mvp.services import marketing as marketing_svc
+from saas_mvp.services import flex_menu as flex_menu_svc
+from saas_mvp.services import portfolio as portfolio_svc
+from saas_mvp.services import profile as profile_svc
+from saas_mvp.services import pos as pos_svc
+from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import faq as faq_svc
+from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.ai import AIError, get_assistant
+from saas_mvp.models.campaign import Campaign
+from saas_mvp.services.tenants import tenant_query
 from fastapi import HTTPException
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
@@ -186,9 +202,11 @@ def dashboard(
     tenant = db.get(Tenant, tid)
     line_config = _line_config_or_none(db, tid)
     usage = get_quota_status(db, tid, tenant.plan)
+    push = push_quota_svc.get_push_quota_status(db, tid)
     return templates.TemplateResponse(
         "dashboard.html",
-        _ctx(request, actor, tenant=tenant, line_config=line_config, usage=usage),
+        _ctx(request, actor, tenant=tenant, line_config=line_config, usage=usage,
+             push_quota=push),
     )
 
 
@@ -935,4 +953,1023 @@ def rich_menu_clear(
         error = str(exc.detail)
     return templates.TemplateResponse(
         "_rich_menu_status.html", _rich_menu_ctx(request, actor, db, error=error)
+    )
+
+
+# ── 共用：選填整數解析 ──────────────────────────────────────────────────────────
+
+def _opt_int(value: str) -> int | None:
+    """空字串 → None；否則轉 int（非法拋 ValueError，由呼叫端轉 error）。"""
+    value = (value or "").strip()
+    return int(value) if value else None
+
+
+def _require_ui_feature(db: Session, actor: Actor, feature: str) -> bool:
+    return features_svc.is_enabled(db, actor.user.tenant_id, feature)
+
+
+# ── 店家自助：分店（MULTI_LOCATION） ─────────────────────────────────────────────
+
+def _locations_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    rows = locations_svc.list_locations(db, tenant_id=tid)
+    active_count = sum(1 for l in rows if l.is_active)
+    return _ctx(
+        request, actor,
+        locations=rows,
+        active_count=active_count,
+        max_locations=settings.max_locations_per_tenant,
+        **extra,
+    )
+
+
+@router.get("/locations", response_class=HTMLResponse)
+def locations_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.MULTI_LOCATION):
+        return _feature_locked(request, actor, features_svc.MULTI_LOCATION, "多分店")
+    return templates.TemplateResponse("locations.html", _locations_ctx(request, actor, db))
+
+
+@router.post("/locations", response_class=HTMLResponse)
+def locations_create(
+    request: Request,
+    name: str = Form(...),
+    address: str = Form(""),
+    phone: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        locations_svc.create_location(
+            db, tenant_id=tid, name=name,
+            address=address or None, phone=phone or None,
+        )
+    except locations_svc.LocationLimitError as exc:
+        error = str(exc)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_locations.html", _locations_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/locations/{location_id}/update", response_class=HTMLResponse)
+def locations_update(
+    request: Request,
+    location_id: int,
+    name: str = Form(...),
+    address: str = Form(""),
+    phone: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        locations_svc.update_location(
+            db, tenant_id=tid, location_id=location_id,
+            name=name, address=address or None, phone=phone or None,
+        )
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_locations.html", _locations_ctx(request, actor, db)
+    )
+
+
+@router.post("/locations/{location_id}/deactivate", response_class=HTMLResponse)
+def locations_deactivate(
+    request: Request,
+    location_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        locations_svc.update_location(
+            db, tenant_id=tid, location_id=location_id, is_active=False
+        )
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_locations.html", _locations_ctx(request, actor, db)
+    )
+
+
+@router.post("/locations/{location_id}/activate", response_class=HTMLResponse)
+def locations_activate(
+    request: Request,
+    location_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        locations_svc.update_location(
+            db, tenant_id=tid, location_id=location_id, is_active=True
+        )
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_locations.html", _locations_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：員工（STAFF_SCHEDULING） ──────────────────────────────────────────
+
+def _staff_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    rows = staff_svc.list_staff(db, tenant_id=tid)
+    shifts = {s.id: staff_svc.list_shifts(db, tenant_id=tid, staff_id=s.id) for s in rows}
+    leaves = {s.id: staff_svc.list_leaves(db, tenant_id=tid, staff_id=s.id) for s in rows}
+    return _ctx(
+        request, actor,
+        staff_rows=rows,
+        staff_shifts=shifts,
+        staff_leaves=leaves,
+        locations=locations_svc.list_locations(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/staff", response_class=HTMLResponse)
+def staff_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    return templates.TemplateResponse("staff.html", _staff_ctx(request, actor, db))
+
+
+@router.post("/staff", response_class=HTMLResponse)
+def staff_create(
+    request: Request,
+    name: str = Form(...),
+    role: str = Form(""),
+    location_id: str = Form(""),
+    booking_mode: str = Form("capacity"),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        staff_svc.create_staff(
+            db, tenant_id=tid, name=name, role=role or None,
+            location_id=_opt_int(location_id), booking_mode=booking_mode,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "分店格式錯誤"
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/staff/{staff_id}/update", response_class=HTMLResponse)
+def staff_update(
+    request: Request,
+    staff_id: int,
+    name: str = Form(...),
+    role: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        staff_svc.update_staff(
+            db, tenant_id=tid, staff_id=staff_id, name=name, role=role or None,
+        )
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db)
+    )
+
+
+@router.post("/staff/{staff_id}/deactivate", response_class=HTMLResponse)
+def staff_deactivate(
+    request: Request,
+    staff_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        staff_svc.update_staff(db, tenant_id=tid, staff_id=staff_id, is_active=False)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_staff_list.html", _staff_ctx(request, actor, db))
+
+
+@router.post("/staff/{staff_id}/activate", response_class=HTMLResponse)
+def staff_activate(
+    request: Request,
+    staff_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        staff_svc.update_staff(db, tenant_id=tid, staff_id=staff_id, is_active=True)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_staff_list.html", _staff_ctx(request, actor, db))
+
+
+@router.post("/staff/{staff_id}/rotate-token", response_class=HTMLResponse)
+def staff_rotate_token(
+    request: Request,
+    staff_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        staff_svc.rotate_token(db, tenant_id=tid, staff_id=staff_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_staff_list.html", _staff_ctx(request, actor, db))
+
+
+@router.post("/staff/{staff_id}/shifts", response_class=HTMLResponse)
+def staff_create_shift(
+    request: Request,
+    staff_id: int,
+    start_time: str = Form(...),
+    end_time: str = Form(...),
+    weekday: str = Form(""),
+    rotation: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        staff_svc.create_shift(
+            db, tenant_id=tid, staff_id=staff_id,
+            start_time=start_time, end_time=end_time,
+            weekday=_opt_int(weekday), rotation=rotation or None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "星期格式錯誤"
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/staff/{staff_id}/shifts/{shift_id}/delete", response_class=HTMLResponse)
+def staff_delete_shift(
+    request: Request,
+    staff_id: int,
+    shift_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        staff_svc.delete_shift(db, tenant_id=tid, staff_id=staff_id, shift_id=shift_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_staff_list.html", _staff_ctx(request, actor, db))
+
+
+@router.post("/staff/{staff_id}/leaves", response_class=HTMLResponse)
+def staff_create_leave(
+    request: Request,
+    staff_id: int,
+    start_at: str = Form(...),
+    end_at: str = Form(...),
+    reason: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        staff_svc.create_leave(
+            db, tenant_id=tid, staff_id=staff_id,
+            start_at=_parse_slot_start(start_at),
+            end_at=_parse_slot_start(end_at),
+            reason=reason or None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "請假時間格式錯誤"
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/staff/{staff_id}/leaves/{leave_id}/delete", response_class=HTMLResponse)
+def staff_delete_leave(
+    request: Request,
+    staff_id: int,
+    leave_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        staff_svc.delete_leave(db, tenant_id=tid, staff_id=staff_id, leave_id=leave_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_staff_list.html", _staff_ctx(request, actor, db))
+
+
+# ── 店家自助：服務項目（SERVICE_CATALOG） ───────────────────────────────────────
+
+def _services_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    services = catalog_svc.list_services(db, tenant_id=tid)
+    staff_rows = staff_svc.list_staff(db, tenant_id=tid)
+    staff_by_id = {s.id: s for s in staff_rows}
+    svc_staff: dict[int, list] = {}
+    for svc in services:
+        links = catalog_svc.list_service_staff(db, tenant_id=tid, service_id=svc.id)
+        svc_staff[svc.id] = [staff_by_id[ln.staff_id] for ln in links if ln.staff_id in staff_by_id]
+    return _ctx(
+        request, actor,
+        categories=catalog_svc.list_categories(db, tenant_id=tid),
+        services=services,
+        staff_rows=staff_rows,
+        service_staff=svc_staff,
+        locations=locations_svc.list_locations(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/services", response_class=HTMLResponse)
+def services_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
+    return templates.TemplateResponse("services.html", _services_ctx(request, actor, db))
+
+
+@router.post("/services/categories", response_class=HTMLResponse)
+def services_create_category(
+    request: Request,
+    name: str = Form(...),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        catalog_svc.create_category(db, tenant_id=tid, name=name, sort_order=sort_order)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/services", response_class=HTMLResponse)
+def services_create(
+    request: Request,
+    name: str = Form(...),
+    duration_minutes: int = Form(60),
+    price_cents: int = Form(0),
+    category_id: str = Form(""),
+    location_id: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        catalog_svc.create_service(
+            db, tenant_id=tid, name=name,
+            duration_minutes=duration_minutes, price_cents=price_cents,
+            category_id=_opt_int(category_id), location_id=_opt_int(location_id),
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "分類或分店格式錯誤"
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/services/{service_id}/staff", response_class=HTMLResponse)
+def services_assign_staff(
+    request: Request,
+    service_id: int,
+    staff_id: int = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        catalog_svc.assign_staff(
+            db, tenant_id=tid, service_id=service_id, staff_id=staff_id
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/services/{service_id}/staff/{staff_id}/unassign", response_class=HTMLResponse)
+def services_unassign_staff(
+    request: Request,
+    service_id: int,
+    staff_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        catalog_svc.unassign_staff(
+            db, tenant_id=tid, service_id=service_id, staff_id=staff_id
+        )
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：行銷活動（MARKETING_AUTO） ────────────────────────────────────────
+
+def _campaigns_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    rows = tenant_query(db, Campaign, tid).order_by(Campaign.id.desc()).all()
+    return _ctx(request, actor, campaigns=rows, **extra)
+
+
+def _campaign_or_none(db: Session, tenant_id: int, campaign_id: int) -> Campaign | None:
+    return (
+        tenant_query(db, Campaign, tenant_id)
+        .filter(Campaign.id == campaign_id)
+        .first()
+    )
+
+
+@router.get("/campaigns", response_class=HTMLResponse)
+def campaigns_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
+    return templates.TemplateResponse("campaigns.html", _campaigns_ctx(request, actor, db))
+
+
+@router.post("/campaigns", response_class=HTMLResponse)
+def campaigns_create(
+    request: Request,
+    name: str = Form(...),
+    type: str = Form(...),
+    message_template: str = Form(...),
+    schedule_at: str = Form(""),
+    segment_json: str = Form(""),
+    reward_type: str = Form(""),
+    reward_value: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    import json as _json
+
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        schedule = _parse_slot_start(schedule_at) if schedule_at.strip() else None
+        seg = segment_json.strip()
+        if seg:
+            _json.loads(seg)  # 驗證 JSON 合法
+        campaign = Campaign(
+            tenant_id=tid,
+            name=name,
+            type=type,
+            message_template=message_template,
+            schedule_at=schedule,
+            segment_json=seg or None,
+            reward_type=reward_type or None,
+            reward_value=_opt_int(reward_value),
+        )
+        db.add(campaign)
+        db.commit()
+    except ValueError:
+        db.rollback()
+        error = "排程時間或受眾 JSON 格式錯誤"
+    except HTTPException as exc:
+        db.rollback()
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_campaigns_list.html", _campaigns_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/campaigns/{campaign_id}/run", response_class=HTMLResponse)
+def campaigns_run(
+    request: Request,
+    campaign_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    push_client: LinePushClient = Depends(get_push_client),
+):
+    tid = actor.user.tenant_id
+    error = None
+    run_result = None
+    campaign = _campaign_or_none(db, tid, campaign_id)
+    if campaign is None:
+        error = "活動不存在"
+    else:
+        run_result = marketing_svc.run_campaign(
+            db,
+            campaign=campaign,
+            now=datetime.datetime.now(datetime.timezone.utc),
+            cap=settings.marketing_max_per_run,
+            push_client=push_client,
+        )
+    return templates.TemplateResponse(
+        "_campaigns_list.html",
+        _campaigns_ctx(request, actor, db, error=error, run_result=run_result),
+    )
+
+
+@router.post("/campaigns/{campaign_id}/deactivate", response_class=HTMLResponse)
+def campaigns_deactivate(
+    request: Request,
+    campaign_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    campaign = _campaign_or_none(db, tid, campaign_id)
+    if campaign is not None:
+        campaign.is_active = False
+        db.commit()
+    return templates.TemplateResponse(
+        "_campaigns_list.html", _campaigns_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：圖文選單卡片（FLEX_MENU） ─────────────────────────────────────────
+
+def _get_or_create_flex_menu(db: Session, tenant_id: int) -> "flex_menu_svc.FlexMenu":
+    menu = flex_menu_svc.get_active_menu(db, tenant_id=tenant_id)
+    if menu is None:
+        menus = flex_menu_svc.list_menus(db, tenant_id=tenant_id)
+        menu = menus[0] if menus else flex_menu_svc.create_menu(db, tenant_id=tenant_id)
+    return menu
+
+
+def _flex_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    menu = _get_or_create_flex_menu(db, tid)
+    cards = flex_menu_svc.list_cards(db, tenant_id=tid, menu_id=menu.id)
+    preview = flex_menu_svc.build_flex_payload(menu, cards)
+    return _ctx(
+        request, actor,
+        menu=menu,
+        cards=cards,
+        preview=preview,
+        max_cards=flex_menu_svc.MAX_CARDS,
+        **extra,
+    )
+
+
+@router.get("/flex-menu", response_class=HTMLResponse)
+def flex_menu_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
+    return templates.TemplateResponse("flex_menu.html", _flex_ctx(request, actor, db))
+
+
+@router.post("/flex-menu/title", response_class=HTMLResponse)
+def flex_menu_set_title(
+    request: Request,
+    title: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    menu = _get_or_create_flex_menu(db, tid)
+    flex_menu_svc.update_menu(db, tenant_id=tid, menu_id=menu.id, title=title or "")
+    return templates.TemplateResponse("_flex_menu.html", _flex_ctx(request, actor, db))
+
+
+@router.post("/flex-menu/cards", response_class=HTMLResponse)
+def flex_menu_add_card(
+    request: Request,
+    title: str = Form(...),
+    action_type: str = Form(...),
+    action_data: str = Form(...),
+    subtitle: str = Form(""),
+    image_url: str = Form(""),
+    bg_color: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    menu = _get_or_create_flex_menu(db, tid)
+    try:
+        flex_menu_svc.add_card(
+            db, tenant_id=tid, menu_id=menu.id,
+            title=title, action_type=action_type, action_data=action_data,
+            subtitle=subtitle or None, image_url=image_url or None,
+            bg_color=bg_color or None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_flex_menu.html", _flex_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/flex-menu/cards/{card_id}/delete", response_class=HTMLResponse)
+def flex_menu_delete_card(
+    request: Request,
+    card_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    menu = _get_or_create_flex_menu(db, tid)
+    try:
+        flex_menu_svc.delete_card(db, tenant_id=tid, menu_id=menu.id, card_id=card_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_flex_menu.html", _flex_ctx(request, actor, db))
+
+
+# ── 店家自助：作品集（PUBLIC_PROFILE） ──────────────────────────────────────────
+
+def _portfolio_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        categories=portfolio_svc.list_categories(db, tenant_id=tid),
+        items=portfolio_svc.list_items(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/portfolio", response_class=HTMLResponse)
+def portfolio_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
+    return templates.TemplateResponse("portfolio.html", _portfolio_ctx(request, actor, db))
+
+
+@router.post("/portfolio/categories", response_class=HTMLResponse)
+def portfolio_create_category(
+    request: Request,
+    name: str = Form(...),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        portfolio_svc.create_category(db, tenant_id=tid, name=name, sort_order=sort_order)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_portfolio.html", _portfolio_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/portfolio/categories/{category_id}/delete", response_class=HTMLResponse)
+def portfolio_delete_category(
+    request: Request,
+    category_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        portfolio_svc.delete_category(db, tenant_id=tid, category_id=category_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_portfolio.html", _portfolio_ctx(request, actor, db))
+
+
+@router.post("/portfolio/items", response_class=HTMLResponse)
+def portfolio_create_item(
+    request: Request,
+    image_url: str = Form(...),
+    caption: str = Form(""),
+    category_id: str = Form(""),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        portfolio_svc.create_item(
+            db, tenant_id=tid, image_url=image_url,
+            caption=caption or None, category_id=_opt_int(category_id),
+            sort_order=sort_order,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "分類格式錯誤"
+    return templates.TemplateResponse(
+        "_portfolio.html", _portfolio_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/portfolio/items/{item_id}/delete", response_class=HTMLResponse)
+def portfolio_delete_item(
+    request: Request,
+    item_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        portfolio_svc.delete_item(db, tenant_id=tid, item_id=item_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_portfolio.html", _portfolio_ctx(request, actor, db))
+
+
+# ── 店家自助：公開店家頁（PUBLIC_PROFILE） ──────────────────────────────────────
+
+def _profile_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        profile=profile_svc.get_by_tenant(db, tid),
+        **extra,
+    )
+
+
+@router.get("/profile", response_class=HTMLResponse)
+def profile_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
+    return templates.TemplateResponse("profile.html", _profile_ctx(request, actor, db))
+
+
+@router.post("/profile", response_class=HTMLResponse)
+def profile_save(
+    request: Request,
+    slug: str = Form(...),
+    display_name: str = Form(""),
+    banner_url: str = Form(""),
+    theme_color: str = Form(""),
+    social_links: str = Form(""),
+    seo_title: str = Form(""),
+    seo_description: str = Form(""),
+    intro: str = Form(""),
+    is_published: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    saved = False
+    try:
+        profile_svc.upsert(
+            db, tid,
+            slug=slug,
+            display_name=display_name or None,
+            banner_url=banner_url or None,
+            theme_color=theme_color or None,
+            social_links=social_links or None,
+            seo_title=seo_title or None,
+            seo_description=seo_description or None,
+            intro=intro or None,
+            is_published=(is_published == "true"),
+        )
+        saved = True
+    except profile_svc.SlugTakenError:
+        error = "此網址代稱已被使用，請換一個。"
+    except ValueError as exc:
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_profile.html", _profile_ctx(request, actor, db, error=error, saved=saved)
+    )
+
+
+# ── 店家自助：POS 結帳（PRODUCT_SALES） ─────────────────────────────────────────
+
+def _pos_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        products=shop_svc.list_products(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/pos", response_class=HTMLResponse)
+def pos_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
+    return templates.TemplateResponse("pos.html", _pos_ctx(request, actor, db))
+
+
+@router.post("/pos/lookup", response_class=HTMLResponse)
+def pos_lookup(
+    request: Request,
+    phone: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    result = pos_svc.lookup_by_phone(db, tenant_id=tid, phone=phone)
+    extra = {"lookup_done": True, "phone": phone}
+    if result is not None:
+        extra.update(
+            customer=result["customer"],
+            points_balance=result["points_balance"],
+            active_coupons=result["active_coupons"],
+        )
+    return templates.TemplateResponse("_pos.html", _pos_ctx(request, actor, db, **extra))
+
+
+@router.post("/pos/checkout", response_class=HTMLResponse)
+async def pos_checkout(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    form = await request.form()
+    phone = (form.get("phone") or "").strip()
+    customer_id = _opt_int(form.get("customer_id") or "")
+    coupon_code = (form.get("coupon_code") or "").strip() or None
+    try:
+        points_to_redeem = int(form.get("points_to_redeem") or 0)
+    except ValueError:
+        points_to_redeem = 0
+
+    # 從 qty_<product_id> 欄位組裝結帳明細（數量 > 0 才納入）。
+    items: list[dict] = []
+    for key, value in form.items():
+        if not key.startswith("qty_"):
+            continue
+        try:
+            qty = int(value)
+        except (TypeError, ValueError):
+            continue
+        if qty > 0:
+            items.append({"product_id": int(key[4:]), "qty": qty})
+
+    error = None
+    order = None
+    if not items:
+        error = "請至少選擇一項商品數量。"
+    else:
+        try:
+            order = pos_svc.checkout(
+                db, tenant_id=tid, customer_id=customer_id, items=items,
+                coupon_code=coupon_code, points_to_redeem=points_to_redeem,
+            )
+        except pos_svc.CustomerNotFound:
+            error = "找不到該會員。"
+        except shop_svc.ProductNotFound:
+            error = "找不到商品。"
+        except shop_svc.ProductInactive:
+            error = "商品已停用。"
+        except shop_svc.OutOfStock:
+            error = "庫存不足。"
+        except membership_svc.InsufficientPoints:
+            error = "點數不足。"
+        except coupons_svc.CouponError as exc:
+            error = str(exc)
+        except HTTPException as exc:
+            error = str(exc.detail)
+
+    extra = {"phone": phone}
+    if customer_id is not None:
+        result = pos_svc.lookup_by_phone(db, tenant_id=tid, phone=phone) if phone else None
+        if result is not None:
+            extra.update(
+                lookup_done=True,
+                customer=result["customer"],
+                points_balance=result["points_balance"],
+                active_coupons=result["active_coupons"],
+            )
+    return templates.TemplateResponse(
+        "_pos.html", _pos_ctx(request, actor, db, order=order, error=error, **extra)
+    )
+
+
+# ── 店家自助：AI 客服 / FAQ（AI_ASSISTANT） ─────────────────────────────────────
+
+def _faq_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        faqs=faq_svc.list_faqs(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/faq", response_class=HTMLResponse)
+def faq_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    return templates.TemplateResponse("faq.html", _faq_ctx(request, actor, db))
+
+
+@router.post("/faq", response_class=HTMLResponse)
+def faq_create(
+    request: Request,
+    question: str = Form(...),
+    answer: str = Form(...),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        faq_svc.create_faq(
+            db, tenant_id=tid, question=question, answer=answer, sort_order=sort_order
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_faq_list.html", _faq_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/faq/{faq_id}/delete", response_class=HTMLResponse)
+def faq_delete(
+    request: Request,
+    faq_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    try:
+        faq_svc.delete_faq(db, tenant_id=tid, faq_id=faq_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse("_faq_list.html", _faq_ctx(request, actor, db))
+
+
+@router.post("/faq/ask", response_class=HTMLResponse)
+def faq_ask(
+    request: Request,
+    question: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    matched = faq_svc.match(db, tid, question)
+    context = "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
+    answer = None
+    source = None
+    error = None
+    try:
+        result = get_assistant().answer(question, context)
+        answer = result.answer
+        source = result.source
+    except AIError as exc:
+        error = f"AI 後端錯誤：{exc}"
+    return templates.TemplateResponse(
+        "_ai_test.html",
+        _ctx(request, actor, question=question, answer=answer, source=source, error=error),
     )

@@ -1,0 +1,11 @@
+<h2>AI 測試</h2>
+<form hx-post="/ui/faq/ask" hx-target="#ai-test-card" hx-swap="innerHTML" class="col">
+  <label>測試問題<input name="question" value="{{ question or '' }}" required></label>
+  <button type="submit">詢問 AI</button>
+</form>
+{% if answer is defined and answer is not none %}
+<div class="card">
+  <p><strong>回答：</strong>{{ answer }}</p>
+  <p class="muted">來源：{{ source }}</p>
+</div>
+{% endif %}

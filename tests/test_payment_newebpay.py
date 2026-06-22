@@ -164,16 +164,42 @@ def _order(oid) -> Order:
 
 
 def _notify_params(trade_no, amount_twd, status_code="SUCCESS"):
+    """組真實藍新 JSON-with-nested-Result 回調 wire format。
+
+    RespondType=JSON 時藍新解密後的明文為 JSON，欄位巢狀於 Result 內、
+    Status 在頂層；Amt 為整數。直接 encrypt 此 JSON 字串模擬真實回調。
+    """
     c = NewebPayClient(merchant_id="MS123456", hash_key=_HK, hash_iv=_HIV, env="stage")
-    info = {
+    payload = {
         "Status": status_code,
-        "MerchantOrderNo": trade_no,
-        "Amt": str(amount_twd),
-        "TradeNo": "24010112000012345",
-        "PaymentType": "CREDIT",
+        "Message": "授權成功" if status_code == "SUCCESS" else "授權失敗",
+        "Result": {
+            "MerchantID": "MS123456",
+            "MerchantOrderNo": trade_no,
+            "Amt": int(amount_twd),
+            "TradeNo": "24010112000012345",
+            "PaymentType": "CREDIT",
+        },
     }
-    ti = c.encrypt_trade_info(info)
+    ti = _encrypt_json(c, payload)
     return {"TradeInfo": ti, "TradeSha": c.trade_sha(ti), "Status": status_code}
+
+
+def _encrypt_json(c: NewebPayClient, payload: dict) -> str:
+    """以 client 的 key/iv 將 JSON 明文 AES 加密成 hex TradeInfo（模擬藍新閘道）。"""
+    from cryptography.hazmat.primitives import padding as _pad
+    from cryptography.hazmat.primitives.ciphers import (
+        Cipher as _Cipher,
+        algorithms as _alg,
+        modes as _modes,
+    )
+
+    plain = json.dumps(payload).encode("utf-8")
+    key, iv = c.hash_key.encode(), c.hash_iv.encode()
+    padder = _pad.PKCS7(_alg.AES.block_size).padder()
+    padded = padder.update(plain) + padder.finalize()
+    enc = _Cipher(_alg.AES(key), _modes.CBC(iv)).encryptor()
+    return (enc.update(padded) + enc.finalize()).hex()
 
 
 class TestCheckout:
@@ -228,3 +254,39 @@ class TestNotify:
         oid, trade_no = self._prepare(http)
         r = http.post("/payments/newebpay/notify", data=_notify_params(trade_no, 100, status_code="FAIL"))
         assert r.text == "1|OK" and _order(oid).status == "pending"
+
+    def test_json_nested_result_parsed_and_marks_paid(self, http):
+        """H1 回歸：decrypt_trade_info 直接解析真實藍新 JSON-with-nested-Result
+        wire format（Status 頂層、MerchantOrderNo/Amt 巢狀於 Result），
+        並正確標記訂單已付。"""
+        oid, trade_no = self._prepare(http)
+        c = NewebPayClient(merchant_id="MS123456", hash_key=_HK, hash_iv=_HIV, env="stage")
+        ti = _encrypt_json(c, {
+            "Status": "SUCCESS",
+            "Result": {"MerchantOrderNo": trade_no, "Amt": 100},
+        })
+        # service 層直接解出巢狀 dict（不再是攤平 query-string）。
+        parsed = c.decrypt_trade_info(ti)
+        assert parsed["Status"] == "SUCCESS"
+        assert parsed["Result"]["MerchantOrderNo"] == trade_no
+        assert parsed["Result"]["Amt"] == 100
+        r = http.post(
+            "/payments/newebpay/notify",
+            data={"TradeInfo": ti, "TradeSha": c.trade_sha(ti)},
+        )
+        assert r.status_code == 200 and r.text == "1|OK"
+        assert _order(oid).status == "paid"
+
+    def test_malformed_result_rejected_not_500(self, http):
+        """H1 回歸：Result 型別異常（非 dict）的回調被拒（不是 500）。"""
+        oid, trade_no = self._prepare(http)
+        c = NewebPayClient(merchant_id="MS123456", hash_key=_HK, hash_iv=_HIV, env="stage")
+        # Result 是字串而非物件 → 取 MerchantOrderNo 不可 .get()，須被攔成拒絕。
+        ti = _encrypt_json(c, {"Status": "SUCCESS", "Result": "not-an-object"})
+        r = http.post(
+            "/payments/newebpay/notify",
+            data={"TradeInfo": ti, "TradeSha": c.trade_sha(ti)},
+        )
+        # 不應 500；訂單維持 pending。
+        assert r.status_code == 200
+        assert _order(oid).status == "pending"

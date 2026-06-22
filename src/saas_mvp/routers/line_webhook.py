@@ -925,6 +925,8 @@ def _try_conversational(
                 staff_id=staff_id,
                 service_id=service_id,
             )
+        except booking_svc.CrossTenantReferenceError:
+            return "預約資料有誤，請重新輸入「預約」開始。", None, None
         except booking_svc.SlotNotFoundError:
             return f"找不到時段 #{slot_id}，請重新輸入「預約」查看。", None, None
         except booking_svc.SlotFullError:

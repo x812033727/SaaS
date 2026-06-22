@@ -17,11 +17,28 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from saas_mvp.models.booking_slot import BookingSlot
+from saas_mvp.models.location import Location
 from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
 from saas_mvp.models.staff import VALID_STAFF_MODES, Staff
 from saas_mvp.models.staff_leave import StaffLeave
 from saas_mvp.models.staff_shift import StaffShift
 from saas_mvp.services.tenants import tenant_query
+
+
+def _assert_location_owned(db: Session, tenant_id: int, location_id: int | None) -> None:
+    """location_id 若帶入，須屬於本租戶，否則 422（防跨租戶引用）。"""
+    if location_id is None:
+        return
+    owned = (
+        tenant_query(db, Location, tenant_id)
+        .filter(Location.id == location_id)
+        .first()
+    )
+    if owned is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="location_id 不屬於本租戶",
+        )
 
 
 # ── 自訂例外（router 轉 HTTP） ────────────────────────────────────────────────
@@ -90,6 +107,7 @@ def create_staff(
         raise HTTPException(
             status_code=422, detail=f"Invalid booking_mode: {booking_mode!r}"
         )
+    _assert_location_owned(db, tenant_id, location_id)
     staff = Staff(
         tenant_id=tenant_id,
         name=name,
@@ -120,6 +138,7 @@ def update_staff(
     if role is not None:
         staff.role = role
     if location_id is not None:
+        _assert_location_owned(db, tenant_id, location_id)
         staff.location_id = location_id
     if booking_mode is not None:
         if booking_mode not in VALID_STAFF_MODES:
@@ -373,9 +392,16 @@ def assign_staff(
 
     衝突拋 StaffConflictError；預約/員工不存在拋對應例外。
     """
-    staff = (
-        tenant_query(db, Staff, tenant_id).filter(Staff.id == staff_id).first()
-    )
+    # 先鎖共用的 Staff 列（FOR UPDATE）：跨「兩筆不同預約」指派同一員工的
+    # 重疊檢查（check_conflict 第 3 條）是跨 reservation 的不變式，只鎖目標
+    # reservation 無法序列化它——兩個並發指派各鎖自己的 reservation，雙雙
+    # 看不到對方、可同時通過衝突檢查而雙重佔用。鎖 staff 列讓「同一員工」的
+    # 所有指派序列化（check_conflict → set staff_id → commit 在鎖內完成）。
+    staff = db.execute(
+        select(Staff)
+        .where(Staff.id == staff_id, Staff.tenant_id == tenant_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if staff is None:
         raise StaffNotFoundError(f"staff {staff_id} not found")
 

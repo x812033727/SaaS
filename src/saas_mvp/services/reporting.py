@@ -48,9 +48,12 @@ def _confirmed_reservations(
         stmt = stmt.where(BookingSlot.slot_start <= date_to)
     if location_id is not None:
         # 分店範圍：以服務的 location_id 推導（Slot/Reservation 未直接綁分店）。
-        stmt = stmt.join(Service, Reservation.service_id == Service.id).where(
-            Service.location_id == location_id
-        )
+        # join 必帶 Service.tenant_id 條件，防跨租戶 Service 列混入。
+        stmt = stmt.join(
+            Service,
+            (Reservation.service_id == Service.id)
+            & (Service.tenant_id == tenant_id),
+        ).where(Service.location_id == location_id)
     return list(db.execute(stmt).scalars())
 
 

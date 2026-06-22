@@ -1,0 +1,51 @@
+<h2>行銷活動</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if run_result %}<div class="card success">已執行：送出 {{ run_result.sent }} 則，略過 {{ run_result.skipped }} 則。</div>{% endif %}
+<form hx-post="/ui/campaigns" hx-target="#campaigns-card" hx-swap="innerHTML" class="row">
+  <label>名稱<input name="name" maxlength="128" required></label>
+  <label>類型
+    <select name="type">
+      <option value="broadcast">群發</option>
+      <option value="birthday">生日</option>
+      <option value="welcome">歡迎</option>
+      <option value="spend">消費門檻</option>
+      <option value="reactivation">喚回</option>
+    </select>
+  </label>
+  <label>訊息範本<input name="message_template" required placeholder="您好 {name}"></label>
+  <label>排程時間<input name="schedule_at" type="datetime-local"></label>
+  <label>受眾 JSON<input name="segment_json" placeholder='{"tier":"vip"}'></label>
+  <label>獎勵類型
+    <select name="reward_type">
+      <option value="">無</option>
+      <option value="points">點數</option>
+      <option value="coupon">優惠券</option>
+    </select>
+  </label>
+  <label>獎勵值<input name="reward_value" type="number" min="0" placeholder="點數或券ID"></label>
+  <button type="submit">新增活動</button>
+</form>
+
+{% if campaigns %}
+<table>
+  <thead><tr><th>#</th><th>名稱</th><th>類型</th><th>獎勵</th><th>狀態</th><th></th></tr></thead>
+  <tbody>
+    {% for c in campaigns %}
+    <tr>
+      <td>{{ c.id }}</td>
+      <td>{{ c.name }}</td>
+      <td>{{ c.type }}</td>
+      <td>{% if c.reward_type %}{{ c.reward_type }}:{{ c.reward_value }}{% else %}—{% endif %}</td>
+      <td><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
+      <td>
+        <button hx-post="/ui/campaigns/{{ c.id }}/run" hx-target="#campaigns-card" hx-swap="innerHTML">立即執行</button>
+        {% if c.is_active %}
+        <button hx-post="/ui/campaigns/{{ c.id }}/deactivate" hx-target="#campaigns-card" hx-swap="innerHTML"
+                hx-confirm="確定停用此活動？">停用</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">尚無行銷活動。</p>{% endif %}
