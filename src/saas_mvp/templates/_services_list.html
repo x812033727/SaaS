@@ -1,0 +1,68 @@
+<h2>服務分類</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-post="/ui/services/categories" hx-target="#services-card" hx-swap="innerHTML" class="row">
+  <label>分類名稱<input name="name" maxlength="128" required></label>
+  <label>排序<input name="sort_order" type="number" value="0"></label>
+  <button type="submit">新增分類</button>
+</form>
+{% if categories %}
+<table>
+  <thead><tr><th>#</th><th>名稱</th><th>排序</th><th>狀態</th></tr></thead>
+  <tbody>
+    {% for cat in categories %}
+    <tr>
+      <td>{{ cat.id }}</td><td>{{ cat.name }}</td><td>{{ cat.sort_order }}</td>
+      <td><span class="badge {{ 'on' if cat.is_active else 'off' }}">{{ '啟用' if cat.is_active else '停用' }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">尚無分類。</p>{% endif %}
+
+<h2>服務項目</h2>
+<form hx-post="/ui/services" hx-target="#services-card" hx-swap="innerHTML" class="row">
+  <label>名稱<input name="name" maxlength="128" required></label>
+  <label>時長（分）<input name="duration_minutes" type="number" min="1" value="60" required></label>
+  <label>價格（分）<input name="price_cents" type="number" min="0" value="0" required></label>
+  <label>分類
+    <select name="category_id">
+      <option value="">未分類</option>
+      {% for cat in categories %}<option value="{{ cat.id }}">{{ cat.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>分店
+    <select name="location_id">
+      <option value="">不限分店</option>
+      {% for l in locations %}<option value="{{ l.id }}">{{ l.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <button type="submit">新增服務</button>
+</form>
+
+{% if services %}
+{% for svc in services %}
+<div class="card">
+  <h3>{{ svc.name }} <span class="badge {{ 'on' if svc.is_active else 'off' }}">{{ '啟用' if svc.is_active else '停用' }}</span></h3>
+  <p class="muted">時長 {{ svc.duration_minutes }} 分 · 價格 {{ svc.price_cents }} 分</p>
+  <h4>指派員工</h4>
+  <form hx-post="/ui/services/{{ svc.id }}/staff" hx-target="#services-card" hx-swap="innerHTML" class="row">
+    <label>員工
+      <select name="staff_id" required>
+        {% for st in staff_rows %}<option value="{{ st.id }}">{{ st.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit">指派</button>
+  </form>
+  {% set assigned = service_staff.get(svc.id, []) %}
+  {% if assigned %}
+  <ul>
+    {% for st in assigned %}
+    <li>{{ st.name }}
+      <button hx-post="/ui/services/{{ svc.id }}/staff/{{ st.id }}/unassign" hx-target="#services-card" hx-swap="innerHTML">移除</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="muted">尚未指派員工。</p>{% endif %}
+</div>
+{% endfor %}
+{% else %}<p class="muted">尚無服務項目。</p>{% endif %}

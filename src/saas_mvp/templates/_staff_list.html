@@ -1,0 +1,117 @@
+<h2>員工管理</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-post="/ui/staff" hx-target="#staff-card" hx-swap="innerHTML" class="row">
+  <label>姓名<input name="name" maxlength="128" required></label>
+  <label>職稱<input name="role" maxlength="64"></label>
+  <label>分店
+    <select name="location_id">
+      <option value="">不限分店</option>
+      {% for l in locations %}<option value="{{ l.id }}">{{ l.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>預約模式
+    <select name="booking_mode">
+      <option value="capacity">容量制</option>
+      <option value="one_to_one">一對一</option>
+    </select>
+  </label>
+  <button type="submit">新增員工</button>
+</form>
+
+{% if staff_rows %}
+{% for s in staff_rows %}
+<div class="card">
+  <h3>{{ s.name }} <span class="badge {{ 'on' if s.is_active else 'off' }}">{{ '啟用' if s.is_active else '停用' }}</span></h3>
+  <p class="muted">職稱：{{ s.role or '—' }} · 模式：{{ s.booking_mode }}</p>
+  <form hx-post="/ui/staff/{{ s.id }}/update" hx-target="#staff-card" hx-swap="innerHTML" class="row">
+    <label>姓名<input name="name" value="{{ s.name }}" maxlength="128" required></label>
+    <label>職稱<input name="role" value="{{ s.role or '' }}" maxlength="64"></label>
+    <button type="submit">更新</button>
+  </form>
+  <p>
+    {% if s.is_active %}
+    <button hx-post="/ui/staff/{{ s.id }}/deactivate" hx-target="#staff-card" hx-swap="innerHTML"
+            hx-confirm="確定停用此員工？">停用</button>
+    {% else %}
+    <button hx-post="/ui/staff/{{ s.id }}/activate" hx-target="#staff-card" hx-swap="innerHTML">啟用</button>
+    {% endif %}
+  </p>
+
+  <h4>員工自助連結</h4>
+  {% if s.access_token %}
+  <p class="muted">入口連結：<code>/s/{{ s.access_token }}</code></p>
+  {% else %}
+  <p class="muted">尚未產生員工自助連結。</p>
+  {% endif %}
+  <button hx-post="/ui/staff/{{ s.id }}/rotate-token" hx-target="#staff-card" hx-swap="innerHTML">
+    {{ '重新產生連結' if s.access_token else '產生連結' }}
+  </button>
+
+  <h4>班表</h4>
+  <form hx-post="/ui/staff/{{ s.id }}/shifts" hx-target="#staff-card" hx-swap="innerHTML" class="row">
+    <label>星期
+      <select name="weekday">
+        <option value="">每日</option>
+        <option value="0">週一</option><option value="1">週二</option>
+        <option value="2">週三</option><option value="3">週四</option>
+        <option value="4">週五</option><option value="5">週六</option>
+        <option value="6">週日</option>
+      </select>
+    </label>
+    <label>開始<input name="start_time" placeholder="09:00" maxlength="5" required></label>
+    <label>結束<input name="end_time" placeholder="18:00" maxlength="5" required></label>
+    <label>輪值
+      <select name="rotation">
+        <option value="">—</option>
+        <option value="day">日班</option><option value="night">夜班</option><option value="off">休假</option>
+      </select>
+    </label>
+    <button type="submit">新增班表</button>
+  </form>
+  {% set shifts = staff_shifts.get(s.id, []) %}
+  {% if shifts %}
+  <table>
+    <thead><tr><th>#</th><th>星期</th><th>時間</th><th>輪值</th><th></th></tr></thead>
+    <tbody>
+      {% for sh in shifts %}
+      <tr>
+        <td>{{ sh.id }}</td>
+        <td>{{ ['週一','週二','週三','週四','週五','週六','週日'][sh.weekday] if sh.weekday is not none else '每日' }}</td>
+        <td>{{ sh.start_time }} - {{ sh.end_time }}</td>
+        <td>{{ sh.rotation or '—' }}</td>
+        <td><button hx-post="/ui/staff/{{ s.id }}/shifts/{{ sh.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無班表。</p>{% endif %}
+
+  <h4>請假</h4>
+  <form hx-post="/ui/staff/{{ s.id }}/leaves" hx-target="#staff-card" hx-swap="innerHTML" class="row">
+    <label>開始<input name="start_at" type="datetime-local" required></label>
+    <label>結束<input name="end_at" type="datetime-local" required></label>
+    <label>原因<input name="reason" maxlength="128"></label>
+    <button type="submit">新增請假</button>
+  </form>
+  {% set leaves = staff_leaves.get(s.id, []) %}
+  {% if leaves %}
+  <table>
+    <thead><tr><th>#</th><th>開始</th><th>結束</th><th>原因</th><th></th></tr></thead>
+    <tbody>
+      {% for lv in leaves %}
+      <tr>
+        <td>{{ lv.id }}</td>
+        <td>{{ lv.start_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ lv.end_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ lv.reason or '—' }}</td>
+        <td><button hx-post="/ui/staff/{{ s.id }}/leaves/{{ lv.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無請假紀錄。</p>{% endif %}
+</div>
+{% endfor %}
+{% else %}
+<p class="muted">尚無員工，請先新增。</p>
+{% endif %}

@@ -13,6 +13,32 @@
   </div>
 </div>
 
+{% if push_quota %}
+<div class="card">
+  <h2>本月推播用量（{{ push_quota.period }}）</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">已用</div><div class="value">{{ push_quota.used }} / {{ push_quota.allowance }}</div></div>
+    <div class="stat"><div class="label">剩餘</div><div class="value">{{ push_quota.remaining }}</div></div>
+    <div class="stat"><div class="label">加購額度</div><div class="value">{{ '已開通' if push_quota.boost_enabled else '未開通' }}</div></div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>快速連結</h2>
+  <p>
+    <a class="btn" href="/ui/locations">分店</a>
+    <a class="btn" href="/ui/staff">員工</a>
+    <a class="btn" href="/ui/services">服務項目</a>
+    <a class="btn" href="/ui/pos">POS 結帳</a>
+    <a class="btn" href="/ui/campaigns">行銷活動</a>
+    <a class="btn" href="/ui/flex-menu">圖文卡片</a>
+    <a class="btn" href="/ui/portfolio">作品集</a>
+    <a class="btn" href="/ui/profile">店家頁</a>
+    <a class="btn" href="/ui/faq">AI 客服</a>
+  </p>
+</div>
+
 <div class="card">
   <h2>LINE Bot 狀態</h2>
   {% if line_config %}

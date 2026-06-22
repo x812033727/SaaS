@@ -1,0 +1,46 @@
+<h2>分店管理（{{ active_count }} / {{ max_locations }}）</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if active_count < max_locations %}
+<form hx-post="/ui/locations" hx-target="#locations-card" hx-swap="innerHTML" class="row">
+  <label>名稱<input name="name" maxlength="128" required></label>
+  <label>地址<input name="address" maxlength="255"></label>
+  <label>電話<input name="phone" maxlength="32"></label>
+  <button type="submit">新增分店</button>
+</form>
+{% else %}
+<p class="muted">已達分店數上限（{{ max_locations }}），如需新增請先停用其他分店。</p>
+{% endif %}
+
+{% if locations %}
+<table>
+  <thead><tr><th>#</th><th>名稱</th><th>地址</th><th>電話</th><th>狀態</th><th></th></tr></thead>
+  <tbody>
+    {% for l in locations %}
+    <tr>
+      <td>{{ l.id }}</td>
+      <td>
+        <form hx-post="/ui/locations/{{ l.id }}/update" hx-target="#locations-card" hx-swap="innerHTML" class="inline">
+          <input name="name" value="{{ l.name }}" maxlength="128" required>
+          <input name="address" value="{{ l.address or '' }}" maxlength="255" placeholder="地址">
+          <input name="phone" value="{{ l.phone or '' }}" maxlength="32" placeholder="電話">
+          <button type="submit">更新</button>
+        </form>
+      </td>
+      <td>{{ l.address or '—' }}</td>
+      <td>{{ l.phone or '—' }}</td>
+      <td><span class="badge {{ 'on' if l.is_active else 'off' }}">{{ '啟用' if l.is_active else '停用' }}</span></td>
+      <td>
+        {% if l.is_active %}
+        <button hx-post="/ui/locations/{{ l.id }}/deactivate" hx-target="#locations-card" hx-swap="innerHTML"
+                hx-confirm="確定停用此分店？">停用</button>
+        {% else %}
+        <button hx-post="/ui/locations/{{ l.id }}/activate" hx-target="#locations-card" hx-swap="innerHTML">啟用</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無分店，請先新增。</p>
+{% endif %}

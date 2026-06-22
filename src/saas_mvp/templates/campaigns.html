@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}行銷活動 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>行銷活動</h1>
+<div class="card" id="campaigns-card">
+  {% include "_campaigns_list.html" %}
+</div>
+{% endblock %}

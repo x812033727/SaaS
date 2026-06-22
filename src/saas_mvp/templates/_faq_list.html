@@ -1,0 +1,26 @@
+<h2>常見問題 (FAQ)</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-post="/ui/faq" hx-target="#faq-card" hx-swap="innerHTML" class="col">
+  <label>問題<input name="question" required></label>
+  <label>答案<textarea name="answer" required></textarea></label>
+  <label>排序<input name="sort_order" type="number" value="0"></label>
+  <button type="submit">新增 FAQ</button>
+</form>
+
+{% if faqs %}
+<table>
+  <thead><tr><th>#</th><th>問題</th><th>答案</th><th>狀態</th><th></th></tr></thead>
+  <tbody>
+    {% for f in faqs %}
+    <tr>
+      <td>{{ f.id }}</td>
+      <td>{{ f.question }}</td>
+      <td>{{ f.answer }}</td>
+      <td><span class="badge {{ 'on' if f.is_active else 'off' }}">{{ '啟用' if f.is_active else '停用' }}</span></td>
+      <td><button hx-post="/ui/faq/{{ f.id }}/delete" hx-target="#faq-card" hx-swap="innerHTML"
+                  hx-confirm="確定刪除此 FAQ？">刪除</button></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">尚無 FAQ。</p>{% endif %}

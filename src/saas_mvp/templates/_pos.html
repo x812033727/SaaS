@@ -1,0 +1,40 @@
+<h2>會員查詢</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if order %}<div class="card success">結帳完成：訂單 #{{ order.id }}，金額 {{ order.total_cents }} 分。</div>{% endif %}
+<form hx-post="/ui/pos/lookup" hx-target="#pos-card" hx-swap="innerHTML" class="row">
+  <label>電話<input name="phone" value="{{ phone or '' }}" maxlength="32" required></label>
+  <button type="submit">查詢</button>
+</form>
+
+{% if lookup_done %}
+  {% if customer %}
+  <div class="card">
+    <h3>{{ customer.display_name or '會員' }}</h3>
+    <p class="muted">電話：{{ customer.phone }} · 點數：{{ points_balance }} · 等級：{{ customer.tier }}</p>
+    {% if active_coupons %}
+    <p>可用優惠券：
+      {% for c in active_coupons %}<code>{{ c.code }}</code> ({{ c.name }}){% if not loop.last %}、{% endif %}{% endfor %}
+    </p>
+    {% else %}<p class="muted">無可用優惠券。</p>{% endif %}
+  </div>
+  {% else %}
+  <p class="muted">查無此電話的會員（可作散客結帳）。</p>
+  {% endif %}
+{% endif %}
+
+<h2>結帳</h2>
+<form hx-post="/ui/pos/checkout" hx-target="#pos-card" hx-swap="innerHTML" class="col">
+  <input type="hidden" name="customer_id" value="{{ customer.id if customer else '' }}">
+  <input type="hidden" name="phone" value="{{ phone or '' }}">
+  <h3>商品</h3>
+  {% if products %}
+  {% for p in products %}
+  <label>{{ p.name }}（{{ p.price_cents }} 分）
+    <input name="qty_{{ p.id }}" type="number" min="0" value="0">
+  </label>
+  {% endfor %}
+  {% else %}<p class="muted">尚無商品，請先到商品頁建立。</p>{% endif %}
+  <label>優惠券碼<input name="coupon_code" maxlength="64" placeholder="（選填）"></label>
+  <label>折抵點數<input name="points_to_redeem" type="number" min="0" value="0"></label>
+  <button type="submit">結帳</button>
+</form>
