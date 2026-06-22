@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     # 不在 LINE 聊天室中直接索取個資。SAAS_PII_TOKEN_TTL_MINUTES 為 token 有效分鐘數。
     pii_token_ttl_minutes: int = 1440
 
+    # 月度推播額度（vibeaico「Additional Push Notification Allowance」）：
+    # 每租戶每月可推播則數，跨所有 LINE push 路徑（提醒/異動通知/行銷）共用。
+    # SAAS_PUSH_ALLOWANCE_BASE:  基本月度額度（預設 200）。
+    # SAAS_PUSH_ALLOWANCE_BOOST: 加購 PUSH_BOOST 旗標時額外增加的額度（預設 +500）。
+    push_allowance_base: int = 200
+    push_allowance_boost: int = 500
+
     # 進階功能旗標 + 訂閱（橫向）
     # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列時的預設。
     #   True  = 向後相容（進階功能預設開，不破壞既有/dev 易用）

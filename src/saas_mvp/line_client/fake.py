@@ -26,6 +26,15 @@ class SentReply:
 
 
 @dataclass
+class SentFlex:
+    """一筆捕捉到的 Flex 回覆記錄。"""
+    reply_token: str
+    alt_text: str
+    contents: dict
+    access_token: str
+
+
+@dataclass
 class SentPush:
     """一筆捕捉到的推播記錄。"""
     to_user_id: str
@@ -54,6 +63,7 @@ class FakeLineReplyClient(LineReplyClient):
 
     def __init__(self, *, available: bool = True) -> None:
         self.sent: list[SentReply] = []
+        self.flex: list[SentFlex] = []
         self._available = available
 
     def reply(
@@ -72,6 +82,22 @@ class FakeLineReplyClient(LineReplyClient):
             quick_reply=quick_reply,
         ))
 
+    def reply_flex(
+        self,
+        reply_token: str,
+        alt_text: str,
+        contents: dict,
+        *,
+        access_token: str,
+    ) -> None:
+        """捕捉 Flex 回覆（不發網路請求）。"""
+        self.flex.append(SentFlex(
+            reply_token=reply_token,
+            alt_text=alt_text,
+            contents=contents,
+            access_token=access_token,
+        ))
+
     def is_available(self) -> bool:
         """回傳建構時指定的 available 值（預設 True）。"""
         return self._available
@@ -79,6 +105,7 @@ class FakeLineReplyClient(LineReplyClient):
     def reset(self) -> None:
         """清空捕捉記錄（跨測試複用同一 instance 時使用）。"""
         self.sent.clear()
+        self.flex.clear()
 
     # ── 便利斷言屬性 ──────────────────────────────────────────────────────────
 

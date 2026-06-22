@@ -124,6 +124,47 @@ class HttpLineReplyClient(LineReplyClient):
         except Exception as exc:
             raise LineReplyError(f"Unexpected LINE reply error: {exc}") from exc
 
+    def reply_flex(
+        self,
+        reply_token: str,
+        alt_text: str,
+        contents: dict,
+        *,
+        access_token: str,
+    ) -> None:
+        """呼叫 LINE reply API 送出單則 Flex 訊息（carousel / bubble）。
+
+        Raises:
+            LineReplyError: 任何網路或 API 錯誤。
+        """
+        message = {"type": "flex", "altText": alt_text[:400], "contents": contents}
+        payload = json.dumps(
+            {"replyToken": reply_token, "messages": [message]}
+        ).encode()
+
+        req = urllib.request.Request(
+            self._api_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                resp.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace") if exc.fp else ""
+            raise LineReplyError(
+                f"LINE reply API HTTP {exc.code}: {exc.reason} — {body[:200]}"
+            ) from exc
+        except OSError as exc:
+            raise LineReplyError(f"LINE reply request failed: {exc}") from exc
+        except Exception as exc:
+            raise LineReplyError(f"Unexpected LINE reply error: {exc}") from exc
+
 
 class HttpLinePushClient(LinePushClient):
     """呼叫真實 LINE Messaging API 的 push client。

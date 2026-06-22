@@ -43,8 +43,10 @@ from saas_mvp.models.campaign_send import (
 )
 from saas_mvp.models.coupon import Coupon
 from saas_mvp.models.customer import Customer
+from saas_mvp.models.campaign_send import CAMPAIGN_SEND_SKIPPED
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import segments as segments_svc
 
 
@@ -228,11 +230,22 @@ def run_campaign(
                     continue
                 row = existing
 
-            # 2. 派發獎勵（同一交易內）。
+            # 2. 月度推播額度閘門：超出本月額度則跳過（不派獎勵、不推播、標
+            #    skipped），並中止本活動其餘顧客（額度已罄，後續必同樣超額）。
+            #    在派發獎勵前檢查，避免「發了券卻沒送出推播」的白扣。
+            if not push_quota_svc.has_push_quota(db, campaign.tenant_id, now=now):
+                row.status = CAMPAIGN_SEND_SKIPPED
+                row.attempt_count = (row.attempt_count or 0) + 1
+                row.last_error = "push allowance exceeded"
+                db.commit()
+                skipped += 1
+                break
+
+            # 3. 派發獎勵（同一交易內）。
             reward_ref = _distribute_reward(db, campaign, customer)
             row.reward_ref = reward_ref
 
-            # 3. 推播訊息（無 line_user_id 不可推，標 failed）。
+            # 4. 推播訊息（無 line_user_id 不可推，標 failed）。
             text = _render(campaign.message_template, customer)
             if not customer.line_user_id:
                 row.status = CAMPAIGN_SEND_FAILED
@@ -247,6 +260,8 @@ def run_campaign(
             row.sent_at = now
             row.attempt_count = (row.attempt_count or 0) + 1
             db.commit()
+            # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
+            push_quota_svc.consume_push(db, campaign.tenant_id, now=now)
             sent += 1
         except Exception as exc:  # noqa: BLE001 - per-customer failure must not stop batch
             db.rollback()

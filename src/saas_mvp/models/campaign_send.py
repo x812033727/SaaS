@@ -35,6 +35,8 @@ from saas_mvp.db import Base
 CAMPAIGN_SEND_PENDING = "pending"
 CAMPAIGN_SEND_SENT = "sent"
 CAMPAIGN_SEND_FAILED = "failed"
+# 月度推播額度用罄時，未送出的 claim 標 skipped（非 failed：並非推播錯誤）。
+CAMPAIGN_SEND_SKIPPED = "skipped"
 
 
 def _utcnow() -> datetime.datetime:
