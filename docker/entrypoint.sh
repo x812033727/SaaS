@@ -36,10 +36,15 @@ case "${1:-web}" in
     run_migrations
     WORKERS="${GUNICORN_WORKERS:-4}"
     echo "[entrypoint] 啟動 gunicorn（${WORKERS} workers）…"
+    # --forwarded-allow-ips：信任反代送來的 X-Forwarded-For/Proto，讓 uvicorn
+    # 還原真實 client IP（否則 request.client.host 永遠是反代 IP，per-IP 限流會
+    # 退化成全站共用一桶）。預設 "*" 之所以安全：容器埠只綁 loopback，唯一能連到
+    # 它的就是本機 nginx。若改成公網直連，務必把此值設成可信反代 IP。
     exec gunicorn saas_mvp.app:app \
       -k uvicorn.workers.UvicornWorker \
       -w "${WORKERS}" \
       -b 0.0.0.0:8000 \
+      --forwarded-allow-ips "${GUNICORN_FORWARDED_ALLOW_IPS:-*}" \
       --access-logfile - \
       --error-logfile - \
       --timeout 60 \

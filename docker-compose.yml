@@ -22,16 +22,22 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    mem_limit: 1g
+    shm_size: 256m
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # --maxmemory + LRU：限流快取在壓力下淘汰舊 key（最壞情況限流短暫 fail-open），
+    # 配合 mem_limit 不讓 redis 無上限長大。
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    mem_limit: 256m
 
   web:
     build: .
@@ -44,13 +50,23 @@ services:
       SAAS_HOST: 0.0.0.0
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
     ports:
-      - "${WEB_PORT:-8099}:8000"
+      # 僅綁 loopback：對外一律走主機 nginx（TLS + 安全標頭 + 限流），不開放公網
+      # 直連容器明文 HTTP；反代信任邊界也因此收斂到本機 nginx。
+      - "127.0.0.1:${WEB_PORT:-8099}:8000"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # 資源上限：避免單租戶/異常請求吃光整機 RAM/CPU 拖垮同主機其他服務。
+    mem_limit: 1500m
+    cpus: 2.0
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   scheduler:
     build: .
@@ -72,6 +88,13 @@ services:
       timeout: 5s
       start_period: 90s
       retries: 3
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   pgdata:

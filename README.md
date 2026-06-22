@@ -134,6 +134,16 @@ curl -s localhost:8000/readyz | jq        # 就緒檢查
 curl -s localhost:8000/metrics | head     # Prometheus 指標
 ```
 
+## 正式部署強化（production hardening）
+
+`docker-compose.yml` 已內建多項上線強化：
+- **容器埠只綁 loopback**（`127.0.0.1:8099`）：對外一律走主機反代（nginx + TLS + 安全標頭），不開放公網直連容器明文 HTTP。反代須 `proxy_pass http://127.0.0.1:8099` 並送 `X-Forwarded-For`。
+- **proxy header 信任**：gunicorn 帶 `--forwarded-allow-ips`（預設 `*`，因埠已綁 loopback 僅本機 nginx 可達），讓 uvicorn 還原真實 client IP——否則 **per-IP 限流會退化成全站共用一桶**（`GUNICORN_FORWARDED_ALLOW_IPS` 可覆寫）。
+- **資源上限**：web/scheduler/db/redis 皆設 `mem_limit`/`cpus`/`pids_limit`，避免單租戶吃光整機拖垮同主機其他服務；redis 設 `--maxmemory` + LRU。
+- **容器降權**：web/scheduler `cap_drop: ALL` + `no-new-privileges`（非 root uid 10001）。
+
+反代端建議（見部署範例）：`server_tokens off` + `Strict-Transport-Security`/`X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`。**資料庫備份**請另設 `pg_dump` 定時排程（pgdata volume 無備份即單點）。
+
 ## 示範資料
 
 `ops/seed_demo` 會建立一個開通**全部進階旗標**的示範店家，並灌入分店、員工（含班表/休假）、

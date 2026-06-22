@@ -137,7 +137,12 @@ def whoami(current_user: User = Depends(get_current_user)) -> UserInfo:
     )
 
 
-@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/change-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    # 與登入同級的 per-IP 限流：擋線上密碼猜測 / 濫用
+    dependencies=[Depends(token_limiter)],
+)
 def change_password(
     body: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
