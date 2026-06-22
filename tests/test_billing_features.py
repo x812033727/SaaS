@@ -75,7 +75,13 @@ class TestSelfService:
         r = client.get("/billing/features", headers=_auth(token))
         assert r.status_code == 200
         keys = {row["key"] for row in r.json()}
-        assert keys == {"AUTO_REMINDER", "COUPON_SYSTEM", "PRODUCT_SALES"}
+        assert keys == {
+            "AUTO_REMINDER", "COUPON_SYSTEM", "PRODUCT_SALES",
+            "STAFF_SCHEDULING", "MULTI_LOCATION", "SERVICE_CATALOG",
+            "BOOKING_NOTIFY", "PUBLIC_PROFILE",
+            "MARKETING_AUTO", "AI_ASSISTANT",
+            "PRIVACY_MODE", "ADVANCED_REPORTING",
+        }
 
     def test_subscribe_returns_payment_id(self, client):
         _, token = _register(client)

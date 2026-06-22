@@ -24,6 +24,7 @@ from saas_mvp.models.reservation import (
     RESERVATION_CONFIRMED,
     Reservation,
 )
+from saas_mvp.services import booking_notify as booking_notify_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.reminders import (
@@ -67,11 +68,16 @@ def book_slot(
     line_user_id: str | None = None,
     display_name: str | None = None,
     note: str | None = None,
+    staff_id: int | None = None,
+    service_id: int | None = None,
 ) -> Reservation:
     """原子建單：鎖時段 → 重驗容量 → 建顧客檔 → INSERT 預約 → 遞增 booked_count
     → 入列提醒 → 單一 commit。
 
     容量不足拋 SlotFullError；時段不存在/停用拋 SlotNotFoundError。
+
+    staff_id（選填）：指定服務員工。若該員工 booking_mode == 'one_to_one'，
+    同一時段同一員工已有 confirmed 預約時拋 SlotFullError（一對一不可重訂）。
     """
     if party_size < 1:
         raise ValueError(f"party_size must be >= 1, got {party_size}")
@@ -96,6 +102,30 @@ def book_slot(
             f"slot {slot_id} full: available={available}, requested={party_size}"
         )
 
+    # 一對一員工：鎖內檢查同時段同員工是否已被佔用（防一對一重訂）。
+    if staff_id is not None:
+        from saas_mvp.models.staff import STAFF_MODE_ONE_TO_ONE, Staff
+
+        staff = (
+            tenant_query(db, Staff, tenant_id)
+            .filter(Staff.id == staff_id)
+            .first()
+        )
+        if staff is not None and staff.booking_mode == STAFF_MODE_ONE_TO_ONE:
+            existing = (
+                tenant_query(db, Reservation, tenant_id)
+                .filter(
+                    Reservation.slot_id == slot_id,
+                    Reservation.staff_id == staff_id,
+                    Reservation.status == RESERVATION_CONFIRMED,
+                )
+                .first()
+            )
+            if existing is not None:
+                raise SlotFullError(
+                    f"staff {staff_id} already booked for slot {slot_id}"
+                )
+
     # 顧客建檔（LINE 來源才有 line_user_id）
     customer = None
     customer_id = None
@@ -116,6 +146,8 @@ def book_slot(
         party_size=party_size,
         status=RESERVATION_CONFIRMED,
         note=note,
+        staff_id=staff_id,
+        service_id=service_id,
     )
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size
@@ -190,6 +222,104 @@ def cancel_reservation(
     reservation.status = RESERVATION_CANCELLED
     reservation.cancelled_at = _utcnow()
     cancel_reminders_for_reservation(db, reservation_id=reservation_id)
+
+    # 預約異動通知（進階功能）：取消時 LINE 推播給顧客。同一交易內入列。
+    if slot is not None:
+        booking_notify_svc.enqueue_cancel(
+            db,
+            reservation=reservation,
+            slot=slot,
+            enabled=features_svc.is_enabled(
+                db, tenant_id, features_svc.BOOKING_NOTIFY
+            ),
+        )
+
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+def reschedule_reservation(
+    db: Session,
+    *,
+    tenant_id: int,
+    reservation_id: int,
+    new_slot_id: int,
+) -> Reservation:
+    """原子改期：把 confirmed 預約移到新時段。
+
+    流程（單一 commit）：
+      1. 取預約（tenant_query；查無拋 ReservationNotFoundError）。
+      2. 鎖舊+新時段（FOR UPDATE，依 slot id 排序避免死結）。
+      3. 新時段鎖內重驗容量（不足拋 SlotFullError）。
+      4. 舊時段 booked_count 回補、新時段遞增、reservation.slot_id 改為新時段。
+      5. 入列 change 通知（BOOKING_NOTIFY 開通且有 line_user_id 時）。
+
+    new_slot_id == 既有 slot_id 為 no-op（直接回傳，不入列、不動容量）。
+    已取消的預約不可改期（拋 ReservationNotFoundError）。
+    """
+    reservation = (
+        tenant_query(db, Reservation, tenant_id)
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    if reservation.status != RESERVATION_CONFIRMED:
+        raise ReservationNotFoundError(
+            f"reservation {reservation_id} is not active"
+        )
+
+    old_slot_id = reservation.slot_id
+    if new_slot_id == old_slot_id:
+        return reservation  # no-op：同一時段
+
+    # 依 slot id 排序鎖定（一致順序避免並發死結）。
+    first_id, second_id = sorted((old_slot_id, new_slot_id))
+    locked: dict[int, BookingSlot] = {}
+    for sid in (first_id, second_id):
+        s = db.execute(
+            select(BookingSlot)
+            .where(BookingSlot.id == sid, BookingSlot.tenant_id == tenant_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if s is not None:
+            locked[sid] = s
+
+    old_slot = locked.get(old_slot_id)
+    new_slot = locked.get(new_slot_id)
+    if new_slot is None or not new_slot.is_active:
+        raise SlotNotFoundError(f"slot {new_slot_id} not found or inactive")
+
+    # 新時段鎖內重驗容量。
+    available = (
+        (new_slot.max_capacity or 0)
+        - (new_slot.walkin_reserved or 0)
+        - (new_slot.booked_count or 0)
+    )
+    if available < reservation.party_size:
+        raise SlotFullError(
+            f"slot {new_slot_id} full: available={available}, "
+            f"requested={reservation.party_size}"
+        )
+
+    if old_slot is not None:
+        old_slot.booked_count = max(
+            0, (old_slot.booked_count or 0) - reservation.party_size
+        )
+    new_slot.booked_count = (new_slot.booked_count or 0) + reservation.party_size
+    reservation.slot_id = new_slot_id
+
+    # 預約異動通知（進階功能）：改期時 LINE 推播給顧客。同一交易內入列。
+    booking_notify_svc.enqueue_change(
+        db,
+        reservation=reservation,
+        slot=new_slot,
+        old_slot=old_slot,
+        enabled=features_svc.is_enabled(
+            db, tenant_id, features_svc.BOOKING_NOTIFY
+        ),
+    )
 
     db.commit()
     db.refresh(reservation)

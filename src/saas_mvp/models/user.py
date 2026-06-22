@@ -15,6 +15,12 @@ class User(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     is_admin = Column(Boolean, nullable=False, default=False)
 
+    # OAuth 登入（LINE Login / Google）外部身分。皆 nullable：密碼註冊用戶為 NULL。
+    # 既有 DB 由 db._migrate_add_user_oauth() 補欄。oauth_subject 為 provider 端的
+    # 穩定使用者 ID；以 email 不分大小寫做帳號連結（見 services/oauth.py）。
+    oauth_provider = Column(String(16), nullable=True)
+    oauth_subject = Column(String(128), nullable=True)
+
     tenant = relationship("Tenant", back_populates="users")
     notes = relationship("Note", back_populates="owner", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")

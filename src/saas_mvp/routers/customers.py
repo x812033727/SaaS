@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.point_transaction import PointTransaction
 from saas_mvp.models.user import User
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import segments as segments_svc
 from saas_mvp.services.customers import (
     get_customer,
     list_customers,
@@ -67,6 +68,20 @@ class PointTxResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TagCreate(BaseModel):
+    name: str = Field(max_length=64)
+    color: str | None = Field(default=None, max_length=16)
+
+
+class TagResponse(BaseModel):
+    id: int
+    tenant_id: int
+    name: str
+    color: str | None
+
+    model_config = {"from_attributes": True}
+
+
 # ─────────────────────────────── Endpoints ───────────────────────────────────
 
 @router.get("/", response_model=list[CustomerResponse])
@@ -75,6 +90,81 @@ def list_all(
     db: Session = Depends(get_db),
 ) -> list[CustomerResponse]:
     rows = list_customers(db, tenant_id=current_user.tenant_id)
+    return [CustomerResponse.model_validate(c) for c in rows]
+
+
+# ── 標籤 CRUD（須在 /{customer_id} 之前宣告，否則 "tags" 會被當成 customer_id） ──
+
+@router.post("/tags", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
+def create_tag(
+    body: TagCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagResponse:
+    tag = segments_svc.create_tag(
+        db, tenant_id=current_user.tenant_id, name=body.name, color=body.color
+    )
+    return TagResponse.model_validate(tag)
+
+
+@router.get("/tags", response_model=list[TagResponse])
+def list_tags(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TagResponse]:
+    rows = segments_svc.list_tags(db, tenant_id=current_user.tenant_id)
+    return [TagResponse.model_validate(t) for t in rows]
+
+
+@router.delete(
+    "/tags/{tag_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_tag(
+    tag_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    segments_svc.delete_tag(db, tenant_id=current_user.tenant_id, tag_id=tag_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── 分眾查詢 ──────────────────────────────────────────────────────────────────
+
+@router.get("/segment", response_model=list[CustomerResponse])
+def segment(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tag_ids: str | None = Query(default=None, description="逗號分隔的 tag id"),
+    tier: str | None = Query(default=None),
+    min_bookings: int | None = Query(default=None, ge=0),
+    last_booked_before: datetime.date | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> list[CustomerResponse]:
+    parsed_tag_ids: list[int] | None = None
+    if tag_ids:
+        try:
+            parsed_tag_ids = [int(x) for x in tag_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="tag_ids must be comma-separated integers",
+            )
+    before_dt: datetime.datetime | None = None
+    if last_booked_before is not None:
+        before_dt = datetime.datetime.combine(
+            last_booked_before, datetime.time.min, tzinfo=datetime.timezone.utc
+        )
+    rows = segments_svc.segment_customers(
+        db,
+        tenant_id=current_user.tenant_id,
+        tag_ids=parsed_tag_ids,
+        tier=tier,
+        min_bookings=min_bookings,
+        last_booked_before=before_dt,
+        location_id=location_id,
+    )
     return [CustomerResponse.model_validate(c) for c in rows]
 
 
@@ -154,3 +244,58 @@ def adjust_points(
     db.commit()
     db.refresh(customer)
     return CustomerResponse.model_validate(customer)
+
+
+# ── 顧客 ⇄ 標籤 掛載 ──────────────────────────────────────────────────────────
+
+@router.get("/{customer_id}/tags", response_model=list[TagResponse])
+def list_customer_tags(
+    customer_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[TagResponse]:
+    rows = segments_svc.list_tags_for_customer(
+        db, tenant_id=current_user.tenant_id, customer_id=customer_id
+    )
+    return [TagResponse.model_validate(t) for t in rows]
+
+
+@router.post(
+    "/{customer_id}/tags/{tag_id}",
+    response_model=TagResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def attach_tag(
+    customer_id: int,
+    tag_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagResponse:
+    segments_svc.attach_tag(
+        db,
+        tenant_id=current_user.tenant_id,
+        customer_id=customer_id,
+        tag_id=tag_id,
+    )
+    tag = segments_svc._get_tag_or_404(db, current_user.tenant_id, tag_id)
+    return TagResponse.model_validate(tag)
+
+
+@router.delete(
+    "/{customer_id}/tags/{tag_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def detach_tag(
+    customer_id: int,
+    tag_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    segments_svc.detach_tag(
+        db,
+        tenant_id=current_user.tenant_id,
+        customer_id=customer_id,
+        tag_id=tag_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

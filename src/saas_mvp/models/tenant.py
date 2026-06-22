@@ -32,11 +32,20 @@ class Tenant(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     # 店家類型（標籤 + 篩選用，無 unique）；NULL = 未分類。
     store_type = Column(String(32), nullable=True, default=None)
+    # 行事曆 ICS 訂閱憑證（店家整店 feed）；token 即能力，NULL = 尚未產生。
+    # 既有 DB 由 _migrate_add_tenant_ics_token() 補欄 + unique index。
+    ics_token = Column(String(64), nullable=True, unique=True)
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     notes = relationship("Note", back_populates="tenant", cascade="all, delete-orphan")
     line_channel_config = relationship(
         "LineChannelConfig",
+        back_populates="tenant",
+        uselist=False,          # 一對一
+        cascade="all, delete-orphan",
+    )
+    business_profile = relationship(
+        "BusinessProfile",
         back_populates="tenant",
         uselist=False,          # 一對一
         cascade="all, delete-orphan",

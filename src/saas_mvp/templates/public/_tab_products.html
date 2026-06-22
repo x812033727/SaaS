@@ -1,0 +1,14 @@
+<section class="tab" id="products-section">
+  <h2>商品</h2>
+  {% if products %}
+    {% for p in products %}
+    <div class="card">
+      <strong>{{ p.name }}</strong>
+      <div>NT${{ '%.0f'|format(p.price_cents / 100) }}</div>
+      {% if p.description %}<div>{{ p.description }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <p>目前尚無商品。</p>
+  {% endif %}
+</section>

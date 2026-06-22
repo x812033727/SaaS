@@ -25,12 +25,35 @@ from saas_mvp.models.tenant_feature import TenantFeature
 AUTO_REMINDER = "AUTO_REMINDER"
 COUPON_SYSTEM = "COUPON_SYSTEM"
 PRODUCT_SALES = "PRODUCT_SALES"
+# PHASE 1：多分店 / 員工排班 / 服務項目。
+STAFF_SCHEDULING = "STAFF_SCHEDULING"
+MULTI_LOCATION = "MULTI_LOCATION"
+SERVICE_CATALOG = "SERVICE_CATALOG"
+# PHASE 2：預約異動通知（店家修改/取消時 LINE 推播）。
+BOOKING_NOTIFY = "BOOKING_NOTIFY"
+# PHASE 3：公開店家頁（含作品集）。
+PUBLIC_PROFILE = "PUBLIC_PROFILE"
+# PHASE 4-1：行銷自動化（生日/喚回/群發活動）+ AI 客服。
+MARKETING_AUTO = "MARKETING_AUTO"
+AI_ASSISTANT = "AI_ASSISTANT"
+# PHASE 4-2：隱私保護模式（tokenized PII 網頁表單）+ 進階報表（xlsx/pdf 匯出）。
+PRIVACY_MODE = "PRIVACY_MODE"
+ADVANCED_REPORTING = "ADVANCED_REPORTING"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
     AUTO_REMINDER: "自動提醒",
     COUPON_SYSTEM: "優惠券／會員",
     PRODUCT_SALES: "商品銷售",
+    STAFF_SCHEDULING: "員工排班",
+    MULTI_LOCATION: "多分店",
+    SERVICE_CATALOG: "服務項目",
+    BOOKING_NOTIFY: "預約異動通知",
+    PUBLIC_PROFILE: "公開店家頁",
+    MARKETING_AUTO: "行銷自動化",
+    AI_ASSISTANT: "AI 客服",
+    PRIVACY_MODE: "隱私保護",
+    ADVANCED_REPORTING: "進階報表",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

@@ -25,6 +25,19 @@ from saas_mvp.routers import analytics as analytics_router
 from saas_mvp.routers import products as products_router
 from saas_mvp.routers import orders as orders_router
 from saas_mvp.routers import payments as payments_router
+from saas_mvp.routers import locations as locations_router
+from saas_mvp.routers import staff as staff_router
+from saas_mvp.routers import staff_portal as staff_portal_router
+from saas_mvp.routers import services as services_router
+from saas_mvp.routers import calendar as calendar_router
+from saas_mvp.routers import profile as profile_router
+from saas_mvp.routers import portfolio as portfolio_router
+from saas_mvp.routers import public as public_router
+from saas_mvp.routers import oauth as oauth_router
+from saas_mvp.routers import campaigns as campaigns_router
+from saas_mvp.routers import pos as pos_router
+from saas_mvp.routers import ai as ai_router
+from saas_mvp.routers import pii as pii_router
 
 _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 
@@ -62,6 +75,19 @@ def create_app() -> FastAPI:
     app.include_router(products_router.router)
     app.include_router(orders_router.router)
     app.include_router(payments_router.router)
+    app.include_router(locations_router.router)
+    app.include_router(staff_router.router)
+    app.include_router(staff_portal_router.router)
+    app.include_router(services_router.router)
+    app.include_router(calendar_router.router)
+    app.include_router(profile_router.router)
+    app.include_router(portfolio_router.router)
+    app.include_router(public_router.router)
+    app.include_router(oauth_router.router)
+    app.include_router(campaigns_router.router)
+    app.include_router(pos_router.router)
+    app.include_router(ai_router.router)
+    app.include_router(pii_router.router)
 
     # ── 伺服器渲染管理 UI（同源）：靜態檔 + UI 路由 + UI 例外 → HTML 行為 ──
     app.mount("/static", StaticFiles(directory=str(_PKG_DIR / "static")), name="static")

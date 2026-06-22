@@ -58,6 +58,23 @@ import saas_mvp.models.order_item as _oitem  # noqa: F401, E402
 import saas_mvp.models.tenant_feature as _tf  # noqa: F401, E402
 import saas_mvp.models.feature_change_history as _fch  # noqa: F401, E402
 import saas_mvp.models.feature_subscription as _fsub  # noqa: F401, E402
+import saas_mvp.models.location as _loc  # noqa: F401, E402
+import saas_mvp.models.staff as _staff  # noqa: F401, E402
+import saas_mvp.models.staff_shift as _sshift  # noqa: F401, E402
+import saas_mvp.models.staff_leave as _sleave  # noqa: F401, E402
+import saas_mvp.models.service_category as _scat  # noqa: F401, E402
+import saas_mvp.models.service as _svc  # noqa: F401, E402
+import saas_mvp.models.service_staff as _svcstaff  # noqa: F401, E402
+import saas_mvp.models.customer_tag as _ctag  # noqa: F401, E402
+import saas_mvp.models.customer_tag_link as _ctaglink  # noqa: F401, E402
+import saas_mvp.models.booking_notification as _bnotif  # noqa: F401, E402
+import saas_mvp.models.business_profile as _bprofile  # noqa: F401, E402
+import saas_mvp.models.portfolio_category as _pcat  # noqa: F401, E402
+import saas_mvp.models.portfolio_item as _pitem  # noqa: F401, E402
+import saas_mvp.models.campaign as _camp  # noqa: F401, E402
+import saas_mvp.models.campaign_send as _campsend  # noqa: F401, E402
+import saas_mvp.models.faq_entry as _faq  # noqa: F401, E402
+import saas_mvp.models.pii_request as _pii  # noqa: F401, E402
 
 # ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login
 # 測試累積使全套逼近 60s self-test 逾時。測試環境把 rounds 降到合法最低值 4，

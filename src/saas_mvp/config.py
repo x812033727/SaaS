@@ -52,12 +52,16 @@ class Settings(BaseSettings):
     reminder_day_of_lead_minutes: int = 180
     reminder_max_per_run: int = 500
 
+    # 預約異動通知（PHASE 2）：店家修改/取消預約時 LINE 推播；
+    # SAAS_NOTIFICATION_MAX_PER_RUN: ops 腳本單次最多派送筆數（防推播暴衝）。
+    notification_max_per_run: int = 500
+
     # 會員集點（P3）：每完成一筆預約給的點數（0 = 停用集點）
     points_per_booking: int = 10
 
     # 商品銷售（P4）
     currency: str = "TWD"
-    payment_provider: str = "stub"  # "stub" | "ecpay"
+    payment_provider: str = "stub"  # "stub" | "ecpay" | "newebpay"
 
     # 對外可達的網址（組綠界 ReturnURL / checkout 絕對網址用）；ecpay 模式必填。
     public_base_url: str = ""
@@ -70,12 +74,50 @@ class Settings(BaseSettings):
     # 定期定額執行次數（月扣上限 99≈8 年，等同長期；屆滿自動停需重訂）
     ecpay_period_exec_times: int = 99
 
+    # 藍新金流 NewebPay（MPG 幕前；金鑰預設為空，正式環境由 SAAS_NEWEBPAY_* 覆寫）。
+    # MerchantID + HashKey + HashIV 由藍新後台取得；env 決定送往測試/正式付款閘道。
+    newebpay_merchant_id: str = ""
+    newebpay_hash_key: str = ""
+    newebpay_hash_iv: str = ""
+    newebpay_env: str = "stage"  # "stage"（測試）| "prod"（正式）
+
+    # LINE 隱私保護模式（PHASE 4-2）：以一次性 token 連結引導顧客在網頁填寫 PII，
+    # 不在 LINE 聊天室中直接索取個資。SAAS_PII_TOKEN_TTL_MINUTES 為 token 有效分鐘數。
+    pii_token_ttl_minutes: int = 1440
+
     # 進階功能旗標 + 訂閱（橫向）
     # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列時的預設。
     #   True  = 向後相容（進階功能預設開，不破壞既有/dev 易用）
     #   False = 嚴格 freemium（預設關，需訂閱才開）
     features_default_enabled: bool = True
     feature_monthly_price_cents: int = 20000  # NT$200
+
+    # 多分店（PHASE 1）：每租戶可建的「啟用中」分店數量上限。
+    max_locations_per_tenant: int = 5
+
+    # OAuth 登入（PHASE 3：LINE Login + Google）。任一 provider 的 client_id/secret
+    # 留空時，get_provider() 回傳 StubOAuthProvider（離線、決定性，供測試/dev）。
+    line_login_channel_id: str = ""
+    line_login_channel_secret: str = ""
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    # OAuth callback 絕對網址 base；留空時 fallback 到 public_base_url。
+    oauth_redirect_base: str = ""
+
+    # 行銷自動化（PHASE 4-1）
+    # SAAS_REACTIVATION_DORMANT_DAYS: 久未回訪判定（last_booked_at 早於 N 天）。
+    # SAAS_REACTIVATION_CAP_PER_SHOP: 喚回活動每店單次發送上限（防推播暴衝）。
+    # SAAS_MARKETING_MAX_PER_RUN:     行銷活動單次發送上限（通用，broadcast/birthday）。
+    reactivation_dormant_days: int = 90
+    reactivation_cap_per_shop: int = 50
+    marketing_max_per_run: int = 500
+
+    # AI 客服（PHASE 4-1，Anthropic Claude）
+    # SAAS_ANTHROPIC_API_KEY: 設定後 get_assistant() 回 AnthropicAssistant；
+    #   留空（預設）回 StubAIAssistant（離線、決定性，供測試/dev）。
+    # SAAS_AI_MODEL: Claude 模型 ID（預設 Claude Sonnet 4.6）。
+    anthropic_api_key: str = ""
+    ai_model: str = "claude-sonnet-4-6"
 
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":

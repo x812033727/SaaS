@@ -1,2 +1,0 @@
-[console_scripts]
-saas-mvp = saas_mvp.__main__:main

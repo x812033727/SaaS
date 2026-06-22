@@ -1,0 +1,255 @@
+"""OAuth 登入 provider 抽象（PHASE 3：LINE Login + Google）。
+
+比照 translation 套件的 ABC + stub + factory 模式：
+  * OAuthProvider     — 抽象介面（authorize_url / exchange_code）。
+  * LineLoginProvider — 真實 LINE Login（OAuth2 + OIDC id_token）。
+  * GoogleOAuthProvider — 真實 Google OAuth2（OIDC id_token + userinfo）。
+  * StubOAuthProvider — 決定性離線 stub，exchange_code(code) 由 code 推導 email。
+  * get_provider(name, *, settings) — 真實 client_id/secret 已設則回真實 provider，
+    否則回 StubOAuthProvider（與 translation.get_translator 同型）。
+
+真實 provider 僅用 stdlib urllib（無新增 runtime 相依，比照 line_client/http.py）。
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from abc import ABC, abstractmethod
+
+
+# provider 名稱白名單（router 用）。
+VALID_PROVIDERS: frozenset[str] = frozenset({"line", "google"})
+
+
+class OAuthError(Exception):
+    """OAuth provider 失敗（網路、token 交換、回應格式異常等）。"""
+
+
+class OAuthProvider(ABC):
+    """OAuth provider 抽象介面。所有 backend（stub / LINE / Google）皆實作此介面。"""
+
+    @abstractmethod
+    def authorize_url(self, state: str, redirect_uri: str) -> str:
+        """回傳導向 provider 授權頁的完整 URL（夾帶 state CSRF token）。"""
+
+    @abstractmethod
+    def exchange_code(self, code: str, redirect_uri: str) -> dict:
+        """以授權碼換取使用者身分。
+
+        Returns:
+            dict 含 ``email``（str）、``subject``（provider 端穩定使用者 ID）、
+            ``name``（str | None）。
+
+        Raises:
+            OAuthError: 交換失敗或回應缺必要欄位。
+        """
+
+
+# ── 決定性離線 stub（測試 / dev 預設） ────────────────────────────────────────
+
+class StubOAuthProvider(OAuthProvider):
+    """離線決定性 stub：不連網，由授權碼直接推導身分。
+
+    保證：
+      * exchange_code(code) → {email: f"{code}@example.com", subject: f"stub-{code}",
+        name: code}，同 code 永遠同輸出。
+      * authorize_url 回固定可預期的 URL（夾帶 state / redirect_uri）。
+
+    無 client_id/secret 設定時為預設 provider，亦為測試的標準實作。
+    """
+
+    def __init__(self, name: str = "stub") -> None:
+        self._name = name
+
+    def authorize_url(self, state: str, redirect_uri: str) -> str:
+        params = urllib.parse.urlencode(
+            {"state": state, "redirect_uri": redirect_uri}
+        )
+        return f"https://stub-oauth.local/{self._name}/authorize?{params}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> dict:
+        if not code:
+            raise OAuthError("empty authorization code")
+        return {
+            "email": f"{code}@example.com",
+            "subject": f"stub-{code}",
+            "name": code,
+        }
+
+
+# ── 真實 provider（僅用 stdlib urllib） ───────────────────────────────────────
+
+def _post_form(url: str, data: dict, *, timeout: int = 10) -> dict:
+    """POST application/x-www-form-urlencoded，回 JSON dict；失敗包成 OAuthError。"""
+    payload = urllib.parse.urlencode(data).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        raise OAuthError(f"OAuth token endpoint HTTP {exc.code}: {exc.reason}") from exc
+    except OSError as exc:
+        raise OAuthError(f"OAuth token request failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise OAuthError(f"Unexpected OAuth token error: {exc}") from exc
+
+
+def _get_json(url: str, *, headers: dict, timeout: int = 10) -> dict:
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        raise OAuthError(f"OAuth userinfo HTTP {exc.code}: {exc.reason}") from exc
+    except OSError as exc:
+        raise OAuthError(f"OAuth userinfo request failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise OAuthError(f"Unexpected OAuth userinfo error: {exc}") from exc
+
+
+def _decode_id_token_claims(id_token: str) -> dict:
+    """解碼 OIDC id_token 的 payload claims（不驗章——僅取 email/sub/name）。
+
+    安全說明：email/sub 來自緊接的 token 端點 HTTPS 回應（非使用者直送），
+    且 token 由 client_secret 換取；此處僅 base64 解 payload 取宣告值。
+    若日後對外暴露更高信任邊界，應改為驗證簽章（需引入相依，本 MVP 避免）。
+    """
+    try:
+        parts = id_token.split(".")
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        return json.loads(decoded)
+    except Exception as exc:  # noqa: BLE001
+        raise OAuthError("invalid id_token") from exc
+
+
+class LineLoginProvider(OAuthProvider):
+    """真實 LINE Login（OAuth2 + OIDC）。僅用 stdlib urllib。"""
+
+    _AUTHORIZE = "https://access.line.me/oauth2/v2.1/authorize"
+    _TOKEN = "https://api.line.me/oauth2/v2.1/token"
+
+    def __init__(self, channel_id: str, channel_secret: str, *, timeout: int = 10) -> None:
+        self._channel_id = channel_id
+        self._channel_secret = channel_secret
+        self._timeout = timeout
+
+    def authorize_url(self, state: str, redirect_uri: str) -> str:
+        params = urllib.parse.urlencode(
+            {
+                "response_type": "code",
+                "client_id": self._channel_id,
+                "redirect_uri": redirect_uri,
+                "state": state,
+                "scope": "openid profile email",
+            }
+        )
+        return f"{self._AUTHORIZE}?{params}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> dict:
+        body = _post_form(
+            self._TOKEN,
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": self._channel_id,
+                "client_secret": self._channel_secret,
+            },
+            timeout=self._timeout,
+        )
+        id_token = body.get("id_token")
+        if not id_token:
+            raise OAuthError("LINE token response missing id_token")
+        claims = _decode_id_token_claims(id_token)
+        email = claims.get("email")
+        subject = claims.get("sub")
+        if not email or not subject:
+            raise OAuthError("LINE id_token missing email/sub")
+        return {"email": email, "subject": subject, "name": claims.get("name")}
+
+
+class GoogleOAuthProvider(OAuthProvider):
+    """真實 Google OAuth2（OIDC）。僅用 stdlib urllib。"""
+
+    _AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth"
+    _TOKEN = "https://oauth2.googleapis.com/token"
+    _USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
+
+    def __init__(self, client_id: str, client_secret: str, *, timeout: int = 10) -> None:
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._timeout = timeout
+
+    def authorize_url(self, state: str, redirect_uri: str) -> str:
+        params = urllib.parse.urlencode(
+            {
+                "response_type": "code",
+                "client_id": self._client_id,
+                "redirect_uri": redirect_uri,
+                "state": state,
+                "scope": "openid email profile",
+            }
+        )
+        return f"{self._AUTHORIZE}?{params}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> dict:
+        body = _post_form(
+            self._TOKEN,
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            },
+            timeout=self._timeout,
+        )
+        access_token = body.get("access_token")
+        if not access_token:
+            raise OAuthError("Google token response missing access_token")
+        info = _get_json(
+            self._USERINFO,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=self._timeout,
+        )
+        email = info.get("email")
+        subject = info.get("sub")
+        if not email or not subject:
+            raise OAuthError("Google userinfo missing email/sub")
+        return {"email": email, "subject": subject, "name": info.get("name")}
+
+
+# ── factory（比照 translation.get_translator） ────────────────────────────────
+
+def get_provider(name: str, *, settings) -> OAuthProvider:
+    """依 provider 名稱回傳實例。
+
+    真實 client_id/secret 已設 → 回真實 provider；否則回 StubOAuthProvider
+    （離線、決定性、永遠可用），呼叫端無需知道實際 backend。
+    """
+    if name == "line":
+        if settings.line_login_channel_id and settings.line_login_channel_secret:
+            return LineLoginProvider(
+                channel_id=settings.line_login_channel_id,
+                channel_secret=settings.line_login_channel_secret,
+            )
+        return StubOAuthProvider(name="line")
+    if name == "google":
+        if settings.google_oauth_client_id and settings.google_oauth_client_secret:
+            return GoogleOAuthProvider(
+                client_id=settings.google_oauth_client_id,
+                client_secret=settings.google_oauth_client_secret,
+            )
+        return StubOAuthProvider(name="google")
+    raise OAuthError(f"unknown oauth provider: {name!r}")

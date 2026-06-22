@@ -63,7 +63,29 @@ def earn_points(
         reservation_id=reservation_id,
     )
     db.add(tx)
+    # PHASE 4-1：消費/集點達門檻觸發 'spend' 行銷（僅入列 pending，behind MARKETING_AUTO）。
+    # reason 以 'campaign:' 開頭者為行銷派點本身，跳過以免遞迴觸發。
+    if not reason.startswith("campaign:"):
+        _maybe_enqueue_spend(db, tenant_id, customer)
     return tx
+
+
+def _maybe_enqueue_spend(db: Session, tenant_id: int, customer: Customer) -> None:
+    """集點達門檻時，若租戶開通 MARKETING_AUTO 則入列 spend CampaignSend（不 commit）。
+
+    門檻語意：customer.points_balance >= spend 活動的 reward_value 視為達標
+    （reward_value 在此既當門檻、也當點數獎勵）。最小化 hook、任何失敗吞掉。
+    """
+    try:
+        from saas_mvp.services import features as features_svc
+
+        if not features_svc.is_enabled(db, tenant_id, features_svc.MARKETING_AUTO):
+            return
+        from saas_mvp.services import marketing as marketing_svc
+
+        marketing_svc.maybe_enqueue_spend_for_customer(db, tenant_id, customer)
+    except Exception:  # noqa: BLE001 - spend hook must never break earn_points
+        pass
 
 
 def redeem_points(

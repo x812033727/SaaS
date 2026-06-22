@@ -1,0 +1,15 @@
+<section class="tab" id="portfolio-section">
+  <h2>作品集</h2>
+  {% if portfolio %}
+    <div class="grid">
+      {% for it in portfolio %}
+      <figure style="margin:0">
+        <img src="{{ it.image_url }}" alt="{{ it.caption or '' }}">
+        {% if it.caption %}<figcaption>{{ it.caption }}</figcaption>{% endif %}
+      </figure>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>目前尚無作品。</p>
+  {% endif %}
+</section>
