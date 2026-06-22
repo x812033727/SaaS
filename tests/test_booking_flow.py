@@ -57,10 +57,32 @@ class TestParse:
         action, params = parse_postback_data("action=pick_service&service_id=5")
         assert action == "pick_service" and params == {"service_id": 5}
 
+    def test_pick_date(self):
+        a, p = parse_postback_data(
+            "action=pick_date&service_id=5&date=2030-06-01"
+        )
+        assert a == "pick_date"
+        assert p == {"service_id": 5, "date": "2030-06-01"}
+        # 格式不符的 date 應被丟棄
+        a, p = parse_postback_data("action=pick_date&service_id=5&date=garbage")
+        assert a == "pick_date" and p == {"service_id": 5}
+
     def test_pick_staff_with_and_without_staff(self):
         a, p = parse_postback_data("action=pick_staff&service_id=5&staff_id=9")
         assert a == "pick_staff" and p == {"service_id": 5, "staff_id": 9}
         a, p = parse_postback_data("action=pick_staff&service_id=5")
+        assert a == "pick_staff" and p == {"service_id": 5}
+
+    def test_pick_staff_carries_date(self):
+        a, p = parse_postback_data(
+            "action=pick_staff&service_id=5&staff_id=9&date=2030-06-01"
+        )
+        assert a == "pick_staff"
+        assert p == {"service_id": 5, "staff_id": 9, "date": "2030-06-01"}
+        # date 格式不符則丟棄，其餘照常
+        a, p = parse_postback_data(
+            "action=pick_staff&service_id=5&date=2030/06/01"
+        )
         assert a == "pick_staff" and p == {"service_id": 5}
 
     def test_pick_slot_carries_state(self):
@@ -118,6 +140,19 @@ def _seed(*, with_service=True, with_staff=True, with_slot=True) -> dict:
             db.add(slot)
             db.flush()
             out["slot_id"] = slot.id
+            out["date"] = "2030-06-01"
+            # 第二個時段在不同日期，供日期過濾測試使用。
+            slot2 = BookingSlot(
+                tenant_id=t.id,
+                slot_start=datetime.datetime(
+                    2030, 6, 2, 18, 0, tzinfo=datetime.timezone.utc
+                ),
+                max_capacity=4,
+            )
+            db.add(slot2)
+            db.flush()
+            out["slot_id2"] = slot2.id
+            out["date2"] = "2030-06-02"
         if with_service:
             svc = Service(tenant_id=t.id, name="剪髮", duration_minutes=30, price_cents=500)
             db.add(svc)
@@ -191,7 +226,7 @@ class TestConversationalFlow:
         data = carousel["contents"][0]["footer"]["contents"][0]["action"]["data"]
         assert f"pick_service&service_id={s['service_id']}" in data
 
-    def test_pick_service_shows_staff_buttons(self, app_client):
+    def test_pick_service_shows_date_buttons(self, app_client):
         client, lc = app_client
         s = _seed()
         _post(
@@ -199,29 +234,63 @@ class TestConversationalFlow:
             _postback_event(f"action=pick_service&service_id={s['service_id']}", eid="f2"),
         )
         last = lc.sent[-1]
-        assert "服務人員" in last.text
+        assert "日期" in last.text
         datas = [d for _l, d in (last.quick_reply or [])]
-        # 含「不指定」與指定員工
-        assert any("action=pick_staff" in d and "staff_id" not in d for d in datas)
-        assert any(f"staff_id={s['staff_id']}" in d for d in datas)
+        # 只列有可預約時段的日期，data 帶 action=pick_date + service_id + date
+        assert any(
+            "action=pick_date" in d
+            and f"service_id={s['service_id']}" in d
+            and f"date={s['date']}" in d
+            for d in datas
+        )
+        assert any(f"date={s['date2']}" in d for d in datas)
 
-    def test_pick_staff_shows_slots(self, app_client):
+    def test_pick_date_shows_staff_buttons(self, app_client):
         client, lc = app_client
         s = _seed()
         _post(
             client, s["tenant_id"],
             _postback_event(
-                f"action=pick_staff&service_id={s['service_id']}&staff_id={s['staff_id']}",
+                f"action=pick_date&service_id={s['service_id']}&date={s['date']}",
+                eid="fd",
+            ),
+        )
+        last = lc.sent[-1]
+        assert "服務人員" in last.text
+        datas = [d for _l, d in (last.quick_reply or [])]
+        # 含「不指定」與指定員工，且皆攜帶 service_id + date 前向狀態
+        assert any(
+            "action=pick_staff" in d
+            and "staff_id" not in d
+            and f"date={s['date']}" in d
+            for d in datas
+        )
+        assert any(
+            f"staff_id={s['staff_id']}" in d and f"date={s['date']}" in d
+            for d in datas
+        )
+
+    def test_pick_staff_shows_slots_filtered_by_date(self, app_client):
+        client, lc = app_client
+        s = _seed()
+        _post(
+            client, s["tenant_id"],
+            _postback_event(
+                f"action=pick_staff&service_id={s['service_id']}"
+                f"&staff_id={s['staff_id']}&date={s['date']}",
                 eid="f3",
             ),
         )
         last = lc.sent[-1]
         assert "請選擇時段" in last.text
         datas = [d for _l, d in (last.quick_reply or [])]
+        # 只列出所選日期的時段（slot_id），另一日期的時段不得出現
         assert any(
             f"slot_id={s['slot_id']}" in d and f"service_id={s['service_id']}" in d
             for d in datas
         )
+        assert all(f"slot_id={s['slot_id2']}" not in d for d in datas)
+        assert any("action=pick_slot" in d for d in datas)
 
     def test_full_flow_creates_reservation_with_service_and_staff(self, app_client):
         client, lc = app_client
@@ -235,7 +304,15 @@ class TestConversationalFlow:
         _post(
             client, tid,
             _postback_event(
-                f"action=pick_staff&service_id={s['service_id']}&staff_id={s['staff_id']}",
+                f"action=pick_date&service_id={s['service_id']}&date={s['date']}",
+                eid="gd",
+            ),
+        )
+        _post(
+            client, tid,
+            _postback_event(
+                f"action=pick_staff&service_id={s['service_id']}"
+                f"&staff_id={s['staff_id']}&date={s['date']}",
                 eid="g3",
             ),
         )

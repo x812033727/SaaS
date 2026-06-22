@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 
 # 文字指令 → action 對照（英文 slash + 中文關鍵字）。
@@ -149,7 +150,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         return None, {}
     action = actions[0]
     if action not in {
-        "book", "pick_service", "pick_staff", "pick_slot",
+        "book", "pick_service", "pick_date", "pick_staff", "pick_slot",
         "slots", "my", "cancel", "help", "menu",
         "coupons", "redeem", "points",
         "shop", "buy", "my_orders",
@@ -158,6 +159,15 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
 
     def _qint(key: str) -> int | None:
         return _to_int(qs[key][0]) if key in qs else None
+
+    def _qdate(key: str) -> str | None:
+        """取出 'YYYY-MM-DD' 字串；格式不符則丟棄（回 None）。"""
+        if key not in qs:
+            return None
+        val = qs[key][0]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", val):
+            return val
+        return None
 
     params: dict = {}
     if action == "book":
@@ -172,14 +182,25 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         sid = _qint("service_id")
         if sid is not None:
             params["service_id"] = sid
+    elif action == "pick_date":
+        # 日期步驟結果：服務 + 日期（'YYYY-MM-DD'）。
+        sid = _qint("service_id")
+        if sid is not None:
+            params["service_id"] = sid
+        d = _qdate("date")
+        if d is not None:
+            params["date"] = d
     elif action == "pick_staff":
-        # 第二步結果：服務 + 員工（staff_id 可缺，代表「不指定」）。
+        # 員工步驟結果：服務 + 員工（staff_id 可缺，代表「不指定」）+ 日期前向狀態。
         sid = _qint("service_id")
         if sid is not None:
             params["service_id"] = sid
         stid = _qint("staff_id")
         if stid is not None:
             params["staff_id"] = stid
+        d = _qdate("date")
+        if d is not None:
+            params["date"] = d
     elif action == "pick_slot":
         # 引導式：使用者已選時段（可帶 service_id / staff_id 前向狀態）。
         if "slot_id" in qs:
