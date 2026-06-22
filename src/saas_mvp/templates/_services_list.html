@@ -11,8 +11,8 @@
   <tbody>
     {% for cat in categories %}
     <tr>
-      <td>{{ cat.id }}</td><td>{{ cat.name }}</td><td>{{ cat.sort_order }}</td>
-      <td><span class="badge {{ 'on' if cat.is_active else 'off' }}">{{ '啟用' if cat.is_active else '停用' }}</span></td>
+      <td data-label="#">{{ cat.id }}</td><td data-label="名稱">{{ cat.name }}</td><td data-label="排序">{{ cat.sort_order }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if cat.is_active else 'off' }}">{{ '啟用' if cat.is_active else '停用' }}</span></td>
     </tr>
     {% endfor %}
   </tbody>

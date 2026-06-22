@@ -11,7 +11,7 @@
   <tbody>
     {% for cat in categories %}
     <tr>
-      <td>{{ cat.id }}</td><td>{{ cat.name }}</td><td>{{ cat.sort_order }}</td>
+      <td data-label="#">{{ cat.id }}</td><td data-label="名稱">{{ cat.name }}</td><td data-label="排序">{{ cat.sort_order }}</td>
       <td><button hx-post="/ui/portfolio/categories/{{ cat.id }}/delete" hx-target="#portfolio-card" hx-swap="innerHTML"
                   hx-confirm="確定刪除此分類？">刪除</button></td>
     </tr>
@@ -40,10 +40,10 @@
   <tbody>
     {% for it in items %}
     <tr>
-      <td>{{ it.id }}</td>
-      <td><code>{{ it.image_url }}</code></td>
-      <td>{{ it.caption or '—' }}</td>
-      <td><span class="badge {{ 'on' if it.is_active else 'off' }}">{{ '啟用' if it.is_active else '停用' }}</span></td>
+      <td data-label="#">{{ it.id }}</td>
+      <td data-label="圖片"><code>{{ it.image_url }}</code></td>
+      <td data-label="說明">{{ it.caption or '—' }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if it.is_active else 'off' }}">{{ '啟用' if it.is_active else '停用' }}</span></td>
       <td><button hx-post="/ui/portfolio/items/{{ it.id }}/delete" hx-target="#portfolio-card" hx-swap="innerHTML"
                   hx-confirm="確定刪除此作品？">刪除</button></td>
     </tr>

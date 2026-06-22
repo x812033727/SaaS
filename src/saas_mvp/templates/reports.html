@@ -26,8 +26,8 @@
     <thead><tr><th>時段（時）</th><th>已訂</th><th>容量</th><th>使用率</th></tr></thead>
     <tbody>
       {% for u in utilization %}
-      <tr><td>{{ '%02d:00' | format(u.hour) }}</td><td>{{ u.booked }}</td><td>{{ u.capacity }}</td>
-          <td>{{ (u.utilization * 100) | round(1) }}%</td></tr>
+      <tr><td data-label="時段（時）">{{ '%02d:00' | format(u.hour) }}</td><td data-label="已訂">{{ u.booked }}</td><td data-label="容量">{{ u.capacity }}</td>
+          <td data-label="使用率">{{ (u.utilization * 100) | round(1) }}%</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -41,9 +41,9 @@
     <thead><tr><th>#</th><th>名稱</th><th>訂位次數</th><th>點數</th><th>等級</th></tr></thead>
     <tbody>
       {% for c in top %}
-      <tr><td>{{ c.id }}</td><td>{{ c.display_name or c.line_user_id }}</td>
-          <td>{{ c.booking_count }}</td><td>{{ c.points_balance }}</td>
-          <td><span class="badge">{{ c.tier }}</span></td></tr>
+      <tr><td data-label="#">{{ c.id }}</td><td data-label="名稱">{{ c.display_name or c.line_user_id }}</td>
+          <td data-label="訂位次數">{{ c.booking_count }}</td><td data-label="點數">{{ c.points_balance }}</td>
+          <td data-label="等級"><span class="badge">{{ c.tier }}</span></td></tr>
       {% endfor %}
     </tbody>
   </table>

@@ -32,11 +32,11 @@
   <tbody>
     {% for c in campaigns %}
     <tr>
-      <td>{{ c.id }}</td>
-      <td>{{ c.name }}</td>
-      <td>{{ c.type }}</td>
-      <td>{% if c.reward_type %}{{ c.reward_type }}:{{ c.reward_value }}{% else %}—{% endif %}</td>
-      <td><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="名稱">{{ c.name }}</td>
+      <td data-label="類型">{{ c.type }}</td>
+      <td data-label="獎勵">{% if c.reward_type %}{{ c.reward_type }}:{{ c.reward_value }}{% else %}—{% endif %}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
       <td>
         <button hx-post="/ui/campaigns/{{ c.id }}/run" hx-target="#campaigns-card" hx-swap="innerHTML">立即執行</button>
         {% if c.is_active %}

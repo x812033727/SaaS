@@ -75,10 +75,10 @@
     <tbody>
       {% for sh in shifts %}
       <tr>
-        <td>{{ sh.id }}</td>
-        <td>{{ ['週一','週二','週三','週四','週五','週六','週日'][sh.weekday] if sh.weekday is not none else '每日' }}</td>
-        <td>{{ sh.start_time }} - {{ sh.end_time }}</td>
-        <td>{{ sh.rotation or '—' }}</td>
+        <td data-label="#">{{ sh.id }}</td>
+        <td data-label="星期">{{ ['週一','週二','週三','週四','週五','週六','週日'][sh.weekday] if sh.weekday is not none else '每日' }}</td>
+        <td data-label="時間">{{ sh.start_time }} - {{ sh.end_time }}</td>
+        <td data-label="輪值">{{ sh.rotation or '—' }}</td>
         <td><button hx-post="/ui/staff/{{ s.id }}/shifts/{{ sh.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button></td>
       </tr>
       {% endfor %}
@@ -100,10 +100,10 @@
     <tbody>
       {% for lv in leaves %}
       <tr>
-        <td>{{ lv.id }}</td>
-        <td>{{ lv.start_at.strftime('%Y-%m-%d %H:%M') }}</td>
-        <td>{{ lv.end_at.strftime('%Y-%m-%d %H:%M') }}</td>
-        <td>{{ lv.reason or '—' }}</td>
+        <td data-label="#">{{ lv.id }}</td>
+        <td data-label="開始">{{ lv.start_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td data-label="結束">{{ lv.end_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td data-label="原因">{{ lv.reason or '—' }}</td>
         <td><button hx-post="/ui/staff/{{ s.id }}/leaves/{{ lv.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button></td>
       </tr>
       {% endfor %}

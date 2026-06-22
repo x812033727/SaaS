@@ -20,12 +20,12 @@
   <tbody>
     {% for c in coupons %}
     <tr>
-      <td>{{ c.id }}</td>
-      <td><code>{{ c.code }}</code></td>
-      <td>{{ c.name }}</td>
-      <td>{% if c.discount_type == 'percent' %}{{ c.discount_value }}%{% else %}{{ c.discount_value }} 分{% endif %}</td>
-      <td>{{ c.redeemed_count }}{% if c.max_redemptions %} / {{ c.max_redemptions }}{% else %} / ∞{% endif %}</td>
-      <td><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="券碼"><code>{{ c.code }}</code></td>
+      <td data-label="名稱">{{ c.name }}</td>
+      <td data-label="折扣">{% if c.discount_type == 'percent' %}{{ c.discount_value }}%{% else %}{{ c.discount_value }} 分{% endif %}</td>
+      <td data-label="已兌換/上限">{{ c.redeemed_count }}{% if c.max_redemptions %} / {{ c.max_redemptions }}{% else %} / ∞{% endif %}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
       <td>
         {% if c.is_active %}
         <button hx-post="/ui/coupons/{{ c.id }}/deactivate" hx-target="#coupons-card" hx-swap="innerHTML"

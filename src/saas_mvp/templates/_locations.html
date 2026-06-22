@@ -17,8 +17,8 @@
   <tbody>
     {% for l in locations %}
     <tr>
-      <td>{{ l.id }}</td>
-      <td>
+      <td data-label="#">{{ l.id }}</td>
+      <td data-label="名稱">
         <form hx-post="/ui/locations/{{ l.id }}/update" hx-target="#locations-card" hx-swap="innerHTML" class="inline">
           <input name="name" value="{{ l.name }}" maxlength="128" required>
           <input name="address" value="{{ l.address or '' }}" maxlength="255" placeholder="地址">
@@ -26,9 +26,9 @@
           <button type="submit">更新</button>
         </form>
       </td>
-      <td>{{ l.address or '—' }}</td>
-      <td>{{ l.phone or '—' }}</td>
-      <td><span class="badge {{ 'on' if l.is_active else 'off' }}">{{ '啟用' if l.is_active else '停用' }}</span></td>
+      <td data-label="地址">{{ l.address or '—' }}</td>
+      <td data-label="電話">{{ l.phone or '—' }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if l.is_active else 'off' }}">{{ '啟用' if l.is_active else '停用' }}</span></td>
       <td>
         {% if l.is_active %}
         <button hx-post="/ui/locations/{{ l.id }}/deactivate" hx-target="#locations-card" hx-swap="innerHTML"

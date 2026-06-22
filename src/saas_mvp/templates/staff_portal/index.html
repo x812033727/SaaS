@@ -11,6 +11,15 @@
     table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
     th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; font-size: .9rem; }
     .empty { color: #888; font-size: .9rem; }
+    @media (max-width: 640px) {
+      body { margin: 1rem; }
+      table, tbody, tr, td { display: block; }
+      table tr { border: 1px solid #ddd; border-radius: 8px; margin-bottom: .6rem; overflow: hidden; }
+      table tr:first-child { display: none; } /* header row */
+      td { border: none; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; gap: 1rem; }
+      td:last-child { border-bottom: none; }
+      td::before { content: attr(data-label); font-weight: 600; color: #666; }
+    }
   </style>
 </head>
 <body>
@@ -22,9 +31,9 @@
     <tr><th>預約編號</th><th>時段</th><th>人數</th></tr>
     {% for b in bookings %}
     <tr>
-      <td>#{{ b.id }}</td>
-      <td>{{ b.slot_start or "—" }}</td>
-      <td>{{ b.party_size }}</td>
+      <td data-label="預約編號">#{{ b.id }}</td>
+      <td data-label="時段">{{ b.slot_start or "—" }}</td>
+      <td data-label="人數">{{ b.party_size }}</td>
     </tr>
     {% endfor %}
   </table>
@@ -38,10 +47,10 @@
     <tr><th>星期</th><th>起</th><th>訖</th><th>輪值</th></tr>
     {% for s in shifts %}
     <tr>
-      <td>{{ s.weekday if s.weekday is not none else "每日" }}</td>
-      <td>{{ s.start_time }}</td>
-      <td>{{ s.end_time }}</td>
-      <td>{{ s.rotation or "—" }}</td>
+      <td data-label="星期">{{ s.weekday if s.weekday is not none else "每日" }}</td>
+      <td data-label="起">{{ s.start_time }}</td>
+      <td data-label="訖">{{ s.end_time }}</td>
+      <td data-label="輪值">{{ s.rotation or "—" }}</td>
     </tr>
     {% endfor %}
   </table>
@@ -55,10 +64,10 @@
     <tr><th>開始</th><th>結束</th><th>事由</th><th>狀態</th></tr>
     {% for l in leaves %}
     <tr>
-      <td>{{ l.start_at }}</td>
-      <td>{{ l.end_at }}</td>
-      <td>{{ l.reason or "—" }}</td>
-      <td>{{ l.status }}</td>
+      <td data-label="開始">{{ l.start_at }}</td>
+      <td data-label="結束">{{ l.end_at }}</td>
+      <td data-label="事由">{{ l.reason or "—" }}</td>
+      <td data-label="狀態">{{ l.status }}</td>
     </tr>
     {% endfor %}
   </table>
