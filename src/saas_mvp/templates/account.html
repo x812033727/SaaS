@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}帳號 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>帳號設定</h1>
+
+<div class="card">
+  <h2>變更密碼</h2>
+  <p class="muted">登入帳號：{{ current_user.email }}</p>
+  <div id="pw-status">{% include "_account_password.html" %}</div>
+  <form hx-post="/ui/account/password" hx-target="#pw-status" hx-swap="innerHTML" autocomplete="off">
+    <label for="current_password">目前密碼</label>
+    <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
+    <label for="new_password">新密碼（至少 8 個字元）</label>
+    <input id="new_password" name="new_password" type="password" required minlength="8" autocomplete="new-password">
+    <label for="confirm_password">再次輸入新密碼</label>
+    <input id="confirm_password" name="confirm_password" type="password" required minlength="8" autocomplete="new-password">
+    <button type="submit">更新密碼</button>
+  </form>
+</div>
+{% endblock %}

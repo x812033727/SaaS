@@ -314,6 +314,53 @@ def settings_save(
     )
 
 
+# ── 帳號 / 變更密碼 ───────────────────────────────────────────────────────────
+
+@router.get("/account", response_class=HTMLResponse)
+def account_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+):
+    return templates.TemplateResponse("account.html", _ctx(request, actor))
+
+
+@router.post("/account/password", response_class=HTMLResponse)
+def account_change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """變更密碼（後台 HTMX）：驗證目前密碼 + 新密碼規則，回 partial 狀態。
+
+    驗證錯誤回 200（partial），確保 HTMX 一定 swap 顯示訊息；不洩漏細節到 log。
+    """
+    user = db.get(User, actor.user.id)
+    error = None
+    if not verify_password(current_password, user.hashed_password):
+        error = "目前密碼不正確。"
+    elif len(new_password) < 8:
+        error = "新密碼至少需 8 個字元。"
+    elif new_password != confirm_password:
+        error = "兩次輸入的新密碼不一致。"
+    elif verify_password(new_password, user.hashed_password):
+        error = "新密碼不可與目前密碼相同。"
+
+    if error:
+        return templates.TemplateResponse(
+            "_account_password.html", _ctx(request, actor, error=error),
+        )
+
+    user.hashed_password = hash_password(new_password)
+    db.add(user)
+    db.commit()
+    return templates.TemplateResponse(
+        "_account_password.html", _ctx(request, actor, saved=True),
+    )
+
+
 # ── 平台管理 ────────────────────────────────────────────────────────────────
 
 @router.get("/admin/bots", response_class=HTMLResponse)
