@@ -114,6 +114,9 @@ def create_staff(
         role=role,
         location_id=location_id,
         booking_mode=booking_mode,
+        # 建立即發 capability token，員工專屬連結 /s/{token} 開箱即用
+        # （rotate_token 仍可重新產生作廢舊連結）。
+        access_token=generate_access_token(),
     )
     db.add(staff)
     db.commit()

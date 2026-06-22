@@ -119,3 +119,23 @@ class TestStaffPortal:
         assert all(item["id"] != resv_b["id"] for item in b.json())
         page = client.get(f"/s/{stoken_a}")
         assert "B租戶員工" not in page.text
+
+
+def test_create_staff_issues_token_and_portal_works_without_rotate(client):
+    """建立員工即發 access_token；員工專屬連結 /s/{token} 開箱即用（免先 rotate）。"""
+    token = _register(client)
+    created = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "新進設計師"})
+    assert created.status_code == 201, created.text
+    portal_token = created.json().get("access_token")
+    assert portal_token, "create_staff 應自動產生 access_token"
+    # 直接用建立回傳的 token 進入專屬入口，不需呼叫 rotate-token
+    page = client.get(f"/s/{portal_token}")
+    assert page.status_code == 200
+    # rotate 後舊 token 失效、新 token 可用
+    rotated = client.post(
+        f"/booking/staff/{created.json()['id']}/rotate-token", headers=_auth(token)
+    ).json()["access_token"]
+    assert rotated != portal_token
+    assert client.get(f"/s/{rotated}").status_code == 200
+    assert client.get(f"/s/{portal_token}").status_code == 404

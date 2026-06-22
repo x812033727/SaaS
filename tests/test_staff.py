@@ -87,12 +87,15 @@ class TestStaffCrud:
         })
         assert r.status_code == 201, r.text
         sid = r.json()["id"]
-        assert r.json()["access_token"] is None
+        # 建立即發 capability token（員工專屬連結開箱即用）
+        created_token = r.json()["access_token"]
+        assert created_token
         assert r.json()["booking_mode"] == "one_to_one"
-        # rotate token
+        # rotate token：產生新 token 並作廢舊的
         rot = client.post(f"/booking/staff/{sid}/rotate-token", headers=_auth(token))
         tok1 = rot.json()["access_token"]
         assert tok1
+        assert tok1 != created_token
         rot2 = client.post(f"/booking/staff/{sid}/rotate-token", headers=_auth(token))
         assert rot2.json()["access_token"] != tok1
         # update
