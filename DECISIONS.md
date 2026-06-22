@@ -803,3 +803,10 @@
 - 理由：只看 RtnCode 不驗簽會被偽造（任何人 POST 即可假裝付款成功）；綠界會重送直到收到 1|OK，故 mark_order_paid 已付為 no-op 仍回 1|OK。
 - 實作：routers/payments（GET checkout 自動 submit 表單、POST callback）；Order 加 merchant_trade_no（唯一，migration _migrate_add_order_merchant_trade_no）對應回調；shop.get_order_by_trade_no。
 - 範圍：只接商品訂單一次性付款；進階功能月費訂閱維持 stub（定期定額為後續）。金鑰/商店代號由 SAAS_ECPAY_* 環境變數提供（預設為綠界公開測試值）。
+
+## 【定期定額】進階功能月費以綠界信用卡定期定額真扣款；首期授權成功才開通、退訂必呼叫 API 真停扣。
+- 時間：2026-06-22
+- 理由：完成收入閉環（基本免費、進階月費）。只在 payment_provider=ecpay 啟用；stub 維持即時開通 → 零回歸。
+- 接點（查官方 SDK 確認）：AIO 定期定額參數 ChoosePayment=Credit + PeriodAmount/PeriodType(M)/Frequency/ExecTimes/PeriodReturnURL；停扣 CreditCardPeriodAction(Action=Cancel,TimeStamp)；查詢 QueryCreditCardPeriodInfo。CheckMacValue 沿用第四輪 EcpayClient（同演算法）。
+- 關鍵正確性：(1) 首期 ReturnURL RtnCode==1 才 set_enabled(True)，pending 期間不開通；(2) 退訂先 cancel_period 停扣再關功能，停扣失敗標 cancel_failed + log（待 ops 重試），絕不關功能卻續扣；(3) 兩回調先驗簽再信任、set_enabled 冪等；(4) S2S HTTP 走 EcpayClient 注入縫 _urllib_post，測試以 fake 不打真實網路；(5) ExecTimes=99 月扣上限，屆滿自動停需重訂。
+- 實作：models/feature_subscription（狀態 pending/active/failed/cancelled/cancel_failed）；services/subscriptions；EcpayClient.build_period_form/cancel_period；billing.subscribe_feature 回 SubscribeResult（stub→payment_id+即時開通；ecpay→checkout_url+pending）；routers/payments 加 subscribe 頁 + subscribe-callback + period-callback。

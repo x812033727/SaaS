@@ -69,6 +69,7 @@ def init_db() -> None:
     from saas_mvp.models import product, order, order_item  # noqa: F401
     # 橫向：進階功能旗標 + 訂閱
     from saas_mvp.models import tenant_feature, feature_change_history  # noqa: F401
+    from saas_mvp.models import feature_subscription  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
