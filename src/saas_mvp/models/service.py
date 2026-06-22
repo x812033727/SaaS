@@ -44,7 +44,7 @@ class Service(Base):
         Integer, nullable=False, default=0, server_default=text("0")
     )
     is_active = Column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     location_id = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

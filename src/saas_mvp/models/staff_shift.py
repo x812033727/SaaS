@@ -43,7 +43,7 @@ class StaffShift(Base):
     end_time = Column(String(5), nullable=False)  # 'HH:MM'
     rotation = Column(String(8), nullable=True)  # 'day' | 'night' | 'off'
     is_active = Column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
 
     __table_args__ = (

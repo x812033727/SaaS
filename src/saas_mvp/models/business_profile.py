@@ -51,7 +51,7 @@ class BusinessProfile(Base):
     intro = Column(Text, nullable=True)
 
     is_published = Column(
-        Boolean, nullable=False, default=False, server_default=text("0")
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)

@@ -50,7 +50,7 @@ class Coupon(Base):
     redeemed_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
     active_from = Column(DateTime(timezone=True), nullable=True)
     active_until = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True, server_default=text("1"))
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

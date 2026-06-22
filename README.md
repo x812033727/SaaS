@@ -818,6 +818,20 @@ ops / UI 全部走它。
 預設單 process 即可跑；要承載更多流量時，用多 worker / 多機橫向擴展。以下三點是
 多 worker 安全的必要條件。
 
+### 0. 一鍵容器化（docker-compose，已內建上述三項）
+
+repo 附 `Dockerfile` + `docker-compose.yml`，一鍵起 **PostgreSQL + Redis + 多 worker
+API（gunicorn）+ ops 排程器**，且已預設 `SAAS_RATE_LIMIT_BACKEND=redis` 與 PG：
+
+```bash
+cp .env.example .env          # 改 SAAS_SECRET_KEY / SAAS_LINE_CHANNEL_ENCRYPT_KEY / 密碼
+docker compose up -d --build  # web(:8099) + db + redis + scheduler
+curl http://127.0.0.1:8099/healthz   # {"status":"ok","db":"ok","rate_limit_backend":"redis"}
+docker compose run --rm web seed     # （選用）灌示範資料 → /ui/login、/p/demo
+```
+
+`scheduler` 服務即「排程單實例」（見下方第 4 點），勿 `scale`。手動部署細節見以下各點。
+
 ### 1. 跑多 worker
 
 ```bash

@@ -84,7 +84,7 @@ class Campaign(Base):
     reward_value = Column(Integer, nullable=True)  # coupon_id 或 points 數量
     message_template = Column(Text, nullable=False)
     is_active = Column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(

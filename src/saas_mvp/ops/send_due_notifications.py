@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from saas_mvp.config import settings
-from saas_mvp.db import SessionLocal
+from saas_mvp.db import SessionLocal, import_all_models
 from saas_mvp.line_client import HttpLinePushClient, LinePushClient
 from saas_mvp.models.booking_notification import (
     NOTIFY_FAILED,
@@ -264,6 +264,9 @@ def main(
     stdout: TextIO = sys.stdout,
 ) -> int:
     args = build_parser().parse_args(argv)
+    # 確保 SQLAlchemy registry 完整：standalone（python -m / cron）執行時
+    # 各 model 未必都被 import，relationship 字串（如 'Tenant'）會解析失敗。
+    import_all_models()
     results = send_due_notifications(
         session_factory=session_factory,
         push_client=push_client,
