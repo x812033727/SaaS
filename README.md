@@ -100,6 +100,31 @@ python -m saas_mvp.ops.seed_demo
 
 > 另有一次性維運腳本 `backfill_line_bot_user_id`（回填既有 bot userId，見文末）。
 
+## 可觀測性（observability）
+
+掛上一層 ASGI middleware，每個請求自動取得 **request-id 串接 + 結構化存取日誌 + Prometheus 指標**，無需逐路由埋點。
+
+**探針（probe）：**
+
+| 端點 | 用途 | 回應 |
+|------|------|------|
+| `GET /healthz` | 存活 + 輕量 DB 檢查（向後相容） | `{status, db, rate_limit_backend}`；DB 異常回 503 |
+| `GET /readyz` | 就緒（readiness）：相依逐項檢查 | `{status, checks{db}, rate_limit_backend}`；未就緒回 503 |
+| `GET /metrics` | Prometheus 文字格式指標 | `http_requests_total` / `http_request_duration_seconds`（histogram）/ `http_requests_in_progress` |
+
+**request-id：** 用戶端可帶 `X-Request-ID`（合理長度的可列印 token）串接既有 trace；未帶則自動新生。值會回寫到回應 `X-Request-ID` header，並注入同一請求跨模組的所有 log。
+
+**日誌：** `SAAS_LOG_FORMAT=json` 輸出單行 JSON（給 Loki/CloudWatch 等聚合器），`text`（預設）為人類可讀單行；`SAAS_LOG_LEVEL` 控制等級。存取日誌 logger 名為 `saas_mvp.access`，含 `method/path/route/status/duration_ms/request_id`。
+
+**指標：** label 用**路由樣板**（如 `/s/{token}`）而非原始路徑，避免 cardinality 爆炸。`/metrics` 為 **per-worker**（每個 gunicorn worker 一份計數），請於 Prometheus 端 `sum()` 聚合。
+- `SAAS_METRICS_ENABLED=false` → `/metrics` 回 404（完全停用）。
+- `SAAS_METRICS_TOKEN` 非空 → `/metrics` 需 `Authorization: Bearer <token>`；留空代表不設限，**僅應在內網/受信任網段曝露**。
+
+```bash
+curl -s localhost:8000/readyz | jq        # 就緒檢查
+curl -s localhost:8000/metrics | head     # Prometheus 指標
+```
+
 ## 示範資料
 
 `ops/seed_demo` 會建立一個開通**全部進階旗標**的示範店家，並灌入分店、員工（含班表/休假）、

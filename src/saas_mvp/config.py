@@ -128,6 +128,17 @@ class Settings(BaseSettings):
     reactivation_cap_per_shop: int = 50
     marketing_max_per_run: int = 500
 
+    # 可觀測性（observability）
+    # SAAS_LOG_FORMAT: "text"（預設，人類可讀）| "json"（log 聚合器）。
+    # SAAS_LOG_LEVEL:  root logger 等級（DEBUG/INFO/WARNING/ERROR，預設 INFO）。
+    # SAAS_METRICS_ENABLED: 是否啟用 Prometheus /metrics（預設 True）。
+    # SAAS_METRICS_TOKEN: 非空時 /metrics 需帶 `Authorization: Bearer <token>`；
+    #   留空（預設）代表 /metrics 不設限——僅應在內網 / 受信任網段曝露。
+    log_format: str = "text"
+    log_level: str = "INFO"
+    metrics_enabled: bool = True
+    metrics_token: str = ""
+
     # AI 客服（PHASE 4-1，Anthropic Claude）
     # SAAS_ANTHROPIC_API_KEY: 設定後 get_assistant() 回 AnthropicAssistant；
     #   留空（預設）回 StubAIAssistant（離線、決定性，供測試/dev）。
