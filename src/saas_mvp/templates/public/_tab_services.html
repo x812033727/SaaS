@@ -1,0 +1,14 @@
+<section class="tab" id="services-section">
+  <h2>服務項目</h2>
+  {% if services %}
+    {% for s in services %}
+    <div class="card">
+      <strong>{{ s.name }}</strong>
+      <div>時長 {{ s.duration_minutes }} 分鐘 · NT${{ '%.0f'|format(s.price_cents / 100) }}</div>
+      {% if s.gcal_url %}<a class="gcal-btn" href="{{ s.gcal_url }}" target="_blank" rel="noopener">加入 Google 行事曆</a>{% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <p>目前尚無服務項目。</p>
+  {% endif %}
+</section>

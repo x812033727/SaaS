@@ -1,0 +1,13 @@
+<section class="tab" id="contact-section">
+  <h2>聯絡資訊</h2>
+  {% if profile.intro %}<p>{{ profile.intro }}</p>{% endif %}
+  {% if social %}
+    <ul>
+      {% for label, url in social.items() %}
+      <li><a href="{{ url }}" target="_blank" rel="noopener">{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>目前尚無聯絡資訊。</p>
+  {% endif %}
+</section>

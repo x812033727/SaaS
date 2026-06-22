@@ -76,6 +76,9 @@ def init_db() -> None:
     # PHASE 2：顧客標籤/分眾、行事曆 ICS、預約異動通知。
     from saas_mvp.models import customer_tag, customer_tag_link  # noqa: F401
     from saas_mvp.models import booking_notification  # noqa: F401
+    # PHASE 3：公開店家頁、作品集、OAuth 登入。
+    from saas_mvp.models import business_profile  # noqa: F401
+    from saas_mvp.models import portfolio_category, portfolio_item  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。
@@ -94,6 +97,7 @@ def init_db() -> None:
     _migrate_add_reservation_service_id()
     _migrate_add_tenant_ics_token()
     _migrate_add_customer_ics_token()
+    _migrate_add_user_oauth()
 
 
 def _migrate_add_line_bot_user_id() -> None:
@@ -506,6 +510,35 @@ def _migrate_add_customer_ics_token() -> None:
         _log.warning(
             "schema migration for %s.%s skipped due to error: %s",
             table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_user_oauth() -> None:
+    """為既有 users 表補上 OAuth 身分欄位（皆 nullable，向後相容）。
+
+    只做 ADD COLUMN，不回填；密碼註冊用戶為 NULL。失敗僅記 warning，不阻擋啟動。
+    """
+    table = "users"
+    columns = {
+        "oauth_provider": "VARCHAR(16)",
+        "oauth_subject": "VARCHAR(128)",
+    }
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        missing = {n: t for n, t in columns.items() if n not in existing}
+        if not missing:
+            return
+        with engine.begin() as conn:
+            for name, col_type in missing.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+        _log.info("migrated: added %s columns to %s", ", ".join(sorted(missing)), table)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s oauth fields skipped due to error: %s",
+            table, type(exc).__name__,
         )
 
 

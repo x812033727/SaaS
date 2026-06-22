@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     # 多分店（PHASE 1）：每租戶可建的「啟用中」分店數量上限。
     max_locations_per_tenant: int = 5
 
+    # OAuth 登入（PHASE 3：LINE Login + Google）。任一 provider 的 client_id/secret
+    # 留空時，get_provider() 回傳 StubOAuthProvider（離線、決定性，供測試/dev）。
+    line_login_channel_id: str = ""
+    line_login_channel_secret: str = ""
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    # OAuth callback 絕對網址 base；留空時 fallback 到 public_base_url。
+    oauth_redirect_base: str = ""
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。

@@ -41,6 +41,18 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _pwd_ctx.verify(plain, hashed)
 
 
+def unusable_password_hash() -> str:
+    """Return a valid bcrypt hash of a random secret no caller will ever know.
+
+    For OAuth-only users we still satisfy the NOT NULL ``hashed_password``
+    column (the security model is never relaxed) — but no password will ever
+    verify against it, so password login is effectively disabled for them.
+    """
+    import secrets
+
+    return hash_password(secrets.token_urlsafe(32))
+
+
 # ──────────────────────────── JWT helpers ─────────────────────────────────────
 
 def create_access_token(

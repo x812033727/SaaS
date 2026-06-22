@@ -31,6 +31,8 @@ MULTI_LOCATION = "MULTI_LOCATION"
 SERVICE_CATALOG = "SERVICE_CATALOG"
 # PHASE 2：預約異動通知（店家修改/取消時 LINE 推播）。
 BOOKING_NOTIFY = "BOOKING_NOTIFY"
+# PHASE 3：公開店家頁（含作品集）。
+PUBLIC_PROFILE = "PUBLIC_PROFILE"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -41,6 +43,7 @@ _FEATURE_LABELS: dict[str, str] = {
     MULTI_LOCATION: "多分店",
     SERVICE_CATALOG: "服務項目",
     BOOKING_NOTIFY: "預約異動通知",
+    PUBLIC_PROFILE: "公開店家頁",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

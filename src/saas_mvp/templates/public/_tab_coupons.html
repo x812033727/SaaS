@@ -1,0 +1,17 @@
+<section class="tab" id="coupons-section">
+  <h2>優惠券</h2>
+  {% if coupons %}
+    {% for c in coupons %}
+    <div class="card">
+      <strong>{{ c.name }}</strong>
+      <div>代碼：{{ c.code }}</div>
+      <div>
+        {% if c.discount_type == 'percent' %}折扣 {{ c.discount_value }}%
+        {% else %}折抵 NT${{ '%.0f'|format(c.discount_value / 100) }}{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p>目前尚無優惠券。</p>
+  {% endif %}
+</section>

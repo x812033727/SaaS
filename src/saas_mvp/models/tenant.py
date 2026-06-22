@@ -44,3 +44,9 @@ class Tenant(Base):
         uselist=False,          # 一對一
         cascade="all, delete-orphan",
     )
+    business_profile = relationship(
+        "BusinessProfile",
+        back_populates="tenant",
+        uselist=False,          # 一對一
+        cascade="all, delete-orphan",
+    )

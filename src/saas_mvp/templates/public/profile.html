@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ seo_title }}</title>
+  <meta name="description" content="{{ seo_description }}">
+  <meta property="og:title" content="{{ seo_title }}">
+  <meta property="og:description" content="{{ seo_description }}">
+  <meta property="og:type" content="website">
+  {% if profile.banner_url %}<meta property="og:image" content="{{ profile.banner_url }}">{% endif %}
+  <style>
+    :root { --theme: {{ profile.theme_color or '#0a7cff' }}; }
+    body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
+    .banner { width: 100%; max-height: 280px; object-fit: cover; display: block; }
+    header.profile { padding: 1rem 1.25rem; border-bottom: 3px solid var(--theme); }
+    header.profile h1 { margin: 0 0 .25rem; color: var(--theme); }
+    nav.tabs { display: flex; gap: .25rem; flex-wrap: wrap; padding: 0 1rem; border-bottom: 1px solid #eee; }
+    nav.tabs a { padding: .6rem 1rem; text-decoration: none; color: #555; border-bottom: 2px solid transparent; }
+    nav.tabs a:target, nav.tabs a:hover { color: var(--theme); border-bottom-color: var(--theme); }
+    main { padding: 1.25rem; max-width: 880px; margin: 0 auto; }
+    section.tab { margin-bottom: 2rem; }
+    section.tab h2 { color: var(--theme); border-bottom: 1px solid #eee; padding-bottom: .35rem; }
+    .card { border: 1px solid #eee; border-radius: 8px; padding: .75rem 1rem; margin: .5rem 0; }
+    .gcal-btn { display: inline-block; margin-top: .4rem; font-size: .85rem; color: var(--theme); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .75rem; }
+    .grid img { width: 100%; border-radius: 8px; display: block; }
+  </style>
+</head>
+<body>
+  {% if profile.banner_url %}<img class="banner" src="{{ profile.banner_url }}" alt="{{ display_name }}">{% endif %}
+  <header class="profile">
+    <h1>{{ display_name }}</h1>
+    {% if profile.intro %}<p>{{ profile.intro }}</p>{% endif %}
+  </header>
+
+  <nav class="tabs">
+    <a href="#services" id="services">服務</a>
+    <a href="#products" id="products">商品</a>
+    <a href="#portfolio" id="portfolio">作品集</a>
+    <a href="#coupons" id="coupons">優惠券</a>
+    <a href="#contact" id="contact">聯絡</a>
+  </nav>
+
+  <main>
+    {% include "public/_tab_services.html" %}
+    {% include "public/_tab_products.html" %}
+    {% include "public/_tab_portfolio.html" %}
+    {% include "public/_tab_coupons.html" %}
+    {% include "public/_tab_contact.html" %}
+  </main>
+</body>
+</html>
