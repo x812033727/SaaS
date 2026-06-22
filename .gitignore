@@ -23,6 +23,9 @@ env/
 .env
 *.env.local
 
+# 資料庫備份檔 — 含敏感租戶資料，絕不進版控
+/backups/
+
 # IDE
 .idea/
 .vscode/

@@ -68,6 +68,46 @@ services:
     cap_drop:
       - ALL
 
+  db-backup:
+    # 與 db 同版本 image：pg_dump/pg_restore 版本精準相符（app image 沒有 pg_dump）。
+    # 每日 BACKUP_TIME 自動 pg_dump custom format 到 ./backups，保留 BACKUP_RETENTION_DAYS 天。
+    # 手動備份：docker compose run --rm db-backup /usr/local/bin/backup.sh
+    # 還原：    docker compose run --rm -e FORCE=1 db-backup \
+    #           /usr/local/bin/restore.sh /backups/saas-YYYYmmdd-HHMMSS.dump
+    image: postgres:16-alpine
+    entrypoint: ["/usr/local/bin/db-backup-entrypoint.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-saas}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-saas_pw}
+      PGDATABASE: ${POSTGRES_DB:-saas}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_TIME: ${BACKUP_TIME:-0300}
+    volumes:
+      # 備份檔落到主機目錄，與容器生命週期解耦（離站建議：另以 rsync/物件儲存同步異地）。
+      - ./backups:/backups
+      - ./docker/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./docker/restore.sh:/usr/local/bin/restore.sh:ro
+      - ./docker/db-backup-entrypoint.sh:/usr/local/bin/db-backup-entrypoint.sh:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    # 覆寫 postgres image 無 HTTP 探針的問題：改判備份迴圈心跳檔新鮮度（<180s）。
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/dbbackup/heartbeat && [ $(($(date +%s) - $(stat -c %Y /tmp/dbbackup/heartbeat))) -lt 180 ]"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    mem_limit: 128m
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   scheduler:
     build: .
     command: ["scheduler"]
