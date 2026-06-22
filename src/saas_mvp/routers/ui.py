@@ -72,6 +72,9 @@ templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
 
 router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
 
+# 送往付費 LLM 的問題字數上限（與 routers/ai.py AskRequest 一致），防成本放大。
+_AI_QUESTION_MAX_LEN = 2000
+
 
 # ── 共用工具 ────────────────────────────────────────────────────────────────
 
@@ -843,6 +846,8 @@ def coupons_create(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.COUPON_SYSTEM):
+        return _feature_locked(request, actor, features_svc.COUPON_SYSTEM, "優惠券／會員")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1003,6 +1008,8 @@ def locations_create(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.MULTI_LOCATION):
+        return _feature_locked(request, actor, features_svc.MULTI_LOCATION, "多分店")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1029,6 +1036,8 @@ def locations_update(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.MULTI_LOCATION):
+        return _feature_locked(request, actor, features_svc.MULTI_LOCATION, "多分店")
     tid = actor.user.tenant_id
     try:
         locations_svc.update_location(
@@ -1049,6 +1058,8 @@ def locations_deactivate(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.MULTI_LOCATION):
+        return _feature_locked(request, actor, features_svc.MULTI_LOCATION, "多分店")
     tid = actor.user.tenant_id
     try:
         locations_svc.update_location(
@@ -1068,6 +1079,8 @@ def locations_activate(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.MULTI_LOCATION):
+        return _feature_locked(request, actor, features_svc.MULTI_LOCATION, "多分店")
     tid = actor.user.tenant_id
     try:
         locations_svc.update_location(
@@ -1118,6 +1131,8 @@ def staff_create(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1143,6 +1158,8 @@ def staff_update(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     try:
         staff_svc.update_staff(
@@ -1162,6 +1179,8 @@ def staff_deactivate(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     try:
         staff_svc.update_staff(db, tenant_id=tid, staff_id=staff_id, is_active=False)
@@ -1177,6 +1196,8 @@ def staff_activate(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     try:
         staff_svc.update_staff(db, tenant_id=tid, staff_id=staff_id, is_active=True)
@@ -1192,6 +1213,8 @@ def staff_rotate_token(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     try:
         staff_svc.rotate_token(db, tenant_id=tid, staff_id=staff_id)
@@ -1211,6 +1234,8 @@ def staff_create_shift(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1236,6 +1261,8 @@ def staff_delete_shift(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     try:
         staff_svc.delete_shift(db, tenant_id=tid, staff_id=staff_id, shift_id=shift_id)
@@ -1254,6 +1281,8 @@ def staff_create_leave(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1280,6 +1309,8 @@ def staff_delete_leave(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
     tid = actor.user.tenant_id
     try:
         staff_svc.delete_leave(db, tenant_id=tid, staff_id=staff_id, leave_id=leave_id)
@@ -1329,6 +1360,8 @@ def services_create_category(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1351,6 +1384,8 @@ def services_create(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1376,6 +1411,8 @@ def services_assign_staff(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1397,6 +1434,8 @@ def services_unassign_staff(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
     tid = actor.user.tenant_id
     try:
         catalog_svc.unassign_staff(
@@ -1451,6 +1490,8 @@ def campaigns_create(
 ):
     import json as _json
 
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1489,6 +1530,8 @@ def campaigns_run(
     db: Session = Depends(get_db),
     push_client: LinePushClient = Depends(get_push_client),
 ):
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
     tid = actor.user.tenant_id
     error = None
     run_result = None
@@ -1516,6 +1559,8 @@ def campaigns_deactivate(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
     tid = actor.user.tenant_id
     campaign = _campaign_or_none(db, tid, campaign_id)
     if campaign is not None:
@@ -1569,6 +1614,8 @@ def flex_menu_set_title(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
     tid = actor.user.tenant_id
     menu = _get_or_create_flex_menu(db, tid)
     flex_menu_svc.update_menu(db, tenant_id=tid, menu_id=menu.id, title=title or "")
@@ -1587,6 +1634,8 @@ def flex_menu_add_card(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
     tid = actor.user.tenant_id
     error = None
     menu = _get_or_create_flex_menu(db, tid)
@@ -1611,6 +1660,8 @@ def flex_menu_delete_card(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
     tid = actor.user.tenant_id
     menu = _get_or_create_flex_menu(db, tid)
     try:
@@ -1651,6 +1702,8 @@ def portfolio_create_category(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1669,6 +1722,8 @@ def portfolio_delete_category(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
     tid = actor.user.tenant_id
     try:
         portfolio_svc.delete_category(db, tenant_id=tid, category_id=category_id)
@@ -1687,6 +1742,8 @@ def portfolio_create_item(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1711,6 +1768,8 @@ def portfolio_delete_item(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
     tid = actor.user.tenant_id
     try:
         portfolio_svc.delete_item(db, tenant_id=tid, item_id=item_id)
@@ -1756,6 +1815,8 @@ def profile_save(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
     tid = actor.user.tenant_id
     error = None
     saved = False
@@ -1811,6 +1872,8 @@ def pos_lookup(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     result = pos_svc.lookup_by_phone(db, tenant_id=tid, phone=phone)
     extra = {"lookup_done": True, "phone": phone}
@@ -1829,6 +1892,8 @@ async def pos_checkout(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     form = await request.form()
     phone = (form.get("phone") or "").strip()
@@ -1922,6 +1987,8 @@ def faq_create(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1942,6 +2009,8 @@ def faq_delete(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
     tid = actor.user.tenant_id
     try:
         faq_svc.delete_faq(db, tenant_id=tid, faq_id=faq_id)
@@ -1957,12 +2026,21 @@ def faq_ask(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
     tid = actor.user.tenant_id
-    matched = faq_svc.match(db, tid, question)
-    context = "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
     answer = None
     source = None
     error = None
+    # 成本防護：避免超長問題被送往付費 LLM（cost amplification）。
+    if len(question) > _AI_QUESTION_MAX_LEN:
+        error = f"問題過長（上限 {_AI_QUESTION_MAX_LEN} 字），請精簡後再試。"
+        return templates.TemplateResponse(
+            "_ai_test.html",
+            _ctx(request, actor, question=question, answer=answer, source=source, error=error),
+        )
+    matched = faq_svc.match(db, tid, question)
+    context = "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
     try:
         result = get_assistant().answer(question, context)
         answer = result.answer
