@@ -142,7 +142,59 @@ curl -s localhost:8000/metrics | head     # Prometheus 指標
 - **資源上限**：web/scheduler/db/redis 皆設 `mem_limit`/`cpus`/`pids_limit`，避免單租戶吃光整機拖垮同主機其他服務；redis 設 `--maxmemory` + LRU。
 - **容器降權**：web/scheduler `cap_drop: ALL` + `no-new-privileges`（非 root uid 10001）。
 
-反代端建議（見部署範例）：`server_tokens off` + `Strict-Transport-Security`/`X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`。**資料庫備份**請另設 `pg_dump` 定時排程（pgdata volume 無備份即單點）。
+反代端建議（見部署範例）：`server_tokens off` + `Strict-Transport-Security`/`X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`。**資料庫備份**已由內建 `db-backup` 服務自動處理，詳見下節。
+
+## 資料庫管理與備份
+
+正式資料庫為 PostgreSQL 16（`db` 服務，資料存在 named volume `pgdata`；開發/測試預設用 SQLite）。
+
+### 自動備份（開箱即用）
+
+`docker-compose.yml` 內建 `db-backup` 服務：每日 `BACKUP_TIME`（UTC `HHMM`，預設 `0300`）自動以
+`pg_dump` custom format 把整個資料庫 dump 到**主機目錄 `./backups`**，並自動刪除超過
+`BACKUP_RETENTION_DAYS`（預設 14）天的舊備份。`docker compose up -d` 後即生效，無需額外設定。
+
+- 設定（`.env`）：`BACKUP_TIME=0300`、`BACKUP_RETENTION_DAYS=14`。
+- 與 `db` 同版本 image，`pg_dump`/`pg_restore` 版本精準相符；備份檔命名 `saas-YYYYmmdd-HHMMSS.dump`。
+- **離站建議**：單機 `./backups` 目錄仍是單點，請另以 rsync / 物件儲存（S3 等）定期同步異地。
+
+### 手動備份
+
+```bash
+docker compose run --rm db-backup /usr/local/bin/backup.sh
+# → ./backups/saas-YYYYmmdd-HHMMSS.dump
+```
+
+### 還原（破壞性，會覆寫現有資料庫）
+
+```bash
+# 列出可用備份
+ls -lh ./backups
+
+# 還原指定備份（FORCE=1 跳過互動確認；--clean 會先 DROP 既有物件再重建）
+docker compose run --rm -e FORCE=1 db-backup \
+  /usr/local/bin/restore.sh /backups/saas-YYYYmmdd-HHMMSS.dump
+```
+
+### Schema 管理（無 Alembic）
+
+採輕量冪等遷移：服務啟動時 `entrypoint.sh` 會跑一次 `init_db()`（`src/saas_mvp/db.py`），
+先 `Base.metadata.create_all` 建缺少的表，再逐一執行 `_migrate_*` 函式為既有 DB 補新欄位
+（`inspect` 偵測欄位是否已存在 → 冪等；失敗只記 warning，不阻擋啟動）。新增欄位時，於對應
+model 加欄並比照既有 `_migrate_add_*` 慣例寫一支遷移函式、登記進 `init_db()`。
+
+### 常用維運指令
+
+```bash
+# 互動 SQL（psql 進到 db 容器）
+docker compose exec db psql -U saas -d saas
+
+# 灌示範資料（冪等）
+docker compose run --rm web seed
+
+# 建立 / 提權平台管理員
+docker compose run --rm web python -m saas_mvp.ops.promote_admin --email owner@shop.tw
+```
 
 ## 示範資料
 
