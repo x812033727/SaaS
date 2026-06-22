@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import saas_mvp
@@ -127,6 +127,37 @@ def create_app() -> FastAPI:
             "version": saas_mvp.__version__,
             "status": "ok",
         }
+
+    @app.get("/healthz", tags=["root"])
+    def healthz():
+        """輕量就緒/存活探針（供 load balancer / k8s probe）：無認證、低成本。
+
+        - db：對 DB 跑一次 ``SELECT 1``，OK → "ok"，例外 → "error"。
+        - rate_limit_backend：目前生效的限流後端（"memory" / "redis"）。
+        DB 不可用時回 503，讓 LB 把此 worker 拉出輪替。
+        """
+        from sqlalchemy import text
+
+        from saas_mvp.auth.ratelimit import effective_backend_name
+        from saas_mvp.db import SessionLocal
+
+        db_status = "ok"
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+        except Exception:  # noqa: BLE001 — 探針不得拋例外，僅回報狀態
+            db_status = "error"
+        finally:
+            db.close()
+
+        body = {
+            "status": "ok" if db_status == "ok" else "error",
+            "db": db_status,
+            # 回報實際生效後端（設定 redis 但降級時會是 "memory"）
+            "rate_limit_backend": effective_backend_name(),
+        }
+        status_code = 200 if db_status == "ok" else 503
+        return JSONResponse(body, status_code=status_code)
 
     return app
 

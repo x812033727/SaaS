@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     key_rate_limit: str = "100/60"
     tenant_rate_limit: str = "1000/60"
 
+    # 速率限制後端（多 worker / 橫向擴展）：
+    # SAAS_RATE_LIMIT_BACKEND: "memory"（預設，in-process，單 worker）
+    #                          | "redis"（跨 worker / 跨機共享同一份滑動視窗計數）。
+    # SAAS_REDIS_URL: redis 連線字串（例 redis://localhost:6379/0）；
+    #   backend=redis 但 url 空 / 連不上 / 未裝 redis 套件時，會記 warning 並
+    #   fallback 回 memory（誤設定不致讓服務啟動失敗）。
+    rate_limit_backend: str = "memory"
+    redis_url: str = ""
+
     # Translation backend
     # SAAS_DEEPL_API_KEY: set to your DeepL auth key to enable real HTTP translation.
     #   If empty (default), get_translator() returns StubTranslator (offline, deterministic).
