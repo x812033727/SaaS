@@ -82,6 +82,8 @@ def init_db() -> None:
     # PHASE 4-1：行銷自動化（活動 + 發送紀錄）+ AI 客服 FAQ。
     from saas_mvp.models import campaign, campaign_send  # noqa: F401
     from saas_mvp.models import faq_entry  # noqa: F401
+    # PHASE 4-2：隱私保護模式（tokenized PII 表單請求）。
+    from saas_mvp.models import pii_request  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 無 Alembic 環境的輕量 schema 演進：補既有 DB 缺少的新欄位。

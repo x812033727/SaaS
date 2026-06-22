@@ -24,6 +24,7 @@ from saas_mvp.db import get_db
 from saas_mvp.models.order import ORDER_PENDING, Order
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services.payment_ecpay import EcpayClient
+from saas_mvp.services.payment_newebpay import NewebPayClient
 
 _log = logging.getLogger(__name__)
 
@@ -133,6 +134,110 @@ async def ecpay_callback(
 @router.get("/ecpay/done", response_class=HTMLResponse)
 def ecpay_done():
     """顧客付款完成後的瀏覽器返回頁（ClientBackURL）。"""
+    return HTMLResponse(
+        "<!doctype html><meta charset='utf-8'><h1>付款流程已完成</h1>"
+        "<p>您可以關閉此頁面，返回 LINE 查看訂單狀態。</p>"
+    )
+
+
+# ── 藍新金流 NewebPay（MPG 幕前） ──────────────────────────────────────────────
+
+
+@router.get("/newebpay/checkout/{order_id}", response_class=HTMLResponse)
+def newebpay_checkout(
+    order_id: int,
+    db: Session = Depends(get_db),
+):
+    order = db.get(Order, order_id)
+    if order is None:
+        return HTMLResponse("<h1>找不到訂單</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    if order.status != ORDER_PENDING:
+        return HTMLResponse(
+            f"<h1>訂單 #{order.id} 狀態為 {html.escape(order.status)}，無法付款。</h1>"
+        )
+    if order.total_cents % 100 != 0:
+        return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
+
+    # 產生/沿用唯一交易編號（首次寫回 order，重載沿用）
+    if not order.merchant_trade_no:
+        order.merchant_trade_no = _gen_trade_no(order.id)
+        db.commit()
+        db.refresh(order)
+
+    base = settings.public_base_url.rstrip("/")
+    client = NewebPayClient()
+    form = client.build_order_form(
+        merchant_trade_no=order.merchant_trade_no,
+        amount_twd=order.total_cents // 100,
+        item_desc=f"訂單{order.id}",
+        return_url=f"{base}/payments/newebpay/done",
+        notify_url=f"{base}/payments/newebpay/notify",
+        client_back_url=f"{base}/payments/newebpay/done",
+    )
+    inputs = "\n".join(
+        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">'
+        for k, v in form.items()
+    )
+    page = (
+        "<!doctype html><meta charset='utf-8'><title>前往付款</title>"
+        f"<body onload='document.forms[0].submit()'>"
+        f"<p>正在前往藍新金流付款頁…</p>"
+        f"<form method='post' action='{html.escape(client.mpg_url)}'>{inputs}"
+        "<noscript><button type='submit'>前往付款</button></noscript></form></body>"
+    )
+    return HTMLResponse(page)
+
+
+@router.post("/newebpay/notify", response_class=PlainTextResponse)
+async def newebpay_notify(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    client = NewebPayClient()
+
+    # 1) 先驗 TradeSha（拒絕偽造）
+    if not client.verify(params):
+        _log.warning("newebpay notify rejected: bad TradeSha")
+        return PlainTextResponse("0|TradeSha Error")
+
+    # 2) 解密 TradeInfo 取交易結果
+    try:
+        info = client.decrypt_trade_info(params.get("TradeInfo", ""))
+    except Exception:  # noqa: BLE001 — 解密失敗即視為無效通知
+        _log.warning("newebpay notify rejected: TradeInfo decrypt failed")
+        return PlainTextResponse("0|decrypt failed")
+
+    result = info.get("Result", info)  # 藍新可能將欄位包在 Result 內或攤平
+    trade_no = result.get("MerchantOrderNo") or info.get("MerchantOrderNo") or ""
+    order = shop_svc.get_order_by_trade_no(db, trade_no) if trade_no else None
+    if order is None:
+        _log.warning("newebpay notify: order not found for trade_no=%s", trade_no)
+        return PlainTextResponse("0|order not found")
+
+    # 3) Status==SUCCESS = 付款成功；交叉驗金額後標記已付（冪等）
+    if str(info.get("Status", "")).upper() == "SUCCESS":
+        try:
+            paid_amt = int(result.get("Amt", info.get("Amt", "0")))
+        except (ValueError, TypeError):
+            paid_amt = -1
+        if paid_amt != order.total_cents // 100:
+            _log.warning(
+                "newebpay notify amount mismatch order=%s expected=%s got=%s",
+                order.id, order.total_cents // 100, paid_amt,
+            )
+            return PlainTextResponse("0|amount mismatch")
+        shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
+        return PlainTextResponse("1|OK")
+
+    # Status != SUCCESS：付款未成功，仍回收下通知（不改訂單）
+    return PlainTextResponse("1|OK")
+
+
+@router.get("/newebpay/done", response_class=HTMLResponse)
+def newebpay_done():
+    """顧客付款完成後的瀏覽器返回頁（ReturnURL / ClientBackURL）。"""
     return HTMLResponse(
         "<!doctype html><meta charset='utf-8'><h1>付款流程已完成</h1>"
         "<p>您可以關閉此頁面，返回 LINE 查看訂單狀態。</p>"

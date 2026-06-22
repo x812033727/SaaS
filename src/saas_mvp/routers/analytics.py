@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
 from saas_mvp.services import analytics as analytics_svc
+from saas_mvp.services import reporting as reporting_svc
+from saas_mvp.services.features import ADVANCED_REPORTING, require_feature
 
 router = APIRouter(
     prefix="/booking/analytics",
@@ -109,4 +111,130 @@ def export_csv(
         content=buf.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=reservations.csv"},
+    )
+
+
+# ── 進階報表（PHASE 4-2，ADVANCED_REPORTING 閘門） ────────────────────────────
+
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get(
+    "/report/popular-services",
+    dependencies=[Depends(require_feature(ADVANCED_REPORTING))],
+)
+def report_popular_services(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> list[dict]:
+    return reporting_svc.popular_services(
+        db, tenant_id=current_user.tenant_id,
+        date_from=date_from, date_to=date_to, location_id=location_id,
+    )
+
+
+@router.get(
+    "/report/staff-performance",
+    dependencies=[Depends(require_feature(ADVANCED_REPORTING))],
+)
+def report_staff_performance(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> list[dict]:
+    return reporting_svc.staff_performance(
+        db, tenant_id=current_user.tenant_id,
+        date_from=date_from, date_to=date_to, location_id=location_id,
+    )
+
+
+@router.get(
+    "/report/revenue-trend",
+    dependencies=[Depends(require_feature(ADVANCED_REPORTING))],
+)
+def report_revenue_trend(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> list[dict]:
+    return reporting_svc.revenue_trend(
+        db, tenant_id=current_user.tenant_id,
+        date_from=date_from, date_to=date_to, location_id=location_id,
+    )
+
+
+@router.get(
+    "/report/return-rate",
+    dependencies=[Depends(require_feature(ADVANCED_REPORTING))],
+)
+def report_return_rate(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> dict:
+    return reporting_svc.return_rate(
+        db, tenant_id=current_user.tenant_id,
+        date_from=date_from, date_to=date_to, location_id=location_id,
+    )
+
+
+def _report_rows(
+    db: Session, tenant_id: int,
+    date_from: datetime.datetime | None,
+    date_to: datetime.datetime | None,
+    location_id: int | None,
+) -> list[dict]:
+    """匯出用扁平列：熱門服務排名（穩定、可讀的表格內容）。"""
+    return reporting_svc.popular_services(
+        db, tenant_id=tenant_id,
+        date_from=date_from, date_to=date_to, location_id=location_id,
+    )
+
+
+@router.get(
+    "/report.xlsx",
+    dependencies=[Depends(require_feature(ADVANCED_REPORTING))],
+)
+def report_xlsx(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> Response:
+    rows = _report_rows(db, current_user.tenant_id, date_from, date_to, location_id)
+    content = reporting_svc.to_xlsx(rows, sheet_title="PopularServices")
+    return Response(
+        content=content,
+        media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": "attachment; filename=report.xlsx"},
+    )
+
+
+@router.get(
+    "/report.pdf",
+    dependencies=[Depends(require_feature(ADVANCED_REPORTING))],
+)
+def report_pdf(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+    location_id: int | None = Query(default=None),
+) -> Response:
+    rows = _report_rows(db, current_user.tenant_id, date_from, date_to, location_id)
+    content = reporting_svc.to_pdf(rows, title="Popular Services")
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=report.pdf"},
     )

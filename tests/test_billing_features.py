@@ -80,6 +80,7 @@ class TestSelfService:
             "STAFF_SCHEDULING", "MULTI_LOCATION", "SERVICE_CATALOG",
             "BOOKING_NOTIFY", "PUBLIC_PROFILE",
             "MARKETING_AUTO", "AI_ASSISTANT",
+            "PRIVACY_MODE", "ADVANCED_REPORTING",
         }
 
     def test_subscribe_returns_payment_id(self, client):

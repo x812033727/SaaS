@@ -44,4 +44,7 @@ def get_payment_provider() -> PaymentProvider:
     if settings.payment_provider == "ecpay":
         from saas_mvp.services.payment_ecpay import EcpayPaymentProvider
         return EcpayPaymentProvider()
+    if settings.payment_provider == "newebpay":
+        from saas_mvp.services.payment_newebpay import NewebPayProvider
+        return NewebPayProvider()
     return StubPaymentProvider()

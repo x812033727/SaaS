@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>填寫聯絡資訊</title>
+  <style>
+    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 420px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.3rem; }
+    label { display: block; margin: 1rem 0 0.3rem; font-weight: 600; }
+    input { width: 100%; padding: 0.6rem; box-sizing: border-box;
+            border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+    button { margin-top: 1.5rem; width: 100%; padding: 0.8rem; font-size: 1rem;
+             background: #06c755; color: #fff; border: none; border-radius: 6px; }
+    .note { color: #888; font-size: 0.85rem; margin-top: 1rem; }
+    .state { padding: 1.5rem; background: #f6f6f6; border-radius: 8px; text-align: center; }
+  </style>
+</head>
+<body>
+  {% if state == "expired" %}
+    <div class="state"><h1>連結已過期</h1><p>此填寫連結已逾期，請向店家索取新連結。</p></div>
+  {% elif state == "used" %}
+    <div class="state"><h1>連結已使用</h1><p>此連結已完成填寫，無需重複送出。</p></div>
+  {% else %}
+    <h1>填寫聯絡資訊</h1>
+    <p>為保護您的個資，請於此安全頁面填寫，我們不會在聊天室中索取。</p>
+    <form method="post" action="/pii/{{ token }}">
+      <label for="name">姓名</label>
+      <input type="text" id="name" name="name" maxlength="64" autocomplete="name">
+      <label for="phone">電話</label>
+      <input type="tel" id="phone" name="phone" maxlength="32" autocomplete="tel">
+      <label for="birthday">生日（YYYY-MM-DD）</label>
+      <input type="date" id="birthday" name="birthday">
+      <button type="submit">送出</button>
+    </form>
+    <p class="note">您填寫的資料僅用於本店服務與通知。</p>
+  {% endif %}
+</body>
+</html>

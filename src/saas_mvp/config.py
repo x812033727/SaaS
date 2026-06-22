@@ -61,7 +61,7 @@ class Settings(BaseSettings):
 
     # 商品銷售（P4）
     currency: str = "TWD"
-    payment_provider: str = "stub"  # "stub" | "ecpay"
+    payment_provider: str = "stub"  # "stub" | "ecpay" | "newebpay"
 
     # 對外可達的網址（組綠界 ReturnURL / checkout 絕對網址用）；ecpay 模式必填。
     public_base_url: str = ""
@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     ecpay_hash_key: str = "5294y06JbISpM5x9"
     ecpay_hash_iv: str = "v77hoKGq4kWxNNIS"
     ecpay_env: str = "stage"  # "stage"（測試）| "prod"（正式）
+
+    # 藍新金流 NewebPay（MPG 幕前；金鑰預設為空，正式環境由 SAAS_NEWEBPAY_* 覆寫）。
+    # MerchantID + HashKey + HashIV 由藍新後台取得；env 決定送往測試/正式付款閘道。
+    newebpay_merchant_id: str = ""
+    newebpay_hash_key: str = ""
+    newebpay_hash_iv: str = ""
+    newebpay_env: str = "stage"  # "stage"（測試）| "prod"（正式）
+
+    # LINE 隱私保護模式（PHASE 4-2）：以一次性 token 連結引導顧客在網頁填寫 PII，
+    # 不在 LINE 聊天室中直接索取個資。SAAS_PII_TOKEN_TTL_MINUTES 為 token 有效分鐘數。
+    pii_token_ttl_minutes: int = 1440
 
     # 進階功能旗標 + 訂閱（橫向）
     # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列時的預設。
