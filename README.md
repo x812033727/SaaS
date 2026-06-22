@@ -68,6 +68,7 @@ python -m saas_mvp.ops.seed_demo
 | `/ui/coupons` | 優惠券 |
 | `/ui/reports` | 進階報表 |
 | `/ui/features` | 進階功能訂閱 |
+| `/ui/account` | 帳號設定（變更登入密碼） |
 | `/ui/admin/bots`、`/ui/admin/tenants/{id}` | 平台管理員：跨店家 bot 總覽 / 單一租戶管理 |
 
 ## 公開 / 對外端點（免登入，`include_in_schema=False`）
@@ -172,6 +173,7 @@ SAAS_DATABASE_URL=sqlite:////tmp/demo.db python -m saas_mvp.ops.seed_demo
 |------|------|------|
 | POST | `/auth/register` | 註冊（需 tenant_name），回傳 access_token |
 | POST | `/auth/token` | 登入，回傳 access_token |
+| POST | `/auth/change-password` | 變更密碼（需登入）；驗證目前密碼，新密碼至少 8 字元且不得與目前相同，成功回 204 |
 
 ### 租戶 `/tenants`
 

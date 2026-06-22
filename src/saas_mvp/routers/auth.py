@@ -9,7 +9,7 @@ Security hardening:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
@@ -36,6 +36,12 @@ class RegisterRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1)
+    # 與註冊相同的最低強度要求
+    new_password: str = Field(min_length=8, description="At least 8 characters")
 
 
 class UserInfo(BaseModel):
@@ -129,3 +135,30 @@ def whoami(current_user: User = Depends(get_current_user)) -> UserInfo:
         tenant_id=current_user.tenant_id,
         tenant_name=current_user.tenant.name,
     )
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """變更登入密碼：須通過目前密碼驗證；新密碼至少 8 字元且不得與目前相同。
+
+    成功回 204。current_user 由請求 session 解析，與此處注入的 db 為同一 session，
+    故直接更新並 commit 即生效（既有 JWT/cookie 不會被動失效——屬已知行為）。
+    """
+    if not verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    if verify_password(body.new_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must differ from the current one",
+        )
+    current_user.hashed_password = hash_password(body.new_password)
+    db.add(current_user)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
