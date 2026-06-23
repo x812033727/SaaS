@@ -111,6 +111,48 @@ class TestBookingUI:
         # 取出 slot id：線上可訂應為 6
         assert "<td>6</td>" in r.text or "6" in r.text
 
+    def test_bulk_generate_slots(self, client):
+        _login(client)
+        r = client.post("/ui/booking/slots/bulk", data={
+            "date_start": "2030-07-01", "date_end": "2030-07-02",
+            "time_start": "11:00", "time_end": "14:00",
+            "interval_minutes": "60", "max_capacity": "10", "walkin_reserved": "0",
+        })
+        assert r.status_code == 200
+        # 2 天 × 3 格（11/12/13）= 6
+        assert "新增 6 個時段" in r.text
+        # 重跑同參數 → 全部略過
+        again = client.post("/ui/booking/slots/bulk", data={
+            "date_start": "2030-07-01", "date_end": "2030-07-02",
+            "time_start": "11:00", "time_end": "14:00",
+            "interval_minutes": "60", "max_capacity": "10", "walkin_reserved": "0",
+        })
+        assert "新增 0 個時段" in again.text
+        assert "略過 6 個" in again.text
+
+    def test_bulk_generate_weekday_filter(self, client):
+        _login(client)
+        # 2030-07-01 是週一(0)。範圍週一~週日，限定週一+週三。
+        r = client.post("/ui/booking/slots/bulk", data={
+            "date_start": "2030-07-01", "date_end": "2030-07-07",
+            "time_start": "11:00", "time_end": "13:00",
+            "interval_minutes": "60", "max_capacity": "5",
+            "weekdays": ["0", "2"],
+        })
+        assert r.status_code == 200
+        # 週一(7/1)+週三(7/3) 各 2 格 = 4
+        assert "新增 4 個時段" in r.text
+
+    def test_bulk_generate_invalid_range(self, client):
+        _login(client)
+        r = client.post("/ui/booking/slots/bulk", data={
+            "date_start": "2030-07-05", "date_end": "2030-07-01",
+            "time_start": "11:00", "time_end": "14:00",
+            "interval_minutes": "60", "max_capacity": "10",
+        })
+        assert r.status_code == 200
+        assert "error" in r.text or "date_end" in r.text
+
     def test_create_slot_invalid_capacity(self, client):
         _login(client)
         r = client.post("/ui/booking/slots", data={

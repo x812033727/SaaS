@@ -703,6 +703,48 @@ def booking_create_slot(
     )
 
 
+@router.post("/booking/slots/bulk", response_class=HTMLResponse)
+def booking_bulk_slots(
+    request: Request,
+    date_start: str = Form(...),
+    date_end: str = Form(...),
+    time_start: str = Form(...),
+    time_end: str = Form(...),
+    interval_minutes: int = Form(...),
+    max_capacity: int = Form(...),
+    walkin_reserved: int = Form(0),
+    weekdays: list[str] = Form(default=[]),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """批次產生時段：日期區間 × 每日營業時間 × 間隔，一鍵展開。"""
+    tid = actor.user.tenant_id
+    error = None
+    bulk_result = None
+    try:
+        wd = {int(w) for w in weekdays if w.strip() != ""}
+        bulk_result = slots_svc.bulk_generate_slots(
+            db,
+            tenant_id=tid,
+            date_start=datetime.date.fromisoformat(date_start),
+            date_end=datetime.date.fromisoformat(date_end),
+            time_start=datetime.time.fromisoformat(time_start),
+            time_end=datetime.time.fromisoformat(time_end),
+            interval_minutes=interval_minutes,
+            max_capacity=max_capacity,
+            walkin_reserved=walkin_reserved,
+            weekdays=wd or None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "日期或時間格式錯誤"
+    return templates.TemplateResponse(
+        "_booking_slots.html",
+        _booking_ctx(request, actor, db, error=error, bulk_result=bulk_result),
+    )
+
+
 @router.post("/booking/slots/{slot_id}/deactivate", response_class=HTMLResponse)
 def booking_deactivate_slot(
     request: Request,
