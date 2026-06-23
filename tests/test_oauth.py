@@ -165,6 +165,124 @@ class TestOAuthLogin:
         ).status_code == 404
 
 
+def _ui_login(client, email: str, password: str = "Test1234!") -> None:
+    """以 UI 表單登入，讓 client jar 持有 access_token cookie。"""
+    r = client.post(
+        "/ui/login", data={"email": email, "password": password}
+    )
+    assert r.status_code == 303, r.text
+    assert client.cookies.get("access_token")
+
+
+def _link_login_and_get_state(client, provider: str) -> str:
+    """打 login?link=1，回傳 state（並讓 jar 持有 oauth_state + oauth_intent）。"""
+    r = client.get(f"/auth/oauth/{provider}/login?link=1")
+    assert r.status_code == 302, r.text
+    assert client.cookies.get("oauth_intent") == "link"
+    state = client.cookies.get("oauth_state")
+    assert state
+    return state
+
+
+class TestOAuthLink:
+    def test_link_binds_to_current_user_regardless_of_email(self, client):
+        """綁定模式：已登入者連結 LINE，即使 LINE 信箱 ≠ 後台信箱也綁到本人。"""
+        email = f"owner_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+
+        # LINE 端身分用完全不同的 code（→ 不同 email），證明綁定不靠 email 配對。
+        code = f"lineid_{uuid.uuid4().hex[:8]}"
+        state = _link_login_and_get_state(client, "line")
+        r = client.get(f"/auth/oauth/line/callback?code={code}&state={state}")
+        assert r.status_code == 303, r.text
+        assert r.headers["location"] == "/ui/account?linked=line"
+
+        db = _Session()
+        try:
+            u = db.query(User).filter(User.email == email).first()
+            assert u.oauth_provider == "line"
+            assert u.oauth_subject == f"stub-{code}"
+        finally:
+            db.close()
+        client.cookies.clear()
+
+    def test_linked_subject_allows_login_with_different_email(self, client):
+        """登入模式以 (provider, subject) 優先：LINE 信箱與後台信箱不同也能登入。"""
+        email = f"owner2_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+        code = f"lineid2_{uuid.uuid4().hex[:8]}"
+        state = _link_login_and_get_state(client, "line")
+        assert client.get(
+            f"/auth/oauth/line/callback?code={code}&state={state}"
+        ).status_code == 303
+        client.cookies.clear()
+
+        # 之後純以 LINE 登入（同 subject，但 LINE email≠後台 email）→ 命中本人。
+        state = _login_and_get_state(client, "line")
+        r = client.get(f"/auth/oauth/line/callback?code={code}&state={state}")
+        assert r.status_code == 303, r.text
+        assert r.headers["location"] == "/ui/"
+        assert "access_token" in r.headers.get("set-cookie", "")
+        client.cookies.clear()
+
+    def test_link_rejects_subject_already_bound_to_other_user(self, client):
+        """帳號接管防護：同一 LINE 身分不得綁到第二個後台帳號。"""
+        code = f"shared_{uuid.uuid4().hex[:8]}"
+
+        # 使用者 A 先綁定該 LINE 身分。
+        email_a = f"a_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email_a)
+        _ui_login(client, email_a)
+        state = _link_login_and_get_state(client, "line")
+        assert client.get(
+            f"/auth/oauth/line/callback?code={code}&state={state}"
+        ).status_code == 303
+        client.cookies.clear()
+
+        # 使用者 B 嘗試綁定同一 LINE 身分 → 導回 account 帶 in_use 錯誤，且未綁定。
+        email_b = f"b_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email_b)
+        _ui_login(client, email_b)
+        state = _link_login_and_get_state(client, "line")
+        r = client.get(f"/auth/oauth/line/callback?code={code}&state={state}")
+        assert r.status_code == 303
+        assert r.headers["location"] == "/ui/account?oauth_error=in_use"
+
+        db = _Session()
+        try:
+            b = db.query(User).filter(User.email == email_b).first()
+            assert b.oauth_provider is None
+            assert b.oauth_subject is None
+        finally:
+            db.close()
+        client.cookies.clear()
+
+    def test_unlink_clears_oauth_identity(self, client):
+        email = f"unlink_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+        code = f"u_{uuid.uuid4().hex[:8]}"
+        state = _link_login_and_get_state(client, "line")
+        assert client.get(
+            f"/auth/oauth/line/callback?code={code}&state={state}"
+        ).status_code == 303
+
+        r = client.post("/ui/account/oauth/unlink")
+        assert r.status_code == 303
+        assert r.headers["location"] == "/ui/account"
+
+        db = _Session()
+        try:
+            u = db.query(User).filter(User.email == email).first()
+            assert u.oauth_provider is None
+            assert u.oauth_subject is None
+        finally:
+            db.close()
+        client.cookies.clear()
+
+
 class TestFactory:
     def test_returns_stub_when_unconfigured(self):
         class _S:

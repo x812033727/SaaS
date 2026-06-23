@@ -17,4 +17,19 @@
     <button type="submit">更新密碼</button>
   </form>
 </div>
+
+<div class="card">
+  <h2>連結 LINE 帳戶</h2>
+  <p class="muted">連結 LINE 帳戶後，即可直接用 LINE 一鍵登入後台管理，免再輸入密碼。</p>
+  {% if linked_label %}<div class="success">已成功連結 {{ linked_label }} 帳戶。</div>{% endif %}
+  {% if oauth_error == "in_use" %}<div class="error">此 LINE 帳戶已被其他後台帳號連結，無法重複綁定。</div>{% endif %}
+  {% if current_user.oauth_provider %}
+    <p>目前已連結：<strong>{{ provider_label or current_user.oauth_provider }}</strong></p>
+    <form method="post" action="/ui/account/oauth/unlink">
+      <button class="danger" type="submit">解除連結</button>
+    </form>
+  {% else %}
+    <a class="btn" href="/auth/oauth/line/login?link=1">連結 LINE 帳戶</a>
+  {% endif %}
+</div>
 {% endblock %}

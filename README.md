@@ -68,7 +68,7 @@ python -m saas_mvp.ops.seed_demo
 | `/ui/coupons` | 優惠券 |
 | `/ui/reports` | 進階報表 |
 | `/ui/features` | 進階功能訂閱 |
-| `/ui/account` | 帳號設定（變更登入密碼） |
+| `/ui/account` | 帳號設定（變更登入密碼、連結／解除 LINE 帳戶以一鍵登入） |
 | `/ui/admin/bots`、`/ui/admin/tenants/{id}` | 平台管理員：跨店家 bot 總覽 / 單一租戶管理 |
 
 ## 公開 / 對外端點（免登入，`include_in_schema=False`）
@@ -80,6 +80,7 @@ python -m saas_mvp.ops.seed_demo
 | `GET /calendar/shop/{token}.ics`、`/calendar/staff/{token}.ics`、`/calendar/customer/{token}.ics` | 行事曆 ICS 訂閱（店家/員工/顧客） |
 | `GET /pii/{token}`、`POST /pii/{token}` | 隱私模式 tokenized PII 表單 |
 | `POST /line/webhook/{tenant_id}` | LINE Webhook（須 `X-Line-Signature`） |
+| `GET /auth/oauth/{provider}/login`、`/callback` | 社群登入（`provider ∈ {line, google}`）。登入頁可「使用 LINE 登入」；後台帳號頁帶 `?link=1` 可把 LINE 帳戶綁到目前登入者，之後即可一鍵登入管理 |
 
 ## 排程作業（`ops/`）
 
