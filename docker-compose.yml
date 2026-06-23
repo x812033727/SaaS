@@ -49,6 +49,12 @@ services:
       SAAS_REDIS_URL: redis://redis:6379/0
       SAAS_HOST: 0.0.0.0
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+      # 後台「重新佈署」按鈕：寫觸發檔到此路徑（下方 volume 掛到主機目錄），
+      # 主機 systemd.path 監看到即跑 saas-deploy.sh。
+      SAAS_DEPLOY_TRIGGER_PATH: /var/run/saas-deploy/deploy.request
+    volumes:
+      # 部署觸發檔落到主機目錄（repo 外，免被 git reset 清掉）；主機 uid 10001 可寫。
+      - /var/lib/saas-deploy/requests:/var/run/saas-deploy
     ports:
       # 僅綁 loopback：對外一律走主機 nginx（TLS + 安全標頭 + 限流），不開放公網
       # 直連容器明文 HTTP；反代信任邊界也因此收斂到本機 nginx。

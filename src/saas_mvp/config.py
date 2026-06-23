@@ -146,6 +146,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     ai_model: str = "claude-sonnet-4-6"
 
+    # 後台「重新佈署」按鈕（平台管理員）：
+    # web 容器無法直接執行主機腳本，故按鈕只寫一個觸發檔到此路徑（主機掛載目錄），
+    # 主機端 systemd.path（saas-deploy-trigger.path）監看到即跑 /usr/local/bin/saas-deploy.sh。
+    # 留空（預設）= 隱藏按鈕並停用觸發（dev/test 不會誤觸）。
+    # 正式環境設 SAAS_DEPLOY_TRIGGER_PATH=/var/run/saas-deploy/deploy.request。
+    deploy_trigger_path: str = ""
+
     @model_validator(mode="after")
     def line_key_must_be_changed_in_prod(self) -> "Settings":
         """在非 dev/test 環境（讀 self.env，含 .env 檔）拒絕公開 dev 預設金鑰。
