@@ -27,9 +27,8 @@ router = APIRouter(
 
 
 def _build_context(db: Session, tenant_id: int, question: str) -> str:
-    """以 faq.match 組裝 context（matched FAQ 的 Q/A 串接）。"""
-    matched = faq_svc.match(db, tenant_id, question)
-    return "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
+    """以 faq.build_context 組裝 context（最相關 FAQ 的 Q/A 串接）。"""
+    return faq_svc.build_context(db, tenant_id, question)
 
 
 # ── /ai/ask ──────────────────────────────────────────────────────────────────

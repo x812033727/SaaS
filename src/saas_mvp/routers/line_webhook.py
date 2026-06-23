@@ -1113,12 +1113,11 @@ def _dispatch_booking(
 
 
 def _ai_reply(db: Session, tenant_id: int, text: str) -> str:
-    """以 AI 助手回答自由文字（context 由 faq.match 注入）。失敗回退說明。"""
+    """以 AI 助手回答自由文字（context 由 faq.build_context 注入）。失敗回退說明。"""
     from saas_mvp.ai import AIError, get_assistant
     from saas_mvp.services import faq as faq_svc
 
-    matched = faq_svc.match(db, tenant_id, text)
-    context = "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
+    context = faq_svc.build_context(db, tenant_id, text)
     try:
         return get_assistant().answer(text, context).answer
     except AIError:

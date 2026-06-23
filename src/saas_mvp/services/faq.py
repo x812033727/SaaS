@@ -89,35 +89,73 @@ def delete_faq(db: Session, *, tenant_id: int, faq_id: int) -> None:
     db.commit()
 
 
-def _tokens(text: str) -> list[str]:
-    """切出可比對的斷詞（去除標點，過短的略過）。"""
-    parts = re.split(r"\s+", text.strip())
-    return [p for p in (s.strip() for s in parts) if len(p) >= 2]
+# 比對前的正規化：移除空白與標點（含全形 CJK 標點與全形符號），只留可辨識字元
+# 做字元級比對。中文沒有空白可斷詞，純靠「整句包含」會漏掉「請問營業時間？」這類
+# 加了綴詞的問法；改以字元 bigram 重疊衡量相似度。
+_STRIP_RE = re.compile(
+    r"[\s　 -⁯　-〿＀-￯!-/:-@\[-`{-~]+"
+)
+
+# build_context 預設帶入的 FAQ 上限（避免 context 過長 / 餵付費 LLM 過量）。
+_CONTEXT_MAX_ENTRIES = 6
 
 
-def match(db: Session, tenant_id: int, question: str) -> list[FAQEntry]:
-    """挑出與 question 相關的有效 FAQ（case-insensitive contains）。
+def _normalize(text: str) -> str:
+    return _STRIP_RE.sub("", (text or "").lower())
 
-    比對規則（任一成立即相關）：
-      - FAQ 問題或答案包含使用者輸入（或其斷詞之一）。
-      - 使用者輸入包含 FAQ 問題。
-    依 sort_order 回傳。
+
+def _char_ngrams(text: str, n: int = 2) -> set[str]:
+    """字元級 n-gram（預設 bigram）。中文無空白，用連續字元窗格比對相似度。"""
+    s = _normalize(text)
+    if len(s) < n:
+        return {s} if s else set()
+    return {s[i : i + n] for i in range(len(s) - n + 1)}
+
+
+def _relevance(query_norm: str, query_grams: set[str], faq: FAQEntry) -> int:
+    """FAQ 與 query 的相關度分數（越高越相關，0 = 不相關）。"""
+    fq_norm = _normalize(faq.question)
+    fa_norm = _normalize(faq.answer)
+    score = 0
+    # 直接子字串（任一方向）→ 高權重，確保精準命中排最前。
+    if query_norm and fq_norm and (fq_norm in query_norm or query_norm in fq_norm):
+        score += 100
+    if query_norm and fa_norm and query_norm in fa_norm:
+        score += 50
+    # 字元 bigram 重疊（問題權重高於答案）——解決中文模糊問法。
+    score += 3 * len(query_grams & _char_ngrams(faq.question))
+    score += len(query_grams & _char_ngrams(faq.answer))
+    return score
+
+
+def match(
+    db: Session, tenant_id: int, question: str, *, top_k: int | None = None
+) -> list[FAQEntry]:
+    """挑出與 question 相關的有效 FAQ，依相關度（高→低）、sort_order 排序。
+
+    比對採「子字串（任一方向）+ 字元 bigram 重疊」評分：中文加綴詞的模糊問法
+    （如「請問營業時間？」對上「營業時間？幾點開到幾點？」）也能命中。
+    top_k 提供時只回前 N 筆最相關。
     """
     rows = list_faqs(db, tenant_id=tenant_id, active_only=True)
-    if not question.strip():
+    query_norm = _normalize(question)
+    if not query_norm:
         return []
-    q_low = question.lower()
-    q_tokens = [t.lower() for t in _tokens(question)]
-    matched: list[FAQEntry] = []
-    for faq in rows:
-        fq = (faq.question or "").lower()
-        fa = (faq.answer or "").lower()
-        if fq and fq in q_low:
-            matched.append(faq)
-            continue
-        if q_low in fq or q_low in fa:
-            matched.append(faq)
-            continue
-        if any(tok in fq or tok in fa for tok in q_tokens):
-            matched.append(faq)
-    return matched
+    query_grams = _char_ngrams(question)
+    scored = [(faq, _relevance(query_norm, query_grams, faq)) for faq in rows]
+    relevant = [(faq, s) for faq, s in scored if s > 0]
+    relevant.sort(key=lambda fs: (-fs[1], fs[0].sort_order, fs[0].id))
+    matched = [faq for faq, _ in relevant]
+    return matched[:top_k] if top_k is not None else matched
+
+
+def build_context(
+    db: Session,
+    tenant_id: int,
+    question: str,
+    *,
+    max_entries: int = _CONTEXT_MAX_ENTRIES,
+) -> str:
+    """組 AI 助手 context：取最相關的前 N 筆 FAQ，串成 Q/A 文字餵給助手。"""
+    matched = match(db, tenant_id, question, top_k=max_entries)
+    return "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)

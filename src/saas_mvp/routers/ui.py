@@ -2294,8 +2294,7 @@ def faq_ask(
             "_ai_test.html",
             _ctx(request, actor, question=question, answer=answer, source=source, error=error),
         )
-    matched = faq_svc.match(db, tid, question)
-    context = "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
+    context = faq_svc.build_context(db, tid, question)
     try:
         result = get_assistant().answer(question, context)
         answer = result.answer
