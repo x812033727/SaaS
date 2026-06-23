@@ -1490,6 +1490,50 @@ def services_create_category(
     )
 
 
+@router.post("/services/categories/{category_id}/edit", response_class=HTMLResponse)
+def services_update_category(
+    request: Request,
+    category_id: int,
+    name: str = Form(...),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        catalog_svc.update_category(
+            db, tenant_id=tid, category_id=category_id,
+            name=name, sort_order=sort_order,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/services/categories/{category_id}/delete", response_class=HTMLResponse)
+def services_delete_category(
+    request: Request,
+    category_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
+    tid = actor.user.tenant_id
+    try:
+        catalog_svc.delete_category(db, tenant_id=tid, category_id=category_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db)
+    )
+
+
 @router.post("/services", response_class=HTMLResponse)
 def services_create(
     request: Request,
@@ -1517,6 +1561,58 @@ def services_create(
         error = "分類或分店格式錯誤"
     return templates.TemplateResponse(
         "_services_list.html", _services_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/services/{service_id}/edit", response_class=HTMLResponse)
+def services_update(
+    request: Request,
+    service_id: int,
+    name: str = Form(...),
+    duration_minutes: int = Form(60),
+    price_cents: int = Form(0),
+    category_id: str = Form(""),
+    location_id: str = Form(""),
+    is_active: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        catalog_svc.update_service(
+            db, tenant_id=tid, service_id=service_id, name=name,
+            duration_minutes=duration_minutes, price_cents=price_cents,
+            category_id=_opt_int(category_id), location_id=_opt_int(location_id),
+            is_active=(is_active == "on"),
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "分類或分店格式錯誤"
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/services/{service_id}/delete", response_class=HTMLResponse)
+def services_delete(
+    request: Request,
+    service_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_CATALOG):
+        return _feature_locked(request, actor, features_svc.SERVICE_CATALOG, "服務項目")
+    tid = actor.user.tenant_id
+    try:
+        catalog_svc.delete_service(db, tenant_id=tid, service_id=service_id)
+    except HTTPException:
+        pass
+    return templates.TemplateResponse(
+        "_services_list.html", _services_ctx(request, actor, db)
     )
 
 

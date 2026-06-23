@@ -7,12 +7,24 @@
 </form>
 {% if categories %}
 <table>
-  <thead><tr><th>#</th><th>名稱</th><th>排序</th><th>狀態</th></tr></thead>
+  <thead><tr><th>#</th><th>名稱</th><th>排序</th><th>狀態</th><th>操作</th></tr></thead>
   <tbody>
     {% for cat in categories %}
     <tr>
       <td data-label="#">{{ cat.id }}</td><td data-label="名稱">{{ cat.name }}</td><td data-label="排序">{{ cat.sort_order }}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if cat.is_active else 'off' }}">{{ '啟用' if cat.is_active else '停用' }}</span></td>
+      <td data-label="操作">
+        <details>
+          <summary>編輯</summary>
+          <form hx-post="/ui/services/categories/{{ cat.id }}/edit" hx-target="#services-card" hx-swap="innerHTML" class="row">
+            <label>名稱<input name="name" maxlength="128" value="{{ cat.name }}" required></label>
+            <label>排序<input name="sort_order" type="number" value="{{ cat.sort_order }}"></label>
+            <button type="submit">儲存</button>
+          </form>
+        </details>
+        <button hx-post="/ui/services/categories/{{ cat.id }}/delete" hx-target="#services-card" hx-swap="innerHTML"
+                hx-confirm="確定刪除分類「{{ cat.name }}」？此分類下的服務會改為未分類。">刪除</button>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
@@ -44,6 +56,32 @@
 <div class="card">
   <h3>{{ svc.name }} <span class="badge {{ 'on' if svc.is_active else 'off' }}">{{ '啟用' if svc.is_active else '停用' }}</span></h3>
   <p class="muted">時長 {{ svc.duration_minutes }} 分 · 價格 {{ svc.price_cents }} 分</p>
+
+  <details>
+    <summary>編輯服務</summary>
+    <form hx-post="/ui/services/{{ svc.id }}/edit" hx-target="#services-card" hx-swap="innerHTML" class="row">
+      <label>名稱<input name="name" maxlength="128" value="{{ svc.name }}" required></label>
+      <label>時長（分）<input name="duration_minutes" type="number" min="1" value="{{ svc.duration_minutes }}" required></label>
+      <label>價格（分）<input name="price_cents" type="number" min="0" value="{{ svc.price_cents }}" required></label>
+      <label>分類
+        <select name="category_id">
+          <option value="" {{ 'selected' if not svc.category_id else '' }}>未分類</option>
+          {% for cat in categories %}<option value="{{ cat.id }}" {{ 'selected' if svc.category_id == cat.id else '' }}>{{ cat.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>分店
+        <select name="location_id">
+          <option value="" {{ 'selected' if not svc.location_id else '' }}>不限分店</option>
+          {% for l in locations %}<option value="{{ l.id }}" {{ 'selected' if svc.location_id == l.id else '' }}>{{ l.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>啟用<input name="is_active" type="checkbox" {{ 'checked' if svc.is_active else '' }}></label>
+      <button type="submit">儲存</button>
+    </form>
+  </details>
+  <button hx-post="/ui/services/{{ svc.id }}/delete" hx-target="#services-card" hx-swap="innerHTML"
+          hx-confirm="確定刪除服務「{{ svc.name }}」？員工指派會一併移除。">刪除服務</button>
+
   <h4>指派員工</h4>
   <form hx-post="/ui/services/{{ svc.id }}/staff" hx-target="#services-card" hx-swap="innerHTML" class="row">
     <label>員工

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 
 import pytest
@@ -170,6 +171,50 @@ class TestServicesUI:
         })
         assert r.status_code == 200
         assert "洗剪護" in r.text
+
+    def test_edit_and_delete_service(self, client):
+        _login(client)
+        created = client.post("/ui/services", data={
+            "name": "待改服務", "duration_minutes": "30", "price_cents": "10000",
+            "category_id": "", "location_id": "",
+        })
+        assert "待改服務" in created.text
+        sid = _last_service_id(client)
+        # 編輯：改名 + 改價
+        edited = client.post(f"/ui/services/{sid}/edit", data={
+            "name": "已改服務", "duration_minutes": "45", "price_cents": "20000",
+            "category_id": "", "location_id": "", "is_active": "on",
+        })
+        assert edited.status_code == 200
+        assert "已改服務" in edited.text and "待改服務" not in edited.text
+        # 刪除
+        deleted = client.post(f"/ui/services/{sid}/delete")
+        assert deleted.status_code == 200
+        assert "已改服務" not in deleted.text
+
+    def test_edit_and_delete_category(self, client):
+        _login(client)
+        client.post("/ui/services/categories", data={"name": "待刪分類", "sort_order": "0"})
+        cid = _last_category_id(client)
+        edited = client.post(f"/ui/services/categories/{cid}/edit",
+                             data={"name": "已改分類", "sort_order": "3"})
+        assert edited.status_code == 200
+        assert "已改分類" in edited.text
+        deleted = client.post(f"/ui/services/categories/{cid}/delete")
+        assert deleted.status_code == 200
+        assert "已改分類" not in deleted.text
+
+
+def _last_service_id(client) -> int:
+    html = client.get("/ui/services").text
+    ids = [int(m) for m in re.findall(r"/ui/services/(\d+)/edit", html)]
+    return max(ids)
+
+
+def _last_category_id(client) -> int:
+    html = client.get("/ui/services").text
+    ids = [int(m) for m in re.findall(r"/ui/services/categories/(\d+)/edit", html)]
+    return max(ids)
 
 
 class TestCampaignsUI:
