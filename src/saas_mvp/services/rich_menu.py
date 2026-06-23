@@ -281,8 +281,53 @@ def _load_font(size: int):
     return None
 
 
-def _draw_labels(png_bytes: bytes, template: dict) -> bytes:
-    """把各按鈕文字置中畫到對應格子上；任何失敗都回傳原始 png_bytes（不破壞流程）。"""
+# 文字佔格子的最大比例（留邊，避免貼齊格線或溢出到相鄰格）。
+_LABEL_WIDTH_RATIO = 0.82
+_LABEL_HEIGHT_RATIO = 0.46
+_LABEL_MAX_SIZE = 180  # 字級上限，避免短標籤（如「預約」）被放到佔滿整格
+
+
+def _fit_font_size(draw, label: str, max_w: float, max_h: float) -> int:
+    """求出能讓 label 完整塞進 (max_w, max_h) 的最大字級（量測實際寬高，非估算）。"""
+    lo, hi = 12, _LABEL_MAX_SIZE
+    best = lo
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = _load_font(mid)
+        if font is None:
+            return 0
+        x0, y0, x1, y1 = draw.textbbox((0, 0), label, font=font)
+        if (x1 - x0) <= max_w and (y1 - y0) <= max_h:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _separator_color(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    """格線顏色：底色亮則調暗、底色暗則調亮，確保分隔線在任何主題都看得見。"""
+    luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+    factor = 0.62 if luminance > 90 else 1.0
+    if luminance <= 90:  # 深底 → 提亮
+        return tuple(min(255, int(c + (255 - c) * 0.35)) for c in rgb)
+    return tuple(int(c * factor) for c in rgb)
+
+
+def _draw_labels(
+    png_bytes: bytes,
+    template: dict,
+    *,
+    base_rgb: tuple[int, int, int] | None = None,
+) -> bytes:
+    """把各按鈕文字置中畫到對應格子上，並畫出格線分隔。
+
+    * 字級以「實際量測 + 二分搜尋」自動縮到剛好塞進格子（含留邊），徹底避免長標籤
+      （如「可預約時段」）溢出到相鄰格。
+    * 以 anchor="mm" 讓文字在格子正中（水平垂直皆置中）。
+    * base_rgb 提供時於格線畫分隔線，讓多格選單看起來像獨立按鈕。
+    * 任何失敗都回傳原始 png_bytes（不破壞流程）。
+    """
     if not _labels_enabled():
         return png_bytes
     try:
@@ -297,36 +342,60 @@ def _draw_labels(png_bytes: bytes, template: dict) -> bytes:
         cell_w = width // cols
         cell_h = height // rows
         draw = ImageDraw.Draw(img)
-        drew_any = False
-        for idx, (label, _data) in enumerate(buttons):
+
+        # 1) 格線分隔（在文字之前畫，文字才會疊在最上層）。
+        if base_rgb is not None and (cols > 1 or rows > 1):
+            line_color = _separator_color(base_rgb)
+            line_w = max(3, min(cell_w, cell_h) // 130)
+            for c in range(1, cols):
+                gx = c * cell_w
+                draw.rectangle([gx - line_w // 2, 0, gx + line_w // 2, height], fill=line_color)
+            for r in range(1, rows):
+                gy = r * cell_h
+                draw.rectangle([0, gy - line_w // 2, width, gy + line_w // 2], fill=line_color)
+
+        # 2) 先算每格能容納的字級，取「全體最小」作為統一字級——讓長短標籤
+        #    視覺一致（不會「預約」特別大、「可預約時段」特別小）。
+        def _cell_box(idx: int):
             col = idx % cols
             row = idx // cols
             x = col * cell_w
             y = row * cell_h
             w = (width - x) if col == cols - 1 else cell_w
             h = (height - y) if row == rows - 1 else cell_h
-            # 字級依格子大小與字數推算，並夾在合理範圍。
-            size = max(36, min(h // 4, (w * 3) // (2 * max(1, len(label)))))
-            font = _load_font(size)
-            if font is None:
-                return png_bytes  # 無字型 → 整體放棄，回純色底圖
+            return x, y, w, h
+
+        sizes = []
+        for idx, (label, _data) in enumerate(buttons):
+            _, _, w, h = _cell_box(idx)
+            sizes.append(
+                _fit_font_size(
+                    draw, label, w * _LABEL_WIDTH_RATIO, h * _LABEL_HEIGHT_RATIO
+                )
+            )
+        if not sizes or min(sizes) <= 0:
+            return png_bytes  # 無字型 → 整體放棄，回純色底圖
+        uniform_size = min(sizes)
+        font = _load_font(uniform_size)
+
+        # 3) 統一字級畫上各格文字（anchor=mm 水平垂直置中）。
+        drew_any = False
+        for idx, (label, _data) in enumerate(buttons):
+            x, y, w, h = _cell_box(idx)
+            size = uniform_size
             cx, cy = x + w // 2, y + h // 2
             # 依格子中心底色亮度決定字色（深底白字／淺底深字）。
             br, bg_, bb = img.getpixel((cx, cy))
             luminance = 0.299 * br + 0.587 * bg_ + 0.114 * bb
             fill = (33, 33, 33) if luminance > 150 else (255, 255, 255)
             stroke_fill = (255, 255, 255) if fill == (33, 33, 33) else (0, 0, 0)
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            tx = cx - tw // 2 - bbox[0]
-            ty = cy - th // 2 - bbox[1]
             draw.text(
-                (tx, ty),
+                (cx, cy),
                 label,
                 font=font,
                 fill=fill,
-                stroke_width=max(2, size // 16),
+                anchor="mm",
+                stroke_width=max(2, size // 18),
                 stroke_fill=stroke_fill,
             )
             drew_any = True
@@ -373,11 +442,14 @@ def build_rich_menu_payload(
             )
         image = image_bytes
     elif mode == MODE_VECTOR:
+        # vector 已是分區色塊，不再額外畫格線（base_rgb=None）。
         image = _draw_labels(
             _sectioned_png(width, height, template["grid"], rgb), template
         )
     else:
-        image = _draw_labels(solid_png(width, height, rgb), template)
+        image = _draw_labels(
+            solid_png(width, height, rgb), template, base_rgb=rgb
+        )
     return payload, image
 
 
