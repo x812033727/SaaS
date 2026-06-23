@@ -32,4 +32,16 @@
     <a class="btn" href="/auth/oauth/line/login?link=1">連結 LINE 帳戶</a>
   {% endif %}
 </div>
+
+{% if is_admin and deploy_available %}
+<div class="card">
+  <h2>重新佈署</h2>
+  <p class="muted">從 GitHub <code>main</code> 拉取最新程式碼並乾淨重建所有容器。期間服務可能短暫中斷數十秒，僅平台管理員可操作。</p>
+  <div id="deploy-status">{% include "_deploy_status.html" %}</div>
+  <form hx-post="/ui/admin/deploy" hx-target="#deploy-status" hx-swap="innerHTML"
+        hx-confirm="確定要重新佈署？將拉取 main 最新版並重建容器，服務可能短暫中斷數十秒。">
+    <button class="danger" type="submit">立即重新佈署</button>
+  </form>
+</div>
+{% endif %}
 {% endblock %}

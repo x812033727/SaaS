@@ -337,7 +337,47 @@ def account_page(
             linked_label=linked_label,
             oauth_error=oauth_error,
             provider_label=provider_label,
+            # 重新佈署按鈕：僅平台管理員 + 已設定觸發路徑時才顯示（template 另把關 is_admin）。
+            deploy_available=bool(settings.deploy_trigger_path),
         ),
+    )
+
+
+@router.post("/admin/deploy", response_class=HTMLResponse)
+def admin_deploy(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+):
+    """平台管理員手動觸發乾淨重新佈署（拉 main 最新版 + 重建容器）。
+
+    web 容器被刻意強化（非 root、cap_drop ALL、僅綁 loopback），無法直接執行主機上
+    的 /usr/local/bin/saas-deploy.sh。故此處只「原子寫入」一個觸發檔到主機掛載目錄；
+    主機端 systemd.path（saas-deploy-trigger.path）監看到該檔即消費它並執行部署腳本。
+    回 partial 狀態（HTMX swap）；錯誤一律回 200 確保訊息能顯示。
+    """
+    path = settings.deploy_trigger_path
+    if not path:
+        return templates.TemplateResponse(
+            "_deploy_status.html",
+            _ctx(request, actor,
+                 deploy_error="未設定部署觸發路徑（SAAS_DEPLOY_TRIGGER_PATH），無法觸發。"),
+        )
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # 先寫 .tmp 再 rename：避免主機 systemd.path 讀到半截內容。
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(f"{stamp} by {actor.user.email}\n", encoding="utf-8")
+        tmp.replace(target)
+    except OSError as exc:
+        return templates.TemplateResponse(
+            "_deploy_status.html",
+            _ctx(request, actor, deploy_error=f"觸發失敗：{exc}"),
+        )
+    return templates.TemplateResponse(
+        "_deploy_status.html",
+        _ctx(request, actor, deploy_triggered=True),
     )
 
 

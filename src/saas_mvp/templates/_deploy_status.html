@@ -1,0 +1,2 @@
+{% if deploy_triggered %}<div class="success">已觸發重新佈署。主機正在拉取 <code>main</code> 最新版並重建容器，約數十秒後完成；期間服務可能短暫中斷，稍候重新整理即可。</div>{% endif %}
+{% if deploy_error %}<div class="error">{{ deploy_error }}</div>{% endif %}
