@@ -153,6 +153,22 @@ def update_category(
     return CategoryResponse.model_validate(cat)
 
 
+@router.delete(
+    "/categories/{category_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_category(
+    category_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    catalog_svc.delete_category(
+        db, tenant_id=current_user.tenant_id, category_id=category_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ─────────────────────────────── Services ────────────────────────────────────
 
 @router.post("/", response_model=ServiceResponse, status_code=status.HTTP_201_CREATED)
@@ -220,6 +236,22 @@ def update_service(
         is_active=body.is_active,
     )
     return ServiceResponse.model_validate(svc)
+
+
+@router.delete(
+    "/{service_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_service(
+    service_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    catalog_svc.delete_service(
+        db, tenant_id=current_user.tenant_id, service_id=service_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ─────────────────────────────── Staff assignment ────────────────────────────

@@ -93,6 +93,44 @@ class TestCatalog:
                          json={"price_cents": 60000})
         assert upd.json()["price_cents"] == 60000
 
+    def test_delete_service_removes_staff_links(self, client):
+        token = _register(client)
+        sid = client.post("/booking/services/", headers=_auth(token),
+                          json={"name": "可刪服務"}).json()["id"]
+        staff_id = client.post("/booking/staff/", headers=_auth(token),
+                               json={"name": "設計師D"}).json()["id"]
+        client.post(f"/booking/services/{sid}/staff", headers=_auth(token),
+                    json={"staff_id": staff_id})
+        d = client.delete(f"/booking/services/{sid}", headers=_auth(token))
+        assert d.status_code == 204, d.text
+        assert client.get(f"/booking/services/{sid}", headers=_auth(token)).status_code == 404
+        # 再刪一次 → 404（已不存在）
+        assert client.delete(f"/booking/services/{sid}", headers=_auth(token)).status_code == 404
+
+    def test_delete_category_orphans_services_to_null(self, client):
+        token = _register(client)
+        cid = client.post("/booking/services/categories", headers=_auth(token),
+                          json={"name": "待刪分類"}).json()["id"]
+        sid = client.post("/booking/services/", headers=_auth(token),
+                          json={"name": "歸屬服務", "category_id": cid}).json()["id"]
+        d = client.delete(f"/booking/services/categories/{cid}", headers=_auth(token))
+        assert d.status_code == 204, d.text
+        # 分類沒了，服務仍在但改為未分類
+        assert client.get(f"/booking/services/categories/{cid}",
+                          headers=_auth(token)).status_code == 404
+        svc = client.get(f"/booking/services/{sid}", headers=_auth(token)).json()
+        assert svc["category_id"] is None
+
+    def test_delete_tenant_isolation(self, client):
+        token_a = _register(client)
+        token_b = _register(client)
+        sid = client.post("/booking/services/", headers=_auth(token_a),
+                          json={"name": "A的服務"}).json()["id"]
+        # B 不能刪 A 的服務 → 404
+        assert client.delete(f"/booking/services/{sid}", headers=_auth(token_b)).status_code == 404
+        # A 仍在
+        assert client.get(f"/booking/services/{sid}", headers=_auth(token_a)).status_code == 200
+
     def test_staff_assignment(self, client):
         token = _register(client)
         sid = client.post("/booking/services/", headers=_auth(token),

@@ -111,6 +111,19 @@ def update_category(
     return cat
 
 
+def delete_category(db: Session, *, tenant_id: int, category_id: int) -> None:
+    """刪除分類。原屬此分類的服務改為未分類（category_id → NULL），
+    避免留下指向已刪分類的鬆散 category_id。"""
+    cat = _get_category_or_404(db, tenant_id, category_id)
+    (
+        tenant_query(db, Service, tenant_id)
+        .filter(Service.category_id == category_id)
+        .update({Service.category_id: None}, synchronize_session=False)
+    )
+    db.delete(cat)
+    db.commit()
+
+
 # ── 服務項目 ──────────────────────────────────────────────────────────────────
 
 def _get_service_or_404(db: Session, tenant_id: int, service_id: int) -> Service:
@@ -207,6 +220,19 @@ def update_service(
     db.commit()
     db.refresh(svc)
     return svc
+
+
+def delete_service(db: Session, *, tenant_id: int, service_id: int) -> None:
+    """刪除服務項目。先清除員工指派（DB 雖有 ON DELETE CASCADE，明確刪除以相容
+    SQLite 等未啟用外鍵的後端）。歷史預約的 service_id 為鬆散欄位（無 FK），保留不動。"""
+    svc = _get_service_or_404(db, tenant_id, service_id)
+    (
+        tenant_query(db, ServiceStaff, tenant_id)
+        .filter(ServiceStaff.service_id == service_id)
+        .delete(synchronize_session=False)
+    )
+    db.delete(svc)
+    db.commit()
 
 
 # ── 服務 ↔ 員工 指派 ──────────────────────────────────────────────────────────
