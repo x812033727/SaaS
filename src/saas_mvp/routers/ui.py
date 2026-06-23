@@ -316,12 +316,42 @@ def settings_save(
 
 # ── 帳號 / 變更密碼 ───────────────────────────────────────────────────────────
 
+_OAUTH_PROVIDER_LABELS = {"line": "LINE", "google": "Google"}
+
+
 @router.get("/account", response_class=HTMLResponse)
 def account_page(
     request: Request,
     actor: Actor = Depends(require_ui_user),
+    linked: str | None = Query(default=None),
+    oauth_error: str | None = Query(default=None),
 ):
-    return templates.TemplateResponse("account.html", _ctx(request, actor))
+    # 綁定結果（由 /auth/oauth/.../callback 導回時帶 query 參數）轉成可顯示文案。
+    linked_label = _OAUTH_PROVIDER_LABELS.get(linked or "")
+    provider_label = _OAUTH_PROVIDER_LABELS.get(actor.user.oauth_provider or "")
+    return templates.TemplateResponse(
+        "account.html",
+        _ctx(
+            request,
+            actor,
+            linked_label=linked_label,
+            oauth_error=oauth_error,
+            provider_label=provider_label,
+        ),
+    )
+
+
+@router.post("/account/oauth/unlink", response_class=HTMLResponse)
+def account_oauth_unlink(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """解除社群帳號連結。使用者仍保有密碼登入，故解除後不致被鎖在門外。"""
+    user = db.get(User, actor.user.id)
+    user.oauth_provider = None
+    user.oauth_subject = None
+    db.commit()
+    return RedirectResponse("/ui/account", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/account/password", response_class=HTMLResponse)
