@@ -12,6 +12,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Rich Menu 自動印字需中文字型（Pillow 由 pip 裝，字型來自系統套件）。
+# fonts-wqy-zenhei 體積小（~2MB）且涵蓋繁簡中文，符合 slim 映像精神；缺字型時
+# 程式會靜默回退純色底圖（不影響啟動）。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
 # 先只複製套件中繼資料 + 原始碼以利 layer 快取（psycopg[binary]/cryptography 皆有 wheel，
 # 無需系統編譯工具）。安裝含 prod 額外相依（gunicorn + psycopg + redis）。
 COPY pyproject.toml README.md ./

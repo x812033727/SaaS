@@ -1,19 +1,25 @@
 """Rich Menu（圖文選單）服務 — 預設模板 + 主題配色，套用至 LINE。
 
 設計：
-* 不引入影像函式庫——主題背景以**純 stdlib（zlib）產生純色 PNG**，零新依賴。
+* 底圖以**純 stdlib（zlib）產生純色／分區色塊 PNG**，零強制依賴。
+* 產生底圖後，若環境具備 Pillow + 中文字型，再把各按鈕的文字標籤（預約／我的預約
+  …）畫到對應格子上，讓 template／vector 模式「選了就有字」。此步為 best-effort：
+  缺 Pillow 或字型時靜默跳過、回傳純色底圖（行為與舊版相容，永不因此失敗）。
 * 模板定義選單版型（size + 各區塊 bounds + postback action）；按鈕 action 直接
   對應既有預約對話 dispatcher（book / my / slots / help），故點按鈕即觸發預約流程。
 * 套用四步：（刪舊）→ create → upload_image → set_default；richMenuId 存回
   LineChannelConfig。
 
-店家如需自訂背景圖，未來可改傳上傳的圖片 bytes 取代純色 PNG（介面已支援 image bytes）。
+店家如需自訂背景圖，custom_image 模式直接上傳含文字的 PNG（不再經自動印字）。
 """
 
 from __future__ import annotations
 
+import io
+import os
 import struct
 import zlib
+from functools import lru_cache
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -230,6 +236,110 @@ def _areas(template: dict) -> list[dict]:
     return areas
 
 
+# ── 自動文字標籤（best-effort，需 Pillow + 中文字型；缺則靜默跳過） ───────────
+# 預設候選字型路徑（Debian/Ubuntu 的 Noto CJK 與文泉驛）；可用環境變數覆寫。
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+)
+
+
+def _labels_enabled() -> bool:
+    """環境開關（預設開）。設 SAAS_RICH_MENU_LABELS=0/false 可關閉自動印字。"""
+    return os.getenv("SAAS_RICH_MENU_LABELS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _font_paths() -> list[str]:
+    env = os.getenv("SAAS_RICH_MENU_FONT")
+    paths = [env] if env else []
+    paths.extend(_FONT_CANDIDATES)
+    return paths
+
+
+@lru_cache(maxsize=64)
+def _load_font(size: int):
+    """載入第一個可用的中文字型（依 size），全部失敗回 None。結果快取避免重複磁碟 I/O。"""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for path in _font_paths():
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return None
+
+
+def _draw_labels(png_bytes: bytes, template: dict) -> bytes:
+    """把各按鈕文字置中畫到對應格子上；任何失敗都回傳原始 png_bytes（不破壞流程）。"""
+    if not _labels_enabled():
+        return png_bytes
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return png_bytes
+    try:
+        cols, rows = template["grid"]
+        buttons = template["buttons"]
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+        width, height = img.size
+        cell_w = width // cols
+        cell_h = height // rows
+        draw = ImageDraw.Draw(img)
+        drew_any = False
+        for idx, (label, _data) in enumerate(buttons):
+            col = idx % cols
+            row = idx // cols
+            x = col * cell_w
+            y = row * cell_h
+            w = (width - x) if col == cols - 1 else cell_w
+            h = (height - y) if row == rows - 1 else cell_h
+            # 字級依格子大小與字數推算，並夾在合理範圍。
+            size = max(36, min(h // 4, (w * 3) // (2 * max(1, len(label)))))
+            font = _load_font(size)
+            if font is None:
+                return png_bytes  # 無字型 → 整體放棄，回純色底圖
+            cx, cy = x + w // 2, y + h // 2
+            # 依格子中心底色亮度決定字色（深底白字／淺底深字）。
+            br, bg_, bb = img.getpixel((cx, cy))
+            luminance = 0.299 * br + 0.587 * bg_ + 0.114 * bb
+            fill = (33, 33, 33) if luminance > 150 else (255, 255, 255)
+            stroke_fill = (255, 255, 255) if fill == (33, 33, 33) else (0, 0, 0)
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            tx = cx - tw // 2 - bbox[0]
+            ty = cy - th // 2 - bbox[1]
+            draw.text(
+                (tx, ty),
+                label,
+                font=font,
+                fill=fill,
+                stroke_width=max(2, size // 16),
+                stroke_fill=stroke_fill,
+            )
+            drew_any = True
+        if not drew_any:
+            return png_bytes
+        out = io.BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        # 任何繪圖例外都回退到原圖——印字是加值，不能讓它擋住選單套用。
+        return png_bytes
+
+
 def build_rich_menu_payload(
     template_name: str,
     theme_name: str,
@@ -263,9 +373,11 @@ def build_rich_menu_payload(
             )
         image = image_bytes
     elif mode == MODE_VECTOR:
-        image = _sectioned_png(width, height, template["grid"], rgb)
+        image = _draw_labels(
+            _sectioned_png(width, height, template["grid"], rgb), template
+        )
     else:
-        image = solid_png(width, height, rgb)
+        image = _draw_labels(solid_png(width, height, rgb), template)
     return payload, image
 
 
