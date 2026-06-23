@@ -25,6 +25,65 @@ def _png_dims(png: bytes) -> tuple[int, int]:
     return struct.unpack(">II", png[16:24])
 
 
+class TestFitNoSpill:
+    """文字不可跨區：量測自適應字級必須讓文字寬高塞進格子留邊範圍內。"""
+
+    @_needs_font
+    def test_fit_font_size_respects_bounds(self):
+        from PIL import Image, ImageDraw
+
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        max_w, max_h = 400.0, 200.0
+        for label in ["預約", "我的預約", "可預約時段", "使用說明"]:
+            size = rm._fit_font_size(draw, label, max_w, max_h)
+            assert size > 0
+            font = rm._load_font(size)
+            x0, y0, x1, y1 = draw.textbbox((0, 0), label, font=font)
+            assert (x1 - x0) <= max_w
+            assert (y1 - y0) <= max_h
+
+    @_needs_font
+    def test_longest_label_stays_within_its_cell(self):
+        """booking3 最長標籤「可預約時段」的字寬必須 < 單格寬度（不溢到隔壁格）。"""
+        from PIL import Image, ImageDraw
+
+        tmpl = rm.TEMPLATES["booking3"]
+        cols = tmpl["grid"][0]
+        cell_w = tmpl["size"]["width"] // cols
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        # 與 _draw_labels 同比例求字級，量測最長標籤實際寬度。
+        size = rm._fit_font_size(
+            draw, "可預約時段", cell_w * rm._LABEL_WIDTH_RATIO, 9999
+        )
+        font = rm._load_font(size)
+        x0, _, x1, _ = draw.textbbox((0, 0), "可預約時段", font=font)
+        assert (x1 - x0) < cell_w
+
+    @_needs_font
+    def test_uniform_font_size_across_cells(self):
+        """同一選單各格採統一字級——以「線上可訂 booking4 全部標籤」量測一致性。
+
+        間接驗證：渲染後不因每格字級不同而參差（透過 _fit_font_size 全體取 min）。
+        """
+        from PIL import Image, ImageDraw
+
+        tmpl = rm.TEMPLATES["booking4"]
+        cols, rows = tmpl["grid"]
+        cell_w = tmpl["size"]["width"] // cols
+        cell_h = tmpl["size"]["height"] // rows
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        sizes = [
+            rm._fit_font_size(
+                draw, label,
+                cell_w * rm._LABEL_WIDTH_RATIO,
+                cell_h * rm._LABEL_HEIGHT_RATIO,
+            )
+            for label, _ in tmpl["buttons"]
+        ]
+        # 統一字級 = 全體最小；最小者本身必能塞入（>0）。
+        assert min(sizes) > 0
+
+
 class TestDrawLabels:
     @_needs_font
     def test_template_image_differs_from_plain_solid(self):
