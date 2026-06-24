@@ -2365,9 +2365,12 @@ def faq_ask(
             "_ai_test.html",
             _ctx(request, actor, question=question, answer=answer, source=source, error=error),
         )
-    context = faq_svc.build_context(db, tid, question)
+    assistant = get_assistant()
+    context = faq_svc.build_context(
+        db, tid, question, max_entries=assistant.context_max_entries
+    )
     try:
-        result = get_assistant().answer(question, context)
+        result = assistant.answer(question, context)
         answer = result.answer
         source = result.source
     except AIError as exc:

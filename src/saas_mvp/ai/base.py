@@ -23,6 +23,12 @@ class AIAssistant(ABC):
     on this interface, not on any concrete class.
     """
 
+    #: How many matched FAQ entries the caller should feed into ``context``.
+    #: A real LLM backend can synthesise across several entries, so the default
+    #: is generous; the offline stub只會原文呈現 context，多筆會變成「問一個列一堆」，
+    #: 因此 stub 覆寫為 1（只回最相關那筆）。
+    context_max_entries: int = 6
+
     @abstractmethod
     def answer(self, question: str, context: str = "") -> AIResult:
         """Answer *question*, optionally grounded in *context* (FAQ + shop info).

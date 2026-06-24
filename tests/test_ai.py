@@ -80,6 +80,12 @@ def test_stub_deterministic():
     assert "10:00-22:00" in r3.answer
 
 
+def test_context_budget_per_backend():
+    # stub 只回最相關 1 筆（否則會「問一個列一堆」）；真 LLM 可吃多筆綜合。
+    assert StubAIAssistant().context_max_entries == 1
+    assert AnthropicAssistant().context_max_entries > 1
+
+
 # ── faq.match ────────────────────────────────────────────────────────────────
 
 def test_faq_match(db):
@@ -150,6 +156,31 @@ def test_ai_ask_returns_answer_with_stub(client, monkeypatch):
     body = r.json()
     assert body["source"] == "stub"
     assert "10:00-22:00" in body["answer"]
+
+
+def test_ai_ask_stub_returns_only_top_faq(client, monkeypatch):
+    """多筆 FAQ 都相關時，stub 只回最相關那筆，不把整排 FAQ 全列出來。"""
+    from saas_mvp import config as cfg
+    monkeypatch.setattr(cfg.settings, "anthropic_api_key", "")  # force stub
+    token = _register(client)
+    client.post("/billing/features/AI_ASSISTANT/subscribe", headers=_auth(token))
+    # 三筆都含「營業」→ 都會 match；只有最相關的「營業時間」該被回。
+    client.post("/ai/faq", headers=_auth(token), json={
+        "question": "營業時間", "answer": "平日10:00-22:00",
+    })
+    client.post("/ai/faq", headers=_auth(token), json={
+        "question": "營業地點", "answer": "台北市信義區",
+    })
+    client.post("/ai/faq", headers=_auth(token), json={
+        "question": "營業項目", "answer": "美容美髮",
+    })
+    r = client.post("/ai/ask", headers=_auth(token), json={"question": "請問營業時間"})
+    assert r.status_code == 200, r.text
+    answer = r.json()["answer"]
+    assert "10:00-22:00" in answer
+    # 不該把其他 FAQ 也一併列出
+    assert "台北市信義區" not in answer
+    assert "美容美髮" not in answer
 
 
 # ── LINE webhook AI fallback ──────────────────────────────────────────────────
