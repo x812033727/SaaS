@@ -19,6 +19,21 @@
   <thead><tr><th>#</th><th>券碼</th><th>名稱</th><th>折扣</th><th>已兌換/上限</th><th>狀態</th><th></th></tr></thead>
   <tbody>
     {% for c in coupons %}
+    {% if editing_id == c.id %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td colspan="6">
+        <form hx-post="/ui/coupons/{{ c.id }}/update" hx-target="#coupons-card" hx-swap="innerHTML" class="col">
+          <label>名稱<input name="name" value="{{ c.name }}" required></label>
+          <label>兌換上限<input name="max_redemptions" type="number" min="1" value="{{ c.max_redemptions or '' }}" placeholder="不限"></label>
+          <div class="row">
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/coupons" hx-target="#coupons-card" hx-swap="innerHTML">取消</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ c.id }}</td>
       <td data-label="券碼"><code>{{ c.code }}</code></td>
@@ -27,12 +42,18 @@
       <td data-label="已兌換/上限">{{ c.redeemed_count }}{% if c.max_redemptions %} / {{ c.max_redemptions }}{% else %} / ∞{% endif %}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
       <td>
-        {% if c.is_active %}
-        <button hx-post="/ui/coupons/{{ c.id }}/deactivate" hx-target="#coupons-card" hx-swap="innerHTML"
-                hx-confirm="確定停用此券？">停用</button>
-        {% else %}<span class="muted">—</span>{% endif %}
+        <div class="row">
+          <button hx-get="/ui/coupons/{{ c.id }}/edit" hx-target="#coupons-card" hx-swap="innerHTML">編輯</button>
+          {% if c.is_active %}
+          <button hx-post="/ui/coupons/{{ c.id }}/deactivate" hx-target="#coupons-card" hx-swap="innerHTML"
+                  hx-confirm="確定停用此券？">停用</button>
+          {% endif %}
+          <button hx-post="/ui/coupons/{{ c.id }}/delete" hx-target="#coupons-card" hx-swap="innerHTML"
+                  hx-confirm="確定永久刪除？(有兌換紀錄會被擋下，請改用停用)">刪除</button>
+        </div>
       </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>

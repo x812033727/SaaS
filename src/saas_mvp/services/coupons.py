@@ -148,6 +148,23 @@ def deactivate_coupon(db: Session, *, tenant_id: int, coupon_id: int) -> None:
     db.commit()
 
 
+def delete_coupon(db: Session, *, tenant_id: int, coupon_id: int) -> None:
+    """刪除優惠券；已有兌換紀錄者擋下（請改用停用，保留稽核軌跡）。"""
+    coupon = _get_or_404(db, tenant_id, coupon_id)
+    redeemed = (
+        tenant_query(db, CouponRedemption, tenant_id)
+        .filter(CouponRedemption.coupon_id == coupon_id)
+        .first()
+    )
+    if redeemed is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="此券已有兌換紀錄，請改用停用",
+        )
+    db.delete(coupon)
+    db.commit()
+
+
 def list_redemptions(
     db: Session, *, tenant_id: int, coupon_id: int
 ) -> list[CouponRedemption]:

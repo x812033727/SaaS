@@ -30,12 +30,16 @@
       <td data-label="電話">{{ l.phone or '—' }}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if l.is_active else 'off' }}">{{ '啟用' if l.is_active else '停用' }}</span></td>
       <td>
-        {% if l.is_active %}
-        <button hx-post="/ui/locations/{{ l.id }}/deactivate" hx-target="#locations-card" hx-swap="innerHTML"
-                hx-confirm="確定停用此分店？">停用</button>
-        {% else %}
-        <button hx-post="/ui/locations/{{ l.id }}/activate" hx-target="#locations-card" hx-swap="innerHTML">啟用</button>
-        {% endif %}
+        <div class="row">
+          {% if l.is_active %}
+          <button hx-post="/ui/locations/{{ l.id }}/deactivate" hx-target="#locations-card" hx-swap="innerHTML"
+                  hx-confirm="確定停用此分店？">停用</button>
+          {% else %}
+          <button hx-post="/ui/locations/{{ l.id }}/activate" hx-target="#locations-card" hx-swap="innerHTML">啟用</button>
+          {% endif %}
+          <button hx-post="/ui/locations/{{ l.id }}/delete" hx-target="#locations-card" hx-swap="innerHTML"
+                  hx-confirm="確定永久刪除？(仍有員工綁定會被擋下，請先改派或停用)">刪除</button>
+        </div>
       </td>
     </tr>
     {% endfor %}

@@ -135,6 +135,23 @@ def deactivate_product(db: Session, *, tenant_id: int, product_id: int) -> None:
     db.commit()
 
 
+def delete_product(db: Session, *, tenant_id: int, product_id: int) -> None:
+    """刪除商品；已有訂單紀錄者擋下（請改用下架，保留訂單明細）。"""
+    p = _product_or_404(db, tenant_id, product_id)
+    ordered = (
+        tenant_query(db, OrderItem, tenant_id)
+        .filter(OrderItem.product_id == product_id)
+        .first()
+    )
+    if ordered is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="此商品已有訂單紀錄，請改用下架",
+        )
+    db.delete(p)
+    db.commit()
+
+
 # ── 訂單 ──────────────────────────────────────────────────────────────────────
 
 def create_order(
