@@ -12,14 +12,37 @@
   <thead><tr><th>#</th><th>問題</th><th>答案</th><th>狀態</th><th></th></tr></thead>
   <tbody>
     {% for f in faqs %}
+    {% if editing_id == f.id %}
+    <tr>
+      <td data-label="#">{{ f.id }}</td>
+      <td colspan="4">
+        <form hx-post="/ui/faq/{{ f.id }}/update" hx-target="#faq-card" hx-swap="innerHTML" class="col">
+          <label>問題<input name="question" value="{{ f.question }}" required></label>
+          <label>答案<textarea name="answer" required>{{ f.answer }}</textarea></label>
+          <label>排序<input name="sort_order" type="number" value="{{ f.sort_order }}"></label>
+          <div class="row">
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/faq" hx-target="#faq-card" hx-swap="innerHTML">取消</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ f.id }}</td>
       <td data-label="問題">{{ f.question }}</td>
       <td data-label="答案">{{ f.answer }}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if f.is_active else 'off' }}">{{ '啟用' if f.is_active else '停用' }}</span></td>
-      <td><button hx-post="/ui/faq/{{ f.id }}/delete" hx-target="#faq-card" hx-swap="innerHTML"
-                  hx-confirm="確定刪除此 FAQ？">刪除</button></td>
+      <td>
+        <div class="row">
+          <button hx-get="/ui/faq/{{ f.id }}/edit" hx-target="#faq-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/faq/{{ f.id }}/toggle" hx-target="#faq-card" hx-swap="innerHTML">{{ '停用' if f.is_active else '啟用' }}</button>
+          <button hx-post="/ui/faq/{{ f.id }}/delete" hx-target="#faq-card" hx-swap="innerHTML"
+                  hx-confirm="確定刪除此 FAQ？">刪除</button>
+        </div>
+      </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>
