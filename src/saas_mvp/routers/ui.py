@@ -870,6 +870,66 @@ def shop_deactivate_product(
     return templates.TemplateResponse("_shop.html", _shop_ctx(request, actor, db))
 
 
+@router.get("/shop/products/{product_id}/edit", response_class=HTMLResponse)
+def shop_edit_product_form(
+    request: Request,
+    product_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_shop.html", _shop_ctx(request, actor, db, editing_id=product_id)
+    )
+
+
+@router.post("/shop/products/{product_id}/update", response_class=HTMLResponse)
+def shop_update_product(
+    request: Request,
+    product_id: int,
+    name: str = Form(...),
+    price_cents: int = Form(...),
+    stock: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    editing_id = None
+    try:
+        shop_svc.update_product(
+            db, tenant_id=tid, product_id=product_id, name=name,
+            price_cents=price_cents,
+            stock=int(stock) if stock.strip() else None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_id = product_id
+    except ValueError:
+        error = "庫存需為整數"
+        editing_id = product_id
+    return templates.TemplateResponse(
+        "_shop.html", _shop_ctx(request, actor, db, error=error, editing_id=editing_id)
+    )
+
+
+@router.post("/shop/products/{product_id}/delete", response_class=HTMLResponse)
+def shop_delete_product(
+    request: Request,
+    product_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        shop_svc.delete_product(db, tenant_id=tid, product_id=product_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_shop.html", _shop_ctx(request, actor, db, error=error)
+    )
+
+
 @router.post("/shop/orders/{order_id}/pay", response_class=HTMLResponse)
 def shop_pay_order(
     request: Request,
@@ -1038,6 +1098,71 @@ def coupons_deactivate(
         pass
     return templates.TemplateResponse(
         "_coupons_list.html", _coupons_ctx(request, actor, db)
+    )
+
+
+@router.get("/coupons/{coupon_id}/edit", response_class=HTMLResponse)
+def coupons_edit_form(
+    request: Request,
+    coupon_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.COUPON_SYSTEM):
+        return _feature_locked(request, actor, features_svc.COUPON_SYSTEM, "優惠券／會員")
+    return templates.TemplateResponse(
+        "_coupons_list.html", _coupons_ctx(request, actor, db, editing_id=coupon_id)
+    )
+
+
+@router.post("/coupons/{coupon_id}/update", response_class=HTMLResponse)
+def coupons_update(
+    request: Request,
+    coupon_id: int,
+    name: str = Form(...),
+    max_redemptions: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.COUPON_SYSTEM):
+        return _feature_locked(request, actor, features_svc.COUPON_SYSTEM, "優惠券／會員")
+    tid = actor.user.tenant_id
+    error = None
+    editing_id = None
+    try:
+        coupons_svc.update_coupon(
+            db, tenant_id=tid, coupon_id=coupon_id, name=name,
+            max_redemptions=int(max_redemptions) if max_redemptions.strip() else None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_id = coupon_id
+    except ValueError:
+        error = "兌換上限需為整數"
+        editing_id = coupon_id
+    return templates.TemplateResponse(
+        "_coupons_list.html",
+        _coupons_ctx(request, actor, db, error=error, editing_id=editing_id),
+    )
+
+
+@router.post("/coupons/{coupon_id}/delete", response_class=HTMLResponse)
+def coupons_delete(
+    request: Request,
+    coupon_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.COUPON_SYSTEM):
+        return _feature_locked(request, actor, features_svc.COUPON_SYSTEM, "優惠券／會員")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        coupons_svc.delete_coupon(db, tenant_id=tid, coupon_id=coupon_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_coupons_list.html", _coupons_ctx(request, actor, db, error=error)
     )
 
 
@@ -1252,6 +1377,26 @@ def locations_activate(
     )
 
 
+@router.post("/locations/{location_id}/delete", response_class=HTMLResponse)
+def locations_delete(
+    request: Request,
+    location_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.MULTI_LOCATION):
+        return _feature_locked(request, actor, features_svc.MULTI_LOCATION, "多分店")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        locations_svc.delete_location(db, tenant_id=tid, location_id=location_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_locations.html", _locations_ctx(request, actor, db, error=error)
+    )
+
+
 # ── 店家自助：員工（STAFF_SCHEDULING） ──────────────────────────────────────────
 
 def _staff_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
@@ -1363,6 +1508,26 @@ def staff_activate(
     except HTTPException:
         pass
     return templates.TemplateResponse("_staff_list.html", _staff_ctx(request, actor, db))
+
+
+@router.post("/staff/{staff_id}/delete", response_class=HTMLResponse)
+def staff_delete(
+    request: Request,
+    staff_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        staff_svc.delete_staff(db, tenant_id=tid, staff_id=staff_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
 
 
 @router.post("/staff/{staff_id}/rotate-token", response_class=HTMLResponse)
@@ -1826,6 +1991,69 @@ def campaigns_deactivate(
     )
 
 
+@router.get("/campaigns/{campaign_id}/edit", response_class=HTMLResponse)
+def campaigns_edit_form(
+    request: Request,
+    campaign_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
+    return templates.TemplateResponse(
+        "_campaigns_list.html",
+        _campaigns_ctx(request, actor, db, editing_id=campaign_id),
+    )
+
+
+@router.post("/campaigns/{campaign_id}/update", response_class=HTMLResponse)
+def campaigns_update(
+    request: Request,
+    campaign_id: int,
+    name: str = Form(...),
+    message_template: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
+    tid = actor.user.tenant_id
+    error = None
+    editing_id = None
+    try:
+        marketing_svc.update_campaign(
+            db, tenant_id=tid, campaign_id=campaign_id,
+            name=name, message_template=message_template,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_id = campaign_id
+    return templates.TemplateResponse(
+        "_campaigns_list.html",
+        _campaigns_ctx(request, actor, db, error=error, editing_id=editing_id),
+    )
+
+
+@router.post("/campaigns/{campaign_id}/delete", response_class=HTMLResponse)
+def campaigns_delete(
+    request: Request,
+    campaign_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.MARKETING_AUTO):
+        return _feature_locked(request, actor, features_svc.MARKETING_AUTO, "行銷自動化")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        marketing_svc.delete_campaign(db, tenant_id=tid, campaign_id=campaign_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_campaigns_list.html", _campaigns_ctx(request, actor, db, error=error)
+    )
+
+
 # ── 店家自助：圖文選單卡片（FLEX_MENU） ─────────────────────────────────────────
 
 def _get_or_create_flex_menu(db: Session, tenant_id: int) -> "flex_menu_svc.FlexMenu":
@@ -1926,6 +2154,54 @@ def flex_menu_delete_card(
     return templates.TemplateResponse("_flex_menu.html", _flex_ctx(request, actor, db))
 
 
+@router.get("/flex-menu/cards/{card_id}/edit", response_class=HTMLResponse)
+def flex_menu_edit_card_form(
+    request: Request,
+    card_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
+    return templates.TemplateResponse(
+        "_flex_menu.html", _flex_ctx(request, actor, db, editing_card_id=card_id)
+    )
+
+
+@router.post("/flex-menu/cards/{card_id}/update", response_class=HTMLResponse)
+def flex_menu_update_card(
+    request: Request,
+    card_id: int,
+    title: str = Form(...),
+    action_type: str = Form(...),
+    action_data: str = Form(...),
+    subtitle: str = Form(""),
+    image_url: str = Form(""),
+    bg_color: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
+    tid = actor.user.tenant_id
+    error = None
+    editing_card_id = None
+    menu = _get_or_create_flex_menu(db, tid)
+    try:
+        flex_menu_svc.update_card(
+            db, tenant_id=tid, menu_id=menu.id, card_id=card_id,
+            title=title, action_type=action_type, action_data=action_data,
+            subtitle=subtitle, image_url=image_url, bg_color=bg_color,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_card_id = card_id
+    return templates.TemplateResponse(
+        "_flex_menu.html",
+        _flex_ctx(request, actor, db, error=error, editing_card_id=editing_card_id),
+    )
+
+
 # ── 店家自助：作品集（PUBLIC_PROFILE） ──────────────────────────────────────────
 
 def _portfolio_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
@@ -1987,6 +2263,50 @@ def portfolio_delete_category(
     return templates.TemplateResponse("_portfolio.html", _portfolio_ctx(request, actor, db))
 
 
+@router.get("/portfolio/categories/{category_id}/edit", response_class=HTMLResponse)
+def portfolio_edit_category_form(
+    request: Request,
+    category_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
+    return templates.TemplateResponse(
+        "_portfolio.html",
+        _portfolio_ctx(request, actor, db, editing_category_id=category_id),
+    )
+
+
+@router.post("/portfolio/categories/{category_id}/update", response_class=HTMLResponse)
+def portfolio_update_category(
+    request: Request,
+    category_id: int,
+    name: str = Form(...),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
+    tid = actor.user.tenant_id
+    error = None
+    editing_category_id = None
+    try:
+        portfolio_svc.update_category(
+            db, tenant_id=tid, category_id=category_id,
+            name=name, sort_order=sort_order,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_category_id = category_id
+    return templates.TemplateResponse(
+        "_portfolio.html",
+        _portfolio_ctx(request, actor, db, error=error,
+                       editing_category_id=editing_category_id),
+    )
+
+
 @router.post("/portfolio/items", response_class=HTMLResponse)
 def portfolio_create_item(
     request: Request,
@@ -2031,6 +2351,49 @@ def portfolio_delete_item(
     except HTTPException:
         pass
     return templates.TemplateResponse("_portfolio.html", _portfolio_ctx(request, actor, db))
+
+
+@router.get("/portfolio/items/{item_id}/edit", response_class=HTMLResponse)
+def portfolio_edit_item_form(
+    request: Request,
+    item_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
+    return templates.TemplateResponse(
+        "_portfolio.html", _portfolio_ctx(request, actor, db, editing_item_id=item_id)
+    )
+
+
+@router.post("/portfolio/items/{item_id}/update", response_class=HTMLResponse)
+def portfolio_update_item(
+    request: Request,
+    item_id: int,
+    image_url: str = Form(...),
+    caption: str = Form(""),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.PUBLIC_PROFILE):
+        return _feature_locked(request, actor, features_svc.PUBLIC_PROFILE, "公開店家頁")
+    tid = actor.user.tenant_id
+    error = None
+    editing_item_id = None
+    try:
+        portfolio_svc.update_item(
+            db, tenant_id=tid, item_id=item_id,
+            image_url=image_url, caption=caption, sort_order=sort_order,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_item_id = item_id
+    return templates.TemplateResponse(
+        "_portfolio.html",
+        _portfolio_ctx(request, actor, db, error=error, editing_item_id=editing_item_id),
+    )
 
 
 # ── 店家自助：公開店家頁（PUBLIC_PROFILE） ──────────────────────────────────────

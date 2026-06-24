@@ -10,11 +10,32 @@
   <thead><tr><th>#</th><th>名稱</th><th>排序</th><th></th></tr></thead>
   <tbody>
     {% for cat in categories %}
+    {% if editing_category_id == cat.id %}
+    <tr>
+      <td data-label="#">{{ cat.id }}</td>
+      <td colspan="3">
+        <form hx-post="/ui/portfolio/categories/{{ cat.id }}/update" hx-target="#portfolio-card" hx-swap="innerHTML" class="col">
+          <label>名稱<input name="name" value="{{ cat.name }}" required></label>
+          <label>排序<input name="sort_order" type="number" value="{{ cat.sort_order }}"></label>
+          <div class="row">
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/portfolio" hx-target="#portfolio-card" hx-swap="innerHTML">取消</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ cat.id }}</td><td data-label="名稱">{{ cat.name }}</td><td data-label="排序">{{ cat.sort_order }}</td>
-      <td><button hx-post="/ui/portfolio/categories/{{ cat.id }}/delete" hx-target="#portfolio-card" hx-swap="innerHTML"
-                  hx-confirm="確定刪除此分類？">刪除</button></td>
+      <td>
+        <div class="row">
+          <button hx-get="/ui/portfolio/categories/{{ cat.id }}/edit" hx-target="#portfolio-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/portfolio/categories/{{ cat.id }}/delete" hx-target="#portfolio-card" hx-swap="innerHTML"
+                  hx-confirm="確定刪除此分類？">刪除</button>
+        </div>
+      </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>
@@ -39,14 +60,36 @@
   <thead><tr><th>#</th><th>圖片</th><th>說明</th><th>狀態</th><th></th></tr></thead>
   <tbody>
     {% for it in items %}
+    {% if editing_item_id == it.id %}
+    <tr>
+      <td data-label="#">{{ it.id }}</td>
+      <td colspan="4">
+        <form hx-post="/ui/portfolio/items/{{ it.id }}/update" hx-target="#portfolio-card" hx-swap="innerHTML" class="col">
+          <label>說明<input name="caption" value="{{ it.caption or '' }}"></label>
+          <label>圖片網址<input name="image_url" value="{{ it.image_url }}"></label>
+          <label>排序<input name="sort_order" type="number" value="{{ it.sort_order }}"></label>
+          <div class="row">
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/portfolio" hx-target="#portfolio-card" hx-swap="innerHTML">取消</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ it.id }}</td>
       <td data-label="圖片"><code>{{ it.image_url }}</code></td>
       <td data-label="說明">{{ it.caption or '—' }}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if it.is_active else 'off' }}">{{ '啟用' if it.is_active else '停用' }}</span></td>
-      <td><button hx-post="/ui/portfolio/items/{{ it.id }}/delete" hx-target="#portfolio-card" hx-swap="innerHTML"
-                  hx-confirm="確定刪除此作品？">刪除</button></td>
+      <td>
+        <div class="row">
+          <button hx-get="/ui/portfolio/items/{{ it.id }}/edit" hx-target="#portfolio-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/portfolio/items/{{ it.id }}/delete" hx-target="#portfolio-card" hx-swap="innerHTML"
+                  hx-confirm="確定刪除此作品？">刪除</button>
+        </div>
+      </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>

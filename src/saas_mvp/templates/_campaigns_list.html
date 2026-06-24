@@ -31,6 +31,21 @@
   <thead><tr><th>#</th><th>名稱</th><th>類型</th><th>獎勵</th><th>狀態</th><th></th></tr></thead>
   <tbody>
     {% for c in campaigns %}
+    {% if editing_id == c.id %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td colspan="5">
+        <form hx-post="/ui/campaigns/{{ c.id }}/update" hx-target="#campaigns-card" hx-swap="innerHTML" class="col">
+          <label>名稱<input name="name" value="{{ c.name }}" required></label>
+          <label>訊息範本<textarea name="message_template" required>{{ c.message_template }}</textarea></label>
+          <div class="row">
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/campaigns" hx-target="#campaigns-card" hx-swap="innerHTML">取消</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ c.id }}</td>
       <td data-label="名稱">{{ c.name }}</td>
@@ -38,13 +53,19 @@
       <td data-label="獎勵">{% if c.reward_type %}{{ c.reward_type }}:{{ c.reward_value }}{% else %}—{% endif %}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>
       <td>
-        <button hx-post="/ui/campaigns/{{ c.id }}/run" hx-target="#campaigns-card" hx-swap="innerHTML">立即執行</button>
-        {% if c.is_active %}
-        <button hx-post="/ui/campaigns/{{ c.id }}/deactivate" hx-target="#campaigns-card" hx-swap="innerHTML"
-                hx-confirm="確定停用此活動？">停用</button>
-        {% endif %}
+        <div class="row">
+          <button hx-get="/ui/campaigns/{{ c.id }}/edit" hx-target="#campaigns-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/campaigns/{{ c.id }}/run" hx-target="#campaigns-card" hx-swap="innerHTML">立即執行</button>
+          {% if c.is_active %}
+          <button hx-post="/ui/campaigns/{{ c.id }}/deactivate" hx-target="#campaigns-card" hx-swap="innerHTML"
+                  hx-confirm="確定停用此活動？">停用</button>
+          {% endif %}
+          <button hx-post="/ui/campaigns/{{ c.id }}/delete" hx-target="#campaigns-card" hx-swap="innerHTML"
+                  hx-confirm="確定永久刪除？(有發送紀錄會被擋下，請改用停用)">刪除</button>
+        </div>
       </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>

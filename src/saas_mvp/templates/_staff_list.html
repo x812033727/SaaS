@@ -35,6 +35,8 @@
     {% else %}
     <button hx-post="/ui/staff/{{ s.id }}/activate" hx-target="#staff-card" hx-swap="innerHTML">啟用</button>
     {% endif %}
+    <button hx-post="/ui/staff/{{ s.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML"
+            hx-confirm="確定永久刪除此員工？(將一併移除其班表/休假設定)">刪除</button>
   </p>
 
   <h4>員工自助連結</h4>

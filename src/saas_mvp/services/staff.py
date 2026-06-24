@@ -156,6 +156,13 @@ def update_staff(
     return staff
 
 
+def delete_staff(db: Session, *, tenant_id: int, staff_id: int) -> None:
+    """刪除員工；其班表/請假/服務指派由 DB FK ondelete=CASCADE 連帶清除。"""
+    staff = _get_or_404(db, tenant_id, staff_id)
+    db.delete(staff)
+    db.commit()
+
+
 def rotate_token(db: Session, *, tenant_id: int, staff_id: int) -> Staff:
     """重新產生員工自助入口憑證。"""
     staff = _get_or_404(db, tenant_id, staff_id)

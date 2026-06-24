@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
 from saas_mvp.models.location import Location
+from saas_mvp.models.staff import Staff
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.services.tenants import tenant_query
 
@@ -106,3 +107,20 @@ def update_location(
     db.commit()
     db.refresh(location)
     return location
+
+
+def delete_location(db: Session, *, tenant_id: int, location_id: int) -> None:
+    """刪除分店；仍有員工綁定者擋下（請先改派或停用）。"""
+    location = _get_or_404(db, tenant_id, location_id)
+    bound_staff = (
+        tenant_query(db, Staff, tenant_id)
+        .filter(Staff.location_id == location_id)
+        .first()
+    )
+    if bound_staff is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="此分店仍有員工綁定，請先改派或停用",
+        )
+    db.delete(location)
+    db.commit()

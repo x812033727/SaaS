@@ -459,6 +459,302 @@ class TestFaqUI:
             db.close()
 
 
+class TestCouponCrud:
+    def _create(self, client, email, code="SAVE10"):
+        client.post("/ui/coupons", data={
+            "code": code, "name": "舊名稱", "discount_type": "percent",
+            "discount_value": "10", "max_redemptions": "5",
+        })
+        from saas_mvp.models.coupon import Coupon
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            return db.query(Coupon).filter(
+                Coupon.tenant_id == tid, Coupon.code == code
+            ).first().id
+        finally:
+            db.close()
+
+    def test_edit_form_and_update(self, client):
+        email = _login(client)
+        cid = self._create(client, email)
+        r = client.get(f"/ui/coupons/{cid}/edit")
+        assert r.status_code == 200
+        assert f"/ui/coupons/{cid}/update" in r.text and "舊名稱" in r.text
+        r2 = client.post(f"/ui/coupons/{cid}/update",
+                         data={"name": "新名稱", "max_redemptions": "20"})
+        assert r2.status_code == 200 and "新名稱" in r2.text
+        from saas_mvp.models.coupon import Coupon
+        db = _Session()
+        try:
+            c = db.get(Coupon, cid)
+            assert c.name == "新名稱" and c.max_redemptions == 20
+        finally:
+            db.close()
+
+    def test_delete_happy(self, client):
+        email = _login(client)
+        cid = self._create(client, email, code="DELME")
+        assert client.post(f"/ui/coupons/{cid}/delete").status_code == 200
+        from saas_mvp.models.coupon import Coupon
+        db = _Session()
+        try:
+            assert db.get(Coupon, cid) is None
+        finally:
+            db.close()
+
+    def test_delete_blocked_when_redeemed(self, client):
+        email = _login(client)
+        cid = self._create(client, email, code="USED")
+        tid = _tenant_id_for(email)
+        from saas_mvp.services import coupons as coupons_svc
+        db = _Session()
+        try:
+            coupons_svc.redeem_coupon(db, tenant_id=tid, code="USED", line_user_id="Uabc")
+        finally:
+            db.close()
+        r = client.post(f"/ui/coupons/{cid}/delete")
+        assert r.status_code == 200 and "兌換紀錄" in r.text  # 被擋下並提示
+        from saas_mvp.models.coupon import Coupon
+        db = _Session()
+        try:
+            assert db.get(Coupon, cid) is not None  # 仍保留
+        finally:
+            db.close()
+
+
+class TestShopProductCrud:
+    def _create(self, client, email, name="舊商品"):
+        client.post("/ui/shop/products", data={"name": name, "price_cents": "500", "stock": ""})
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            return db.query(Product).filter(
+                Product.tenant_id == tid, Product.name == name
+            ).first().id
+        finally:
+            db.close()
+
+    def test_edit_and_update(self, client):
+        email = _login(client)
+        pid = self._create(client, email)
+        r = client.get(f"/ui/shop/products/{pid}/edit")
+        assert r.status_code == 200 and "舊商品" in r.text
+        r2 = client.post(f"/ui/shop/products/{pid}/update",
+                         data={"name": "新商品", "price_cents": "800", "stock": "3"})
+        assert "新商品" in r2.text
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            p = db.get(Product, pid)
+            assert p.name == "新商品" and p.price_cents == 800 and p.stock == 3
+        finally:
+            db.close()
+
+    def test_delete_happy(self, client):
+        email = _login(client)
+        pid = self._create(client, email, "刪商品")
+        assert client.post(f"/ui/shop/products/{pid}/delete").status_code == 200
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            assert db.get(Product, pid) is None
+        finally:
+            db.close()
+
+    def test_delete_blocked_when_ordered(self, client):
+        email = _login(client)
+        pid = self._create(client, email, "已售商品")
+        tid = _tenant_id_for(email)
+        from saas_mvp.services import shop as shop_svc
+        db = _Session()
+        try:
+            shop_svc.create_order(db, tenant_id=tid, items=[(pid, 1)], line_user_id="Ubuy")
+        finally:
+            db.close()
+        r = client.post(f"/ui/shop/products/{pid}/delete")
+        assert r.status_code == 200 and "訂單紀錄" in r.text
+        from saas_mvp.models.product import Product
+        db = _Session()
+        try:
+            assert db.get(Product, pid) is not None
+        finally:
+            db.close()
+
+
+class TestCampaignCrud:
+    def _create(self, client, email, name="舊活動"):
+        client.post("/ui/campaigns", data={
+            "name": name, "type": "broadcast", "message_template": "嗨 {name}",
+            "schedule_at": "", "segment_json": "", "reward_type": "", "reward_value": "",
+        })
+        from saas_mvp.models.campaign import Campaign
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            return db.query(Campaign).filter(
+                Campaign.tenant_id == tid, Campaign.name == name
+            ).first().id
+        finally:
+            db.close()
+
+    def test_edit_and_update(self, client):
+        email = _login(client)
+        cid = self._create(client, email)
+        r = client.get(f"/ui/campaigns/{cid}/edit")
+        assert r.status_code == 200 and "舊活動" in r.text
+        r2 = client.post(f"/ui/campaigns/{cid}/update",
+                         data={"name": "新活動", "message_template": "新訊息 {name}"})
+        assert "新活動" in r2.text
+        from saas_mvp.models.campaign import Campaign
+        db = _Session()
+        try:
+            assert db.get(Campaign, cid).name == "新活動"
+        finally:
+            db.close()
+
+    def test_delete_happy(self, client):
+        email = _login(client)
+        cid = self._create(client, email, "刪活動")
+        assert client.post(f"/ui/campaigns/{cid}/delete").status_code == 200
+        from saas_mvp.models.campaign import Campaign
+        db = _Session()
+        try:
+            assert db.get(Campaign, cid) is None
+        finally:
+            db.close()
+
+
+class TestPortfolioEdit:
+    def test_category_update(self, client):
+        email = _login(client)
+        client.post("/ui/portfolio/categories", data={"name": "舊分類", "sort_order": "0"})
+        from saas_mvp.models.portfolio_category import PortfolioCategory
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            cat_id = db.query(PortfolioCategory).filter(
+                PortfolioCategory.tenant_id == tid
+            ).first().id
+        finally:
+            db.close()
+        r = client.get(f"/ui/portfolio/categories/{cat_id}/edit")
+        assert r.status_code == 200 and "舊分類" in r.text
+        r2 = client.post(f"/ui/portfolio/categories/{cat_id}/update",
+                         data={"name": "新分類", "sort_order": "2"})
+        assert "新分類" in r2.text
+
+    def test_item_update(self, client):
+        email = _login(client)
+        client.post("/ui/portfolio/items", data={
+            "image_url": "https://x/a.jpg", "caption": "舊圖說",
+            "category_id": "", "sort_order": "0",
+        })
+        from saas_mvp.models.portfolio_item import PortfolioItem
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            item_id = db.query(PortfolioItem).filter(
+                PortfolioItem.tenant_id == tid
+            ).first().id
+        finally:
+            db.close()
+        r = client.get(f"/ui/portfolio/items/{item_id}/edit")
+        assert r.status_code == 200 and "舊圖說" in r.text
+        r2 = client.post(f"/ui/portfolio/items/{item_id}/update", data={
+            "image_url": "https://x/b.jpg", "caption": "新圖說", "sort_order": "1",
+        })
+        assert "新圖說" in r2.text
+
+
+class TestFlexCardEdit:
+    def test_card_update(self, client):
+        email = _login(client)
+        client.post("/ui/flex-menu/cards", data={
+            "title": "舊卡", "action_type": "uri", "action_data": "https://e.com",
+            "subtitle": "舊副標", "image_url": "", "bg_color": "",
+        })
+        from saas_mvp.models.flex_menu_card import FlexMenuCard
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            card_id = db.query(FlexMenuCard).filter(
+                FlexMenuCard.tenant_id == tid, FlexMenuCard.title == "舊卡"
+            ).first().id
+        finally:
+            db.close()
+        r = client.get(f"/ui/flex-menu/cards/{card_id}/edit")
+        assert r.status_code == 200 and "舊卡" in r.text
+        r2 = client.post(f"/ui/flex-menu/cards/{card_id}/update", data={
+            "title": "新卡", "action_type": "uri", "action_data": "https://e2.com",
+            "subtitle": "新副標", "image_url": "", "bg_color": "",
+        })
+        assert "新卡" in r2.text
+
+
+class TestLocationStaffDelete:
+    def _create_location(self, client, email, name="待刪分店"):
+        client.post("/ui/locations", data={"name": name, "address": "", "phone": ""})
+        from saas_mvp.models.location import Location
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            return db.query(Location).filter(
+                Location.tenant_id == tid, Location.name == name
+            ).first().id
+        finally:
+            db.close()
+
+    def test_location_delete_happy(self, client):
+        email = _login(client)
+        lid = self._create_location(client, email)
+        assert client.post(f"/ui/locations/{lid}/delete").status_code == 200
+        from saas_mvp.models.location import Location
+        db = _Session()
+        try:
+            assert db.get(Location, lid) is None
+        finally:
+            db.close()
+
+    def test_location_delete_blocked_with_staff(self, client):
+        email = _login(client)
+        lid = self._create_location(client, email, "有員工分店")
+        client.post("/ui/staff", data={
+            "name": "小華", "role": "設計師",
+            "location_id": str(lid), "booking_mode": "capacity",
+        })
+        r = client.post(f"/ui/locations/{lid}/delete")
+        assert r.status_code == 200 and "員工綁定" in r.text
+        from saas_mvp.models.location import Location
+        db = _Session()
+        try:
+            assert db.get(Location, lid) is not None
+        finally:
+            db.close()
+
+    def test_staff_delete_happy(self, client):
+        email = _login(client)
+        client.post("/ui/staff", data={
+            "name": "待刪員工", "role": "", "location_id": "", "booking_mode": "capacity",
+        })
+        from saas_mvp.models.staff import Staff
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            sid = db.query(Staff).filter(
+                Staff.tenant_id == tid, Staff.name == "待刪員工"
+            ).first().id
+        finally:
+            db.close()
+        assert client.post(f"/ui/staff/{sid}/delete").status_code == 200
+        db = _Session()
+        try:
+            assert db.get(Staff, sid) is None
+        finally:
+            db.close()
+
+
 class TestDashboardPushPanel:
     def test_push_usage_panel(self, client):
         _login(client)

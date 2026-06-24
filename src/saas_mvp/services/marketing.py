@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import json
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -48,10 +49,66 @@ from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import segments as segments_svc
+from saas_mvp.services.tenants import tenant_query
 
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _campaign_or_404(db: Session, tenant_id: int, campaign_id: int) -> Campaign:
+    campaign = (
+        tenant_query(db, Campaign, tenant_id)
+        .filter(Campaign.id == campaign_id)
+        .first()
+    )
+    if campaign is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found"
+        )
+    return campaign
+
+
+def update_campaign(
+    db: Session,
+    *,
+    tenant_id: int,
+    campaign_id: int,
+    name: str | None = None,
+    message_template: str | None = None,
+    reward_value: int | None = None,
+    is_active: bool | None = None,
+) -> Campaign:
+    """更新活動欄位（僅帶入者覆寫）。"""
+    campaign = _campaign_or_404(db, tenant_id, campaign_id)
+    if name is not None:
+        campaign.name = name
+    if message_template is not None:
+        campaign.message_template = message_template
+    if reward_value is not None:
+        campaign.reward_value = reward_value
+    if is_active is not None:
+        campaign.is_active = is_active
+    db.commit()
+    db.refresh(campaign)
+    return campaign
+
+
+def delete_campaign(db: Session, *, tenant_id: int, campaign_id: int) -> None:
+    """刪除活動；已有發送紀錄者擋下（請改用停用，保留發送軌跡）。"""
+    campaign = _campaign_or_404(db, tenant_id, campaign_id)
+    sent = (
+        tenant_query(db, CampaignSend, tenant_id)
+        .filter(CampaignSend.campaign_id == campaign_id)
+        .first()
+    )
+    if sent is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="此活動已有發送紀錄，請改用停用",
+        )
+    db.delete(campaign)
+    db.commit()
 
 
 def _parse_segment(campaign: Campaign) -> dict:

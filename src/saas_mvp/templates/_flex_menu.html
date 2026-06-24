@@ -32,14 +32,45 @@
   <thead><tr><th>#</th><th>標題</th><th>副標</th><th>動作</th><th></th></tr></thead>
   <tbody>
     {% for c in cards %}
+    {% if editing_card_id == c.id %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td colspan="4">
+        <form hx-post="/ui/flex-menu/cards/{{ c.id }}/update" hx-target="#flex-card" hx-swap="innerHTML" class="col">
+          <label>標題<input name="title" value="{{ c.title }}" maxlength="128" required></label>
+          <label>副標<input name="subtitle" value="{{ c.subtitle or '' }}" maxlength="256"></label>
+          <label>圖片網址<input name="image_url" value="{{ c.image_url or '' }}" maxlength="512"></label>
+          <label>背景色<input name="bg_color" value="{{ c.bg_color or '' }}" maxlength="16" placeholder="#ffffff"></label>
+          <label>動作類型
+            <select name="action_type">
+              <option value="uri" {{ 'selected' if c.action_type == 'uri' else '' }}>開啟網址</option>
+              <option value="message" {{ 'selected' if c.action_type == 'message' else '' }}>傳送訊息</option>
+              <option value="postback" {{ 'selected' if c.action_type == 'postback' else '' }}>postback</option>
+            </select>
+          </label>
+          <label>動作資料<input name="action_data" value="{{ c.action_data }}" maxlength="512" required></label>
+          <div class="row">
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/flex-menu" hx-target="#flex-card" hx-swap="innerHTML">取消</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ c.id }}</td>
       <td data-label="標題">{{ c.title }}</td>
       <td data-label="副標">{{ c.subtitle or '—' }}</td>
       <td data-label="動作">{{ c.action_type }}: {{ c.action_data }}</td>
-      <td><button hx-post="/ui/flex-menu/cards/{{ c.id }}/delete" hx-target="#flex-card" hx-swap="innerHTML"
-                  hx-confirm="確定刪除此卡片？">刪除</button></td>
+      <td>
+        <div class="row">
+          <button hx-get="/ui/flex-menu/cards/{{ c.id }}/edit" hx-target="#flex-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/flex-menu/cards/{{ c.id }}/delete" hx-target="#flex-card" hx-swap="innerHTML"
+                  hx-confirm="確定刪除此卡片？">刪除</button>
+        </div>
+      </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>
