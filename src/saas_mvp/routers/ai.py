@@ -26,9 +26,15 @@ router = APIRouter(
 )
 
 
-def _build_context(db: Session, tenant_id: int, question: str) -> str:
-    """以 faq.build_context 組裝 context（最相關 FAQ 的 Q/A 串接）。"""
-    return faq_svc.build_context(db, tenant_id, question)
+def _build_context(
+    db: Session, tenant_id: int, question: str, max_entries: int
+) -> str:
+    """以 faq.build_context 組裝 context（最相關 FAQ 的 Q/A 串接）。
+
+    max_entries 由 backend 決定：stub 只回最相關 1 筆（否則會把多筆 FAQ 全列出），
+    真 LLM 則可吃多筆綜合作答。
+    """
+    return faq_svc.build_context(db, tenant_id, question, max_entries=max_entries)
 
 
 # ── /ai/ask ──────────────────────────────────────────────────────────────────
@@ -49,8 +55,10 @@ def ask(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AskResponse:
-    context = _build_context(db, current_user.tenant_id, body.question)
     assistant = get_assistant()
+    context = _build_context(
+        db, current_user.tenant_id, body.question, assistant.context_max_entries
+    )
     try:
         result = assistant.answer(body.question, context)
     except AIError as exc:

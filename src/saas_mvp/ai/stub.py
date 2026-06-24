@@ -23,6 +23,10 @@ class StubAIAssistant(AIAssistant):
     - Otherwise echo the question with a canned acknowledgement.
     """
 
+    # 沒有真 LLM 可綜合，stub 只把 context 原文回給顧客，因此只取最相關 1 筆 FAQ，
+    # 避免「問一個問題卻列出一整排 FAQ」。
+    context_max_entries: int = 1
+
     def answer(self, question: str, context: str = "") -> AIResult:
         if context and context.strip():
             return AIResult(answer=context.strip(), source="stub")
