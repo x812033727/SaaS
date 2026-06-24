@@ -2215,6 +2215,7 @@ async def pos_checkout(
 
 def _faq_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
+    extra.setdefault("editing_id", None)
     return _ctx(
         request, actor,
         faqs=faq_svc.list_faqs(db, tenant_id=tid),
@@ -2272,6 +2273,76 @@ def faq_delete(
     except HTTPException:
         pass
     return templates.TemplateResponse("_faq_list.html", _faq_ctx(request, actor, db))
+
+
+@router.post("/faq/{faq_id}/toggle", response_class=HTMLResponse)
+def faq_toggle(
+    request: Request,
+    faq_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        faq = faq_svc.get_faq(db, tenant_id=tid, faq_id=faq_id)
+        faq_svc.update_faq(
+            db, tenant_id=tid, faq_id=faq_id, is_active=not faq.is_active
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_faq_list.html", _faq_ctx(request, actor, db, error=error)
+    )
+
+
+@router.get("/faq/{faq_id}/edit", response_class=HTMLResponse)
+def faq_edit_form(
+    request: Request,
+    faq_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    return templates.TemplateResponse(
+        "_faq_list.html", _faq_ctx(request, actor, db, editing_id=faq_id)
+    )
+
+
+@router.post("/faq/{faq_id}/update", response_class=HTMLResponse)
+def faq_update(
+    request: Request,
+    faq_id: int,
+    question: str = Form(...),
+    answer: str = Form(...),
+    sort_order: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    tid = actor.user.tenant_id
+    error = None
+    editing_id = None
+    try:
+        faq_svc.update_faq(
+            db,
+            tenant_id=tid,
+            faq_id=faq_id,
+            question=question,
+            answer=answer,
+            sort_order=sort_order,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_id = faq_id
+    return templates.TemplateResponse(
+        "_faq_list.html",
+        _faq_ctx(request, actor, db, error=error, editing_id=editing_id),
+    )
 
 
 @router.post("/faq/ask", response_class=HTMLResponse)

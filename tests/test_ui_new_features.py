@@ -399,6 +399,65 @@ class TestFaqUI:
         assert r2.status_code == 200
         assert "回答" in r2.text
 
+    def _create_faq(self, client, email):
+        client.post("/ui/faq", data={
+            "question": "可以刷卡嗎？", "answer": "可以，接受信用卡。", "sort_order": "0",
+        })
+        from saas_mvp.models.faq_entry import FAQEntry
+        db = _Session()
+        try:
+            tid = _tenant_id_for(email)
+            return db.query(FAQEntry).filter(FAQEntry.tenant_id == tid).first().id
+        finally:
+            db.close()
+
+    def test_toggle_active(self, client):
+        email = _login(client)
+        fid = self._create_faq(client, email)
+        # 新建預設啟用 → 停用
+        r = client.post(f"/ui/faq/{fid}/toggle")
+        assert r.status_code == 200
+        from saas_mvp.models.faq_entry import FAQEntry
+        db = _Session()
+        try:
+            assert db.get(FAQEntry, fid).is_active is False
+        finally:
+            db.close()
+        # 再切回啟用
+        client.post(f"/ui/faq/{fid}/toggle")
+        db = _Session()
+        try:
+            assert db.get(FAQEntry, fid).is_active is True
+        finally:
+            db.close()
+
+    def test_edit_form_renders_prefilled(self, client):
+        email = _login(client)
+        fid = self._create_faq(client, email)
+        r = client.get(f"/ui/faq/{fid}/edit")
+        assert r.status_code == 200
+        assert f"/ui/faq/{fid}/update" in r.text
+        assert "可以刷卡嗎？" in r.text  # 預填現有問題
+
+    def test_update_content(self, client):
+        email = _login(client)
+        fid = self._create_faq(client, email)
+        r = client.post(f"/ui/faq/{fid}/update", data={
+            "question": "可以用 LINE Pay 嗎？",
+            "answer": "可以，支援 LINE Pay 與行動支付。",
+            "sort_order": "5",
+        })
+        assert r.status_code == 200
+        assert "LINE Pay" in r.text
+        from saas_mvp.models.faq_entry import FAQEntry
+        db = _Session()
+        try:
+            f = db.get(FAQEntry, fid)
+            assert f.question == "可以用 LINE Pay 嗎？"
+            assert f.sort_order == 5
+        finally:
+            db.close()
+
 
 class TestDashboardPushPanel:
     def test_push_usage_panel(self, client):
