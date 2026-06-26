@@ -307,3 +307,29 @@ class TestReminderHoursUI:
         r = client.post("/ui/booking/reminder-hours", data={"reminder_hours_before": 999})
         assert r.status_code == 200
         assert "1 ～ 168" in r.text or "error" in r.text.lower()
+
+
+class TestCalendarUI:
+    def test_month_view_renders(self, client):
+        _login(client)
+        r = client.get("/ui/calendar")
+        assert r.status_code == 200
+        assert "預約行事曆" in r.text
+        assert "月曆" in r.text and "週曆" in r.text
+
+    def test_week_view_renders(self, client):
+        _login(client)
+        r = client.get("/ui/calendar?view=week")
+        assert r.status_code == 200
+        assert "上一週" in r.text
+
+    def test_staff_mode_renders(self, client):
+        _login(client)
+        r = client.get("/ui/calendar?mode=staff")
+        assert r.status_code == 200
+        assert "員工排班" in r.text
+
+    def test_bad_date_falls_back(self, client):
+        _login(client)
+        r = client.get("/ui/calendar?date=not-a-date")
+        assert r.status_code == 200

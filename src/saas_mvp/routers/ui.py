@@ -68,6 +68,7 @@ from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import line_chat as line_chat_svc
+from saas_mvp.services import calendar_view as calendar_view_svc
 from saas_mvp.services.events import broker as event_broker
 from saas_mvp.ai import AIError, get_assistant
 from saas_mvp.models.campaign import Campaign
@@ -2942,4 +2943,43 @@ async def line_events_stream(
         gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── 預約行事曆（月曆 / 週曆 + 雙模式：顧客預約 / 員工排班） ─────────────────────
+@router.get("/calendar", response_class=HTMLResponse)
+def calendar_page(
+    request: Request,
+    view: str = Query(default="month"),
+    mode: str = Query(default="reservations"),
+    date: str | None = Query(default=None),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """後台預約行事曆。view=month|week；mode=reservations|staff；date=錨點(YYYY-MM-DD)。"""
+    tid = actor.user.tenant_id
+    today = datetime.date.today()
+    try:
+        anchor = datetime.date.fromisoformat(date) if date else today
+    except ValueError:
+        anchor = today
+
+    month_data = week_data = staff_grid = None
+    if mode == "staff":
+        staff_grid = calendar_view_svc.build_staff_grid(db, tenant_id=tid)
+    elif view == "week":
+        week_data = calendar_view_svc.build_week(db, tenant_id=tid, anchor=anchor)
+    else:
+        view = "month"
+        month_data = calendar_view_svc.build_month(
+            db, tenant_id=tid, year=anchor.year, month=anchor.month
+        )
+
+    return templates.TemplateResponse(
+        "calendar.html",
+        _ctx(
+            request, actor,
+            view=view, mode=mode, today=today,
+            month_data=month_data, week_data=week_data, staff_grid=staff_grid,
+        ),
     )
