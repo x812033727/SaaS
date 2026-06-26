@@ -221,9 +221,14 @@ def create_order(
             line_total_cents=line_total,
         ))
 
-    # ── 折扣（與 POS / 訂單三條結帳路徑一致）：先會員等級折扣，再優惠券 ──────────
+    # ── 折扣（會員等級 + 優惠券）：三條結帳路徑共用 pricing.apply_order_discounts ──
     from saas_mvp.models.customer import Customer
-    from saas_mvp.services import membership as membership_svc
+    from saas_mvp.services import coupons as coupons_svc
+    from saas_mvp.services import pricing as pricing_svc
+
+    # 套券需有 line_user_id（券以 LINE 一人一券為單位）；先驗，維持 422 語意。
+    if coupon_code and not line_user_id:
+        raise HTTPException(status_code=422, detail="套用優惠券需要 line_user_id")
 
     # 解析會員（customer_id 優先，否則以 line_user_id 對應建檔顧客）；散客不折。
     customer = None
@@ -238,41 +243,14 @@ def create_order(
             .filter(Customer.line_user_id == line_user_id).first()
         )
 
-    running = total
-    tier_discount = 0
-    if customer is not None:
-        tier_discount = membership_svc.tier_discount_for(customer.tier, total)
-        running -= tier_discount
-
-    # 套用優惠券（同一交易內核銷 + 折抵；min_spend 以毛額判定）
-    coupon_discount = 0
-    if coupon_code:
-        if not line_user_id:
-            raise HTTPException(
-                status_code=422, detail="套用優惠券需要 line_user_id"
-            )
-        from saas_mvp.services import coupons as coupons_svc
-
-        try:
-            coupon, _ = coupons_svc.redeem_coupon_core(
-                db,
-                tenant_id=tenant_id,
-                code=coupon_code,
-                line_user_id=line_user_id,
-                customer_id=customer.id if customer is not None else customer_id,
-                order_id=order.id,
-                subtotal_cents=total,
-            )
-        except coupons_svc.CouponError as exc:
-            db.rollback()
-            raise CouponApplyError(str(exc)) from exc
-        # 券折抵以「等級折扣後」金額為基準，避免疊加超出。
-        coupon_discount = coupons_svc.compute_discount(coupon, max(0, running))
-        running -= coupon_discount
-        order.coupon_code = coupon_code
-
-    order.discount_cents = tier_discount + coupon_discount
-    order.total_cents = max(0, running)
+    try:
+        order.total_cents = pricing_svc.apply_order_discounts(
+            db, tenant_id=tenant_id, order=order, customer=customer,
+            subtotal_cents=total, line_user_id=line_user_id, coupon_code=coupon_code,
+        )
+    except coupons_svc.CouponError as exc:
+        db.rollback()
+        raise CouponApplyError(str(exc)) from exc
 
     db.commit()
     db.refresh(order)

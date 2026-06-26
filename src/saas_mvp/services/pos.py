@@ -27,7 +27,6 @@ from saas_mvp.models.order import ORDER_PENDING, Order
 from saas_mvp.models.order_item import OrderItem
 from saas_mvp.models.product import Product
 from saas_mvp.models.reservation import Reservation
-from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.tenants import tenant_query
 
@@ -83,14 +82,6 @@ def lookup_by_phone(db: Session, *, tenant_id: int, phone: str) -> dict | None:
         "tier_discount_percent": membership_svc.tier_discount_percent(customer.tier),
         "active_coupons": _active_coupons(db, tenant_id),
     }
-
-
-def _coupon_discount(coupon: Coupon, subtotal: int) -> int:
-    """依券種算折扣金額（cents），不超過 subtotal。
-
-    委派 coupons.compute_discount 以一致處理四種券型（gift/upsell 不折金額）。
-    """
-    return max(0, min(coupons_svc.compute_discount(coupon, subtotal), subtotal))
 
 
 def checkout(
@@ -176,38 +167,14 @@ def checkout(
             line_total_cents=line_total,
         ))
 
-    total = subtotal
+    # 會員等級折扣 + 優惠券：三條結帳路徑共用 pricing.apply_order_discounts。
+    # 設定 order.discount_cents（等級+券）、order.coupon_code；回傳折後（未扣點）金額。
+    from saas_mvp.services import pricing as pricing_svc
 
-    # 會員等級折扣（對標 vibeaico「不同等級不同折扣」）：對小計套用，於優惠券之前。
-    # 散客（customer=None）無等級、不折。
-    tier_discount = 0
-    if customer is not None:
-        tier_discount = membership_svc.tier_discount_for(customer.tier, subtotal)
-        total -= tier_discount
-
-    # 套用優惠券折扣（核銷需 line_user_id；散客或無 line_user_id 不可用券）。
-    coupon_discount = 0
-    if coupon_code:
-        if customer is None or not customer.line_user_id:
-            raise coupons_svc.CouponError("coupon requires a member with LINE id")
-        # 走共用核心：鎖券 + 重驗有效性/額度/一人一券 + **最低消費門檻**（以毛額判定）
-        # + 記 order_id；不 commit（由本交易統一 commit）。與訂單 REST 路徑一致。
-        coupon, _ = coupons_svc.redeem_coupon_core(
-            db,
-            tenant_id=tenant_id,
-            code=coupon_code,
-            line_user_id=customer.line_user_id,
-            customer_id=customer.id,
-            order_id=order.id,
-            subtotal_cents=subtotal,
-        )
-        # 券折抵以「等級折扣後」的金額為基準，避免折扣疊加超出。
-        coupon_discount = _coupon_discount(coupon, max(0, total))
-        total -= coupon_discount
-        order.coupon_code = coupon_code
-
-    # 記錄商品端折抵（等級 + 優惠券；不含點數折抵）。
-    order.discount_cents = tier_discount + coupon_discount
+    total = pricing_svc.apply_order_discounts(
+        db, tenant_id=tenant_id, order=order, customer=customer,
+        subtotal_cents=subtotal, line_user_id=None, coupon_code=coupon_code,
+    )
 
     # 折抵點數（不足拋 InsufficientPoints → 整筆 rollback）。
     if points_to_redeem > 0:
