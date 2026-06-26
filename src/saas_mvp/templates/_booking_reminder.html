@@ -1,0 +1,14 @@
+<div id="reminder-card">
+  <h2>自動提醒設定</h2>
+  <p class="muted">設定在預約前幾小時，自動以 LINE 推播提醒顧客（需開通「自動提醒」進階功能）。</p>
+  <form hx-post="/ui/booking/reminder-hours" hx-target="#reminder-card" hx-swap="outerHTML" class="row">
+    <label>預約前
+      <input name="reminder_hours_before" type="number" min="1" max="168"
+             value="{{ reminder_hours }}" required>
+      小時提醒
+    </label>
+    <button type="submit" class="btn">儲存</button>
+  </form>
+  {% if saved %}<p class="ok">已儲存：預約前 {{ reminder_hours }} 小時提醒。</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+</div>

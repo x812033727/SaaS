@@ -829,6 +829,62 @@ def _service_carousel(services: list) -> dict:
     }
 
 
+def _my_reservations_carousel(db: Session, tenant_id: int, rows: list) -> dict:
+    """「我的預約」清單 → LINE Flex carousel（每張卡片附「取消預約」按鈕，上限 12）。"""
+    from saas_mvp.models.booking_slot import BookingSlot
+
+    rows = rows[:12]  # carousel 上限 12 張
+    slot_ids = [r.slot_id for r in rows if r.slot_id is not None]
+    slots = {}
+    if slot_ids:
+        slots = {
+            s.id: s
+            for s in db.query(BookingSlot)
+            .filter(BookingSlot.tenant_id == tenant_id, BookingSlot.id.in_(slot_ids))
+            .all()
+        }
+    bubbles = []
+    for r in rows:
+        slot = slots.get(r.slot_id)
+        when = slot.slot_start.strftime("%m/%d %H:%M") if slot is not None else "—"
+        bubbles.append({
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": f"預約 #{r.id}", "weight": "bold",
+                     "size": "lg"},
+                    {"type": "text", "text": f"時間：{when}", "size": "sm",
+                     "color": "#555555", "wrap": True},
+                    {"type": "text", "text": f"人數：{r.party_size} 位", "size": "sm",
+                     "color": "#888888"},
+                ],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "action": {
+                            "type": "postback",
+                            "label": "取消預約",
+                            "data": f"action=cancel&reservation_id={r.id}",
+                            "displayText": f"取消預約 #{r.id}",
+                        },
+                    }
+                ],
+            },
+        })
+    return {
+        "type": "flex",
+        "altText": "你的預約",
+        "contents": {"type": "carousel", "contents": bubbles},
+    }
+
+
 def _staff_choice_buttons(
     service_id: int, staff_list: list, date: str | None = None
 ) -> list[tuple[str, str]]:
@@ -933,6 +989,15 @@ def _try_conversational(
         if not cards:
             return "目前沒有可用的選單。", None, None
         return None, None, flex_menu_svc.build_flex_payload(menu, cards)
+
+    # 「我的預約」→ Flex carousel（每張附取消按鈕）；無預約則回文字提示。
+    if action == "my":
+        rows = booking_svc.list_my_reservations(
+            db, tenant_id=tenant_id, line_user_id=line_user_id
+        )
+        if not rows:
+            return "你目前沒有預約。輸入「時段」開始預約。", None, None
+        return None, None, _my_reservations_carousel(db, tenant_id, rows)
 
     # 引導式第一步：'book'（無 slot_id）且有上架服務 → 服務 carousel。
     if action == "book" and params.get("slot_id") is None:
@@ -1300,6 +1365,22 @@ def _handle_booking_event(
     raw_text = ""
     if etype == "message" and event.get("message", {}).get("type") == "text":
         raw_text = event["message"].get("text", "")
+
+    # 後台客服：存檔顧客傳入的文字訊息 + SSE 推播到後台（best-effort，不影響預約）。
+    if raw_text and line_user_id:
+        try:
+            from saas_mvp.services import line_chat as line_chat_svc
+            from saas_mvp.services.events import publish_event
+
+            line_chat_svc.record_inbound(
+                db, tenant_id=tenant_id, line_user_id=line_user_id, text=raw_text
+            )
+            publish_event(
+                tenant_id, "line_message",
+                line_user_id=line_user_id, text=raw_text, direction="in",
+            )
+        except Exception:  # noqa: BLE001 — 客服存檔失敗不得影響預約主流程
+            db.rollback()
 
     # 僅在會建單的動作向 LINE 取 displayName，供顧客檔回填（可核對是誰預約）。
     display_name = None

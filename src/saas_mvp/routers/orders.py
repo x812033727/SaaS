@@ -16,6 +16,7 @@ from saas_mvp.models.user import User
 from saas_mvp.services.features import PRODUCT_SALES, require_feature
 from saas_mvp.services.payment import get_payment_provider
 from saas_mvp.services.shop import (
+    CouponApplyError,
     OrderNotFound,
     OutOfStock,
     ProductInactive,
@@ -43,6 +44,7 @@ class OrderItemIn(BaseModel):
 class OrderCreate(BaseModel):
     items: list[OrderItemIn] = Field(min_length=1)
     line_user_id: str | None = Field(default=None, max_length=64)
+    coupon_code: str | None = Field(default=None, max_length=64)
 
 
 class OrderItemResponse(BaseModel):
@@ -61,6 +63,8 @@ class OrderResponse(BaseModel):
     line_user_id: str | None
     status: str
     total_cents: int
+    discount_cents: int = 0
+    coupon_code: str | None = None
     currency: str
     created_at: datetime.datetime
     paid_at: datetime.datetime | None
@@ -91,9 +95,12 @@ def create(
             tenant_id=current_user.tenant_id,
             items=[(it.product_id, it.qty) for it in body.items],
             line_user_id=body.line_user_id,
+            coupon_code=body.coupon_code,
         )
     except (ProductNotFound,):
         raise HTTPException(status_code=404, detail="Product not found")
+    except CouponApplyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except (ProductInactive, OutOfStock) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     resp = _with_items(db, current_user.tenant_id, order)

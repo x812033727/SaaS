@@ -44,6 +44,9 @@ FLEX_MENU = "FLEX_MENU"
 # 月度推播額度加購（vibeaico「Additional Push Notification Allowance」）：
 # 開通後該租戶每月推播額度 = push_allowance_base + push_allowance_boost。
 PUSH_BOOST = "PUSH_BOOST"
+# 無限員工：未開通時員工數受 settings.free_staff_limit（預設 3）限制，
+# 開通（輕量版以上）解除上限。對標 vibeaico「無限員工」。
+UNLIMITED_STAFF = "UNLIMITED_STAFF"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -61,6 +64,7 @@ _FEATURE_LABELS: dict[str, str] = {
     ADVANCED_REPORTING: "進階報表",
     FLEX_MENU: "圖文選單卡片",
     PUSH_BOOST: "加購推播額度",
+    UNLIMITED_STAFF: "無限員工",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

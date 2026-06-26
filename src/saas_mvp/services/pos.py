@@ -79,17 +79,18 @@ def lookup_by_phone(db: Session, *, tenant_id: int, phone: str) -> dict | None:
     return {
         "customer": customer,
         "points_balance": customer.points_balance or 0,
+        "tier": customer.tier or "regular",
+        "tier_discount_percent": membership_svc.tier_discount_percent(customer.tier),
         "active_coupons": _active_coupons(db, tenant_id),
     }
 
 
 def _coupon_discount(coupon: Coupon, subtotal: int) -> int:
-    """依券種算折扣金額（cents），不超過 subtotal。"""
-    if coupon.discount_type == "percent":
-        disc = subtotal * (coupon.discount_value or 0) // 100
-    else:  # amount
-        disc = coupon.discount_value or 0
-    return max(0, min(disc, subtotal))
+    """依券種算折扣金額（cents），不超過 subtotal。
+
+    委派 coupons.compute_discount 以一致處理四種券型（gift/upsell 不折金額）。
+    """
+    return max(0, min(coupons_svc.compute_discount(coupon, subtotal), subtotal))
 
 
 def checkout(
@@ -177,7 +178,15 @@ def checkout(
 
     total = subtotal
 
+    # 會員等級折扣（對標 vibeaico「不同等級不同折扣」）：對小計套用，於優惠券之前。
+    # 散客（customer=None）無等級、不折。
+    tier_discount = 0
+    if customer is not None:
+        tier_discount = membership_svc.tier_discount_for(customer.tier, subtotal)
+        total -= tier_discount
+
     # 套用優惠券折扣（核銷需 line_user_id；散客或無 line_user_id 不可用券）。
+    coupon_discount = 0
     if coupon_code:
         if customer is None or not customer.line_user_id:
             raise coupons_svc.CouponError("coupon requires a member with LINE id")
@@ -190,7 +199,13 @@ def checkout(
             raise coupons_svc.CouponNotFound(f"coupon {coupon_code!r} not found")
         # 核銷（鎖內重驗有效性/額度/一人一券；同一交易）。
         _redeem_coupon_inline(db, coupon, customer)
-        total -= _coupon_discount(coupon, subtotal)
+        # 券折抵以「等級折扣後」的金額為基準，避免折扣疊加超出。
+        coupon_discount = _coupon_discount(coupon, max(0, total))
+        total -= coupon_discount
+        order.coupon_code = coupon_code
+
+    # 記錄商品端折抵（等級 + 優惠券；不含點數折抵）。
+    order.discount_cents = tier_discount + coupon_discount
 
     # 折抵點數（不足拋 InsufficientPoints → 整筆 rollback）。
     if points_to_redeem > 0:

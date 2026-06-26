@@ -35,6 +35,8 @@ THEMES: dict[str, tuple[int, int, int]] = {
     "sunset_orange": (245, 124, 0),
     "dark": (33, 33, 33),
     "rose_pink": (233, 30, 99),
+    # 精品主題（香檳金）；對標 vibeaico「BOUTIQUE 精品主題」。
+    "boutique": (191, 167, 106),
 }
 
 # ── 建立模式（management UI 三選一） ──────────────────────────────────────────
@@ -114,6 +116,15 @@ TEMPLATES: dict[str, dict] = {
         "size": {"width": 2500, "height": 1686},
         "grid": (2, 3),
         "buttons": _cycle_buttons(6),
+    },
+    # 大尺寸不等寬版型（3+4+4 = 11 區）；對標 vibeaico「大尺寸選單（3+4+4 等）」。
+    # grid 僅供 vector 模式分區底圖近似；實際 tap 區由 rows_spec 鋪排。
+    "grid3x4x4": {
+        "label": "大尺寸（3+4+4，11 區）",
+        "size": {"width": 2500, "height": 1686},
+        "grid": (4, 3),
+        "rows_spec": [3, 4, 4],
+        "buttons": _cycle_buttons(11),
     },
 }
 
@@ -211,13 +222,41 @@ def list_modes() -> list[str]:
 
 
 def _areas(template: dict) -> list[dict]:
-    """依 grid 與 buttons 計算各區塊 bounds + postback action。"""
-    cols, rows = template["grid"]
+    """依 grid 與 buttons 計算各區塊 bounds + postback action。
+
+    若模板帶 ``rows_spec``（每列欄數的清單，例如 [3, 4, 4] = 大尺寸 3+4+4），
+    則以不等寬列鋪排（對標 vibeaico 大尺寸選單）；否則用均勻 grid。
+    """
     width = template["size"]["width"]
     height = template["size"]["height"]
+    buttons = template["buttons"]
+
+    rows_spec = template.get("rows_spec")
+    if rows_spec:
+        areas = []
+        n_rows = len(rows_spec)
+        cell_h = height // n_rows
+        idx = 0
+        for ri, ncols in enumerate(rows_spec):
+            y = ri * cell_h
+            h = (height - y) if ri == n_rows - 1 else cell_h
+            cell_w = width // ncols
+            for ci in range(ncols):
+                if idx >= len(buttons):
+                    break
+                label, data = buttons[idx]
+                x = ci * cell_w
+                w = (width - x) if ci == ncols - 1 else cell_w
+                areas.append({
+                    "bounds": {"x": x, "y": y, "width": w, "height": h},
+                    "action": {"type": "postback", "data": data, "displayText": label},
+                })
+                idx += 1
+        return areas
+
+    cols, rows = template["grid"]
     cell_w = width // cols
     cell_h = height // rows
-    buttons = template["buttons"]
     areas = []
     for idx, (label, data) in enumerate(buttons):
         col = idx % cols

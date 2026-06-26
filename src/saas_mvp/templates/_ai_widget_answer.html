@@ -1,0 +1,8 @@
+<div class="aiw-answer">
+  {% if error %}
+  <p class="error">{{ error }}</p>
+  {% elif answer %}
+  <div class="aiw-q">你：{{ question }}</div>
+  <div class="aiw-a">{{ answer }}</div>
+  {% endif %}
+</div>

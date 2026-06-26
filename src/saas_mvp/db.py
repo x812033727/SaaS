@@ -94,6 +94,8 @@ def import_all_models() -> None:
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
     # 月度推播額度計量（跨提醒/異動通知/行銷 push 路徑共用）。
     from saas_mvp.models import push_usage  # noqa: F401
+    # 後台 LINE 客服對話紀錄（收/發）。
+    from saas_mvp.models import line_message  # noqa: F401
 
 
 def init_db() -> None:
@@ -120,6 +122,49 @@ def init_db() -> None:
     _migrate_add_customer_ics_token()
     _migrate_add_user_oauth()
     _migrate_add_customer_birthday()
+    _migrate_add_coupon_order_fields()
+    _migrate_add_tenant_reminder_hours()
+    _migrate_add_profile_announcement()
+
+
+def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
+    """冪等補欄：表存在且欄位缺少時 ALTER TABLE ADD COLUMN。失敗僅記 warning。
+
+    ``ddl`` 為欄位型別與預設片段，例如 ``"INTEGER NOT NULL DEFAULT 0"``。
+    """
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        _log.info("migrated: added %s.%s column", table, column)
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s.%s skipped due to error: %s",
+            table, column, type(exc).__name__,
+        )
+
+
+def _migrate_add_coupon_order_fields() -> None:
+    """票券四類型 + 訂單套券（對標 vibeaico）所需的既有 DB 補欄。"""
+    _add_column_if_missing("coupons", "min_spend_cents", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing("orders", "discount_cents", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing("orders", "coupon_code", "VARCHAR(64)")
+    _add_column_if_missing("coupon_redemptions", "order_id", "INTEGER")
+
+
+def _migrate_add_tenant_reminder_hours() -> None:
+    """自訂提醒時間（小時）：為既有 tenants 表補上 reminder_hours_before 欄位。"""
+    _add_column_if_missing("tenants", "reminder_hours_before", "INTEGER")
+
+
+def _migrate_add_profile_announcement() -> None:
+    """公開頁公告：為既有 business_profiles 表補上 announcement 欄位。"""
+    _add_column_if_missing("business_profiles", "announcement", "TEXT")
 
 
 def _migrate_add_customer_birthday() -> None:

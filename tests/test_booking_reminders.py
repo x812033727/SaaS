@@ -194,3 +194,43 @@ class TestSend:
         )
         assert all(r.status == "failed" for r in results)
         assert all(r.status == "failed" for r in _reminders(db, tid))
+
+
+class TestCustomReminderHours:
+    def test_compute_remind_times_custom_hours(self):
+        from saas_mvp.services.reminders import compute_remind_times
+        from saas_mvp.models.reservation_reminder import REMINDER_DAY_BEFORE
+
+        times = compute_remind_times(_SLOT_START, 180, hours_before=3)
+        assert times[REMINDER_DAY_BEFORE] == _SLOT_START - datetime.timedelta(hours=3)
+
+    def test_booking_uses_tenant_custom_hours(self, db):
+        tid = _seed(db)
+        # 設定該店：預約前 2 小時提醒
+        t = db.query(Tenant).filter(Tenant.id == tid).first()
+        t.reminder_hours_before = 2
+        db.commit()
+        sid = _seed_slot(db, tid)
+        booking_svc.book_slot(
+            db, tenant_id=tid, slot_id=sid, party_size=1, line_user_id="Uhrs"
+        )
+        expected = (_SLOT_START - datetime.timedelta(hours=2)).replace(tzinfo=None)
+        for r in _reminders(db, tid):
+            if r.kind == REMINDER_DAY_BEFORE:
+                assert r.remind_at.replace(tzinfo=None) == expected
+
+    def test_booking_default_hours_when_unset(self, db):
+        from saas_mvp.config import settings
+
+        tid = _seed(db)  # reminder_hours_before 預設 None
+        sid = _seed_slot(db, tid)
+        booking_svc.book_slot(
+            db, tenant_id=tid, slot_id=sid, party_size=1, line_user_id="Udef"
+        )
+        expected = (
+            _SLOT_START
+            - datetime.timedelta(hours=settings.reminder_hours_before_default)
+        ).replace(tzinfo=None)
+        for r in _reminders(db, tid):
+            if r.kind == REMINDER_DAY_BEFORE:
+                assert r.remind_at.replace(tzinfo=None) == expected

@@ -9,6 +9,7 @@
   <meta property="og:description" content="{{ seo_description }}">
   <meta property="og:type" content="website">
   {% if banner_url %}<meta property="og:image" content="{{ banner_url }}">{% endif %}
+  {% if json_ld %}<script type="application/ld+json">{{ json_ld|safe }}</script>{% endif %}
   <style>
     :root { --theme: {{ profile.theme_color or '#0a7cff' }}; }
     body { font-family: system-ui, sans-serif; margin: 0; color: #222; }
@@ -26,10 +27,16 @@
     .gcal-btn { display: inline-block; margin-top: .4rem; font-size: .85rem; color: var(--theme); }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .75rem; }
     .grid img { width: 100%; border-radius: 8px; display: block; }
+    .announce { margin: 0; padding: .85rem 1.25rem; background: #fff7e6; border-bottom: 1px solid #ffe1a8; color: #7a5b00; }
+    .announce strong { color: #b06f00; }
+    .sched { border: 1px solid #eee; border-radius: 8px; padding: .6rem .9rem; margin: .5rem 0; }
+    .sched .who { font-weight: 600; color: var(--theme); }
+    .sched .slots { color: #555; font-size: .9rem; margin-top: .2rem; }
   </style>
 </head>
 <body>
   {% if banner_url %}<img class="banner" src="{{ banner_url }}" alt="{{ display_name }}">{% endif %}
+  {% if announcement %}<p class="announce"><strong>公告</strong>　{{ announcement }}</p>{% endif %}
   <header class="profile">
     <h1>{{ display_name }}</h1>
     {% if profile.intro %}<p>{{ profile.intro }}</p>{% endif %}
@@ -40,6 +47,7 @@
     <a href="#products" id="products">商品</a>
     <a href="#portfolio" id="portfolio">作品集</a>
     <a href="#coupons" id="coupons">優惠券</a>
+    {% if staff_schedule %}<a href="#team" id="team">團隊排班</a>{% endif %}
     <a href="#contact" id="contact">聯絡</a>
   </nav>
 
@@ -48,6 +56,23 @@
     {% include "public/_tab_products.html" %}
     {% include "public/_tab_portfolio.html" %}
     {% include "public/_tab_coupons.html" %}
+    {% if staff_schedule %}
+    <section class="tab" id="team">
+      <h2>團隊排班</h2>
+      {% for st in staff_schedule %}
+      <div class="sched">
+        <div class="who">{{ st.name }}{% if st.role %} · {{ st.role }}{% endif %}</div>
+        {% if st.shifts %}
+        <div class="slots">
+          {% for sh in st.shifts %}{{ sh.weekday }} {{ sh.start }}–{{ sh.end }}{% if not loop.last %}　{% endif %}{% endfor %}
+        </div>
+        {% else %}
+        <div class="slots">尚未排班</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
     {% include "public/_tab_contact.html" %}
   </main>
 </body>

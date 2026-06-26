@@ -33,8 +33,9 @@ router = APIRouter(
 class CouponCreate(BaseModel):
     code: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=128)
-    discount_type: str = Field(pattern="^(percent|amount)$")
+    discount_type: str = Field(pattern="^(percent|amount|gift|upsell)$")
     discount_value: int = Field(ge=0)
+    min_spend_cents: int = Field(default=0, ge=0)
     max_redemptions: int | None = Field(default=None, ge=1)
     active_from: datetime.datetime | None = None
     active_until: datetime.datetime | None = None
@@ -54,6 +55,7 @@ class CouponResponse(BaseModel):
     name: str
     discount_type: str
     discount_value: int
+    min_spend_cents: int
     max_redemptions: int | None
     redeemed_count: int
     active_from: datetime.datetime | None
@@ -69,6 +71,7 @@ class RedemptionResponse(BaseModel):
     line_user_id: str
     customer_id: int | None
     reservation_id: int | None
+    order_id: int | None = None
     redeemed_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -87,6 +90,7 @@ def create(
         name=body.name,
         discount_type=body.discount_type,
         discount_value=body.discount_value,
+        min_spend_cents=body.min_spend_cents,
         max_redemptions=body.max_redemptions,
         active_from=body.active_from,
         active_until=body.active_until,

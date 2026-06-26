@@ -284,3 +284,52 @@ class TestFeaturesUI:
         client.post("/ui/features/PRODUCT_SALES/unsubscribe")
         locked = client.get("/ui/shop")
         assert "尚未開通" in locked.text
+
+
+class TestReminderHoursUI:
+    def test_page_shows_reminder_control(self, client):
+        _login(client)
+        r = client.get("/ui/booking")
+        assert r.status_code == 200
+        assert "自動提醒設定" in r.text
+
+    def test_set_reminder_hours(self, client):
+        _login(client)
+        r = client.post("/ui/booking/reminder-hours", data={"reminder_hours_before": 6})
+        assert r.status_code == 200
+        assert "已儲存" in r.text and "6" in r.text
+        # 重新整理頁面應反映新值
+        page = client.get("/ui/booking")
+        assert 'value="6"' in page.text
+
+    def test_reject_out_of_range(self, client):
+        _login(client)
+        r = client.post("/ui/booking/reminder-hours", data={"reminder_hours_before": 999})
+        assert r.status_code == 200
+        assert "1 ～ 168" in r.text or "error" in r.text.lower()
+
+
+class TestCalendarUI:
+    def test_month_view_renders(self, client):
+        _login(client)
+        r = client.get("/ui/calendar")
+        assert r.status_code == 200
+        assert "預約行事曆" in r.text
+        assert "月曆" in r.text and "週曆" in r.text
+
+    def test_week_view_renders(self, client):
+        _login(client)
+        r = client.get("/ui/calendar?view=week")
+        assert r.status_code == 200
+        assert "上一週" in r.text
+
+    def test_staff_mode_renders(self, client):
+        _login(client)
+        r = client.get("/ui/calendar?mode=staff")
+        assert r.status_code == 200
+        assert "員工排班" in r.text
+
+    def test_bad_date_falls_back(self, client):
+        _login(client)
+        r = client.get("/ui/calendar?date=not-a-date")
+        assert r.status_code == 200

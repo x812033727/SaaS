@@ -13,7 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from saas_mvp.models.coupon import VALID_DISCOUNT_TYPES, Coupon
+from saas_mvp.models.coupon import (
+    DISCOUNT_AMOUNT,
+    DISCOUNT_PERCENT,
+    VALID_DISCOUNT_TYPES,
+    Coupon,
+)
 from saas_mvp.models.coupon_redemption import CouponRedemption
 from saas_mvp.services.tenants import tenant_query
 
@@ -41,6 +46,23 @@ class CouponExhausted(CouponError):
 
 class AlreadyRedeemed(CouponError):
     pass
+
+
+class MinSpendNotMet(CouponError):
+    """訂單小計未達券的最低消費門檻。"""
+
+
+def compute_discount(coupon: Coupon, subtotal_cents: int) -> int:
+    """券對某訂單小計可折抵的金額（cents）。
+
+    percent → 小計 * value/100（無條件捨去）；amount → min(value, 小計)；
+    gift/upsell（贈品/加購）不折抵訂單金額，回 0。
+    """
+    if coupon.discount_type == DISCOUNT_PERCENT:
+        return max(0, subtotal_cents) * coupon.discount_value // 100
+    if coupon.discount_type == DISCOUNT_AMOUNT:
+        return min(coupon.discount_value, max(0, subtotal_cents))
+    return 0  # gift / upsell
 
 
 def _utcnow() -> datetime.datetime:
@@ -76,6 +98,7 @@ def create_coupon(
     discount_type: str,
     discount_value: int,
     max_redemptions: int | None = None,
+    min_spend_cents: int = 0,
     active_from: datetime.datetime | None = None,
     active_until: datetime.datetime | None = None,
 ) -> Coupon:
@@ -85,14 +108,17 @@ def create_coupon(
         )
     if discount_value < 0:
         raise HTTPException(status_code=422, detail="discount_value must be >= 0")
-    if discount_type == "percent" and discount_value > 100:
+    if discount_type == DISCOUNT_PERCENT and discount_value > 100:
         raise HTTPException(status_code=422, detail="percent discount must be 0-100")
+    if min_spend_cents < 0:
+        raise HTTPException(status_code=422, detail="min_spend_cents must be >= 0")
     coupon = Coupon(
         tenant_id=tenant_id,
         code=code,
         name=name,
         discount_type=discount_type,
         discount_value=discount_value,
+        min_spend_cents=min_spend_cents,
         max_redemptions=max_redemptions,
         active_from=active_from,
         active_until=active_until,
@@ -179,7 +205,7 @@ def list_redemptions(
 
 # ── 原子核銷（拋自訂例外，REST 與 webhook 共用） ──────────────────────────────
 
-def redeem_coupon(
+def redeem_coupon_core(
     db: Session,
     *,
     tenant_id: int,
@@ -187,8 +213,15 @@ def redeem_coupon(
     line_user_id: str,
     customer_id: int | None = None,
     reservation_id: int | None = None,
-) -> CouponRedemption:
-    """核銷一張券。鎖券列重驗有效性與額度後遞增；一人一券由 unique 約束擋。"""
+    order_id: int | None = None,
+    subtotal_cents: int | None = None,
+) -> tuple[Coupon, CouponRedemption]:
+    """核銷核心：鎖券列 → 重驗有效性/額度/最低消費 → flush redemption（不 commit）。
+
+    不負責 commit，供 create_order 等多寫流程在同一交易內套券後一次 commit。
+    傳入 ``subtotal_cents`` 時會檢查 min_spend_cents 門檻（預約核銷可省略）。
+    一人一券由 unique(coupon_id, line_user_id) 於 flush 時觸發。
+    """
     coupon = db.execute(
         select(Coupon)
         .where(Coupon.tenant_id == tenant_id, Coupon.code == code)
@@ -211,12 +244,19 @@ def redeem_coupon(
     ):
         raise CouponExhausted(f"coupon {code!r} fully redeemed")
 
+    min_spend = coupon.min_spend_cents or 0
+    if subtotal_cents is not None and subtotal_cents < min_spend:
+        raise MinSpendNotMet(
+            f"coupon {code!r} requires min spend {min_spend} (got {subtotal_cents})"
+        )
+
     redemption = CouponRedemption(
         tenant_id=tenant_id,
         coupon_id=coupon.id,
         customer_id=customer_id,
         line_user_id=line_user_id,
         reservation_id=reservation_id,
+        order_id=order_id,
     )
     db.add(redemption)
     try:
@@ -226,6 +266,27 @@ def redeem_coupon(
         raise AlreadyRedeemed(f"coupon {code!r} already redeemed by this user")
 
     coupon.redeemed_count = (coupon.redeemed_count or 0) + 1
+    return coupon, redemption
+
+
+def redeem_coupon(
+    db: Session,
+    *,
+    tenant_id: int,
+    code: str,
+    line_user_id: str,
+    customer_id: int | None = None,
+    reservation_id: int | None = None,
+) -> CouponRedemption:
+    """核銷一張券（獨立交易；REST 與 webhook 預約核銷用）。"""
+    _, redemption = redeem_coupon_core(
+        db,
+        tenant_id=tenant_id,
+        code=code,
+        line_user_id=line_user_id,
+        customer_id=customer_id,
+        reservation_id=reservation_id,
+    )
     db.commit()
     db.refresh(redemption)
     return redemption

@@ -22,10 +22,16 @@ from sqlalchemy import (
 
 from saas_mvp.db import Base
 
-# discount_type 常數
-DISCOUNT_PERCENT = "percent"
-DISCOUNT_AMOUNT = "amount"
-VALID_DISCOUNT_TYPES = frozenset({DISCOUNT_PERCENT, DISCOUNT_AMOUNT})
+# discount_type 常數（對標 vibeaico 四種票券類型）
+DISCOUNT_PERCENT = "percent"  # 折扣券：百分比折扣
+DISCOUNT_AMOUNT = "amount"    # 折價券：固定金額折抵
+GIFT = "gift"                 # 贈品券：免費贈品（不折抵訂單金額，核銷後贈送）
+UPSELL = "upsell"            # 加購券：特惠加購價（discount_value=加購價，不折抵訂單）
+VALID_DISCOUNT_TYPES = frozenset(
+    {DISCOUNT_PERCENT, DISCOUNT_AMOUNT, GIFT, UPSELL}
+)
+# 會折抵訂單金額的類型（gift/upsell 為贈品/加購，不直接抵扣金額）。
+MONETARY_DISCOUNT_TYPES = frozenset({DISCOUNT_PERCENT, DISCOUNT_AMOUNT})
 
 
 def _utcnow() -> datetime.datetime:
@@ -44,8 +50,13 @@ class Coupon(Base):
     )
     code = Column(String(64), nullable=False)
     name = Column(String(128), nullable=False)
-    discount_type = Column(String(16), nullable=False)  # percent | amount
-    discount_value = Column(Integer, nullable=False)  # percent: 0-100；amount: cents
+    discount_type = Column(String(16), nullable=False)  # percent|amount|gift|upsell
+    # percent: 0-100；amount: 折抵 cents；gift: 0；upsell: 加購價 cents
+    discount_value = Column(Integer, nullable=False)
+    # 最低消費限制（cents）：訂單小計需 >= 此值方可套用；NULL/0 = 不限。
+    min_spend_cents = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     max_redemptions = Column(Integer, nullable=True)  # NULL = 不限
     redeemed_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
     active_from = Column(DateTime(timezone=True), nullable=True)

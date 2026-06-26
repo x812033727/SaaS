@@ -263,3 +263,26 @@ def test_inactive_tenant_shows_disabled_page(client):
     r = client.get("/ui/", follow_redirects=False)
     assert r.status_code == 403
     assert "停用" in r.text
+
+
+# ── AI 客服浮動 widget ───────────────────────────────────────────────────────
+def test_ai_widget_present_on_authed_pages(client):
+    email, password, _, _ = _register_api(client)
+    _login_ui(client, email, password)
+    html = client.get("/ui/").text
+    assert "aiw-fab" in html
+    assert "/ui/ai-widget/ask" in html
+
+
+def test_ai_widget_ask_returns_answer(client):
+    email, password, _, _ = _register_api(client)
+    _login_ui(client, email, password)
+    r = client.post("/ui/ai-widget/ask", data={"question": "如何設定 LINE？"})
+    assert r.status_code == 200
+    # stub 助手會給出回覆，或在未開通時給友善訊息；至少回 200 partial
+    assert "aiw-answer" in r.text
+
+
+def test_ai_widget_requires_login(client):
+    r = client.post("/ui/ai-widget/ask", data={"question": "hi"}, follow_redirects=False)
+    assert r.status_code in (302, 303)

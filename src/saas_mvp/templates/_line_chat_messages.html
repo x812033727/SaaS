@@ -1,0 +1,19 @@
+<div class="chat-thread" id="chat-thread">
+  {% if not messages %}
+  <p class="muted">尚無訊息。</p>
+  {% endif %}
+  {% for m in messages %}
+  <div class="chat-msg chat-{{ m.direction }}">
+    <div class="bubble">{{ m.text }}</div>
+    <div class="meta">{{ '店家' if m.direction == 'out' else '顧客' }} · {{ m.created_at.strftime('%m/%d %H:%M') }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% if line_user_id %}
+<form class="chat-reply" hx-post="/ui/line-chat/{{ line_user_id }}/reply"
+      hx-target="#chat-panel" hx-swap="innerHTML">
+  <input type="text" name="text" placeholder="輸入回覆內容…" required maxlength="2000" autocomplete="off">
+  <button type="submit" class="btn">回覆</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% endif %}

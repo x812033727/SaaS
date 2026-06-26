@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}預約行事曆 · LINE Bot 管理{% endblock %}
+{% block content %}
+<style>
+  .cal-toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .5rem 0 1rem; }
+  .cal-toolbar .seg a { padding: .35rem .7rem; border: 1px solid #ddd; text-decoration: none; color: #555; }
+  .cal-toolbar .seg a.active { background: var(--theme, #0a7cff); color: #fff; border-color: var(--theme, #0a7cff); }
+  table.cal { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.cal th { padding: .4rem; background: #f6f8fa; border: 1px solid #eee; font-size: .85rem; }
+  table.cal td { border: 1px solid #eee; vertical-align: top; height: 84px; padding: .25rem; }
+  td.dim { background: #fafafa; color: #bbb; }
+  td.today { outline: 2px solid var(--theme, #0a7cff); outline-offset: -2px; }
+  .daynum { font-size: .8rem; color: #888; }
+  .ev { display: block; font-size: .72rem; border-radius: 4px; padding: 1px 4px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .ev.confirmed { background: #e6f4ea; color: #1d7a3a; }
+  .ev.attended { background: #e6f0ff; color: #1456c4; }
+  .ev.cancelled { background: #f0f0f0; color: #999; text-decoration: line-through; }
+  .legend span { font-size: .78rem; margin-right: .8rem; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
+  .wk-day { border: 1px solid #eee; border-radius: 8px; padding: .5rem .75rem; margin: .4rem 0; }
+  .wk-day h4 { margin: 0 0 .3rem; }
+  .sgrid td .rot-off { color: #b00; }
+</style>
+
+<h1>預約行事曆</h1>
+
+<div class="cal-toolbar">
+  <span class="seg">
+    <a href="/ui/calendar?mode=reservations&view=month" class="{{ 'active' if mode=='reservations' and view=='month' else '' }}">月曆</a>
+    <a href="/ui/calendar?mode=reservations&view=week" class="{{ 'active' if mode=='reservations' and view=='week' else '' }}">週曆</a>
+    <a href="/ui/calendar?mode=staff" class="{{ 'active' if mode=='staff' else '' }}">員工排班</a>
+  </span>
+  <span class="legend">
+    <span><i style="background:#e6f4ea"></i>已預約</span>
+    <span><i style="background:#e6f0ff"></i>已到場</span>
+    <span><i style="background:#f0f0f0"></i>已取消</span>
+  </span>
+</div>
+
+{% if mode == 'staff' and staff_grid %}
+<table class="cal sgrid">
+  <thead>
+    <tr><th>員工</th>{% for lbl in staff_grid.weekday_labels %}<th>{{ lbl }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+    {% for row in staff_grid.rows %}
+    <tr>
+      <td><strong>{{ row.name }}</strong>{% if row.role %}<div class="daynum">{{ row.role }}</div>{% endif %}
+        {% for c in row.anyday %}<span class="ev confirmed">每日 {{ c.start }}–{{ c.end }}</span>{% endfor %}
+      </td>
+      {% for day_cells in row.weekdays %}
+      <td>
+        {% for c in day_cells %}
+        <span class="ev {{ 'cancelled' if c.rotation=='off' else 'confirmed' }}">
+          {% if c.rotation == 'off' %}<span class="rot-off">休</span>{% else %}{{ c.start }}–{{ c.end }}{% endif %}
+        </span>
+        {% endfor %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+    {% if not staff_grid.rows %}<tr><td colspan="8" class="muted">尚無啟用中員工。</td></tr>{% endif %}
+  </tbody>
+</table>
+
+{% elif view == 'week' and week_data %}
+<div class="cal-toolbar">
+  <a class="btn" href="/ui/calendar?mode=reservations&view=week&date={{ week_data.prev }}">← 上一週</a>
+  <strong>{{ week_data.title }}</strong>
+  <a class="btn" href="/ui/calendar?mode=reservations&view=week&date={{ week_data.next }}">下一週 →</a>
+</div>
+{% for d in week_data.days %}
+<div class="wk-day {{ 'today' if d.date == today else '' }}">
+  <h4>{{ d.label }} · {{ d.date.isoformat() }}</h4>
+  {% if d.reservations %}
+    {% for r in d.reservations %}
+    <span class="ev {{ 'cancelled' if r.status=='cancelled' else ('attended' if r.attended else 'confirmed') }}">
+      {{ r.time }} · {{ r.party_size }} 位 · #{{ r.id }}
+    </span>
+    {% endfor %}
+  {% else %}<span class="muted">無預約</span>{% endif %}
+</div>
+{% endfor %}
+
+{% elif month_data %}
+<div class="cal-toolbar">
+  <a class="btn" href="/ui/calendar?mode=reservations&view=month&date={{ month_data.prev }}">← 上個月</a>
+  <strong>{{ month_data.title }}</strong>
+  <a class="btn" href="/ui/calendar?mode=reservations&view=month&date={{ month_data.next }}">下個月 →</a>
+</div>
+<table class="cal">
+  <thead>
+    <tr>{% for lbl in month_data.weekday_labels %}<th>{{ lbl }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+    {% for week in month_data.weeks %}
+    <tr>
+      {% for cell in week %}
+      <td class="{{ '' if cell.in_month else 'dim' }} {{ 'today' if cell.date == today else '' }}">
+        <div class="daynum">{{ cell.day }}</div>
+        {% for r in cell.reservations[:4] %}
+        <span class="ev {{ 'cancelled' if r.status=='cancelled' else ('attended' if r.attended else 'confirmed') }}"
+              title="#{{ r.id }} {{ r.time }} {{ r.party_size }}位">{{ r.time }} #{{ r.id }}</span>
+        {% endfor %}
+        {% if cell.reservations|length > 4 %}<span class="daynum">+{{ cell.reservations|length - 4 }} 筆</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

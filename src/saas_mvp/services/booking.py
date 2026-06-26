@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.config import settings
 from saas_mvp.models.booking_slot import BookingSlot
 from saas_mvp.models.customer import upsert_customer_from_line
+from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.reservation import (
     RESERVATION_CANCELLED,
     RESERVATION_CONFIRMED,
@@ -177,11 +178,19 @@ def book_slot(
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
 
     # 自動提醒為進階功能：需 tenant 開通 AUTO_REMINDER 且全域 reminder_enabled。
+    # 提醒提前小時數：per-tenant 設定優先，未設定沿用全域預設。
+    tenant_row = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    hours_before = (
+        tenant_row.reminder_hours_before
+        if tenant_row is not None and tenant_row.reminder_hours_before
+        else settings.reminder_hours_before_default
+    )
     enqueue_reminders(
         db,
         reservation=reservation,
         slot=slot,
         day_of_lead_minutes=settings.reminder_day_of_lead_minutes,
+        hours_before=hours_before,
         enabled=(
             settings.reminder_enabled
             and features_svc.is_enabled(db, tenant_id, features_svc.AUTO_REMINDER)
@@ -201,6 +210,8 @@ def book_slot(
 
     db.commit()
     db.refresh(reservation)
+    # 後台即時通知：新預約推播到後台（best-effort）。
+    _publish_reservation_event(tenant_id, "booking_new", reservation)
     return reservation
 
 
@@ -259,7 +270,24 @@ def cancel_reservation(
 
     db.commit()
     db.refresh(reservation)
+    # 後台即時通知：取消（狀態變更）推播到後台（best-effort）。
+    _publish_reservation_event(tenant_id, "booking_cancel", reservation)
     return reservation
+
+
+def _publish_reservation_event(tenant_id: int, event_type: str, reservation) -> None:
+    """SSE 廣播預約異動到後台（best-effort，絕不影響預約主流程）。"""
+    try:
+        from saas_mvp.services.events import publish_event
+
+        publish_event(
+            tenant_id, event_type,
+            reservation_id=reservation.id,
+            status=reservation.status,
+            line_user_id=reservation.line_user_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def reschedule_reservation(
