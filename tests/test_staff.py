@@ -324,3 +324,64 @@ class TestStaffLimit:
         unlocked = client.post("/booking/staff/", headers=_auth(token),
                                json={"name": "unlimited"})
         assert unlocked.status_code == 201, unlocked.text
+
+
+class TestBulkShifts:
+    def test_bulk_template_creates_shifts(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "排班員"}).json()["id"]
+        tid = _tenant_id_of(token)
+        from saas_mvp.services import staff as staff_svc
+        db = _Session()
+        try:
+            result = staff_svc.bulk_create_shifts_from_template(
+                db, tenant_id=tid, staff_id=sid, template="early",
+                weekdays=[0, 1, 2, 3, 4],
+            )
+            assert result == {"created": 5, "skipped": 0}
+            # 再套一次 → 全部略過（冪等）
+            again = staff_svc.bulk_create_shifts_from_template(
+                db, tenant_id=tid, staff_id=sid, template="early",
+                weekdays=[0, 1, 2, 3, 4],
+            )
+            assert again == {"created": 0, "skipped": 5}
+            shifts = staff_svc.list_shifts(db, tenant_id=tid, staff_id=sid)
+            assert len(shifts) == 5
+            assert all(sh.start_time == "09:00" and sh.end_time == "13:00" for sh in shifts)
+        finally:
+            db.close()
+
+    def test_bulk_unknown_template_422(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "x"}).json()["id"]
+        tid = _tenant_id_of(token)
+        from fastapi import HTTPException
+        from saas_mvp.services import staff as staff_svc
+        db = _Session()
+        try:
+            with pytest.raises(HTTPException) as ei:
+                staff_svc.bulk_create_shifts_from_template(
+                    db, tenant_id=tid, staff_id=sid, template="nope", weekdays=[0],
+                )
+            assert ei.value.status_code == 422
+        finally:
+            db.close()
+
+    def test_bulk_empty_weekdays_422(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "y"}).json()["id"]
+        tid = _tenant_id_of(token)
+        from fastapi import HTTPException
+        from saas_mvp.services import staff as staff_svc
+        db = _Session()
+        try:
+            with pytest.raises(HTTPException) as ei:
+                staff_svc.bulk_create_shifts_from_template(
+                    db, tenant_id=tid, staff_id=sid, template="early", weekdays=[],
+                )
+            assert ei.value.status_code == 422
+        finally:
+            db.close()

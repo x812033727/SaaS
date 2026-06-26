@@ -1450,6 +1450,7 @@ def _staff_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         staff_rows=rows,
         staff_shifts=shifts,
         staff_leaves=leaves,
+        shift_templates=staff_svc.SHIFT_TEMPLATES,
         locations=locations_svc.list_locations(db, tenant_id=tid),
         **extra,
     )
@@ -1615,6 +1616,36 @@ def staff_create_shift(
         error = "星期格式錯誤"
     return templates.TemplateResponse(
         "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/staff/{staff_id}/shifts/bulk", response_class=HTMLResponse)
+def staff_bulk_shifts(
+    request: Request,
+    staff_id: int,
+    template: str = Form(...),
+    weekdays: list[str] = Form(default=[]),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """以內建模板批量排班（對標 vibeaico「內建模板一鍵套用」）。"""
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    tid = actor.user.tenant_id
+    error = None
+    saved = None
+    try:
+        wd = [int(w) for w in weekdays if w != ""]
+        result = staff_svc.bulk_create_shifts_from_template(
+            db, tenant_id=tid, staff_id=staff_id, template=template, weekdays=wd,
+        )
+        saved = f"已套用模板：新增 {result['created']} 筆、略過 {result['skipped']} 筆（已存在）。"
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "星期格式錯誤"
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db, error=error, bulk_msg=saved)
     )
 
 

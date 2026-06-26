@@ -258,6 +258,85 @@ def create_shift(
     return shift
 
 
+# 內建班表模板（對標 vibeaico「內建模板一鍵套用」）。
+SHIFT_TEMPLATES: dict[str, dict] = {
+    "early": {"label": "早班", "start": "09:00", "end": "13:00", "rotation": "day"},
+    "late": {"label": "晚班", "start": "14:00", "end": "18:00", "rotation": "night"},
+    "fullday": {"label": "全日班", "start": "09:00", "end": "18:00", "rotation": "day"},
+}
+
+
+def bulk_create_shifts(
+    db: Session,
+    *,
+    tenant_id: int,
+    staff_id: int,
+    weekdays: list[int],
+    start_time: str,
+    end_time: str,
+    rotation: str | None = None,
+) -> dict:
+    """為一名員工在多個 weekday 批量建立相同時段班表（對標 vibeaico 批量排班）。
+
+    冪等：(staff_id, weekday, start_time) 已存在者略過。回傳 {created, skipped}。
+    """
+    _get_or_404(db, tenant_id, staff_id)
+    if not weekdays:
+        raise HTTPException(status_code=422, detail="weekdays must not be empty")
+    for wd in weekdays:
+        if not (0 <= wd <= 6):
+            raise HTTPException(status_code=422, detail="weekday must be 0-6")
+    if not start_time or not end_time:
+        raise HTTPException(status_code=422, detail="start_time/end_time required")
+
+    existing = {
+        (sh.weekday, sh.start_time)
+        for sh in list_shifts(db, tenant_id=tenant_id, staff_id=staff_id)
+    }
+    created = 0
+    skipped = 0
+    for wd in sorted(set(weekdays)):
+        if (wd, start_time) in existing:
+            skipped += 1
+            continue
+        db.add(StaffShift(
+            tenant_id=tenant_id,
+            staff_id=staff_id,
+            weekday=wd,
+            start_time=start_time,
+            end_time=end_time,
+            rotation=rotation,
+        ))
+        created += 1
+    db.commit()
+    return {"created": created, "skipped": skipped}
+
+
+def bulk_create_shifts_from_template(
+    db: Session,
+    *,
+    tenant_id: int,
+    staff_id: int,
+    template: str,
+    weekdays: list[int],
+) -> dict:
+    """以內建模板批量排班；未知模板 → 422。"""
+    tpl = SHIFT_TEMPLATES.get(template)
+    if tpl is None:
+        raise HTTPException(
+            status_code=422, detail=f"Unknown shift template: {template!r}"
+        )
+    return bulk_create_shifts(
+        db,
+        tenant_id=tenant_id,
+        staff_id=staff_id,
+        weekdays=weekdays,
+        start_time=tpl["start"],
+        end_time=tpl["end"],
+        rotation=tpl["rotation"],
+    )
+
+
 def delete_shift(db: Session, *, tenant_id: int, staff_id: int, shift_id: int) -> None:
     _get_or_404(db, tenant_id, staff_id)
     shift = (

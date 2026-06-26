@@ -50,6 +50,25 @@
   </button>
 
   <h4>班表</h4>
+  {% if bulk_msg %}<p class="ok">{{ bulk_msg }}</p>{% endif %}
+  <details class="bulk-shift">
+    <summary>批量排班（內建模板一鍵套用）</summary>
+    <form hx-post="/ui/staff/{{ s.id }}/shifts/bulk" hx-target="#staff-card" hx-swap="innerHTML">
+      <label>模板
+        <select name="template">
+          {% for key, tpl in shift_templates.items() %}
+          <option value="{{ key }}">{{ tpl.label }}（{{ tpl.start }}–{{ tpl.end }}）</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="weekday-picks">
+        {% for i, lbl in [(0,'週一'),(1,'週二'),(2,'週三'),(3,'週四'),(4,'週五'),(5,'週六'),(6,'週日')] %}
+        <label class="inline"><input type="checkbox" name="weekdays" value="{{ i }}"> {{ lbl }}</label>
+        {% endfor %}
+      </div>
+      <button type="submit">套用到所選日</button>
+    </form>
+  </details>
   <form hx-post="/ui/staff/{{ s.id }}/shifts" hx-target="#staff-card" hx-swap="innerHTML" class="row">
     <label>星期
       <select name="weekday">
