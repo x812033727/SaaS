@@ -221,3 +221,76 @@ def test_tenant_isolation(db):
             db, tenant_id=t1, customer_id=c1.id,
             items=[{"product_id": p2.id, "qty": 1}],
         )
+
+
+def test_tier_discount_gold(db):
+    """金卡會員結帳享 10% 折扣（對標 vibeaico「不同等級不同折扣」）。"""
+    tid = _tenant(db)
+    c = _customer(db, tid, points=500)
+    c.tier = "gold"
+    p = _product(db, tid, price=10000, stock=5)
+    db.commit()
+    order = pos_svc.checkout(
+        db, tenant_id=tid, customer_id=c.id,
+        items=[{"product_id": p.id, "qty": 1}],
+    )
+    # 10000 → 10% off 1000 → 9000
+    assert order.total_cents == 9000
+    assert order.discount_cents == 1000
+
+
+def test_tier_discount_regular_none(db):
+    tid = _tenant(db)
+    c = _customer(db, tid, points=0)  # tier 預設 regular
+    p = _product(db, tid, price=10000, stock=5)
+    db.commit()
+    order = pos_svc.checkout(
+        db, tenant_id=tid, customer_id=c.id,
+        items=[{"product_id": p.id, "qty": 1}],
+    )
+    assert order.discount_cents == 0
+    assert order.total_cents == 10000
+
+
+def test_tier_discount_stacks_with_coupon(db):
+    """等級折扣後再套優惠券（券以折後金額為基準）。"""
+    tid = _tenant(db)
+    c = _customer(db, tid, points=500, line="Ustack")
+    c.tier = "gold"
+    p = _product(db, tid, price=10000, stock=5)
+    coupon = Coupon(
+        tenant_id=tid, code="SAVE", name="折100", discount_type="amount",
+        discount_value=100,
+    )
+    db.add(coupon)
+    db.commit()
+    order = pos_svc.checkout(
+        db, tenant_id=tid, customer_id=c.id,
+        items=[{"product_id": p.id, "qty": 1}], coupon_code="SAVE",
+    )
+    # 10000 → gold 10% off → 9000 → 券折 100 → 8900
+    assert order.discount_cents == 1100
+    assert order.total_cents == 8900
+    assert order.coupon_code == "SAVE"
+
+
+def test_walkin_no_tier_discount(db):
+    tid = _tenant(db)
+    p = _product(db, tid, price=10000, stock=5)
+    db.commit()
+    order = pos_svc.checkout(
+        db, tenant_id=tid, customer_id=None,
+        items=[{"product_id": p.id, "qty": 1}],
+    )
+    assert order.discount_cents == 0
+    assert order.total_cents == 10000
+
+
+def test_lookup_exposes_tier_discount(db):
+    tid = _tenant(db)
+    c = _customer(db, tid, phone="0900000000", points=500)
+    c.tier = "gold"
+    db.commit()
+    hit = pos_svc.lookup_by_phone(db, tenant_id=tid, phone="0900000000")
+    assert hit["tier"] == "gold"
+    assert hit["tier_discount_percent"] == 10

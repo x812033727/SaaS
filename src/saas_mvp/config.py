@@ -114,6 +114,12 @@ class Settings(BaseSettings):
     # 免費版員工數上限；開通 UNLIMITED_STAFF（輕量版以上）解除。
     free_staff_limit: int = 3
 
+    # 會員等級結帳折扣（百分比）。對標 vibeaico「不同等級不同折扣」。
+    # 0 = 該等級不折扣；於 POS 結帳對商品小計套用（在優惠券之前）。
+    tier_discount_gold_percent: int = 10
+    tier_discount_silver_percent: int = 5
+    tier_discount_regular_percent: int = 0
+
     # OAuth 登入（PHASE 3：LINE Login + Google）。任一 provider 的 client_id/secret
     # 留空時，get_provider() 回傳 StubOAuthProvider（離線、決定性，供測試/dev）。
     line_login_channel_id: str = ""

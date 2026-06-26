@@ -2509,6 +2509,7 @@ def pos_lookup(
         extra.update(
             customer=result["customer"],
             points_balance=result["points_balance"],
+            tier_discount_percent=result["tier_discount_percent"],
             active_coupons=result["active_coupons"],
         )
     return templates.TemplateResponse("_pos.html", _pos_ctx(request, actor, db, **extra))

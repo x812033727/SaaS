@@ -10,7 +10,7 @@
   {% if customer %}
   <div class="card">
     <h3>{{ customer.display_name or '會員' }}</h3>
-    <p class="muted">電話：{{ customer.phone }} · 點數：{{ points_balance }} · 等級：{{ customer.tier }}</p>
+    <p class="muted">電話：{{ customer.phone }} · 點數：{{ points_balance }} · 等級：{{ customer.tier }}{% if tier_discount_percent %} · 會員折扣 {{ tier_discount_percent }}%{% endif %}</p>
     {% if active_coupons %}
     <p>可用優惠券：
       {% for c in active_coupons %}<code>{{ c.code }}</code> ({{ c.name }}){% if not loop.last %}、{% endif %}{% endfor %}
