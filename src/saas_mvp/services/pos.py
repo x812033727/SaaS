@@ -190,15 +190,17 @@ def checkout(
     if coupon_code:
         if customer is None or not customer.line_user_id:
             raise coupons_svc.CouponError("coupon requires a member with LINE id")
-        coupon = db.execute(
-            select(Coupon).where(
-                Coupon.tenant_id == tenant_id, Coupon.code == coupon_code
-            ).with_for_update()
-        ).scalar_one_or_none()
-        if coupon is None:
-            raise coupons_svc.CouponNotFound(f"coupon {coupon_code!r} not found")
-        # 核銷（鎖內重驗有效性/額度/一人一券；同一交易）。
-        _redeem_coupon_inline(db, coupon, customer)
+        # 走共用核心：鎖券 + 重驗有效性/額度/一人一券 + **最低消費門檻**（以毛額判定）
+        # + 記 order_id；不 commit（由本交易統一 commit）。與訂單 REST 路徑一致。
+        coupon, _ = coupons_svc.redeem_coupon_core(
+            db,
+            tenant_id=tenant_id,
+            code=coupon_code,
+            line_user_id=customer.line_user_id,
+            customer_id=customer.id,
+            order_id=order.id,
+            subtotal_cents=subtotal,
+        )
         # 券折抵以「等級折扣後」的金額為基準，避免折扣疊加超出。
         coupon_discount = _coupon_discount(coupon, max(0, total))
         total -= coupon_discount
@@ -252,48 +254,3 @@ def checkout(
     db.commit()
     db.refresh(order)
     return order
-
-
-def _redeem_coupon_inline(db: Session, coupon: Coupon, customer: Customer) -> None:
-    """在已鎖券列的 checkout 交易內完成核銷（不另開交易、不 commit）。
-
-    複用 coupons 的有效性/額度/一人一券檢查語意，但不 commit（由 checkout 統一 commit）。
-    """
-    from sqlalchemy.exc import IntegrityError
-
-    from saas_mvp.models.coupon_redemption import CouponRedemption
-
-    now = _utcnow().replace(tzinfo=None)
-
-    def _naive(dt):
-        if dt is None:
-            return None
-        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-
-    if not coupon.is_active:
-        raise coupons_svc.CouponInactive(f"coupon {coupon.code!r} is inactive")
-    af = _naive(coupon.active_from)
-    au = _naive(coupon.active_until)
-    if (af is not None and now < af) or (au is not None and now > au):
-        raise coupons_svc.CouponExpired(f"coupon {coupon.code!r} not in active window")
-    if (
-        coupon.max_redemptions is not None
-        and (coupon.redeemed_count or 0) >= coupon.max_redemptions
-    ):
-        raise coupons_svc.CouponExhausted(f"coupon {coupon.code!r} fully redeemed")
-
-    redemption = CouponRedemption(
-        tenant_id=coupon.tenant_id,
-        coupon_id=coupon.id,
-        customer_id=customer.id,
-        line_user_id=customer.line_user_id,
-    )
-    db.add(redemption)
-    try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        raise coupons_svc.AlreadyRedeemed(
-            f"coupon {coupon.code!r} already redeemed by this user"
-        )
-    coupon.redeemed_count = (coupon.redeemed_count or 0) + 1

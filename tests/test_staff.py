@@ -325,6 +325,32 @@ class TestStaffLimit:
                                json={"name": "unlimited"})
         assert unlocked.status_code == 201, unlocked.text
 
+    def test_reactivation_respects_limit(self, client):
+        """補強:停用→啟用也要過上限,堵住「停用一個→補一個→再啟用舊的」繞道。"""
+        from saas_mvp.config import settings
+
+        token = _register(client)
+        tid = _tenant_id_of(token)
+        self._set_unlimited(tid, False)
+
+        ids = []
+        for i in range(settings.free_staff_limit):
+            r = client.post("/booking/staff/", headers=_auth(token),
+                            json={"name": f"s{i}"})
+            assert r.status_code == 201
+            ids.append(r.json()["id"])
+        # 停用第一位 → 騰出名額 → 補一位（成功）
+        client.put(f"/booking/staff/{ids[0]}", headers=_auth(token),
+                   json={"is_active": False})
+        extra = client.post("/booking/staff/", headers=_auth(token),
+                            json={"name": "extra"})
+        assert extra.status_code == 201
+        # 現在已滿；嘗試「重新啟用」被停用的那位 → 應被上限擋下 402
+        react = client.put(f"/booking/staff/{ids[0]}", headers=_auth(token),
+                           json={"is_active": True})
+        assert react.status_code == 402, react.text
+        assert "無限員工" in react.json()["detail"]
+
 
 class TestBulkShifts:
     def test_bulk_template_creates_shifts(self, client):

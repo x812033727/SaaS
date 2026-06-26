@@ -294,3 +294,43 @@ def test_lookup_exposes_tier_discount(db):
     hit = pos_svc.lookup_by_phone(db, tenant_id=tid, phone="0900000000")
     assert hit["tier"] == "gold"
     assert hit["tier_discount_percent"] == 10
+
+
+def test_pos_coupon_below_min_spend_rejected(db):
+    """補強:POS 套券也須通過最低消費門檻(與訂單 REST 路徑一致)。"""
+    from saas_mvp.services import coupons as coupons_svc
+    tid = _tenant(db)
+    c = _customer(db, tid, points=0, line="Umin")
+    p = _product(db, tid, price=5000, stock=5)  # 小計 5000
+    coupon = Coupon(
+        tenant_id=tid, code="MIN", name="滿萬折", discount_type="amount",
+        discount_value=500, min_spend_cents=10000,  # 門檻 10000 > 小計
+    )
+    db.add(coupon)
+    db.commit()
+    with pytest.raises(coupons_svc.MinSpendNotMet):
+        pos_svc.checkout(
+            db, tenant_id=tid, customer_id=c.id,
+            items=[{"product_id": p.id, "qty": 1}], coupon_code="MIN",
+        )
+    # 未達門檻 → 不應留下核銷紀錄
+    db.refresh(coupon)
+    assert coupon.redeemed_count == 0
+
+
+def test_pos_coupon_meets_min_spend_applies(db):
+    tid = _tenant(db)
+    c = _customer(db, tid, points=0, line="Umin2")
+    p = _product(db, tid, price=12000, stock=5)
+    coupon = Coupon(
+        tenant_id=tid, code="MIN2", name="滿萬折", discount_type="amount",
+        discount_value=500, min_spend_cents=10000,
+    )
+    db.add(coupon)
+    db.commit()
+    order = pos_svc.checkout(
+        db, tenant_id=tid, customer_id=c.id,
+        items=[{"product_id": p.id, "qty": 1}], coupon_code="MIN2",
+    )
+    assert order.total_cents == 11500  # 12000 - 500
+    assert order.coupon_code == "MIN2"

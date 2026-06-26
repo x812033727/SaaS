@@ -179,6 +179,10 @@ def update_staff(
             )
         staff.booking_mode = booking_mode
     if is_active is not None:
+        # 重新啟用（停用→啟用）也要過員工上限閘門，否則可「停用一個→補一個→
+        # 再啟用舊的」繞過免費版上限。停用方向不檢查。
+        if is_active and not staff.is_active:
+            _enforce_staff_limit(db, tenant_id)
         staff.is_active = is_active
     db.commit()
     db.refresh(staff)
