@@ -94,7 +94,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from saas_mvp.db import get_db
-from saas_mvp.line_client import LineReplyClient, get_line_client
+from saas_mvp.line_client import (
+    LineProfileClient,
+    LineReplyClient,
+    get_line_client,
+    get_profile_client,
+)
 from saas_mvp.models.line_channel_config import (
     InvalidTargetLangError,
     LineChannelConfig,
@@ -181,6 +186,7 @@ async def line_webhook(
     db: Session = Depends(get_db),
     translator: Translator = Depends(get_translator),
     line_client: LineReplyClient = Depends(get_line_client),
+    profile_client: LineProfileClient = Depends(get_profile_client),
 ):
     # ── 1. 取得 raw body（HMAC 驗章必須用原始 bytes） ──────────────────────────
     body = await request.body()
@@ -307,6 +313,7 @@ async def line_webhook(
         line_client,
         bind,
         bot_mode,
+        profile_client,
     )
 
     return {"status": "ok"}
@@ -323,6 +330,7 @@ def _process_events(
     line_client: LineReplyClient,
     bind,
     bot_mode: str = "translation",
+    profile_client: LineProfileClient | None = None,
 ) -> None:
     """在 background 內依序處理每個 event，並以 webhookEventId 做冪等去重。
 
@@ -371,6 +379,7 @@ def _process_events(
                     line_client,
                     stage_holder,
                     bot_mode,
+                    profile_client,
                 )
                 _mark_webhook_event_processed(db, event_row_id, stage)
             except Exception as exc:
@@ -548,6 +557,7 @@ def _handle_line_event(
     line_client: LineReplyClient,
     stage_holder: list[str] | None = None,
     bot_mode: str = "translation",
+    profile_client: LineProfileClient | None = None,
 ) -> str:
     """處理單筆 LINE event，回傳最後完成的處理階段。"""
     stage = LineWebhookEventStage.CLAIMED.value
@@ -571,6 +581,7 @@ def _handle_line_event(
             event,
             line_client,
             stage_holder,
+            profile_client,
         )
 
     event_type = event.get("type")
@@ -901,6 +912,7 @@ def _try_conversational(
     action: str | None,
     params: dict,
     line_user_id: str,
+    display_name: str | None = None,
 ) -> tuple[str | None, list | None, dict | None] | None:
     """引導式對話步驟機（服務→日期→員工→時段→確認），以 postback 攜帶狀態。
 
@@ -991,6 +1003,7 @@ def _try_conversational(
                 slot_id=slot_id,
                 party_size=party_size,
                 line_user_id=line_user_id,
+                display_name=display_name,
                 staff_id=staff_id,
                 service_id=service_id,
             )
@@ -1012,6 +1025,7 @@ def _dispatch_booking(
     params: dict,
     line_user_id: str,
     raw_text: str = "",
+    display_name: str | None = None,
 ) -> tuple[str, list | None]:
     """執行預約指令；回傳 (回覆文字, quick_reply 按鈕或 None)。預期錯誤轉友善訊息。"""
     # 引導式第一步：選時段（「時段」或「預約」無參數）
@@ -1044,6 +1058,7 @@ def _dispatch_booking(
                 slot_id=slot_id,
                 party_size=party_size,
                 line_user_id=line_user_id,
+                display_name=display_name,
             )
         except booking_svc.SlotNotFoundError:
             return f"找不到時段 #{slot_id}，請重新輸入「時段」查看。", None
@@ -1228,6 +1243,35 @@ def _my_orders_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
     )
 
 
+# 會實際建單的 booking 動作；只有這些動作才需向 LINE 取使用者 displayName，
+# 避免「時段/我的預約/取消」等查詢類訊息也多打一次 profile API。
+_BOOKING_CREATE_ACTIONS = {"book", "pick_slot"}
+
+
+def _resolve_display_name(
+    profile_client: LineProfileClient | None,
+    line_user_id: str,
+    access_token: str,
+) -> str | None:
+    """向 LINE 取使用者 displayName 供建單回填；任何失敗皆降級為 None，不阻擋建單。
+
+    webhook event.source 只給 userId，displayName 需另呼叫 profile API 取得。
+    profile API 僅對「已加 bot 好友」者回名字，非好友/封鎖回 404；網路/憑證失敗
+    亦同——一律吞掉並回 None，由 book_slot 照常以 line_user_id 建單。
+    """
+    if not line_user_id or profile_client is None:
+        return None
+    try:
+        profile = profile_client.get_profile(line_user_id, access_token=access_token)
+    except Exception:  # noqa: BLE001 - profile 失敗不得中斷建單
+        _log.warning(
+            "LINE profile fetch failed for user %s; proceeding without display_name",
+            line_user_id,
+        )
+        return None
+    return profile.display_name if profile else None
+
+
 def _handle_booking_event(
     db: Session,
     tenant_id: int,
@@ -1235,6 +1279,7 @@ def _handle_booking_event(
     event: dict,
     line_client: LineReplyClient,
     stage_holder: list[str] | None = None,
+    profile_client: LineProfileClient | None = None,
 ) -> str:
     """booking 模式事件處理：解析指令 → 執行 → reply（含引導式 quick-reply 按鈕）。
 
@@ -1256,14 +1301,21 @@ def _handle_booking_event(
     if etype == "message" and event.get("message", {}).get("type") == "text":
         raw_text = event["message"].get("text", "")
 
+    # 僅在會建單的動作向 LINE 取 displayName，供顧客檔回填（可核對是誰預約）。
+    display_name = None
+    if action in _BOOKING_CREATE_ACTIONS and line_user_id:
+        display_name = _resolve_display_name(profile_client, line_user_id, access_token)
+
     # 引導式對話（服務→日期→員工→時段→確認）優先攔截；未接手者交回既有 dispatcher。
-    conv = _try_conversational(db, tenant_id, action, params, line_user_id)
+    conv = _try_conversational(
+        db, tenant_id, action, params, line_user_id, display_name
+    )
     if conv is not None:
         reply_text, quick_reply, flex = conv
     else:
         # message 但非文字（圖片/貼圖）→ action 為 None；回說明
         reply_text, quick_reply = _dispatch_booking(
-            db, tenant_id, action, params, line_user_id, raw_text
+            db, tenant_id, action, params, line_user_id, raw_text, display_name
         )
         flex = None
 

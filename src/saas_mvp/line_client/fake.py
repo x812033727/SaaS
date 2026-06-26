@@ -8,11 +8,13 @@ import itertools
 
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
+    LineProfileClient,
     LinePushClient,
     LinePushError,
     LineReplyClient,
     LineRichMenuClient,
     LineRichMenuError,
+    LineUserProfile,
 )
 
 
@@ -250,3 +252,44 @@ class StubLineBotInfoClient(LineBotInfoClient):
         if self._raises:
             raise RuntimeError("stub bot/info unavailable")
         return self._user_id
+
+
+class StubLineProfileClient(LineProfileClient):
+    """測試用 profile client，回傳預設 profile，無網路呼叫。
+
+    使用方式（pytest + FastAPI dependency_overrides）::
+
+        stub = StubLineProfileClient(display_name="王小明")
+        app.dependency_overrides[get_profile_client] = lambda: stub
+
+    Args:
+        profile: ``get_profile()`` 的固定回傳值；傳 None 模擬「回應缺 body」。
+        display_name: 便利參數；profile 為 None 但給此值時自動合成 LineUserProfile。
+        raises: 設為 True（或 Exception 實例）時 ``get_profile()`` 拋例外，
+            模擬 profile API 不可達；用來驗證建單在失敗時仍成功、display_name 留 None。
+
+    Attributes:
+        calls: 收到的 ``(user_id, access_token)`` 清單（按呼叫順序），供斷言。
+    """
+
+    def __init__(
+        self,
+        profile: LineUserProfile | None = None,
+        *,
+        display_name: str | None = None,
+        raises: bool | Exception = False,
+    ) -> None:
+        if profile is None and display_name is not None:
+            profile = LineUserProfile(user_id="", display_name=display_name)
+        self._profile = profile
+        self._raises = raises
+        self.calls: list[tuple[str, str]] = []
+
+    def get_profile(self, user_id: str, *, access_token: str) -> LineUserProfile | None:
+        """回傳建構時指定的 profile；raises 為真時拋例外。"""
+        self.calls.append((user_id, access_token))
+        if isinstance(self._raises, Exception):
+            raise self._raises
+        if self._raises:
+            raise RuntimeError("stub profile unavailable")
+        return self._profile

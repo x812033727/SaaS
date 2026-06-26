@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 
 class LineReplyError(Exception):
@@ -154,6 +155,63 @@ class LineRichMenuClient(ABC):
     @abstractmethod
     def is_available(self) -> bool:
         """回傳此 client 是否具備發送能力。"""
+
+
+class LineProfileError(Exception):
+    """LINE `GET /v2/bot/profile/{userId}` 呼叫失敗的基底例外。"""
+
+
+class LineProfileCredentialError(LineProfileError):
+    """access token 無效或未授權（HTTP 400/401/403）。"""
+
+
+class LineProfileNetworkError(LineProfileError):
+    """profile API 網路層失敗，例如 timeout、DNS 或連線中斷。"""
+
+
+class LineProfileParseError(LineProfileError):
+    """profile API 回應格式不符預期（非 JSON 或非物件）。"""
+
+
+@dataclass(frozen=True)
+class LineUserProfile:
+    """LINE 使用者 profile（`GET /v2/bot/profile/{userId}` 回應）。
+
+    picture_url / status_message 保留欄位供未來使用；目前預約流程只取 display_name。
+    display_name 可能為 None（回應缺 displayName，例如使用者未設名稱）。
+    """
+    user_id: str
+    display_name: str | None
+    picture_url: str | None = None
+    status_message: str | None = None
+
+
+class LineProfileClient(ABC):
+    """LINE `GET /v2/bot/profile/{userId}` client 介面 — 取得使用者顯示名稱等 profile。
+
+    供 LINE 預約流程在建單時補回顧客 displayName（webhook event.source 只給 userId）。
+    與其他 client 一致採 ABC + abstractmethod、access_token 以 per-call 傳入，
+    使同一實例可服務不同 tenant。
+    """
+
+    @abstractmethod
+    def get_profile(self, user_id: str, *, access_token: str) -> LineUserProfile | None:
+        """以 channel access token 呼叫 profile API，回傳該使用者的 profile。
+
+        Args:
+            user_id: 目標使用者的 LINE userId（格式 U[0-9a-f]{32}）。
+            access_token: 該 LINE channel 的 channel access token（Bearer）。
+
+        Returns:
+            成功時回傳 :class:`LineUserProfile`（display_name 可能為 None）；
+            回應缺少可用 body 時回 None。
+
+        Raises:
+            LineProfileCredentialError: token 無效或未授權（400/401/403）。
+            LineProfileNetworkError: 網路層失敗。
+            LineProfileParseError: 回應格式不是可解析的 JSON 物件。
+            LineProfileError: 其他 profile API 失敗。
+        """
 
 
 class LineBotInfoClient(ABC):

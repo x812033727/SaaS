@@ -633,6 +633,7 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     """組預約頁 context：bot_mode、時段、預約、顧客。"""
     tid = actor.user.tenant_id
     cfg = _line_config_or_none(db, tid)
+    customers = customers_svc.list_customers(db, tenant_id=tid)
     return _ctx(
         request,
         actor,
@@ -641,7 +642,9 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         has_line_config=cfg is not None,
         slots=slots_svc.list_slots(db, tenant_id=tid),
         reservations=booking_svc.list_reservations(db, tenant_id=tid),
-        customers=customers_svc.list_customers(db, tenant_id=tid),
+        customers=customers,
+        # 預約列以 customer_id 對應顧客檔，顯示可核對的 LINE 名稱/電話（免額外查詢）。
+        customer_by_id={c.id: c for c in customers},
         **extra,
     )
 

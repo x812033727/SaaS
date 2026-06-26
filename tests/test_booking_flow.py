@@ -28,7 +28,12 @@ import saas_mvp.models.service_staff as _ss  # noqa: F401,E402
 from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.booking.commands import parse_postback_data  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
-from saas_mvp.line_client import FakeLineReplyClient, get_line_client  # noqa: E402
+from saas_mvp.line_client import (  # noqa: E402
+    FakeLineReplyClient,
+    StubLineProfileClient,
+    get_line_client,
+    get_profile_client,
+)
 from saas_mvp.models.booking_slot import BookingSlot  # noqa: E402
 from saas_mvp.models.line_channel_config import LineChannelConfig  # noqa: E402
 from saas_mvp.models.reservation import Reservation  # noqa: E402
@@ -112,6 +117,11 @@ def app_client():
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_line_client] = lambda: line_client
     app.dependency_overrides[get_translator] = lambda: StubTranslator()
+    # 建單動作會向 LINE profile API 取 displayName；測試以 stub 回傳固定名字，
+    # 避免真實 HTTP，同時讓顧客檔 display_name 被回填。
+    app.dependency_overrides[get_profile_client] = lambda: StubLineProfileClient(
+        display_name="王小明"
+    )
 
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c, line_client
