@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     # 多分店（PHASE 1）：每租戶可建的「啟用中」分店數量上限。
     max_locations_per_tenant: int = 5
 
+    # 免費版員工數上限；開通 UNLIMITED_STAFF（輕量版以上）解除。
+    free_staff_limit: int = 3
+
     # OAuth 登入（PHASE 3：LINE Login + Google）。任一 provider 的 client_id/secret
     # 留空時，get_provider() 回傳 StubOAuthProvider（離線、決定性，供測試/dev）。
     line_login_channel_id: str = ""

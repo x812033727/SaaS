@@ -276,3 +276,51 @@ class TestAssignStaff:
         r = client.post(f"/booking/staff/{sid}/assign", headers=_auth(token),
                         json={"reservation_id": 999999})
         assert r.status_code == 404
+
+
+class TestStaffLimit:
+    """免費版 3 員工上限 + UNLIMITED_STAFF 解除（對標 vibeaico「無限員工」）。"""
+
+    def _set_unlimited(self, tenant_id: int, enabled: bool) -> None:
+        from saas_mvp.services import features as features_svc
+        db = _Session()
+        try:
+            features_svc.set_enabled(
+                db, tenant_id, features_svc.UNLIMITED_STAFF, enabled,
+                actor_user_id=None, source="admin",
+            )
+        finally:
+            db.close()
+
+    def test_free_tier_limit_then_unlock(self, client):
+        from saas_mvp.config import settings
+
+        token = _register(client)
+        tid = _tenant_id_of(token)
+        # 明確關閉 UNLIMITED_STAFF（預設 features_default_enabled=True 會放行）
+        self._set_unlimited(tid, False)
+
+        # 建到上限（free_staff_limit，預設 3）皆成功
+        for i in range(settings.free_staff_limit):
+            r = client.post("/booking/staff/", headers=_auth(token),
+                            json={"name": f"staff{i}"})
+            assert r.status_code == 201, r.text
+        # 第 N+1 位 → 402 Payment Required
+        over = client.post("/booking/staff/", headers=_auth(token),
+                           json={"name": "overflow"})
+        assert over.status_code == 402, over.text
+        assert "無限員工" in over.json()["detail"]
+
+        # 停用一位後可再建一位（停用者不佔額度）
+        sid_first = client.get("/booking/staff/", headers=_auth(token)).json()[0]["id"]
+        client.put(f"/booking/staff/{sid_first}", headers=_auth(token),
+                   json={"is_active": False})
+        again = client.post("/booking/staff/", headers=_auth(token),
+                            json={"name": "after-deactivate"})
+        assert again.status_code == 201, again.text
+
+        # 開通 UNLIMITED_STAFF → 不再受限
+        self._set_unlimited(tid, True)
+        unlocked = client.post("/booking/staff/", headers=_auth(token),
+                               json={"name": "unlimited"})
+        assert unlocked.status_code == 201, unlocked.text

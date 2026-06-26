@@ -94,6 +94,34 @@ def get_staff(db: Session, *, tenant_id: int, staff_id: int) -> Staff:
     return _get_or_404(db, tenant_id, staff_id)
 
 
+def _enforce_staff_limit(db: Session, tenant_id: int) -> None:
+    """免費版員工數上限閘門：未開通 UNLIMITED_STAFF 時，啟用中員工數不得超過
+    settings.free_staff_limit（預設 3）。對標 vibeaico「無限員工」進階功能。
+
+    僅計「啟用中」（is_active=True）員工——停用者不佔額度。
+    開通（輕量版以上）後完全不限。
+    """
+    # 延遲 import 避免 services.features ↔ auth.dependencies 載入期循環。
+    from saas_mvp.config import settings
+    from saas_mvp.services import features as features_svc
+
+    if features_svc.is_enabled(db, tenant_id, features_svc.UNLIMITED_STAFF):
+        return
+    active_count = (
+        tenant_query(db, Staff, tenant_id)
+        .filter(Staff.is_active.is_(True))
+        .count()
+    )
+    if active_count >= settings.free_staff_limit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"免費版員工上限為 {settings.free_staff_limit} 位。"
+                "升級「無限員工」(輕量版以上) 即可解除上限。"
+            ),
+        )
+
+
 def create_staff(
     db: Session,
     *,
@@ -107,6 +135,7 @@ def create_staff(
         raise HTTPException(
             status_code=422, detail=f"Invalid booking_mode: {booking_mode!r}"
         )
+    _enforce_staff_limit(db, tenant_id)
     _assert_location_owned(db, tenant_id, location_id)
     staff = Staff(
         tenant_id=tenant_id,
