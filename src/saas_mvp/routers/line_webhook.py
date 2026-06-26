@@ -1301,6 +1301,22 @@ def _handle_booking_event(
     if etype == "message" and event.get("message", {}).get("type") == "text":
         raw_text = event["message"].get("text", "")
 
+    # 後台客服：存檔顧客傳入的文字訊息 + SSE 推播到後台（best-effort，不影響預約）。
+    if raw_text and line_user_id:
+        try:
+            from saas_mvp.services import line_chat as line_chat_svc
+            from saas_mvp.services.events import publish_event
+
+            line_chat_svc.record_inbound(
+                db, tenant_id=tenant_id, line_user_id=line_user_id, text=raw_text
+            )
+            publish_event(
+                tenant_id, "line_message",
+                line_user_id=line_user_id, text=raw_text, direction="in",
+            )
+        except Exception:  # noqa: BLE001 — 客服存檔失敗不得影響預約主流程
+            db.rollback()
+
     # 僅在會建單的動作向 LINE 取 displayName，供顧客檔回填（可核對是誰預約）。
     display_name = None
     if action in _BOOKING_CREATE_ACTIONS and line_user_id:

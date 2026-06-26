@@ -94,6 +94,8 @@ def import_all_models() -> None:
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
     # 月度推播額度計量（跨提醒/異動通知/行銷 push 路徑共用）。
     from saas_mvp.models import push_usage  # noqa: F401
+    # 後台 LINE 客服對話紀錄（收/發）。
+    from saas_mvp.models import line_message  # noqa: F401
 
 
 def init_db() -> None:

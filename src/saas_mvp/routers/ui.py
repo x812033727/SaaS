@@ -20,7 +20,12 @@ import html
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -62,6 +67,8 @@ from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.services import line_chat as line_chat_svc
+from saas_mvp.services.events import broker as event_broker
 from saas_mvp.ai import AIError, get_assistant
 from saas_mvp.models.campaign import Campaign
 from saas_mvp.services.tenants import tenant_query
@@ -2744,4 +2751,130 @@ def faq_ask(
     return templates.TemplateResponse(
         "_ai_test.html",
         _ctx(request, actor, question=question, answer=answer, source=source, error=error),
+    )
+
+
+# ── 後台 LINE 客服訊息 + SSE 即時通知 ────────────────────────────────────────
+@router.get("/line-chat", response_class=HTMLResponse)
+def line_chat_page(
+    request: Request,
+    u: str | None = Query(default=None),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """客服對話頁：左側對話列表，右側選定對話的訊息序列 + 回覆框。"""
+    tid = actor.user.tenant_id
+    conversations = line_chat_svc.list_conversations(db, tenant_id=tid)
+    selected = u
+    selected_name = None
+    messages = []
+    if selected:
+        messages = line_chat_svc.list_messages(
+            db, tenant_id=tid, line_user_id=selected
+        )
+        for c in conversations:
+            if c["line_user_id"] == selected:
+                selected_name = c["display_name"]
+                break
+    return templates.TemplateResponse(
+        "line_chat.html",
+        _ctx(
+            request, actor,
+            conversations=conversations,
+            selected=selected,
+            selected_name=selected_name,
+            line_user_id=selected,
+            messages=messages,
+        ),
+    )
+
+
+@router.post("/line-chat/{line_user_id}/reply", response_class=HTMLResponse)
+def line_chat_reply(
+    request: Request,
+    line_user_id: str,
+    text: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    push_client: LinePushClient = Depends(get_push_client),
+):
+    """店家從後台回覆顧客：LINE push → 存檔 outbound → SSE 廣播。"""
+    from saas_mvp.line_client import LinePushError
+    from saas_mvp.models.line_channel_config import LineChannelConfig
+    from saas_mvp.services.events import publish_event
+
+    tid = actor.user.tenant_id
+    text = (text or "").strip()
+    error = None
+    if not text:
+        error = "回覆內容不可為空。"
+    else:
+        cfg = (
+            db.query(LineChannelConfig)
+            .filter(LineChannelConfig.tenant_id == tid)
+            .first()
+        )
+        token = None
+        try:
+            token = cfg.access_token if cfg else None
+        except Exception:  # noqa: BLE001 — 解密失敗視同未設定
+            token = None
+        if not token:
+            error = "尚未設定 LINE channel access token，無法回覆。"
+        else:
+            try:
+                push_client.push(line_user_id, text, access_token=token)
+                line_chat_svc.record_outbound(
+                    db, tenant_id=tid, line_user_id=line_user_id, text=text
+                )
+                publish_event(
+                    tid, "line_message",
+                    line_user_id=line_user_id, text=text, direction="out",
+                )
+            except LinePushError as exc:
+                error = f"LINE 推播失敗：{exc}"
+
+    messages = line_chat_svc.list_messages(db, tenant_id=tid, line_user_id=line_user_id)
+    return templates.TemplateResponse(
+        "_line_chat_messages.html",
+        _ctx(request, actor, messages=messages, line_user_id=line_user_id, error=error),
+    )
+
+
+@router.get("/events")
+async def line_events_stream(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+):
+    """SSE 即時通知串流：新預約 / 取消 / 新訊息即時推送到後台。
+
+    以 cookie 認證（EventSource 會自動帶上同源 cookie）。每租戶一條訂閱。
+    """
+    import asyncio
+    import json as _json
+
+    tenant_id = actor.user.tenant_id
+    queue = await event_broker.subscribe(tenant_id)
+
+    async def gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"  # 心跳，維持連線
+                    continue
+                etype = event.get("type", "message")
+                data = _json.dumps(event, ensure_ascii=False)
+                yield f"event: {etype}\ndata: {data}\n\n"
+        finally:
+            event_broker.unsubscribe(tenant_id, queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

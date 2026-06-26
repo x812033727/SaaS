@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}客服訊息 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>LINE 客服訊息</h1>
+<p class="muted">顧客在 LINE 傳來的訊息會即時出現於此，可直接從後台回覆，無需切換到 LINE OA Manager。</p>
+
+<div id="sse-status" class="muted" style="font-size:.85em">● 即時通知連線中…</div>
+
+<div class="chat-layout">
+  <aside class="chat-list card">
+    <h2>對話</h2>
+    {% if not conversations %}
+    <p class="muted">目前沒有對話。</p>
+    {% endif %}
+    {% for c in conversations %}
+    <a class="chat-conv" href="/ui/line-chat?u={{ c.line_user_id }}">
+      <div class="name">{{ c.display_name or c.line_user_id }}</div>
+      <div class="preview">{{ '↩ ' if c.last_direction == 'out' else '' }}{{ c.last_text[:24] }}</div>
+    </a>
+    {% endfor %}
+  </aside>
+
+  <section id="chat-panel" class="card">
+    {% if selected %}
+    <h2>{{ selected_name or selected }}</h2>
+    {% include "_line_chat_messages.html" %}
+    {% else %}
+    <p class="muted">從左側選擇一個對話開始回覆。</p>
+    {% endif %}
+  </section>
+</div>
+
+<script>
+(function () {
+  var statusEl = document.getElementById('sse-status');
+  if (!window.EventSource) { statusEl.textContent = '瀏覽器不支援即時通知'; return; }
+  var es = new EventSource('/ui/events');
+  es.onopen = function () { statusEl.textContent = '● 即時通知已連線'; };
+  es.onerror = function () { statusEl.textContent = '● 即時通知中斷，重連中…'; };
+  function notify(label) {
+    statusEl.textContent = '🔔 ' + label + '（' + new Date().toLocaleTimeString() + '）';
+  }
+  es.addEventListener('line_message', function () { notify('收到新訊息'); });
+  es.addEventListener('booking_new', function () { notify('有新預約'); });
+  es.addEventListener('booking_cancel', function () { notify('有預約取消'); });
+})();
+</script>
+{% endblock %}

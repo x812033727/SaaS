@@ -201,6 +201,8 @@ def book_slot(
 
     db.commit()
     db.refresh(reservation)
+    # 後台即時通知：新預約推播到後台（best-effort）。
+    _publish_reservation_event(tenant_id, "booking_new", reservation)
     return reservation
 
 
@@ -259,7 +261,24 @@ def cancel_reservation(
 
     db.commit()
     db.refresh(reservation)
+    # 後台即時通知：取消（狀態變更）推播到後台（best-effort）。
+    _publish_reservation_event(tenant_id, "booking_cancel", reservation)
     return reservation
+
+
+def _publish_reservation_event(tenant_id: int, event_type: str, reservation) -> None:
+    """SSE 廣播預約異動到後台（best-effort，絕不影響預約主流程）。"""
+    try:
+        from saas_mvp.services.events import publish_event
+
+        publish_event(
+            tenant_id, event_type,
+            reservation_id=reservation.id,
+            status=reservation.status,
+            line_user_id=reservation.line_user_id,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def reschedule_reservation(
