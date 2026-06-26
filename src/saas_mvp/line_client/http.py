@@ -17,12 +17,18 @@ from saas_mvp.line_client.base import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LineProfileClient,
+    LineProfileCredentialError,
+    LineProfileError,
+    LineProfileNetworkError,
+    LineProfileParseError,
     LinePushClient,
     LinePushError,
     LineReplyClient,
     LineReplyError,
     LineRichMenuClient,
     LineRichMenuError,
+    LineUserProfile,
 )
 
 _LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
@@ -365,3 +371,56 @@ class HttpLineBotInfoClient(LineBotInfoClient):
         if not user_id or not _LINE_USER_ID_RE.match(user_id):
             return None
         return user_id
+
+
+class HttpLineProfileClient(LineProfileClient):
+    """呼叫真實 LINE `GET /v2/bot/profile/{userId}` 取得使用者 profile 的 client。
+
+    僅用 stdlib urllib。HTTP/網路/解析失敗轉成 line_client.base 的型別化例外，
+    由呼叫端決定是否降級（預約流程降級為 display_name=None，不阻擋建單）。
+
+    Args:
+        api_base: API base（預設官方 URL，測試時可替換）。
+        timeout: HTTP timeout（秒）。
+    """
+
+    def __init__(
+        self,
+        api_base: str = _LINE_API_BASE,
+        timeout: int = 10,
+    ) -> None:
+        self._api_base = api_base
+        self._timeout = timeout
+
+    def get_profile(self, user_id: str, *, access_token: str) -> LineUserProfile | None:
+        """呼叫 profile API，回傳 :class:`LineUserProfile`；回應非物件時回 None。"""
+        req = urllib.request.Request(
+            f"{self._api_base}/v2/bot/profile/{user_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            if exc.code in {400, 401, 403}:
+                raise LineProfileCredentialError(
+                    f"LINE profile credential rejected: HTTP {exc.code}"
+                ) from exc
+            raise LineProfileError(f"LINE profile HTTP {exc.code}") from exc
+        except OSError as exc:
+            raise LineProfileNetworkError("LINE profile network error") from exc
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LineProfileParseError("LINE profile returned invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise LineProfileParseError("LINE profile returned non-object JSON")
+
+        return LineUserProfile(
+            user_id=data.get("userId") or user_id,
+            display_name=data.get("displayName"),
+            picture_url=data.get("pictureUrl"),
+            status_message=data.get("statusMessage"),
+        )

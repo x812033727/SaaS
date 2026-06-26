@@ -18,12 +18,18 @@ from saas_mvp.line_client.base import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LineProfileClient,
+    LineProfileCredentialError,
+    LineProfileError,
+    LineProfileNetworkError,
+    LineProfileParseError,
     LinePushClient,
     LinePushError,
     LineReplyClient,
     LineReplyError,
     LineRichMenuClient,
     LineRichMenuError,
+    LineUserProfile,
 )
 from saas_mvp.line_client.fake import (
     FakeLinePushClient,
@@ -33,9 +39,11 @@ from saas_mvp.line_client.fake import (
     SentPush,
     SentReply,
     StubLineBotInfoClient,
+    StubLineProfileClient,
 )
 from saas_mvp.line_client.http import (
     HttpLineBotInfoClient,
+    HttpLineProfileClient,
     HttpLinePushClient,
     HttpLineReplyClient,
     HttpLineRichMenuClient,
@@ -67,6 +75,16 @@ def get_bot_info_client() -> LineBotInfoClient:
     :class:`StubLineBotInfoClient`，不需任何 monkeypatch。
     """
     return HttpLineBotInfoClient()
+
+
+def get_profile_client() -> LineProfileClient:
+    """FastAPI dependency：回傳可注入的 LINE profile client。
+
+    預設回傳 :class:`HttpLineProfileClient`（真實 HTTP）。
+    測試中透過 ``app.dependency_overrides[get_profile_client]`` 替換成
+    :class:`StubLineProfileClient`，不需任何 monkeypatch。
+    """
+    return HttpLineProfileClient()
 
 
 def get_push_client() -> LinePushClient:
@@ -105,6 +123,15 @@ __all__ = [
     "HttpLineBotInfoClient",
     "StubLineBotInfoClient",
     "get_bot_info_client",
+    "LineProfileClient",
+    "LineProfileError",
+    "LineProfileCredentialError",
+    "LineProfileNetworkError",
+    "LineProfileParseError",
+    "LineUserProfile",
+    "HttpLineProfileClient",
+    "StubLineProfileClient",
+    "get_profile_client",
     "LinePushClient",
     "LinePushError",
     "HttpLinePushClient",
