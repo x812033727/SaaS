@@ -134,3 +134,34 @@ class TestApplyModes:
         )
         assert status["template"] == "grid1x2"
         assert len(client.created) == 1
+
+
+class TestLargeLayoutAndBoutique:
+    def test_boutique_theme_present(self):
+        assert "boutique" in rm.THEMES
+
+    def test_3x4x4_template_present(self):
+        assert "grid3x4x4" in rm.TEMPLATES
+        tpl = rm.TEMPLATES["grid3x4x4"]
+        assert tpl["rows_spec"] == [3, 4, 4]
+
+    def test_3x4x4_areas_irregular_rows(self):
+        payload, png = rm.build_rich_menu_payload("grid3x4x4", "boutique")
+        areas = payload["areas"]
+        # 11 區（3+4+4）
+        assert len(areas) == 11
+        width = payload["size"]["width"]
+        # 第一列 3 區，等寬鋪滿整列
+        top = [a for a in areas if a["bounds"]["y"] == 0]
+        assert len(top) == 3
+        assert sum(a["bounds"]["width"] for a in top) == width
+        # 中間列（第二列）4 區
+        row_h = payload["size"]["height"] // 3
+        mid = [a for a in areas if a["bounds"]["y"] == row_h]
+        assert len(mid) == 4
+        assert sum(a["bounds"]["width"] for a in mid) == width
+        assert isinstance(png, bytes) and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_existing_uniform_layout_unaffected(self):
+        payload, _ = rm.build_rich_menu_payload("booking4", "ocean_blue")
+        assert len(payload["areas"]) == 4  # 2x2 維持原樣
