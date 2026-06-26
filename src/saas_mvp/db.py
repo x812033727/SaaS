@@ -120,6 +120,41 @@ def init_db() -> None:
     _migrate_add_customer_ics_token()
     _migrate_add_user_oauth()
     _migrate_add_customer_birthday()
+    _migrate_add_customer_blacklist()
+
+
+def _migrate_add_customer_blacklist() -> None:
+    """為既有 booking_customers 表補上黑名單欄位（blacklisted + blacklist_reason）。
+
+    blacklisted 帶 NOT NULL DEFAULT FALSE，既有顧客自動回填 false（零影響）；
+    blacklist_reason 為 nullable 備註。只做 ADD COLUMN，失敗僅記 warning，不阻擋啟動。
+    """
+    table = "booking_customers"
+    columns = {
+        "blacklisted": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "blacklist_reason": "VARCHAR(255)",
+    }
+    try:
+        inspector = inspect(engine)
+        if table not in inspector.get_table_names():
+            return
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        missing = {
+            name: col_type for name, col_type in columns.items() if name not in existing
+        }
+        if not missing:
+            return
+        with engine.begin() as conn:
+            for name, col_type in missing.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+        _log.info(
+            "migrated: added %s columns to %s", ", ".join(sorted(missing)), table
+        )
+    except Exception as exc:  # noqa: BLE001 — 遷移失敗不得阻擋啟動
+        _log.warning(
+            "schema migration for %s blacklist fields skipped due to error: %s",
+            table, type(exc).__name__,
+        )
 
 
 def _migrate_add_customer_birthday() -> None:

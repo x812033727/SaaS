@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -64,6 +65,12 @@ class Customer(Base):
     # 生日（PHASE 4 行銷自動化：生日活動 targeting）；nullable = 未填。
     # 既有 DB 由 _migrate_add_customer_birthday() 補欄。
     birthday = Column(Date, nullable=True)
+    # 黑名單：True = 禁止此 LINE 顧客線上預約（book_slot 早退拒絕）；reason 選填供店家記事。
+    # 既有 DB 由 _migrate_add_customer_blacklist() 補欄。
+    blacklisted = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    blacklist_reason = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

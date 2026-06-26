@@ -1007,6 +1007,8 @@ def _try_conversational(
                 staff_id=staff_id,
                 service_id=service_id,
             )
+        except booking_svc.CustomerBlacklistedError:
+            return "很抱歉，您目前無法在線上預約，請直接與店家聯繫。", None, None
         except booking_svc.CrossTenantReferenceError:
             return "預約資料有誤，請重新輸入「預約」開始。", None, None
         except booking_svc.SlotNotFoundError:
@@ -1060,6 +1062,8 @@ def _dispatch_booking(
                 line_user_id=line_user_id,
                 display_name=display_name,
             )
+        except booking_svc.CustomerBlacklistedError:
+            return "很抱歉，您目前無法在線上預約，請直接與店家聯繫。", None
         except booking_svc.SlotNotFoundError:
             return f"找不到時段 #{slot_id}，請重新輸入「時段」查看。", None
         except booking_svc.SlotFullError:

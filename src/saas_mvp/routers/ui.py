@@ -805,6 +805,32 @@ def booking_mark_attendance(
     )
 
 
+@router.post("/booking/customers/{customer_id}/blacklist", response_class=HTMLResponse)
+def booking_set_blacklist(
+    request: Request,
+    customer_id: int,
+    blacklisted: str = Form(...),
+    reason: str = Form(default=""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """加入/解除顧客黑名單（硬性阻擋線上預約），重新渲染顧客卡片。"""
+    tid = actor.user.tenant_id
+    try:
+        customers_svc.set_blacklist(
+            db,
+            tenant_id=tid,
+            customer_id=customer_id,
+            blacklisted=(blacklisted == "true"),
+            reason=(reason.strip() or None),
+        )
+    except HTTPException:
+        pass  # 查無顧客（跨租戶/已刪）時靜默，照常回渲染目前清單
+    return templates.TemplateResponse(
+        "_booking_customers.html", _booking_ctx(request, actor, db)
+    )
+
+
 # ── 店家自助：商品銷售 ────────────────────────────────────────────────────────
 
 def _shop_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:

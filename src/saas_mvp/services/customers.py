@@ -54,3 +54,33 @@ def update_customer(
     db.commit()
     db.refresh(customer)
     return customer
+
+
+def set_blacklist(
+    db: Session,
+    *,
+    tenant_id: int,
+    customer_id: int,
+    blacklisted: bool,
+    reason: str | None = None,
+) -> Customer:
+    """設定顧客黑名單狀態（硬性阻擋線上預約）。
+
+    blacklisted=True 時記錄 reason（選填）；解除時一併清空 reason。
+    """
+    customer = _get_or_404(db, tenant_id, customer_id)
+    customer.blacklisted = blacklisted
+    customer.blacklist_reason = reason if blacklisted else None
+    db.commit()
+    db.refresh(customer)
+    return customer
+
+
+def is_blacklisted(db: Session, *, tenant_id: int, line_user_id: str) -> bool:
+    """此 LINE 顧客是否被列入黑名單（查無顧客檔 = 非黑名單）。"""
+    customer = (
+        tenant_query(db, Customer, tenant_id)
+        .filter(Customer.line_user_id == line_user_id)
+        .first()
+    )
+    return bool(customer and customer.blacklisted)

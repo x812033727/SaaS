@@ -20,6 +20,7 @@ from saas_mvp.services import segments as segments_svc
 from saas_mvp.services.customers import (
     get_customer,
     list_customers,
+    set_blacklist,
     update_customer,
 )
 from saas_mvp.services.tenants import tenant_query
@@ -49,8 +50,15 @@ class CustomerResponse(BaseModel):
     note: str | None
     points_balance: int
     tier: str
+    blacklisted: bool
+    blacklist_reason: str | None
 
     model_config = {"from_attributes": True}
+
+
+class BlacklistUpdate(BaseModel):
+    blacklisted: bool
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class PointsAdjust(BaseModel):
@@ -193,6 +201,24 @@ def patch_one(
         customer_id=customer_id,
         phone=body.phone,
         note=body.note,
+    )
+    return CustomerResponse.model_validate(customer)
+
+
+@router.post("/{customer_id}/blacklist", response_model=CustomerResponse)
+def set_customer_blacklist(
+    customer_id: int,
+    body: BlacklistUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CustomerResponse:
+    """設定/解除顧客黑名單（硬性阻擋線上預約）；解除時一併清空原因。"""
+    customer = set_blacklist(
+        db,
+        tenant_id=current_user.tenant_id,
+        customer_id=customer_id,
+        blacklisted=body.blacklisted,
+        reason=body.reason,
     )
     return CustomerResponse.model_validate(customer)
 
