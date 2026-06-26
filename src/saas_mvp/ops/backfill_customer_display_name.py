@@ -23,11 +23,10 @@ from typing import Callable, TextIO
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from saas_mvp.db import SessionLocal
+from saas_mvp.db import SessionLocal, import_all_models
 from saas_mvp.line_client import HttpLineProfileClient, LineProfileClient
 from saas_mvp.models.customer import Customer
 from saas_mvp.models.line_channel_config import LineChannelConfig
-from saas_mvp.models.tenant import Tenant  # noqa: F401 - resolve SQLAlchemy relationship
 
 
 @dataclass(frozen=True)
@@ -174,6 +173,8 @@ def backfill_customer_display_names(
     Dry-run still calls LINE profile API（驗證可補名字），但不 commit。
     Apply mode 一次 commit 一筆。每筆之間 sleep_seconds 節流，避免觸 LINE rate limit。
     """
+    # standalone 入口：確保所有 model 已註冊，否則 Tenant→User 等字串 relationship 解析失敗。
+    import_all_models()
     client = profile_client or HttpLineProfileClient()
     with session_factory() as db:
         customer_ids = _candidate_customer_ids(
