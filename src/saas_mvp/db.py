@@ -124,6 +124,7 @@ def init_db() -> None:
     _migrate_add_customer_birthday()
     _migrate_add_coupon_order_fields()
     _migrate_add_tenant_reminder_hours()
+    _migrate_add_profile_announcement()
 
 
 def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
@@ -159,6 +160,11 @@ def _migrate_add_coupon_order_fields() -> None:
 def _migrate_add_tenant_reminder_hours() -> None:
     """自訂提醒時間（小時）：為既有 tenants 表補上 reminder_hours_before 欄位。"""
     _add_column_if_missing("tenants", "reminder_hours_before", "INTEGER")
+
+
+def _migrate_add_profile_announcement() -> None:
+    """公開頁公告：為既有 business_profiles 表補上 announcement 欄位。"""
+    _add_column_if_missing("business_profiles", "announcement", "TEXT")
 
 
 def _migrate_add_customer_birthday() -> None:

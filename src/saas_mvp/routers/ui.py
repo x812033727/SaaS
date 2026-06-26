@@ -2470,6 +2470,7 @@ def profile_save(
     seo_title: str = Form(""),
     seo_description: str = Form(""),
     intro: str = Form(""),
+    announcement: str = Form(""),
     is_published: str = Form(""),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
@@ -2490,6 +2491,7 @@ def profile_save(
             seo_title=seo_title or None,
             seo_description=seo_description or None,
             intro=intro or None,
+            announcement=announcement or None,
             is_published=(is_published == "true"),
         )
         saved = True

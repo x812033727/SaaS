@@ -14,6 +14,7 @@
   <label>SEO 標題<input name="seo_title" value="{{ profile.seo_title if profile else '' }}" maxlength="256"></label>
   <label>SEO 描述<input name="seo_description" value="{{ profile.seo_description if profile else '' }}" maxlength="512"></label>
   <label>簡介<textarea name="intro">{{ profile.intro if profile else '' }}</textarea></label>
+  <label>公告（顯示於公開頁頂端）<textarea name="announcement" placeholder="例：本週四公休">{{ profile.announcement if profile else '' }}</textarea></label>
   <label><input name="is_published" type="checkbox" value="true" {{ 'checked' if profile and profile.is_published else '' }}> 發佈（對外公開）</label>
   <button type="submit">儲存</button>
 </form>
