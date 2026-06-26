@@ -51,6 +51,12 @@ class CouponRedemption(Base):
         ForeignKey("booking_reservations.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # 套用於商品訂單時的關聯（預約核銷時為 NULL）。
+    order_id = Column(
+        Integer,
+        ForeignKey("orders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     redeemed_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     __table_args__ = (

@@ -50,6 +50,12 @@ class Order(Base):
         String(16), nullable=False, default=ORDER_PENDING, server_default=ORDER_PENDING
     )
     total_cents = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # 套用優惠券後折抵的金額（cents）；total_cents 為折抵後實付。
+    discount_cents = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # 套用的優惠券代碼（紀錄用，NULL = 未套券）。
+    coupon_code = Column(String(64), nullable=True)
     currency = Column(String(8), nullable=False, default="TWD", server_default="TWD")
     # 金流交易編號（綠界 MerchantTradeNo，唯一）；回調以此對應訂單。
     # 既有 DB 由 _migrate_add_order_merchant_trade_no() 補欄。

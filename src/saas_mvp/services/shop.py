@@ -46,6 +46,10 @@ class OrderNotFound(ShopError):
     pass
 
 
+class CouponApplyError(ShopError):
+    """套用優惠券失敗（無效/過期/已用/未達最低消費）。"""
+
+
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -161,8 +165,13 @@ def create_order(
     items: list[tuple[int, int]],
     line_user_id: str | None = None,
     customer_id: int | None = None,
+    coupon_code: str | None = None,
 ) -> Order:
-    """原子建單：鎖商品（固定順序）→ 驗庫存 → 扣庫存 + 快照單價 → 建 Order+Items。"""
+    """原子建單：鎖商品（固定順序）→ 驗庫存 → 扣庫存 + 快照單價 → 建 Order+Items。
+
+    傳入 ``coupon_code`` 時於同一交易內套券：核銷（鎖券、驗額度/最低消費/一人一券）
+    後折抵 total_cents。需有 ``line_user_id``（券以 LINE 領取／一人一券為單位）。
+    """
     if not items:
         raise HTTPException(status_code=422, detail="items must not be empty")
 
@@ -212,7 +221,34 @@ def create_order(
             line_total_cents=line_total,
         ))
 
-    order.total_cents = total
+    # 套用優惠券（同一交易內核銷 + 折抵）
+    if coupon_code:
+        if not line_user_id:
+            raise HTTPException(
+                status_code=422, detail="套用優惠券需要 line_user_id"
+            )
+        from saas_mvp.services import coupons as coupons_svc
+
+        try:
+            coupon, _ = coupons_svc.redeem_coupon_core(
+                db,
+                tenant_id=tenant_id,
+                code=coupon_code,
+                line_user_id=line_user_id,
+                customer_id=customer_id,
+                order_id=order.id,
+                subtotal_cents=total,
+            )
+        except coupons_svc.CouponError as exc:
+            db.rollback()
+            raise CouponApplyError(str(exc)) from exc
+        discount = coupons_svc.compute_discount(coupon, total)
+        order.discount_cents = discount
+        order.coupon_code = coupon_code
+        order.total_cents = max(0, total - discount)
+    else:
+        order.total_cents = total
+
     db.commit()
     db.refresh(order)
     return order
