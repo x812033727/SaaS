@@ -221,7 +221,31 @@ def create_order(
             line_total_cents=line_total,
         ))
 
-    # 套用優惠券（同一交易內核銷 + 折抵）
+    # ── 折扣（與 POS / 訂單三條結帳路徑一致）：先會員等級折扣，再優惠券 ──────────
+    from saas_mvp.models.customer import Customer
+    from saas_mvp.services import membership as membership_svc
+
+    # 解析會員（customer_id 優先，否則以 line_user_id 對應建檔顧客）；散客不折。
+    customer = None
+    if customer_id is not None:
+        customer = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(Customer.id == customer_id).first()
+        )
+    elif line_user_id:
+        customer = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(Customer.line_user_id == line_user_id).first()
+        )
+
+    running = total
+    tier_discount = 0
+    if customer is not None:
+        tier_discount = membership_svc.tier_discount_for(customer.tier, total)
+        running -= tier_discount
+
+    # 套用優惠券（同一交易內核銷 + 折抵；min_spend 以毛額判定）
+    coupon_discount = 0
     if coupon_code:
         if not line_user_id:
             raise HTTPException(
@@ -235,19 +259,20 @@ def create_order(
                 tenant_id=tenant_id,
                 code=coupon_code,
                 line_user_id=line_user_id,
-                customer_id=customer_id,
+                customer_id=customer.id if customer is not None else customer_id,
                 order_id=order.id,
                 subtotal_cents=total,
             )
         except coupons_svc.CouponError as exc:
             db.rollback()
             raise CouponApplyError(str(exc)) from exc
-        discount = coupons_svc.compute_discount(coupon, total)
-        order.discount_cents = discount
+        # 券折抵以「等級折扣後」金額為基準，避免疊加超出。
+        coupon_discount = coupons_svc.compute_discount(coupon, max(0, running))
+        running -= coupon_discount
         order.coupon_code = coupon_code
-        order.total_cents = max(0, total - discount)
-    else:
-        order.total_cents = total
+
+    order.discount_cents = tier_discount + coupon_discount
+    order.total_cents = max(0, running)
 
     db.commit()
     db.refresh(order)

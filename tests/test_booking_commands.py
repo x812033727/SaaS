@@ -89,3 +89,25 @@ class TestParsePostback:
 
     def test_empty(self):
         assert parse_postback_data("") == (None, {})
+
+
+def test_buy_text_with_coupon():
+    assert parse_booking_command("購買 1 2 SAVE10") == (
+        "buy", {"product_id": 1, "qty": 2, "coupon": "SAVE10"}
+    )
+
+
+def test_buy_text_without_coupon():
+    assert parse_booking_command("購買 1 2") == ("buy", {"product_id": 1, "qty": 2})
+
+
+def test_buy_postback_with_coupon():
+    assert parse_postback_data("action=buy&product_id=1&qty=2&coupon=SAVE10") == (
+        "buy", {"product_id": 1, "qty": 2, "coupon": "SAVE10"}
+    )
+
+
+def test_buy_postback_without_coupon():
+    assert parse_postback_data("action=buy&product_id=1&qty=2") == (
+        "buy", {"product_id": 1, "qty": 2}
+    )
