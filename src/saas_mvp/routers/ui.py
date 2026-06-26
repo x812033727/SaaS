@@ -2784,6 +2784,37 @@ def faq_update(
     )
 
 
+@router.post("/ai-widget/ask", response_class=HTMLResponse)
+def ai_widget_ask(
+    request: Request,
+    question: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """右下角浮動 AI 客服 widget 的問答端點（對標 vibeaico AI 客服 widget）。"""
+    tid = actor.user.tenant_id
+    answer = None
+    error = None
+    if not features_svc.is_enabled(db, tid, features_svc.AI_ASSISTANT):
+        error = "AI 客服未開通（專業版功能）。"
+    elif len(question) > _AI_QUESTION_MAX_LEN:
+        error = f"問題過長（上限 {_AI_QUESTION_MAX_LEN} 字），請精簡後再試。"
+    else:
+        assistant = get_assistant()
+        context = faq_svc.build_context(
+            db, tid, question, max_entries=assistant.context_max_entries
+        )
+        try:
+            result = assistant.answer(question, context)
+            answer = result.answer
+        except AIError as exc:
+            error = f"AI 後端錯誤：{exc}"
+    return templates.TemplateResponse(
+        "_ai_widget_answer.html",
+        _ctx(request, actor, question=question, answer=answer, error=error),
+    )
+
+
 @router.post("/faq/ask", response_class=HTMLResponse)
 def faq_ask(
     request: Request,
