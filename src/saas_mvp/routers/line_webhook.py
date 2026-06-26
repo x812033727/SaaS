@@ -1185,7 +1185,7 @@ def _dispatch_booking(
         if action == "shop":
             return _list_products_reply(db, tenant_id)
         if action == "buy":
-            return _buy_reply(db, tenant_id, params.get("product_id"), params.get("qty", 1), line_user_id), None
+            return _buy_reply(db, tenant_id, params.get("product_id"), params.get("qty", 1), line_user_id, params.get("coupon")), None
         return _my_orders_reply(db, tenant_id, line_user_id), None
 
     # help 或無法辨識
@@ -1209,8 +1209,6 @@ def _ai_reply(db: Session, tenant_id: int, text: str) -> str:
 
 def _list_coupons_reply(db: Session, tenant_id: int) -> tuple[str, list | None]:
     """列出有效券，附 quick-reply 兌換按鈕。"""
-    from saas_mvp.models.coupon import Coupon
-
     coupons = [c for c in coupons_svc.list_coupons(db, tenant_id=tenant_id) if c.is_active][:12]
     if not coupons:
         return "目前沒有可用的優惠券。", None
@@ -1268,7 +1266,8 @@ def _list_products_reply(db: Session, tenant_id: int) -> tuple[str, list | None]
 
 
 def _buy_reply(
-    db: Session, tenant_id: int, product_id: int | None, qty: int, line_user_id: str
+    db: Session, tenant_id: int, product_id: int | None, qty: int, line_user_id: str,
+    coupon_code: str | None = None,
 ) -> str:
     if product_id is None:
         return "請指定商品，例：購買 1 2（先輸入「商品」查看）"
@@ -1278,6 +1277,7 @@ def _buy_reply(
             tenant_id=tenant_id,
             items=[(product_id, qty)],
             line_user_id=line_user_id or None,
+            coupon_code=coupon_code or None,
         )
     except shop_svc.ProductNotFound:
         return f"找不到商品 #{product_id}。"
@@ -1285,11 +1285,20 @@ def _buy_reply(
         return f"商品 #{product_id} 已下架。"
     except shop_svc.OutOfStock:
         return f"商品 #{product_id} 庫存不足。"
+    except shop_svc.CouponApplyError as exc:
+        return f"優惠券無法套用：{exc}"
     checkout = get_payment_provider().create_checkout(
         order_id=order.id, amount_cents=order.total_cents, currency=order.currency
     )
+    # 有折抵（會員等級 / 優惠券）時附上折抵金額，讓顧客看到優惠。
+    discount_line = (
+        f"已折抵：{order.discount_cents} {order.currency}\n"
+        if (order.discount_cents or 0) > 0 else ""
+    )
     return (
-        f"已建立訂單 #{order.id}\n金額：{order.total_cents} {order.currency}\n"
+        f"已建立訂單 #{order.id}\n"
+        f"{discount_line}"
+        f"應付：{order.total_cents} {order.currency}\n"
         f"付款連結：{checkout}"
     )
 
