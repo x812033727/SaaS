@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     rate_limit_backend: str = "memory"
     redis_url: str = ""
 
+    # SSE 即時通知後端（後台客服/預約推送）：
+    # SAAS_EVENTS_BACKEND: "memory"（預設，行內、僅同一 worker）
+    #   | "redis"（以 redis pub/sub 跨 worker 廣播，多 worker 部署需此項）。
+    # 共用 SAAS_REDIS_URL；url 空 / 連不上 / 未裝 redis 時記 warning 並 fallback memory。
+    events_backend: str = "memory"
+
     # Translation backend
     # SAAS_DEEPL_API_KEY: set to your DeepL auth key to enable real HTTP translation.
     #   If empty (default), get_translator() returns StubTranslator (offline, deterministic).

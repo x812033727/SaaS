@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -50,8 +51,20 @@ _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle (replaces deprecated @on_event)."""
     init_db()
-    yield
-    # teardown hooks go here in future tasks
+    # SSE 即時通知：events_backend=redis 時啟動跨 worker pub/sub listener
+    # （memory 預設回 None，行內單 worker 廣播，行為不變）。
+    from saas_mvp.services import events as events_svc
+
+    events_task = await events_svc.start_redis_fanout()
+    try:
+        yield
+    finally:
+        if events_task is not None:
+            events_task.cancel()
+            try:
+                await events_task
+            except BaseException:  # noqa: BLE001 — 收尾不得拋（含 CancelledError）
+                pass
 
 
 def create_app() -> FastAPI:
@@ -161,11 +174,15 @@ def create_app() -> FastAPI:
         finally:
             db.close()
 
+        from saas_mvp.services.events import broker as _event_broker
+
         body = {
             "status": "ok" if db_status == "ok" else "error",
             "db": db_status,
             # 回報實際生效後端（設定 redis 但降級時會是 "memory"）
             "rate_limit_backend": effective_backend_name(),
+            # SSE 事件廣播：實際生效後端（redis 啟用成功才是 "redis"）
+            "events_backend": "redis" if _event_broker.redis_enabled() else "memory",
         }
         status_code = 200 if db_status == "ok" else 503
         return JSONResponse(body, status_code=status_code)
