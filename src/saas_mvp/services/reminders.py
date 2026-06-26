@@ -31,11 +31,17 @@ def _utcnow() -> datetime.datetime:
 
 
 def compute_remind_times(
-    slot_start: datetime.datetime, day_of_lead_minutes: int
+    slot_start: datetime.datetime,
+    day_of_lead_minutes: int,
+    hours_before: int = 24,
 ) -> dict[str, datetime.datetime]:
-    """由 slot_start 算出兩種提醒的 remind_at（offset 式，易於測試）。"""
+    """由 slot_start 算出兩種提醒的 remind_at（offset 式，易於測試）。
+
+    ``hours_before``：「預約前提醒」提前的小時數（對標 vibeaico「自訂提醒時間（小時）」）。
+    預設 24（＝前一天）；店家可自訂為任意正整數小時。
+    """
     return {
-        REMINDER_DAY_BEFORE: slot_start - datetime.timedelta(days=1),
+        REMINDER_DAY_BEFORE: slot_start - datetime.timedelta(hours=hours_before),
         REMINDER_DAY_OF: slot_start
         - datetime.timedelta(minutes=day_of_lead_minutes),
     }
@@ -47,6 +53,7 @@ def enqueue_reminders(
     reservation: Reservation,
     slot: BookingSlot,
     day_of_lead_minutes: int,
+    hours_before: int = 24,
     enabled: bool = True,
 ) -> int:
     """為一筆預約入列 day_before / day_of 兩筆 pending 提醒（不 commit）。
@@ -58,7 +65,9 @@ def enqueue_reminders(
     if not enabled or not reservation.line_user_id:
         return 0
 
-    times = compute_remind_times(slot.slot_start, day_of_lead_minutes)
+    times = compute_remind_times(
+        slot.slot_start, day_of_lead_minutes, hours_before=hours_before
+    )
     added = 0
     for kind, remind_at in times.items():
         row = ReservationReminder(

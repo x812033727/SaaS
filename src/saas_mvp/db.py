@@ -123,6 +123,7 @@ def init_db() -> None:
     _migrate_add_user_oauth()
     _migrate_add_customer_birthday()
     _migrate_add_coupon_order_fields()
+    _migrate_add_tenant_reminder_hours()
 
 
 def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
@@ -153,6 +154,11 @@ def _migrate_add_coupon_order_fields() -> None:
     _add_column_if_missing("orders", "discount_cents", "INTEGER NOT NULL DEFAULT 0")
     _add_column_if_missing("orders", "coupon_code", "VARCHAR(64)")
     _add_column_if_missing("coupon_redemptions", "order_id", "INTEGER")
+
+
+def _migrate_add_tenant_reminder_hours() -> None:
+    """自訂提醒時間（小時）：為既有 tenants 表補上 reminder_hours_before 欄位。"""
+    _add_column_if_missing("tenants", "reminder_hours_before", "INTEGER")
 
 
 def _migrate_add_customer_birthday() -> None:

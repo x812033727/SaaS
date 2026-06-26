@@ -641,6 +641,11 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
     cfg = _line_config_or_none(db, tid)
     customers = customers_svc.list_customers(db, tenant_id=tid)
+    tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
+    reminder_hours = (
+        (tenant_row.reminder_hours_before if tenant_row else None)
+        or settings.reminder_hours_before_default
+    )
     return _ctx(
         request,
         actor,
@@ -650,6 +655,7 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         slots=slots_svc.list_slots(db, tenant_id=tid),
         reservations=booking_svc.list_reservations(db, tenant_id=tid),
         customers=customers,
+        reminder_hours=reminder_hours,
         # 預約列以 customer_id 對應顧客檔，顯示可核對的 LINE 名稱/電話（免額外查詢）。
         customer_by_id={c.id: c for c in customers},
         **extra,
@@ -682,6 +688,31 @@ def booking_set_bot_mode(
         error = str(exc.detail)
     return templates.TemplateResponse(
         "_booking_botmode.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/booking/reminder-hours", response_class=HTMLResponse)
+def booking_set_reminder_hours(
+    request: Request,
+    reminder_hours_before: int = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """設定「預約前幾小時提醒」（對標 vibeaico「自訂提醒時間（小時）」）。"""
+    tid = actor.user.tenant_id
+    error = None
+    saved = False
+    if reminder_hours_before < 1 or reminder_hours_before > 168:
+        error = "提醒時間需介於 1 ～ 168 小時。"
+    else:
+        tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
+        if tenant_row is not None:
+            tenant_row.reminder_hours_before = reminder_hours_before
+            db.commit()
+            saved = True
+    return templates.TemplateResponse(
+        "_booking_reminder.html",
+        _booking_ctx(request, actor, db, error=error, saved=saved),
     )
 
 

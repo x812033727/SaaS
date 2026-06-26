@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.config import settings
 from saas_mvp.models.booking_slot import BookingSlot
 from saas_mvp.models.customer import upsert_customer_from_line
+from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.reservation import (
     RESERVATION_CANCELLED,
     RESERVATION_CONFIRMED,
@@ -177,11 +178,19 @@ def book_slot(
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
 
     # 自動提醒為進階功能：需 tenant 開通 AUTO_REMINDER 且全域 reminder_enabled。
+    # 提醒提前小時數：per-tenant 設定優先，未設定沿用全域預設。
+    tenant_row = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    hours_before = (
+        tenant_row.reminder_hours_before
+        if tenant_row is not None and tenant_row.reminder_hours_before
+        else settings.reminder_hours_before_default
+    )
     enqueue_reminders(
         db,
         reservation=reservation,
         slot=slot,
         day_of_lead_minutes=settings.reminder_day_of_lead_minutes,
+        hours_before=hours_before,
         enabled=(
             settings.reminder_enabled
             and features_svc.is_enabled(db, tenant_id, features_svc.AUTO_REMINDER)

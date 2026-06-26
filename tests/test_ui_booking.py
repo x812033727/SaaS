@@ -284,3 +284,26 @@ class TestFeaturesUI:
         client.post("/ui/features/PRODUCT_SALES/unsubscribe")
         locked = client.get("/ui/shop")
         assert "尚未開通" in locked.text
+
+
+class TestReminderHoursUI:
+    def test_page_shows_reminder_control(self, client):
+        _login(client)
+        r = client.get("/ui/booking")
+        assert r.status_code == 200
+        assert "自動提醒設定" in r.text
+
+    def test_set_reminder_hours(self, client):
+        _login(client)
+        r = client.post("/ui/booking/reminder-hours", data={"reminder_hours_before": 6})
+        assert r.status_code == 200
+        assert "已儲存" in r.text and "6" in r.text
+        # 重新整理頁面應反映新值
+        page = client.get("/ui/booking")
+        assert 'value="6"' in page.text
+
+    def test_reject_out_of_range(self, client):
+        _login(client)
+        r = client.post("/ui/booking/reminder-hours", data={"reminder_hours_before": 999})
+        assert r.status_code == 200
+        assert "1 ～ 168" in r.text or "error" in r.text.lower()

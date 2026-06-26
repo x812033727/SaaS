@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     reminder_enabled: bool = True
     reminder_day_of_lead_minutes: int = 180
     reminder_max_per_run: int = 500
+    # 「預約前提醒」預設提前小時數；per-tenant 可由 Tenant.reminder_hours_before 覆寫。
+    reminder_hours_before_default: int = 24
 
     # 預約異動通知（PHASE 2）：店家修改/取消預約時 LINE 推播；
     # SAAS_NOTIFICATION_MAX_PER_RUN: ops 腳本單次最多派送筆數（防推播暴衝）。
