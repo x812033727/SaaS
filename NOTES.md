@@ -4116,3 +4116,5 @@ M2 待開 issue：
 - `[M2] LINE webhook event TTL 清理 processed 舊資料`
 - `[M2] LINE webhook last_error 完整診斷資料設計`
 - `[M2] LINE webhook pending 超時監控與告警`
+## 任務 #5 完成：結論明確區分「本輪過了」與「M2 移交待辦」，不把 M2 混入本輪 PR。
+
