@@ -6,7 +6,7 @@
 * X-Line-Signature 驗章失敗 → 400（符合 LINE 文件建議）。
 * 非文字事件靜默略過，回 200 OK。
 * 重送去重：以 webhookEventId 持久化 claim 狀態；processed / pending
-  重複 ID 略過，failed 且尚未送出 reply 者允許重試。deliveryContext.isRedelivery
+  重複 ID 略過，failed 且尚未送出 reply 者允許重試；LINE 的重送提示欄位
   僅作診斷 log。
 * quota 超量 → 不翻譯、以明確訊息 reply（不拋 500）。
 * quota 計費點後移：先做非遞增檢查放行，待 translate 與 reply 皆成功後才

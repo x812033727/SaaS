@@ -4097,3 +4097,24 @@ I will view `tests/test_line_task2_translator.py` to examine the unit tests for 
 
 ## 任務 #4 完成：跑聚焦測試確認全綠：translator 介面、stub skip、enhanced translation
 
+## 任務 #1 完成：上述四個測試檔在工作目錄實跑全數通過（0 failed），涵蓋：同 ID 重送不 reply 不計量、redelivery=true 但新 ID 正常處理、缺欄位退化處理、混合批次僅重複 ID 被略過。
+
+## 任務 #2 完成：`isRedelivery` 在 router 中不出現於任何 skip/continue 的條件分支，只出現在 log。
+
+## 任務 #3 完成：`LineWebhookEvent` 在 `db.init_db()` 的 metadata 中可建表，`(tenant_id, webhook_event_id)` 唯一約束存在且跨租戶隔離。
+
+## 任務 #4 完成：reply 後失敗（`last_stage=reply_sent`）的 row 不被改回 pending；reply 前失敗（claimed/quota_checked/translated）可重試。
+
+## 任務 #5 完成：本輪結案與 M2 移交範圍切清楚，不把 M2 混入本輪 PR。
+
+本輪已過：冪等契約以 `(tenant_id, webhook_event_id)` 唯一約束與 `_claim_webhook_event()` 為唯一邊界；`isRedelivery` 只保留 log 診斷；缺 `webhookEventId` 退化為直接處理；reply 後失敗不重試，reply 前失敗可重試。指定四組測試已作為本輪驗收依據。
+
+本輪不做：不加 `MAX_ATTEMPTS`、不加 TTL 清理 job、不改 `last_error` 儲存完整訊息、不補 pending 監控告警、不引入 Redis/Celery。這些不是本輪 PR 的驗收條件，不能拿來阻擋結案。
+
+M2 待開 issue：
+- `[M2] LINE webhook failed retry MAX_ATTEMPTS 守衛`
+- `[M2] LINE webhook event TTL 清理 processed 舊資料`
+- `[M2] LINE webhook last_error 完整診斷資料設計`
+- `[M2] LINE webhook pending 超時監控與告警`
+## 任務 #5 完成：結論明確區分「本輪過了」與「M2 移交待辦」，不把 M2 混入本輪 PR。
+
