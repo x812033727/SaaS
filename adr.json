@@ -1273,6 +1273,76 @@
       "rejected": "",
       "session_id": "pja3a0622488",
       "created_at": 1781962721.327443
+    },
+    {
+      "decision": "冪等邊界唯一收斂點為 _claim_webhook_event()——router 主流程對 isRedelivery 完全無感知。",
+      "rationale": "邊界集中才可測、可維護；分散到多處會讓「哪裡去重」變成隱性知識。",
+      "rejected": "在 _process_events 迴圈頂層加 isRedelivery 條件 skip——會漏處理首次送達失敗後的合法 redelivery。",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841738
+    },
+    {
+      "decision": "DB 唯一約束 (tenant_id, webhook_event_id) 是冪等的唯一真相來源，以 IntegrityError + rollback 跨方言處理衝突。",
+      "rationale": "DB 約束是多實例下的正確保底，應用層鎖反而製造額外狀態；SQLite/PostgreSQL 均適用。",
+      "rejected": "應用層鎖（threading.Lock / Redis SETNX）——M1 單實例 + 共用 DB 場景下過度設計；M2 多實例若有 DB 壓力問題再評估 Redis，但唯一約束仍是最終保底，Redis 只降壓不替代。",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841814
+    },
+    {
+      "decision": "reply 前/後重試邊界以 _FAILED_RETRYABLE_STAGES_BEFORE_REPLY 常數明確列舉，reply_sent 刻意不列入。",
+      "rationale": "保守優先——寧可少重試，不可重複 reply；reply 後重試的唯一效果是建單/計費重複，成本高於損失一次翻譯。",
+      "rejected": "所有 failed 狀態均允許重試——reply 後也重試會造成重複回覆，違反 LINE Messaging API 語意。",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841833
+    },
+    {
+      "decision": "isRedelivery 在 router 中只出現於 log 診斷（line_webhook.py:568–573），永不作為任何 skip/continue 條件。",
+      "rationale": "isRedelivery 是 LINE 的提示欄位，不是冪等契約；webhookEventId 才是去重鍵，混用兩者會讓邏輯出現兩套不對稱路徑。",
+      "rejected": "",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841845
+    },
+    {
+      "decision": "缺 webhookEventId 時退化為直接處理（return None, True），不攔截也不報錯。",
+      "rationale": "前向相容——LINE 未來可能有不帶此欄的 event 類型；攔截會造成靜默丟棄，違反「儘量處理」原則。",
+      "rejected": "",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841862
+    },
+    {
+      "decision": "attempt_count 本輪不設上限（MAX_ATTEMPTS 守衛移交 M2）。",
+      "rationale": "LINE 正常 redelivery 窗口 < 1 小時，M1 流量下同 ID 無限卡 pending 無真實場景；加上限本輪須補狀態分支與測試，膨脹驗收範圍。",
+      "rejected": "本輪補 MAX_ATTEMPTS = 5——高工確認 M1 可接受，且無具體失敗場景支撐其必要性，議程子題二未能舉證「無上限破壞本輪冪等契約」，故否決納入本輪。",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.984188
+    },
+    {
+      "decision": "last_error 只存 type(exc).__name__，不存完整 message 或 traceback。",
+      "rationale": "防 PII 與內部路徑洩漏至 DB；debug 完整資訊走 log，DB 只存分類索引。",
+      "rejected": "補 line_webhook_event_errors 子表存完整訊息——屬 M2 技術債，本輪不納入。",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841895
+    },
+    {
+      "decision": "TTL 清理 job（processed_at < now - 7d）移交 M2，不進本輪 PR。",
+      "rationale": "M1 每日數百筆、數 MB 等級，累積速度不影響當前效能；本輪加清理 job 屬鍍金。",
+      "rejected": "",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841907
+    },
+    {
+      "decision": "本輪驗收閉環定義為——四組指定測試全綠 + grep 確認 isRedelivery 無 skip/continue 路徑，不補新程式碼。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.984192
+    },
+    {
+      "decision": "M2 移交項目必須開成具體 issue 追蹤，不可口頭承諾——MAX_ATTEMPTS 守衛、TTL 清理、last_error 完整訊息、pending > 5 min 監控告警各開一票。",
+      "rationale": "高工明確警示「M2 不具體開票，半年後變資料累積與卡 pending 難查問題」，這是本輪唯一需要額外行動的輸出。",
+      "rejected": "",
+      "session_id": "pjcdbe979a16",
+      "created_at": 1782578187.9841936
     }
   ]
 }

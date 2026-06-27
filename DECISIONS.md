@@ -810,3 +810,47 @@
 - 接點（查官方 SDK 確認）：AIO 定期定額參數 ChoosePayment=Credit + PeriodAmount/PeriodType(M)/Frequency/ExecTimes/PeriodReturnURL；停扣 CreditCardPeriodAction(Action=Cancel,TimeStamp)；查詢 QueryCreditCardPeriodInfo。CheckMacValue 沿用第四輪 EcpayClient（同演算法）。
 - 關鍵正確性：(1) 首期 ReturnURL RtnCode==1 才 set_enabled(True)，pending 期間不開通；(2) 退訂先 cancel_period 停扣再關功能，停扣失敗標 cancel_failed + log（待 ops 重試），絕不關功能卻續扣；(3) 兩回調先驗簽再信任、set_enabled 冪等；(4) S2S HTTP 走 EcpayClient 注入縫 _urllib_post，測試以 fake 不打真實網路；(5) ExecTimes=99 月扣上限，屆滿自動停需重訂。
 - 實作：models/feature_subscription（狀態 pending/active/failed/cancelled/cancel_failed）；services/subscriptions；EcpayClient.build_period_form/cancel_period；billing.subscribe_feature 回 SubscribeResult（stub→payment_id+即時開通；ecpay→checkout_url+pending）；routers/payments 加 subscribe 頁 + subscribe-callback + period-callback。
+## 冪等邊界唯一收斂點為 _claim_webhook_event()——router 主流程對 isRedelivery 完全無感知。
+- 時間：2026-06-28 00:36
+- 理由：邊界集中才可測、可維護；分散到多處會讓「哪裡去重」變成隱性知識。
+- 否決方案：在 _process_events 迴圈頂層加 isRedelivery 條件 skip——會漏處理首次送達失敗後的合法 redelivery。
+
+## DB 唯一約束 (tenant_id, webhook_event_id) 是冪等的唯一真相來源，以 IntegrityError + rollback 跨方言處理衝突。
+- 時間：2026-06-28 00:36
+- 理由：DB 約束是多實例下的正確保底，應用層鎖反而製造額外狀態；SQLite/PostgreSQL 均適用。
+- 否決方案：應用層鎖（threading.Lock / Redis SETNX）——M1 單實例 + 共用 DB 場景下過度設計；M2 多實例若有 DB 壓力問題再評估 Redis，但唯一約束仍是最終保底，Redis 只降壓不替代。
+
+## reply 前/後重試邊界以 _FAILED_RETRYABLE_STAGES_BEFORE_REPLY 常數明確列舉，reply_sent 刻意不列入。
+- 時間：2026-06-28 00:36
+- 理由：保守優先——寧可少重試，不可重複 reply；reply 後重試的唯一效果是建單/計費重複，成本高於損失一次翻譯。
+- 否決方案：所有 failed 狀態均允許重試——reply 後也重試會造成重複回覆，違反 LINE Messaging API 語意。
+
+## isRedelivery 在 router 中只出現於 log 診斷（line_webhook.py:568–573），永不作為任何 skip/continue 條件。
+- 時間：2026-06-28 00:36
+- 理由：isRedelivery 是 LINE 的提示欄位，不是冪等契約；webhookEventId 才是去重鍵，混用兩者會讓邏輯出現兩套不對稱路徑。
+
+## 缺 webhookEventId 時退化為直接處理（return None, True），不攔截也不報錯。
+- 時間：2026-06-28 00:36
+- 理由：前向相容——LINE 未來可能有不帶此欄的 event 類型；攔截會造成靜默丟棄，違反「儘量處理」原則。
+
+## attempt_count 本輪不設上限（MAX_ATTEMPTS 守衛移交 M2）。
+- 時間：2026-06-28 00:36
+- 理由：LINE 正常 redelivery 窗口 < 1 小時，M1 流量下同 ID 無限卡 pending 無真實場景；加上限本輪須補狀態分支與測試，膨脹驗收範圍。
+- 否決方案：本輪補 MAX_ATTEMPTS = 5——高工確認 M1 可接受，且無具體失敗場景支撐其必要性，議程子題二未能舉證「無上限破壞本輪冪等契約」，故否決納入本輪。
+
+## last_error 只存 type(exc).__name__，不存完整 message 或 traceback。
+- 時間：2026-06-28 00:36
+- 理由：防 PII 與內部路徑洩漏至 DB；debug 完整資訊走 log，DB 只存分類索引。
+- 否決方案：補 line_webhook_event_errors 子表存完整訊息——屬 M2 技術債，本輪不納入。
+
+## TTL 清理 job（processed_at < now - 7d）移交 M2，不進本輪 PR。
+- 時間：2026-06-28 00:36
+- 理由：M1 每日數百筆、數 MB 等級，累積速度不影響當前效能；本輪加清理 job 屬鍍金。
+
+## 本輪驗收閉環定義為——四組指定測試全綠 + grep 確認 isRedelivery 無 skip/continue 路徑，不補新程式碼。
+- 時間：2026-06-28 00:36
+
+## M2 移交項目必須開成具體 issue 追蹤，不可口頭承諾——MAX_ATTEMPTS 守衛、TTL 清理、last_error 完整訊息、pending > 5 min 監控告警各開一票。
+- 時間：2026-06-28 00:36
+- 理由：高工明確警示「M2 不具體開票，半年後變資料累積與卡 pending 難查問題」，這是本輪唯一需要額外行動的輸出。
+
