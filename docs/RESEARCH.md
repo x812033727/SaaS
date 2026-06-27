@@ -1177,3 +1177,107 @@ LINE 官方文件直接指出重送不是唯一重複來源，應以 `webhookEve
 
 建議: 後續別再讓 `translate()` 回傳 `str` 或 tuple；以 `TranslationResult` 作唯一介面，避免 skip/偵測語言資訊再次散落。
 
+## 2026-06-28 00:31
+
+<think>
+Bash 工具不可用。讓我直接看 `line_webhook_event.py` model 的設計，現況已經有：
+- `LineWebhookEventStatus` enum (PENDING/PROCESSED/FAILED)
+- `LineWebhookEventStage` enum (CLAIMED/QUOTA_CHECKED/TRANSLATED/REPLY_SENT/USAGE_INCREMENTED)
+- `tenant_id` + `webhook_event_id` 複合唯一約束
+- `attempt_count`, `last_error`, `last_stage`, `created_at`, `updated_at`, `processed_at` 全部覆蓋
+- `String(64)` for webhook_event_id 寬度足夠容納 ULID 26 字元
+
+這比我之前建議的版本還要完整。`line_webhook.py` 也已：
+- 把 claim 邏輯獨立成 `_claim_webhook_event`
+- reply 前失敗可重試（`_claim_failed_webhook_event_for_retry`）
+- reply 後不重試（避免 LINE 對已回 reply 重發造成重複建單）
+- per-event try/except + rollback + log.exception + continue
+- `isRedelivery` 僅做 log 診斷
+- 缺 `webhookEventId` 退化路徑
+
+本輪任務**100% 已實作完成**。我需要把這個事實講清楚，不要又浪費團隊時間重做或過度設計。
+
+讓我寫一份精準的調研報告。
+</think>
+
+資料齊了，整理給你看。
+
+---
+
+## 調研報告：LINE webhook event 持久化冪等表
+
+### 核心發現：**本輪任務 100% 已實作完成**
+
+`docs/RESEARCH.md` 在 `2026-06-20 17:11` 已對本任務做完調研；本輪看到程式碼後確認所有建議都已落地，且實作**比上輪建議更嚴謹**。逐項對齊：
+
+| 需求 | 實作位置 |
+|---|---|
+| `LineWebhookEvent` model（pending/processed/failed 狀態） | [line_webhook_event.py:39–80](src/saas_mvp/models/line_webhook_event.py) |
+| 唯一約束 `(tenant_id, webhook_event_id)` 跨租戶防碰撞 | [line_webhook_event.py:78–82](src/saas_mvp/models/line_webhook_event.py) |
+| `LineWebhookEventStage` 階段追蹤（claimed → quota_checked → translated → reply_sent → usage_incremented） | [line_webhook_event.py:21–27](src/saas_mvp/models/line_webhook_event.py) |
+| `attempt_count` / `last_error` / `last_stage` / `processed_at` 監控欄位 | [line_webhook_event.py:58–73](src/saas_mvp/models/line_webhook_event.py) |
+| `webhookEventId` claim 邏輯（INSERT + catch `IntegrityError`） | [line_webhook.py:362–396](src/saas_mvp/routers/line_webhook.py) |
+| reply 前失敗可重試 / reply 後不重試 | [line_webhook.py:399–436](src/saas_mvp/routers/line_webhook.py) |
+| 標記 processed / failed | [line_webhook.py:447–478](src/saas_mvp/routers/line_webhook.py) |
+| `isRedelivery` 僅作 log 診斷 | [line_webhook.py:516–522](src/saas_mvp/routers/line_webhook.py) |
+| 缺 `webhookEventId` 退化路徑 | [line_webhook.py:373–375](src/saas_mvp/routers/line_webhook.py) |
+| per-event 例外隔離（rollback → log → continue） | [line_webhook.py:341–352](src/saas_mvp/routers/line_webhook.py) |
+| 跨方言 INSERT 衝突（不依賴 SQLite-specific `on_conflict_do_nothing`） | `except IntegrityError: db.rollback()` 寫法 |
+
+### 業界最佳實踐對齊
+
+重點: Hookdeck 官方的「`processed_webhooks` 表 + unique constraint + INSERT-before-side-effect + 失敗時 DELETE 允許重試」模式，**本 repo 用 `failed` 狀態 + `attempt_count` + `last_stage` 改回 `pending` 達成等價語意**（不會真的 DELETE，是改狀態 + 累加重試次數 — 對監控/告警更友善）。來源：[Hookdeck — Implement Webhook Idempotency](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)
+
+重點: Hookdeck 強調「Do the INSERT before side effects, return 2XX on constraint violation」— 本 repo `_claim_webhook_event` 確實在 side effect（translate / reply）前 INSERT，符合業界共識。同上來源。
+
+重點: 業界另一常見反模式「side effect 成功後才 INSERT 冪等記錄」— 本 repo 不採此模式；先 claim 失敗 → 直接 `continue` 跳過翻譯/reply，符合「冪等層先驗、後做業務」的最佳實踐。
+
+重點: Hookdeck 文章的「DELETE on error to allow retry」建議在 SQLite/PostgreSQL 上有 FK 約束級聯風險；本 repo 用「失敗狀態保留 + stage-gated 條件 UPDATE 改回 `pending`」是更安全的同義設計 — 失敗 row 留作 audit、reply 後的 stage 不在重試條件內（避免重複建單）。
+
+### 補強設計觀察（非本輪必須）
+
+重點: 現有 `last_error: String(255)` 只存 `type(exc).__name__`（無 stack trace / 無 message）— 這是**正確的**安全設計（避免 PII / 內部路徑洩漏進 DB / log），但若未來需要 debug 失敗原因，建議另開一張 `line_webhook_event_errors` 子表記錄完整 error message + traceback。**M2 技術債**，不擋本輪驗收。
+
+重點: `attempt_count` 已存在但**無上限保護** — 若 LINE 在某次失敗後無限 retry（理論上 LINE 會停，但 bot server 一直回 200 也有可能），同 `webhookEventId` 會被無限次改回 pending 永不標 processed。建議**M2 補一個 `MAX_ATTEMPTS = 5` 守衛**，超過直接標 `failed` 終止並告警（人工介入 / 修補流程）。**非本輪**，現有實作對 LINE redelivery 正常行為已足夠。
+
+重點: TTL 清理 — 上輪調研提到 24–72h；目前無自動清理 job，老 row 會累積。**M2 技術債**。M1 規模（每個 webhook 一筆）下累積速度極慢（每日數百筆 ~ 數 MB 等級），不影響當前效能。
+
+重點: `_claim_failed_webhook_event_for_retry` 用 `update().where(...).values(attempt_count=LineWebhookEvent.attempt_count + 1)` — 這是 **atomic UPDATE**（UPDATE 內的 `+1` 由 SQL 引擎執行），比「先 SELECT、Python 加 1、再 UPDATE」更安全（消除 TOCTOU）。**值得保留的好實作**。
+
+重點: 跨方言 INSERT 衝突處理 — `except IntegrityError: db.rollback()` 對 SQLite/PostgreSQL 都正確，**不需**用 `on_conflict_do_nothing()` 走 dialect 特定路徑，符合上輪調研結論。來源：[SQLAlchemy 2.0 SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)
+
+重點: `_claim_webhook_event` 在 commit 失敗時回傳 `(row, False)` — 此 row 是**已存在的 row**（不是新 claim），呼叫端 `_process_events` 內 `if not should_process: continue` 直接跳過，符合「INSERT 失敗等同於已處理過」的冪等語意。
+
+### ⚠️ 不要做的事
+
+重點: **不要回頭改用 `on_conflict_do_nothing()`**（SQLite-specific `Insert.on_conflict_do_nothing`）— 會綁死 SQLite dialect；既有 `IntegrityError` 寫法已跨方言、零遷移成本。來源：[SQLAlchemy SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)
+重點: **不要為了「更通用」引入 Redis 鎖 / Celery** — 既有單一 SQLAlchemy session + row-level 冪等表對 M1 流量完全足夠；LINE redelivery 重試窗口（< 1 小時）也不會造成 row 累積。**M2 再考慮**升級到 Redis SETNX + TTL 加速查表。
+重點: **不要把 `isRedelivery` 真的刪掉** — 現狀只用作 log 診斷（[line_webhook.py:516–522](src/saas_mvp/routers/line_webhook.py)），這是**正確處理**：上輪調研已明確「`isRedelivery` 只保留作 log/診斷」，現有實作已對齊。
+重點: **不要把整段 `try/except` 改成 async** — 現有同步設計在 `BackgroundTasks.run_in_threadpool` 內已離開 event loop，符合 [line_webhook.py:91–113](src/saas_mvp/routers/line_webhook.py) 的 async 化 M2 技術債文件。
+
+---
+
+## 建議
+
+建議: **本輪無需新開發**。本任務在 `2026-06-20 17:11` 調研後的實作已 100% 覆蓋「以 `webhookEventId` 追蹤 pending/processed/failed、取代單純跳過 `isRedelivery=true`」的需求，且實作額外加入 `attempt_count` / `last_stage` / reply-後-不重試 / per-event 例外隔離 這些上輪沒明確要求的細節。**直接標記完成**。
+建議: 若團隊想跑一輪「驗收測試」確認冪等契約，可聚焦以下三個 case（不必新增程式碼）：
+1. 同 `webhookEventId` 連送兩次 → 第二次不 reply / 不計量
+2. `webhookEventId=A` 為 `failed` 且 `last_stage=claimed` → 第三次送同 ID 可 claim 成功（重試路徑）
+3. `webhookEventId=A` 為 `failed` 且 `last_stage=reply_sent` → 第三次送同 ID 仍 skip（不重試已 reply 的）
+建議: **M2 技術債（建議另開 issue 追蹤，不混入當前 PR）**：
+1. `MAX_ATTEMPTS` 守衛：避免 LINE 異常 retry 導致同 row 永遠卡 pending
+2. TTL 清理 job：刪除 `created_at < now - 7 days` 的 processed row
+3. `_process_events` 失敗時的 `last_error` 改記例外 message（目前只存 `type(exc).__name__`，debug 友善度不足）
+4. 監控指標：`pending` 超過 5 分鐘未 processed 的 row 數（告警 webhook 卡住）
+建議: 不要把這次改良包成「新功能」— 它已存在於 main / 當前 commit。建議把本輪調研報告的「驗收測試三件套」直接拿給 PM 確認：跑完綠即可關單，跳過重做。
+
+---
+
+**Sources:**
+- [Hookdeck — Implement Webhook Idempotency](https://hookdeck.com/webhooks/guides/implement-webhook-idempotency)
+- [SQLAlchemy 2.0 SQLite Dialect](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html)
+- [LINE Developers — Receive messages (webhook, webhookEventId ULID)](https://developers.line.biz/en/reference/messaging-api/index.html.md)
+- [LINE Developers — Receiving messages (redelivery 機制)](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)
+
+總結一句話：**這輪任務在 `2026-06-20 17:11` 調研後已被完整實作**（`LineWebhookEvent` 冪等表 + 5 階段追蹤 + 跨方言 `IntegrityError` claim + reply-後-不重試 + `isRedelivery` 降級為 log），本輪再做就是自造輪子。建議把三個驗收測試案例跑綠即關單，M2 再補 `MAX_ATTEMPTS` / TTL 清理 / 監控指標。
+
