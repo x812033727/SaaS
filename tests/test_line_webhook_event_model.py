@@ -59,9 +59,11 @@ def test_line_webhook_event_defaults_and_duplicate_guard():
     db = Session()
     try:
         tenant = Tenant(name="line-webhook-event-test")
-        db.add(tenant)
+        other_tenant = Tenant(name="line-webhook-event-test-other")
+        db.add_all([tenant, other_tenant])
         db.commit()
         db.refresh(tenant)
+        db.refresh(other_tenant)
 
         row = LineWebhookEvent(tenant_id=tenant.id, webhook_event_id="evt-1")
         db.add(row)
@@ -70,6 +72,15 @@ def test_line_webhook_event_defaults_and_duplicate_guard():
 
         assert row.status == "pending"
         assert row.attempt_count == 0
+
+        cross_tenant_row = LineWebhookEvent(
+            tenant_id=other_tenant.id,
+            webhook_event_id="evt-1",
+        )
+        db.add(cross_tenant_row)
+        db.commit()
+        db.refresh(cross_tenant_row)
+        assert cross_tenant_row.id != row.id
 
         db.add(LineWebhookEvent(tenant_id=tenant.id, webhook_event_id="evt-1"))
         try:
