@@ -31,6 +31,7 @@ from sqlalchemy.pool import StaticPool
 
 import saas_mvp.services.auto_reply as auto_reply_svc
 from saas_mvp.db import Base, get_db, import_all_models
+from saas_mvp.line_client import get_line_client
 from saas_mvp.models.auto_reply_rule import (
     MATCH_TYPE_CONTAINS,
     MATCH_TYPE_EXACT,
@@ -87,7 +88,12 @@ def _register(client: TestClient) -> tuple[str, int]:
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    return body["access_token"], body["tenant"]["id"]
+    token = body["access_token"]
+    if "tenant" in body:
+        return token, body["tenant"]["id"]
+    me = client.get("/tenants/me", headers=_auth(token))
+    assert me.status_code == 200, me.text
+    return token, me.json()["id"]
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -247,26 +253,29 @@ class TestCriterion3And4WebhookIntegration:
     @pytest.fixture()
     def webhook_env(self, monkeypatch, client):
         """注入 fake LINE client、tenant + channel config + 一條 auto_reply 規則。"""
-        import saas_mvp.line_client as line_client_mod
         from saas_mvp.line_client.fake import FakeLineReplyClient
         from saas_mvp.services.line_config import upsert_line_config
-        from saas_mvp.services.flex_menu import create_flex_menu
 
         fake = FakeLineReplyClient()
-        monkeypatch.setattr(line_client_mod, "get_default_client", lambda: fake)
+        client.app.dependency_overrides[get_line_client] = lambda: fake
 
         token, tenant_id = _register(client)
         headers = _auth(token)
 
         # 建立 LINE channel config（讓 webhook 認得這 tenant）
-        cfg = upsert_line_config(
-            _Session(),
-            tenant_id=tenant_id,
-            channel_access_token="test-token",
-            channel_secret="test-secret",
-            bot_mode="auto_reply",
-        )
-        assert cfg.bot_mode == "auto_reply"
+        db = _Session()
+        try:
+            cfg = upsert_line_config(
+                db,
+                tenant_id=tenant_id,
+                access_token="test-token",
+                channel_secret="test-secret",
+                bot_mode="auto_reply",
+                bot_info_client=None,
+            )
+        finally:
+            db.close()
+        assert cfg["bot_mode"] == "auto_reply"
 
         return {
             "client": client,
@@ -324,9 +333,11 @@ class TestCriterion3And4WebhookIntegration:
         assert resp.status_code == 200, resp.text
 
         # 假 client 應該收到 1 則 reply
-        sent = [r for r in webhook_env["fake"].replies if r["reply_token"] == "tok-text-001"]
+        sent = [
+            r for r in webhook_env["fake"].sent if r.reply_token == "tok-text-001"
+        ]
         assert sent, "webhook auto_reply mode 沒有呼叫 fake client.reply()"
-        assert sent[0]["text"] == "Hi from auto-reply"
+        assert sent[0].text == "Hi from auto-reply"
 
     def test_webhook_auto_reply_no_match_does_not_reply(
         self, webhook_env: dict[str, Any]
@@ -365,7 +376,7 @@ class TestCriterion3And4WebhookIntegration:
         )
         assert resp.status_code == 200, resp.text
 
-        sent = [r for r in webhook_env["fake"].replies if r["reply_token"] == "tok-miss"]
+        sent = [r for r in webhook_env["fake"].sent if r.reply_token == "tok-miss"]
         assert sent == [], f"未命中時不該 reply，但 fake 收到：{sent}"
 
     def test_webhook_auto_reply_logs_in_and_out_line_message(
@@ -511,15 +522,9 @@ class TestCriterion5CrudTenantIsolation:
 # ────────────────────────────────────────────────────────────────────────────
 
 class TestCriterion7TranslationBookingNotBroken:
-    def test_translation_branch_still_works(self, monkeypatch):
+    def test_translation_branch_still_works(self):
         """Smoke：注入 fake translator + LINE client，translation 模式仍可翻譯並回覆。"""
-        from saas_mvp.line_client.fake import FakeLineReplyClient
         from saas_mvp.services.line_config import upsert_line_config
-        from saas_mvp.line_client import get_default_client as _orig_get_default_client
-
-        import saas_mvp.line_client as line_client_mod
-        fake = FakeLineReplyClient()
-        monkeypatch.setattr(line_client_mod, "get_default_client", lambda: fake)
 
         # 在隔離的 DB 跑一次 happy path
         engine = create_engine(
@@ -540,9 +545,10 @@ class TestCriterion7TranslationBookingNotBroken:
             upsert_line_config(
                 db,
                 tenant_id=t.id,
-                channel_access_token="x",
+                access_token="x",
                 channel_secret="x",
                 bot_mode="translation",
+                bot_info_client=None,
             )
             db.commit()
         finally:
@@ -552,15 +558,9 @@ class TestCriterion7TranslationBookingNotBroken:
         # 不會因 import_all_models 把所有 model 載入而壞掉。
         assert True
 
-    def test_booking_branch_smoke(self, monkeypatch):
+    def test_booking_branch_smoke(self):
         """Smoke：booking 模式設定不爆。完整覆蓋在 test_booking_bot_mode.py。"""
         from saas_mvp.services.line_config import upsert_line_config
-        import saas_mvp.line_client as line_client_mod
-        from saas_mvp.line_client.fake import FakeLineReplyClient
-
-        monkeypatch.setattr(
-            line_client_mod, "get_default_client", lambda: FakeLineReplyClient()
-        )
 
         engine = create_engine(
             "sqlite://",
@@ -580,9 +580,10 @@ class TestCriterion7TranslationBookingNotBroken:
             upsert_line_config(
                 db,
                 tenant_id=t.id,
-                channel_access_token="x",
+                access_token="x",
                 channel_secret="x",
                 bot_mode="booking",
+                bot_info_client=None,
             )
             db.commit()
         finally:
