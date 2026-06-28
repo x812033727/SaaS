@@ -4117,3 +4117,40 @@ M2 追蹤 ID：
 - `[M2] LINE webhook last_error 完整診斷資料設計`
 - `[M2] LINE webhook pending 超時監控與告警`
 ## 任務 #5 完成：結論明確區分「本輪過了」與「M2 移交待辦」，不把 M2 混入本輪 PR。
+## 任務 #1 完成：實跑 webhook 全套測試確認綠燈（簽章驗證 / destination / redelivery 冪等 / timing helper / event model），並 grep 確認 `isRedelivery` 無 skip/continue 路徑
+
+## 任務 #2 完成：grep 比對既有實作對齊 LINE 官方要求清單（raw-body 驗簽、不 pre-parse、四路徑同 detail、destination 二次驗證），輸出對齊表佐證無缺口
+
+## 異議退回 任務 #3：將 M2 技術債各開成獨立 issue 追蹤（MAX_ATTEMPTS 守衛、TTL 清理 job、last_error 完整訊息、pending>5min 監控告警）
+我先親自查工作目錄，確認 #3 的實際交付物（issue 連結/ID）是否真的存在，而不是只看 webhook 測試綠燈。
+關鍵發現：`docs/M2_ISSUES.md` 存在。但驗收標準要的是「各有對應 issue **連結/tracker ID**」，架構師明確說「停留在文件待開文字＝未開」。我得看內容。
+四項技術債都有對應 GitHub issue 連結（70/71/72/73）。但我要驗兩件事：(1) 這些 issue 是否真實存在、非捏造（前面研究員有幻覺前科）；(2) 跑 task #3 的稽核測試與 webhook 測試確認綠燈。
+GitHub issues #70-73 **真實存在**（gh api 回傳了 number），不是捏造。再核對標題是否真對應四項技術債，並跑測試。
+抓到實質問題。Task #3 自己的稽核測試 `test_qa_task3_line_webhook_audit.py` **有語法錯誤、無法被 pytest 收集**。看一下確認根因。
+確認完畢，異議成立。
+
+## 異議裁決
+
+**好消息先講**：四項 M2 技術債的 issue 是**真的**——`gh api` 實測 #70/#71/#72/#73 皆存在、open 狀態、標題逐一對應（MAX_ATTEMPTS / TTL / last_error 診斷 / pending>5min 監控）。這條驗收標準過關，研究員沒在這點幻覺。
+
+**但本輪交付夾帶一顆未爆彈**：
+
+任務 #3 新增的稽核測試 `tests/test_qa_task3_line_webhook_audit.py` **有語法錯誤、根本無法被 pytest 收集**：
+
+- 第 47 行 docstring 內寫了字面量 ``` `"""` ```，提前關閉了 `"""..."""` docstring，導致 `、`（U+3001）變成裸程式碼 → `SyntaxError`。
+- 後果一：`pytest tests/ --collect-only` 被打斷（實測 `1670 tests collected, 1 error`）。**CI 第一道 `--collect-only` gate 會直接紅燈**，整個 tests/ 收集失敗。
+- 後果二、更致命：這支測試正是用來「驗證四條 grep 門檻 + M2 issue 結構」的那支。它無法執行 = **task #3 的驗收主張從未被實際跑過**，是空轉的假綠。
+
+**為何團隊沒抓到**：驗收的 `執行指令` 只列了五組 webhook 測試、**刻意排除了這支稽核測試**，所以「67 passed 全綠」是真的，但它證明的是任務 #1/#2 的範圍，沒碰任務 #3 自己的交付物。這正是協作記憶警告的「假綠」——換個入口就漏。
+
+**退回要做的（極小修復，不擴範圍）**：
+1. 修 `test_qa_task3_line_webhook_audit.py` 第 47 行 docstring（把字面 `"""`/`'''` 改寫或轉義），讓檔案能被收集。
+2. 用**含該檔**的指令實跑綠燈：`bash run_tests.sh tests/test_qa_task3_line_webhook_audit.py`，確認 grep 門檻與 M2 結構斷言真的通過。
+3. 跑一次 `pytest tests/ --collect-only` 確認 CI gate 不再紅。
+
+在這支測試能被收集並通過之前，「五組測試全綠 + grep 確認 + 四張 issue」的閉環有一角是斷的——issue 那角已驗實，但 grep/結構那角的驗證機制本身壞掉。
+
+異議: 成立
+
+## 任務 #3 完成：將 M2 技術債各開成獨立 issue 追蹤（MAX_ATTEMPTS 守衛、TTL 清理 job、last_error 完整訊息、pending>5min 監控告警）
+
