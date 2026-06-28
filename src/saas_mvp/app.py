@@ -43,6 +43,7 @@ from saas_mvp.routers import ai as ai_router
 from saas_mvp.routers import pii as pii_router
 from saas_mvp.routers import flex_menu as flex_menu_router
 from saas_mvp.routers import rich_menu as rich_menu_router
+from saas_mvp.routers import auto_reply_rules as auto_reply_rules_router
 
 _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(pii_router.router)
     app.include_router(flex_menu_router.router)
     app.include_router(rich_menu_router.router)
+    app.include_router(auto_reply_rules_router.router)
 
     # ── 伺服器渲染管理 UI（同源）：靜態檔 + UI 路由 + UI 例外 → HTML 行為 ──
     app.mount("/static", StaticFiles(directory=str(_PKG_DIR / "static")), name="static")

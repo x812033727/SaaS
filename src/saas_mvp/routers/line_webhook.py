@@ -124,14 +124,17 @@ from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import flex_menu as flex_menu_svc
+from saas_mvp.services import line_chat as line_chat_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
 from saas_mvp.services import staff as staff_svc
 from saas_mvp.services.payment import get_payment_provider
+from saas_mvp.models.auto_reply_rule import REPLY_TYPE_FLEX, REPLY_TYPE_TEXT
 
 _log = logging.getLogger(__name__)
 
@@ -578,7 +581,7 @@ def _handle_line_event(
             event_idx,
         )
 
-    # ── bot_mode 分流：booking 走預約對話，translation（預設）維持現狀 ───────────
+    # ── bot_mode 分流：booking/auto_reply 各自處理；translation（預設）維持現狀 ─
     if bot_mode == "booking":
         return _handle_booking_event(
             db,
@@ -588,6 +591,15 @@ def _handle_line_event(
             line_client,
             stage_holder,
             profile_client,
+        )
+    if bot_mode == "auto_reply":
+        return _handle_auto_reply_event(
+            db,
+            tenant_id,
+            access_token,
+            event,
+            line_client,
+            stage_holder,
         )
 
     event_type = event.get("type")
@@ -670,6 +682,115 @@ def _handle_line_event(
 
     increment_usage(db, tenant_id, plan, chars=len(result.text))
     stage = LineWebhookEventStage.USAGE_INCREMENTED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+    return stage
+
+
+def _record_line_message_best_effort(
+    db: Session,
+    *,
+    tenant_id: int,
+    line_user_id: str,
+    text: str,
+    direction: str,
+) -> None:
+    if not line_user_id or not text:
+        return
+    try:
+        if direction == "in":
+            line_chat_svc.record_inbound(
+                db, tenant_id=tenant_id, line_user_id=line_user_id, text=text
+            )
+        else:
+            line_chat_svc.record_outbound(
+                db, tenant_id=tenant_id, line_user_id=line_user_id, text=text
+            )
+    except Exception:  # noqa: BLE001 - 對話紀錄不得阻斷 webhook 主流程
+        db.rollback()
+        _log.warning(
+            "failed to record LINE %s message for tenant %d",
+            direction,
+            tenant_id,
+            exc_info=True,
+        )
+
+
+def _handle_auto_reply_event(
+    db: Session,
+    tenant_id: int,
+    access_token: str,
+    event: dict,
+    line_client: LineReplyClient,
+    stage_holder: list[str] | None = None,
+) -> str:
+    """auto_reply 模式：關鍵字規則命中才回覆；未命中靜默。"""
+    stage = LineWebhookEventStage.CLAIMED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+
+    if event.get("type") != "message":
+        return stage
+
+    message = event.get("message", {})
+    if message.get("type") != "text":
+        return stage
+
+    text = message.get("text", "")
+    reply_token = event.get("replyToken", "")
+    line_user_id = event.get("source", {}).get("userId", "")
+
+    _record_line_message_best_effort(
+        db,
+        tenant_id=tenant_id,
+        line_user_id=line_user_id,
+        text=text,
+        direction="in",
+    )
+
+    rules = auto_reply_svc.list_rules(db, tenant_id=tenant_id, active_only=True)
+    rule = auto_reply_svc.match(rules, text)
+    if rule is None:
+        return stage
+
+    if rule.reply_type == REPLY_TYPE_TEXT:
+        reply_text = rule.reply_text or ""
+        if not reply_text:
+            return stage
+        line_client.reply(reply_token, reply_text, access_token=access_token)
+        _record_line_message_best_effort(
+            db,
+            tenant_id=tenant_id,
+            line_user_id=line_user_id,
+            text=reply_text,
+            direction="out",
+        )
+    elif rule.reply_type == REPLY_TYPE_FLEX and rule.flex_menu_id is not None:
+        menu = flex_menu_svc.get_menu(
+            db, tenant_id=tenant_id, menu_id=rule.flex_menu_id
+        )
+        cards = flex_menu_svc.list_cards(
+            db, tenant_id=tenant_id, menu_id=rule.flex_menu_id
+        )
+        payload = flex_menu_svc.build_flex_payload(menu, cards)
+        alt_text = payload.get("altText", "選單")
+        line_client.reply_flex(
+            reply_token,
+            alt_text,
+            payload["contents"],
+            access_token=access_token,
+        )
+        _record_line_message_best_effort(
+            db,
+            tenant_id=tenant_id,
+            line_user_id=line_user_id,
+            text=alt_text,
+            direction="out",
+        )
+    else:
+        return stage
+
+    stage = LineWebhookEventStage.REPLY_SENT.value
     if stage_holder is not None:
         stage_holder[0] = stage
     return stage
