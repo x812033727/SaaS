@@ -1343,6 +1343,55 @@
       "rejected": "",
       "session_id": "pjcdbe979a16",
       "created_at": 1782578187.9841936
+    },
+    {
+      "decision": "**本輪零開發，純驗收關單**——webhook 接收與驗簽已 100% 覆蓋 LINE 官方要求，且在 timing 防護、列舉防護、destination 二次驗證、解密失敗 200 fall-back 四個面向比官方最低要求更嚴謹。",
+      "rationale": "改動只會引入迴歸風險，ROI 為負；「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開」即為本輪完整閉環。",
+      "rejected": "引入 LINE Bot SDK、補 IP allowlist、改 `request.stream()`——三者皆為無效或破壞性鍍金，被否決。",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.6391168
+    },
+    {
+      "decision": "**`raw-body 先於 parse` 列為明確 grep 門檻**——`await request.body()` 必須出現在 `json.loads(body)` 之前，以 grep 行號順序驗證；任何重構不得打破此順序，違反即阻擋合入。",
+      "rationale": "工程師指出此順序若被移位，HMAC 驗簽會靜默失效，且現有測試無法偵測（test 不驗行號順序）。",
+      "rejected": "",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.6391234
+    },
+    {
+      "decision": "**`_constant_time_verify` 為驗簽唯一實作點，新增拒絕路徑一律流入此 helper**——任何新 rejection 分支不得自行計算 HMAC；以 grep 確認 `hmac.new` 在整個 router 只出現在 helper 函式體內。",
+      "rationale": "分散的 inline HMAC 會打破 timing 收斂保證；單一入口確保未來換 signature scheme 只改一處。",
+      "rejected": "各分支 inline `hmac.new`——破壞 timing side-channel 防護，被否決。",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.639125
+    },
+    {
+      "decision": "**`isRedelivery` 永只作診斷 log，冪等鍵固定為 `webhookEventId`**——grep 確認 `isRedelivery` 在 `line_webhook.py` 無任何 `skip`/`continue`/`return`/`raise` 相鄰控制流；此規則隨新功能擴充持續有效。",
+      "rationale": "`isRedelivery` 是 LINE 的提示欄位，非冪等契約；混用兩者會產生不對稱雙路徑。",
+      "rejected": "用 `isRedelivery` 做去重條件——破壞單一冪等鍵原則，被否決。",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.639126
+    },
+    {
+      "decision": "**JSON parse 失敗 detail 差異列為 M2 hardening，本輪不阻擋**——「Request body is not valid JSON」與 `_INVALID_SIGNATURE_DETAIL` 字串不同，此差異的 M2 issue 需有明確驗收條件：handler parse 失敗路徑改回 400 + `_INVALID_SIGNATURE_DETAIL`，且補對應 negative test case。",
+      "rationale": "攻擊者需先通過 HMAC 才能觸發此分支，風險極低，不值得在本輪擴大測試範圍。",
+      "rejected": "",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.6391265
+    },
+    {
+      "decision": "**M2 四票各須有 issue tracker ID，每票附具體驗收條件，不可停留在文件「待開」文字**——四票：MAX_ATTEMPTS 守衛（驗收：attempt_count > N 時 row 標 `failed`，不再 claim）、TTL 清理 job（驗收：processed_at < now-7d 的 row 被定期刪除）、`last_error` 完整訊息（驗收：DB 欄位存 exception message，log 仍有 traceback）、pending>5min 監控告警（驗收：Prometheus/alerting rule 設定，含 runbook 連結）。",
+      "rationale": "高工明確警示「無 issue ID 的 M2 半年後變孤兒技術債、難查卡 pending 問題」；模糊 hardening bucket 無法排程。",
+      "rejected": "把 M2 待辦寫進 `NOTES.md` 或 docstring 的 `TODO: 開 issue` 文字——無追蹤 ID 即視為未開，被否決。",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.6391282
+    },
+    {
+      "decision": "**驗收閉環定義不擴充**——僅「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開（含 issue ID）」，不新增程式碼；任何「順手補強」提案須先舉證對上述三項的必要性，否則駁回。",
+      "rationale": "",
+      "rejected": "",
+      "session_id": "pj47c3d6c075",
+      "created_at": 1782634615.6391292
     }
   ]
 }
