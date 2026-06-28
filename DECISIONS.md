@@ -369,7 +369,7 @@
 - 時間：2026-06-16 08:00
 - 理由：高級工程師點出「第一道擋下後第二道不應誤觸」是測試覆蓋盲點，必須補。
 
-## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 開 issue tracker 留待 M2**。
+## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 登記 issue tracker 留待 M2**。
 - 時間：2026-06-16 08:00
 - 理由：修這個需先定義「成功副作用邊界」（何時算服務完成、何時算未完成），跨整個 webhook 設計面，超出本輪 scope；明文化是當前最值錢的處置。
 
@@ -405,7 +405,7 @@
 ## 文件化語意 — line_webhook.py 步驟 6c 註解改述「reply 阻塞 I/O 在 BackgroundTasks 機制下已自動被 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；threadpool 線程佔用（高 RPS × 多 worker）見 M2 async 化技術債」；模組 docstring M2 段落更新為「HttpLineReplyClient 改用 httpx.AsyncClient（lifespan 管理單一 instance）+ _process_events 改 async def + AsyncSession 整套重構；asyncio.to_thread 包裝為錯誤方向、不再列入技術債」
 - 時間：2026-06-16 13:57
 
-## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #XXX") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
+## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #L2-quota-migration") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
 - 時間：2026-06-16 13:57
 - 理由：直接合進 master 會讓 CI baseline 永久 7 紅，未來提 PR 的人分不清「已知缺口」vs「本次 regression」；xfail 讓 CI 綠、缺口可被追蹤、reviewer 一眼看清狀態。
 - 否決方案：(a) 留紅直接合——CI 噪音永久化；(b) 本輪順手修——超出本輪 scope、PR 失焦。
@@ -880,8 +880,7 @@
 ## **M2 四票各須有 issue tracker ID，每票附具體驗收條件，不可停留在文件「待開」文字**——四票：MAX_ATTEMPTS 守衛（驗收：attempt_count > N 時 row 標 `failed`，不再 claim）、TTL 清理 job（驗收：processed_at < now-7d 的 row 被定期刪除）、`last_error` 完整訊息（驗收：DB 欄位存 exception message，log 仍有 traceback）、pending>5min 監控告警（驗收：Prometheus/alerting rule 設定，含 runbook 連結）。
 - 時間：2026-06-28 16:16
 - 理由：高工明確警示「無 issue ID 的 M2 半年後變孤兒技術債、難查卡 pending 問題」；模糊 hardening bucket 無法排程。
-- 否決方案：把 M2 待辦寫進 `NOTES.md` 或 docstring 的 `TODO: 開 issue` 文字——無追蹤 ID 即視為未開，被否決。
+- 否決方案：把 M2 待辦寫進 `NOTES.md` 或 docstring 的未開票占位文字——無追蹤 ID 即視為未開，被否決。
 
 ## **驗收閉環定義不擴充**——僅「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開（含 issue ID）」，不新增程式碼；任何「順手補強」提案須先舉證對上述三項的必要性，否則駁回。
 - 時間：2026-06-28 16:16
-
