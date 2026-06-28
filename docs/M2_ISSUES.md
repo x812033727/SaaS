@@ -32,6 +32,8 @@
 
 ## M2-LINE-WEBHOOK-001
 
+Issue: https://github.com/x812033727/SaaS/issues/70
+
 標題：webhook event 加入 `MAX_ATTEMPTS` 守衛
 
 範圍：
@@ -43,6 +45,8 @@
 - 不影響已 `processed` 或 reply 後失敗的去重語意。
 
 ## M2-LINE-WEBHOOK-002
+
+Issue: https://github.com/x812033727/SaaS/issues/71
 
 標題：webhook event TTL 清理 job
 
@@ -56,6 +60,8 @@
 
 ## M2-LINE-WEBHOOK-003
 
+Issue: https://github.com/x812033727/SaaS/issues/72
+
 標題：webhook event 失敗診斷資料補強
 
 範圍：
@@ -68,6 +74,8 @@
 - 自動化測試覆蓋敏感資訊不落 DB。
 
 ## M2-LINE-WEBHOOK-004
+
+Issue: https://github.com/x812033727/SaaS/issues/73
 
 標題：webhook event pending 超時監控
 
