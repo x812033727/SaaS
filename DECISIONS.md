@@ -884,3 +884,34 @@
 
 ## **驗收閉環定義不擴充**——僅「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開（含 issue ID）」，不新增程式碼；任何「順手補強」提案須先舉證對上述三項的必要性，否則駁回。
 - 時間：2026-06-28 16:16
+## `match()` 比對優先序固定為「型別階層優先（exact > prefix > contains），同型別內 priority asc，同 priority 再 id asc 為 tie-breaker」——廢除「全域 priority 取第一」歧義說法。
+- 時間：2026-06-28 17:04
+- 理由：確保 deterministic；商家只需管型別與 priority 兩個維度，id 作保底 tie-breaker 無需額外配置。
+- 否決方案：全域 priority 唯一排序——exact 規則容易被低 priority 的 contains 規則蓋掉，反直覺且難除錯。
+
+## CRUD 層強制 invariant 驗證：`reply_type=text` 必須 `reply_text` 非空；`reply_type=flex` 必須 `flex_menu_id` 非 None；`keyword.strip()` 不可為空字串；違反者 422 拒絕。
+- 時間：2026-06-28 17:04
+- 理由：`keyword` 為空時 `contains`/`prefix` 會全命中所有訊息，屬安全性缺陷而非業務邊界問題，不可留到 runtime 才爆。
+
+## `flex_menu_id` 跨租戶校驗**本輪必做，不延到 M2**：CRUD create/update 時額外 `db.query(FlexMenu).filter(FlexMenu.id==flex_menu_id, FlexMenu.tenant_id==current_tenant_id).first()` 確認所有權，查無回傳 404；webhook 取 FlexMenu 時同樣加 `tenant_id` filter。
+- 時間：2026-06-28 17:04
+- 理由：高工指出 FK 無法保證同租戶，此為跨租戶內容外洩，不是性能問題，MVP 必須堵死。
+- 否決方案：依賴 FK 隱式保護——FK 只管參照存在，不管所有權。
+
+## Router 形狀對齊現有自助 API 慣例，改用 `current_user.tenant_id`，不在 path 暴露 `{tenant_id}`；prefix 改為 `/api/auto-reply-rules`，所有 query 與 filter 均帶 `tenant_id=current_user.tenant_id`。
+- 時間：2026-06-28 17:04
+- 理由：沿用既有慣例降低維護認知負擔，避免引入新的 `require_same_tenant` 依賴檢查。
+- 否決方案：`/api/tenants/{tenant_id}/auto-reply-rules` + filter——需額外顯式校驗 path tenant_id 與 token 一致，漏加即洞開。
+
+## `LineMessage` 落表透過 `services/line_chat.py`（或等效現有服務函式）寫入，不在 webhook 直接 `db.add`；若該服務無現成 `record_in`/`record_out` 函式，本輪在 `services/line_chat.py` 補兩個輕薄 helper，webhook 只呼叫 helper。
+- 時間：2026-06-28 17:04
+- 理由：沿用現有集中寫入模式，避免雙頭落表邏輯，未來欄位擴充只改一處。
+- 否決方案：webhook 直接 db.add——打破既有集中模式，未來欄位新增需改兩處。
+
+## `models/auto_reply_rule.py` 建立後必須加入 `db.import_all_models()`（或等效 metadata 收集點），`routers/auto_reply_rules.py` 必須在 `app.py` 的 `include_router` 區段登記，兩者作為任務 #1/#4 的 DoD 必要項。
+- 時間：2026-06-28 17:04
+- 理由：高工與工程師均指出遺漏會讓 `create_all` 不建表、路由 404，本輪把它寫進定案而非靠口頭記憶。
+
+## 上輪其餘六條決策維持不變（獨立 `auto_reply` 分支、per-request DB query、純函式 `match()` 無副作用、`exact` case-sensitive 其餘 lower()、MVP 不快取、不含 HTML 管理頁）。
+- 時間：2026-06-28 17:04
+
