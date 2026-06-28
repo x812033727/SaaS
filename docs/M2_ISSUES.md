@@ -32,6 +32,8 @@
 
 ## M2-LINE-WEBHOOK-001
 
+Issue: https://github.com/x812033727/SaaS/issues/70
+
 標題：webhook event 加入 `MAX_ATTEMPTS` 守衛
 
 範圍：
@@ -39,10 +41,12 @@
 - 超過上限時維持 `failed` 並產生告警或可查詢狀態。
 
 驗收：
-- 同一 event 超過上限後不再被改回 `pending`。
+- `MAX_ATTEMPTS` 守衛生效：同一 event 超過上限後不再被改回 `pending`。
 - 不影響已 `processed` 或 reply 後失敗的去重語意。
 
 ## M2-LINE-WEBHOOK-002
+
+Issue: https://github.com/x812033727/SaaS/issues/71
 
 標題：webhook event TTL 清理 job
 
@@ -51,10 +55,12 @@
 - 清理方式可先用 ops command 或排程 job，不在 request path 內執行。
 
 驗收：
-- 7 天前的 `processed` rows 可被清理。
+- `TTL` 清理生效：7 天前的 `processed` rows 可被清理。
 - `pending` / `failed` rows 預設不清，避免吃掉診斷資料。
 
 ## M2-LINE-WEBHOOK-003
+
+Issue: https://github.com/x812033727/SaaS/issues/72
 
 標題：webhook event 失敗診斷資料補強
 
@@ -64,10 +70,12 @@
 - 避免 access token、channel secret、使用者文字等敏感資料落入 DB。
 
 驗收：
-- 失敗排查可取得足夠上下文。
+- `last_error` 診斷補強後，失敗排查可取得足夠上下文。
 - 自動化測試覆蓋敏感資訊不落 DB。
 
 ## M2-LINE-WEBHOOK-004
+
+Issue: https://github.com/x812033727/SaaS/issues/73
 
 標題：webhook event pending 超時監控
 
@@ -76,5 +84,5 @@
 - 設定告警門檻與排查 runbook。
 
 驗收：
-- 可查出卡住超過 5 分鐘的 rows。
+- 可查出 `pending` 卡住超過 5 分鐘的 rows。
 - 告警內容包含 tenant_id、webhook_event_id、last_stage、attempt_count。
