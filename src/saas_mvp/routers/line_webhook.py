@@ -76,7 +76,13 @@
     （canonical 說明位置）：「sync 函式已在 threadpool」再包一層屬冗餘
     雙重包裝（anyio 反模式，淨效果為零、反而多佔一條 thread）。
 
-  詳見 issue #XXX / 2026-Q2 async 化重構追蹤（TODO: 開 issue、替換 #XXX）。
+  追蹤：
+  - async 化：[M2-LINE-WEBHOOK-ASYNC](../../../docs/M2_ISSUES.md#m2-line-webhook-async)
+  - task queue 化：[M2-LINE-WEBHOOK-QUEUE](../../../docs/M2_ISSUES.md#m2-line-webhook-queue)
+  - event hardening：[M2-LINE-WEBHOOK-001](../../../docs/M2_ISSUES.md#m2-line-webhook-001)
+    / [M2-LINE-WEBHOOK-002](../../../docs/M2_ISSUES.md#m2-line-webhook-002)
+    / [M2-LINE-WEBHOOK-003](../../../docs/M2_ISSUES.md#m2-line-webhook-003)
+    / [M2-LINE-WEBHOOK-004](../../../docs/M2_ISSUES.md#m2-line-webhook-004)
 """
 
 from __future__ import annotations
