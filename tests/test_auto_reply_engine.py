@@ -368,6 +368,24 @@ def test_webhook_auto_reply_flex_rule_uses_reply_flex(client):
     assert fake.flex[-1].alt_text == "店內選單"
     assert fake.flex[-1].contents["type"] == "carousel"
 
+    db = _Session()
+    try:
+        rows = (
+            db.query(LineMessage)
+            .filter(
+                LineMessage.tenant_id == tenant_id,
+                LineMessage.line_user_id == "U-auto-001",
+            )
+            .order_by(LineMessage.id)
+            .all()
+        )
+        assert [(row.direction, row.text) for row in rows] == [
+            (DIRECTION_IN, "menu"),
+            (DIRECTION_OUT, "店內選單"),
+        ]
+    finally:
+        db.close()
+
 
 def test_webhook_auto_reply_no_match_does_not_reply(client):
     token = _register(client)
@@ -393,6 +411,23 @@ def test_webhook_auto_reply_no_match_does_not_reply(client):
     fake = client.app.state.fake_line_client
     assert fake.sent == []
     assert fake.flex == []
+
+    db = _Session()
+    try:
+        rows = (
+            db.query(LineMessage)
+            .filter(
+                LineMessage.tenant_id == tenant_id,
+                LineMessage.line_user_id == "U-auto-001",
+            )
+            .order_by(LineMessage.id)
+            .all()
+        )
+        assert [(row.direction, row.text) for row in rows] == [
+            (DIRECTION_IN, "not matched"),
+        ]
+    finally:
+        db.close()
 
 
 def test_auto_reply_rule_flex_menu_must_belong_to_current_tenant(client):
@@ -498,6 +533,20 @@ def test_auto_reply_match_returns_none_without_match():
     ]
 
     assert auto_reply_svc.match(rules, "no match") is None
+
+
+@pytest.mark.parametrize(
+    ("match_type", "keyword", "text"),
+    [
+        ("exact", "hello", "hello"),
+        ("prefix", "HEL", "hello there"),
+        ("contains", "VIP", "hello vip customer"),
+    ],
+)
+def test_auto_reply_match_supports_each_match_type(match_type, keyword, text):
+    rule = _rule(id=1, keyword=keyword, match_type=match_type)
+
+    assert auto_reply_svc.match([rule], text) is rule
 
 
 def test_auto_reply_match_type_order_exact_prefix_contains():
