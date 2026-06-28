@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import hmac
+import json
 import uuid
 
 import pytest
@@ -9,10 +13,16 @@ from sqlalchemy.pool import StaticPool
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, import_all_models
 from saas_mvp.db import get_db
+from saas_mvp.line_client import FakeLineReplyClient, get_line_client
 from saas_mvp.models.auto_reply_rule import AutoReplyRule
+from saas_mvp.models.line_message import DIRECTION_IN, DIRECTION_OUT, LineMessage
 from saas_mvp.models.line_channel_config import VALID_BOT_MODES, validate_bot_mode
 from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.models.tenant import Tenant
+
+
+_CHANNEL_SECRET = "auto-reply-test-secret"
+_ACCESS_TOKEN = "auto-reply-test-token"
 
 
 def _rule(
@@ -100,6 +110,7 @@ def client():
     Base.metadata.drop_all(bind=_engine)
     Base.metadata.create_all(bind=_engine)
     app = create_app()
+    fake_line_client = FakeLineReplyClient()
 
     def override_get_db():
         db = _Session()
@@ -109,6 +120,8 @@ def client():
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_line_client] = lambda: fake_line_client
+    app.state.fake_line_client = fake_line_client
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
@@ -128,6 +141,58 @@ def _register(client: TestClient) -> str:
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _tenant_id(client: TestClient, token: str) -> int:
+    resp = client.get("/tenants/me", headers=_auth(token))
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+def _configure_auto_reply_line(tenant_id: int) -> None:
+    from saas_mvp.services.line_config import upsert_line_config
+
+    db = _Session()
+    try:
+        upsert_line_config(
+            db,
+            tenant_id,
+            channel_secret=_CHANNEL_SECRET,
+            access_token=_ACCESS_TOKEN,
+            default_target_lang="zh-TW",
+            bot_mode="auto_reply",
+            bot_info_client=None,
+        )
+    finally:
+        db.close()
+
+
+def _sign(body: bytes) -> str:
+    mac = hmac.new(_CHANNEL_SECRET.encode("utf-8"), body, hashlib.sha256).digest()
+    return base64.b64encode(mac).decode("utf-8")
+
+
+def _text_payload(text: str, *, reply_token: str = "rt-auto") -> bytes:
+    return json.dumps(
+        {
+            "events": [
+                {
+                    "type": "message",
+                    "replyToken": reply_token,
+                    "source": {"type": "user", "userId": "U-auto-001"},
+                    "message": {"type": "text", "text": text},
+                }
+            ]
+        }
+    ).encode("utf-8")
+
+
+def _post_line_webhook(client: TestClient, tenant_id: int, body: bytes):
+    return client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers={"X-Line-Signature": _sign(body), "Content-Type": "application/json"},
+    )
 
 
 def test_auto_reply_rule_api_crud(client):
@@ -212,6 +277,122 @@ def test_auto_reply_rule_api_tenant_isolation(client):
         client.delete(f"/api/auto-reply-rules/{rule_id}", headers=_auth(token_b)).status_code
         == 404
     )
+
+
+def test_webhook_auto_reply_text_rule_replies_and_records_messages(client):
+    token = _register(client)
+    tenant_id = _tenant_id(client, token)
+    _configure_auto_reply_line(tenant_id)
+
+    created = client.post(
+        "/api/auto-reply-rules/",
+        headers=_auth(token),
+        json={
+            "keyword": "hello",
+            "match_type": "contains",
+            "reply_type": "text",
+            "reply_text": "Hi from auto reply",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    body = _text_payload("well hello there", reply_token="rt-auto-text")
+    resp = _post_line_webhook(client, tenant_id, body)
+
+    assert resp.status_code == 200, resp.text
+    fake = client.app.state.fake_line_client
+    assert fake.sent[-1].reply_token == "rt-auto-text"
+    assert fake.sent[-1].text == "Hi from auto reply"
+    assert fake.flex == []
+
+    db = _Session()
+    try:
+        rows = (
+            db.query(LineMessage)
+            .filter(
+                LineMessage.tenant_id == tenant_id,
+                LineMessage.line_user_id == "U-auto-001",
+            )
+            .order_by(LineMessage.id)
+            .all()
+        )
+        assert [(row.direction, row.text) for row in rows] == [
+            (DIRECTION_IN, "well hello there"),
+            (DIRECTION_OUT, "Hi from auto reply"),
+        ]
+    finally:
+        db.close()
+
+
+def test_webhook_auto_reply_flex_rule_uses_reply_flex(client):
+    from saas_mvp.services import flex_menu as flex_svc
+
+    token = _register(client)
+    tenant_id = _tenant_id(client, token)
+    _configure_auto_reply_line(tenant_id)
+
+    db = _Session()
+    try:
+        menu = flex_svc.create_menu(db, tenant_id=tenant_id, title="店內選單")
+        flex_svc.add_card(
+            db,
+            tenant_id=tenant_id,
+            menu_id=menu.id,
+            title="預約",
+            action_type="message",
+            action_data="預約",
+        )
+        menu_id = menu.id
+    finally:
+        db.close()
+
+    created = client.post(
+        "/api/auto-reply-rules/",
+        headers=_auth(token),
+        json={
+            "keyword": "menu",
+            "match_type": "exact",
+            "reply_type": "flex",
+            "flex_menu_id": menu_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    body = _text_payload("menu", reply_token="rt-auto-flex")
+    resp = _post_line_webhook(client, tenant_id, body)
+
+    assert resp.status_code == 200, resp.text
+    fake = client.app.state.fake_line_client
+    assert fake.sent == []
+    assert fake.flex[-1].reply_token == "rt-auto-flex"
+    assert fake.flex[-1].alt_text == "店內選單"
+    assert fake.flex[-1].contents["type"] == "carousel"
+
+
+def test_webhook_auto_reply_no_match_does_not_reply(client):
+    token = _register(client)
+    tenant_id = _tenant_id(client, token)
+    _configure_auto_reply_line(tenant_id)
+
+    created = client.post(
+        "/api/auto-reply-rules/",
+        headers=_auth(token),
+        json={
+            "keyword": "hello",
+            "match_type": "exact",
+            "reply_type": "text",
+            "reply_text": "Hi",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    body = _text_payload("not matched", reply_token="rt-auto-miss")
+    resp = _post_line_webhook(client, tenant_id, body)
+
+    assert resp.status_code == 200, resp.text
+    fake = client.app.state.fake_line_client
+    assert fake.sent == []
+    assert fake.flex == []
 
 
 def test_auto_reply_rule_flex_menu_must_belong_to_current_tenant(client):
