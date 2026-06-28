@@ -369,7 +369,7 @@
 - 時間：2026-06-16 08:00
 - 理由：高級工程師點出「第一道擋下後第二道不應誤觸」是測試覆蓋盲點，必須補。
 
-## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 開 issue tracker 留待 M2**。
+## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 登記 issue tracker 留待 M2**。
 - 時間：2026-06-16 08:00
 - 理由：修這個需先定義「成功副作用邊界」（何時算服務完成、何時算未完成），跨整個 webhook 設計面，超出本輪 scope；明文化是當前最值錢的處置。
 
@@ -405,7 +405,7 @@
 ## 文件化語意 — line_webhook.py 步驟 6c 註解改述「reply 阻塞 I/O 在 BackgroundTasks 機制下已自動被 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；threadpool 線程佔用（高 RPS × 多 worker）見 M2 async 化技術債」；模組 docstring M2 段落更新為「HttpLineReplyClient 改用 httpx.AsyncClient（lifespan 管理單一 instance）+ _process_events 改 async def + AsyncSession 整套重構；asyncio.to_thread 包裝為錯誤方向、不再列入技術債」
 - 時間：2026-06-16 13:57
 
-## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #XXX") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
+## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #L2-quota-migration") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
 - 時間：2026-06-16 13:57
 - 理由：直接合進 master 會讓 CI baseline 永久 7 紅，未來提 PR 的人分不清「已知缺口」vs「本次 regression」；xfail 讓 CI 綠、缺口可被追蹤、reviewer 一眼看清狀態。
 - 否決方案：(a) 留紅直接合——CI 噪音永久化；(b) 本輪順手修——超出本輪 scope、PR 失焦。
@@ -854,3 +854,33 @@
 - 時間：2026-06-28 00:36
 - 理由：高工明確警示「M2 不具體開票，半年後變資料累積與卡 pending 難查問題」，這是本輪唯一需要額外行動的輸出。
 
+## **本輪零開發，純驗收關單**——webhook 接收與驗簽已 100% 覆蓋 LINE 官方要求，且在 timing 防護、列舉防護、destination 二次驗證、解密失敗 200 fall-back 四個面向比官方最低要求更嚴謹。
+- 時間：2026-06-28 16:16
+- 理由：改動只會引入迴歸風險，ROI 為負；「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開」即為本輪完整閉環。
+- 否決方案：引入 LINE Bot SDK、補 IP allowlist、改 `request.stream()`——三者皆為無效或破壞性鍍金，被否決。
+
+## **`raw-body 先於 parse` 列為明確 grep 門檻**——`await request.body()` 必須出現在 `json.loads(body)` 之前，以 grep 行號順序驗證；任何重構不得打破此順序，違反即阻擋合入。
+- 時間：2026-06-28 16:16
+- 理由：工程師指出此順序若被移位，HMAC 驗簽會靜默失效，且現有測試無法偵測（test 不驗行號順序）。
+
+## **`_constant_time_verify` 為驗簽唯一實作點，新增拒絕路徑一律流入此 helper**——任何新 rejection 分支不得自行計算 HMAC；以 grep 確認 `hmac.new` 在整個 router 只出現在 helper 函式體內。
+- 時間：2026-06-28 16:16
+- 理由：分散的 inline HMAC 會打破 timing 收斂保證；單一入口確保未來換 signature scheme 只改一處。
+- 否決方案：各分支 inline `hmac.new`——破壞 timing side-channel 防護，被否決。
+
+## **`isRedelivery` 永只作診斷 log，冪等鍵固定為 `webhookEventId`**——grep 確認 `isRedelivery` 在 `line_webhook.py` 無任何 `skip`/`continue`/`return`/`raise` 相鄰控制流；此規則隨新功能擴充持續有效。
+- 時間：2026-06-28 16:16
+- 理由：`isRedelivery` 是 LINE 的提示欄位，非冪等契約；混用兩者會產生不對稱雙路徑。
+- 否決方案：用 `isRedelivery` 做去重條件——破壞單一冪等鍵原則，被否決。
+
+## **JSON parse 失敗 detail 差異列為 M2 hardening，本輪不阻擋**——「Request body is not valid JSON」與 `_INVALID_SIGNATURE_DETAIL` 字串不同，此差異的 M2 issue 需有明確驗收條件：handler parse 失敗路徑改回 400 + `_INVALID_SIGNATURE_DETAIL`，且補對應 negative test case。
+- 時間：2026-06-28 16:16
+- 理由：攻擊者需先通過 HMAC 才能觸發此分支，風險極低，不值得在本輪擴大測試範圍。
+
+## **M2 四票各須有 issue tracker ID，每票附具體驗收條件，不可停留在文件「待開」文字**——四票：MAX_ATTEMPTS 守衛（驗收：attempt_count > N 時 row 標 `failed`，不再 claim）、TTL 清理 job（驗收：processed_at < now-7d 的 row 被定期刪除）、`last_error` 完整訊息（驗收：DB 欄位存 exception message，log 仍有 traceback）、pending>5min 監控告警（驗收：Prometheus/alerting rule 設定，含 runbook 連結）。
+- 時間：2026-06-28 16:16
+- 理由：高工明確警示「無 issue ID 的 M2 半年後變孤兒技術債、難查卡 pending 問題」；模糊 hardening bucket 無法排程。
+- 否決方案：把 M2 待辦寫進 `NOTES.md` 或 docstring 的未開票占位文字——無追蹤 ID 即視為未開，被否決。
+
+## **驗收閉環定義不擴充**——僅「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開（含 issue ID）」，不新增程式碼；任何「順手補強」提案須先舉證對上述三項的必要性，否則駁回。
+- 時間：2026-06-28 16:16
