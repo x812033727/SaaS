@@ -92,6 +92,8 @@ def import_all_models() -> None:
     from saas_mvp.models import pii_request  # noqa: F401
     # PHASE 5：Flex 圖文選單卡片（menu 先於 card，FK 依賴）。
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
+    # LINE 自動回覆規則（依賴 flex_menu FK）。
+    from saas_mvp.models import auto_reply_rule  # noqa: F401
     # 月度推播額度計量（跨提醒/異動通知/行銷 push 路徑共用）。
     from saas_mvp.models import push_usage  # noqa: F401
     # 後台 LINE 客服對話紀錄（收/發）。
