@@ -14,6 +14,7 @@ import secrets
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from saas_mvp.models.booking_slot import BookingSlot
@@ -56,6 +57,10 @@ class StaffConflictError(StaffError):
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+# update_shift 的 weekday 需要「未提供」哨兵——None 是合法儲存值（每日）。
+_UNSET = object()
 
 
 def generate_access_token() -> str:
@@ -190,8 +195,20 @@ def update_staff(
 
 
 def delete_staff(db: Session, *, tenant_id: int, staff_id: int) -> None:
-    """刪除員工；其班表/請假/服務指派由 DB FK ondelete=CASCADE 連帶清除。"""
+    """刪除員工，連同其班表/請假/服務指派。
+
+    依賴列在應用層明刪而非只靠 FK ondelete=CASCADE——SQLite（預設 DB）未開
+    PRAGMA foreign_keys，DB 層 cascade 不會發生，會留下孤兒班表/請假。
+    """
+    from saas_mvp.models.service_staff import ServiceStaff
+
     staff = _get_or_404(db, tenant_id, staff_id)
+    for model in (StaffShift, StaffLeave, ServiceStaff):
+        (
+            tenant_query(db, model, tenant_id)
+            .filter(model.staff_id == staff_id)
+            .delete(synchronize_session=False)
+        )
     db.delete(staff)
     db.commit()
 
@@ -248,8 +265,60 @@ def create_shift(
         rotation=rotation,
     )
     db.add(shift)
-    from sqlalchemy.exc import IntegrityError
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A shift already exists for this staff/weekday/start_time",
+        )
+    db.refresh(shift)
+    return shift
 
+
+def _shift_or_404(
+    db: Session, tenant_id: int, staff_id: int, shift_id: int
+) -> StaffShift:
+    shift = (
+        tenant_query(db, StaffShift, tenant_id)
+        .filter(StaffShift.id == shift_id, StaffShift.staff_id == staff_id)
+        .first()
+    )
+    if shift is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Shift not found"
+        )
+    return shift
+
+
+def update_shift(
+    db: Session,
+    *,
+    tenant_id: int,
+    staff_id: int,
+    shift_id: int,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    weekday: int | None | object = _UNSET,
+    rotation: str | None = None,
+    is_active: bool | None = None,
+) -> StaffShift:
+    """更新班表；weekday=_UNSET 表示不變，None 表示改為每日。"""
+    _get_or_404(db, tenant_id, staff_id)
+    shift = _shift_or_404(db, tenant_id, staff_id, shift_id)
+    if start_time is not None:
+        shift.start_time = start_time
+    if end_time is not None:
+        shift.end_time = end_time
+    if weekday is not _UNSET:
+        if weekday is not None and not (0 <= weekday <= 6):
+            raise HTTPException(status_code=422, detail="weekday must be 0-6")
+        shift.weekday = weekday
+    if rotation is not None:
+        shift.rotation = rotation
+    if is_active is not None:
+        shift.is_active = is_active
     try:
         db.commit()
     except IntegrityError:
@@ -343,15 +412,7 @@ def bulk_create_shifts_from_template(
 
 def delete_shift(db: Session, *, tenant_id: int, staff_id: int, shift_id: int) -> None:
     _get_or_404(db, tenant_id, staff_id)
-    shift = (
-        tenant_query(db, StaffShift, tenant_id)
-        .filter(StaffShift.id == shift_id, StaffShift.staff_id == staff_id)
-        .first()
-    )
-    if shift is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Shift not found"
-        )
+    shift = _shift_or_404(db, tenant_id, staff_id, shift_id)
     db.delete(shift)
     db.commit()
 
@@ -368,6 +429,16 @@ def list_leaves(db: Session, *, tenant_id: int, staff_id: int) -> list[StaffLeav
     )
 
 
+def _validate_leave_range(
+    start_at: datetime.datetime, end_at: datetime.datetime
+) -> None:
+    # 顛倒/零長度區間永遠不會被 check_conflict 命中，等於無效請假 → 直接擋。
+    if _naive(end_at) <= _naive(start_at):
+        raise HTTPException(
+            status_code=422, detail="end_at must be after start_at"
+        )
+
+
 def create_leave(
     db: Session,
     *,
@@ -379,6 +450,7 @@ def create_leave(
     status_value: str = "approved",
 ) -> StaffLeave:
     _get_or_404(db, tenant_id, staff_id)
+    _validate_leave_range(start_at, end_at)
     leave = StaffLeave(
         tenant_id=tenant_id,
         staff_id=staff_id,
@@ -393,8 +465,9 @@ def create_leave(
     return leave
 
 
-def delete_leave(db: Session, *, tenant_id: int, staff_id: int, leave_id: int) -> None:
-    _get_or_404(db, tenant_id, staff_id)
+def _leave_or_404(
+    db: Session, tenant_id: int, staff_id: int, leave_id: int
+) -> StaffLeave:
     leave = (
         tenant_query(db, StaffLeave, tenant_id)
         .filter(StaffLeave.id == leave_id, StaffLeave.staff_id == staff_id)
@@ -404,6 +477,41 @@ def delete_leave(db: Session, *, tenant_id: int, staff_id: int, leave_id: int) -
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Leave not found"
         )
+    return leave
+
+
+def update_leave(
+    db: Session,
+    *,
+    tenant_id: int,
+    staff_id: int,
+    leave_id: int,
+    start_at: datetime.datetime | None = None,
+    end_at: datetime.datetime | None = None,
+    reason: str | None = None,
+    status_value: str | None = None,
+) -> StaffLeave:
+    _get_or_404(db, tenant_id, staff_id)
+    leave = _leave_or_404(db, tenant_id, staff_id, leave_id)
+    new_start = start_at if start_at is not None else leave.start_at
+    new_end = end_at if end_at is not None else leave.end_at
+    _validate_leave_range(new_start, new_end)
+    if start_at is not None:
+        leave.start_at = start_at
+    if end_at is not None:
+        leave.end_at = end_at
+    if reason is not None:
+        leave.reason = reason
+    if status_value is not None:
+        leave.status = status_value
+    db.commit()
+    db.refresh(leave)
+    return leave
+
+
+def delete_leave(db: Session, *, tenant_id: int, staff_id: int, leave_id: int) -> None:
+    _get_or_404(db, tenant_id, staff_id)
+    leave = _leave_or_404(db, tenant_id, staff_id, leave_id)
     db.delete(leave)
     db.commit()
 

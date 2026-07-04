@@ -74,6 +74,31 @@ def list_tags(db: Session, *, tenant_id: int) -> list[CustomerTag]:
     )
 
 
+def update_tag(
+    db: Session,
+    *,
+    tenant_id: int,
+    tag_id: int,
+    name: str | None = None,
+    color: str | None = None,
+) -> CustomerTag:
+    """更新標籤（改名/改色）；同租戶同名重複回 409，查無/跨租戶回 404。"""
+    tag = _get_tag_or_404(db, tenant_id, tag_id)
+    if name is not None:
+        tag.name = name
+    if color is not None:
+        tag.color = color
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Tag name already exists"
+        )
+    db.refresh(tag)
+    return tag
+
+
 def delete_tag(db: Session, *, tenant_id: int, tag_id: int) -> None:
     """刪除標籤（連帶 CASCADE 刪掉其所有掛載）；查無/跨租戶回 404。"""
     tag = _get_tag_or_404(db, tenant_id, tag_id)
