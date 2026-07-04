@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime
 import io
 
-from sqlalchemy import select
+from sqlalchemy import String, case, cast, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from saas_mvp.models.booking_slot import BookingSlot
@@ -27,13 +27,12 @@ from saas_mvp.models.service import Service
 from saas_mvp.models.staff import Staff
 
 
-def _confirmed_reservations(
-    db: Session,
+def _confirmed_reservations_stmt(
     tenant_id: int,
     date_from: datetime.datetime | None,
     date_to: datetime.datetime | None,
     location_id: int | None,
-) -> list[Reservation]:
+):
     stmt = (
         select(Reservation)
         .join(BookingSlot, Reservation.slot_id == BookingSlot.id)
@@ -54,7 +53,23 @@ def _confirmed_reservations(
             (Reservation.service_id == Service.id)
             & (Service.tenant_id == tenant_id),
         ).where(Service.location_id == location_id)
-    return list(db.execute(stmt).scalars())
+    return stmt
+
+
+def _confirmed_reservations(
+    db: Session,
+    tenant_id: int,
+    date_from: datetime.datetime | None,
+    date_to: datetime.datetime | None,
+    location_id: int | None,
+) -> list[Reservation]:
+    return list(
+        db.execute(
+            _confirmed_reservations_stmt(
+                tenant_id, date_from, date_to, location_id
+            )
+        ).scalars()
+    )
 
 
 def _service_names(db: Session, tenant_id: int) -> dict[int, str]:
@@ -150,26 +165,40 @@ def revenue_trend(
     date_to: datetime.datetime | None = None,
     location_id: int | None = None,
 ) -> list[dict]:
-    """已付訂單營收依「日」分桶（依 paid_at）。location_id 在此忽略（訂單未綁分店）。"""
-    stmt = select(Order).where(
-        Order.tenant_id == tenant_id,
-        Order.status == ORDER_PAID,
+    """已付訂單營收依「日」分桶（依 paid_at）。location_id 在此忽略（訂單未綁分店）。
+
+    聚合下推 SQL（GROUP BY date(paid_at)），免撈全表回 Python。
+    方言注意：SQLite 的 CAST(x AS DATE) 語意錯誤（回傳前導數字），
+    須用 func.date()（SQLite 原生 date()、PG 的 date() 函式式 cast 皆可）。
+    """
+    day = func.date(Order.paid_at).label("day")
+    stmt = (
+        select(
+            day,
+            func.count(Order.id),
+            func.coalesce(func.sum(Order.total_cents), 0),
+        )
+        .where(
+            Order.tenant_id == tenant_id,
+            Order.status == ORDER_PAID,
+            Order.paid_at.is_not(None),
+        )
+        .group_by(day)
+        .order_by(day)
     )
     if date_from is not None:
         stmt = stmt.where(Order.paid_at >= date_from)
     if date_to is not None:
         stmt = stmt.where(Order.paid_at <= date_to)
-    orders = list(db.execute(stmt).scalars())
-
-    buckets: dict[str, dict] = {}
-    for o in orders:
-        if o.paid_at is None:
-            continue
-        day = o.paid_at.date().isoformat()
-        b = buckets.setdefault(day, {"day": day, "order_count": 0, "revenue_cents": 0})
-        b["order_count"] += 1
-        b["revenue_cents"] += o.total_cents or 0
-    return [buckets[d] for d in sorted(buckets)]
+    return [
+        {
+            # SQLite 回字串、PG 回 date 物件；str() 皆得 ISO 格式
+            "day": str(d),
+            "order_count": int(cnt),
+            "revenue_cents": int(total),
+        }
+        for d, cnt, total in db.execute(stmt).all()
+    ]
 
 
 def return_rate(
@@ -180,16 +209,39 @@ def return_rate(
     date_to: datetime.datetime | None = None,
     location_id: int | None = None,
 ) -> dict:
-    """回購率：窗內有 ≥2 筆 confirmed 預約的顧客 / 窗內有預約的顧客總數。"""
-    rows = _confirmed_reservations(db, tenant_id, date_from, date_to, location_id)
-    per_customer: dict[str, int] = {}
-    for r in rows:
-        key = r.line_user_id or f"resv:{r.customer_id}"
-        if r.line_user_id is None and r.customer_id is None:
-            continue
-        per_customer[key] = per_customer.get(key, 0) + 1
-    total = len(per_customer)
-    repeat = sum(1 for n in per_customer.values() if n >= 2)
+    """回購率：窗內有 ≥2 筆 confirmed 預約的顧客 / 窗內有預約的顧客總數。
+
+    聚合下推 SQL：以顧客鍵（line_user_id，缺者退回 'resv:{customer_id}'）
+    GROUP BY 後在外層一趟算 total / repeat。
+    """
+    ckey = func.coalesce(
+        Reservation.line_user_id,
+        literal("resv:").concat(cast(Reservation.customer_id, String)),
+    ).label("ckey")
+    per_customer = (
+        _confirmed_reservations_stmt(
+            tenant_id, date_from, date_to, location_id
+        )
+        .with_only_columns(ckey, func.count().label("n"))
+        .where(
+            or_(
+                Reservation.line_user_id.is_not(None),
+                Reservation.customer_id.is_not(None),
+            )
+        )
+        .group_by(ckey)
+        .subquery()
+    )
+    total, repeat = db.execute(
+        select(
+            func.count(),
+            func.coalesce(
+                func.sum(case((per_customer.c.n >= 2, 1), else_=0)), 0
+            ),
+        ).select_from(per_customer)
+    ).one()
+    total = int(total)
+    repeat = int(repeat)
     return {
         "total_customers": total,
         "repeat_customers": repeat,

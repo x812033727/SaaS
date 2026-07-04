@@ -80,27 +80,37 @@ def slot_utilization(
     date_from: datetime.datetime | None = None,
     date_to: datetime.datetime | None = None,
 ) -> list[dict]:
-    """依「小時」聚合時段使用率（sum booked / sum capacity）。"""
-    stmt = select(BookingSlot).where(BookingSlot.tenant_id == tenant_id)
+    """依「小時」聚合時段使用率（sum booked / sum capacity）。
+
+    聚合下推 SQL：extract('hour') 在 SQLite 編譯為 CAST(STRFTIME('%H',..) AS
+    INTEGER)、PG 為原生 EXTRACT，雙方言可攜；比率仍在 Python 端算（除零語意）。
+    """
+    hour_expr = func.extract("hour", BookingSlot.slot_start)
+    stmt = (
+        select(
+            hour_expr.label("hour"),
+            func.coalesce(func.sum(BookingSlot.booked_count), 0),
+            func.coalesce(func.sum(BookingSlot.max_capacity), 0),
+        )
+        .where(BookingSlot.tenant_id == tenant_id)
+        .group_by(hour_expr)
+        .order_by(hour_expr)
+    )
     if date_from is not None:
         stmt = stmt.where(BookingSlot.slot_start >= date_from)
     if date_to is not None:
         stmt = stmt.where(BookingSlot.slot_start <= date_to)
-    slots = list(db.execute(stmt).scalars())
 
-    buckets: dict[int, dict] = {}
-    for s in slots:
-        hour = s.slot_start.hour
-        b = buckets.setdefault(hour, {"hour": hour, "booked": 0, "capacity": 0})
-        b["booked"] += s.booked_count or 0
-        b["capacity"] += s.max_capacity or 0
     out = []
-    for hour in sorted(buckets):
-        b = buckets[hour]
-        b["utilization"] = (
-            round(b["booked"] / b["capacity"], 4) if b["capacity"] else 0.0
-        )
-        out.append(b)
+    for hour, booked, capacity in db.execute(stmt).all():
+        booked = int(booked)
+        capacity = int(capacity)
+        out.append({
+            "hour": int(hour),
+            "booked": booked,
+            "capacity": capacity,
+            "utilization": round(booked / capacity, 4) if capacity else 0.0,
+        })
     return out
 
 

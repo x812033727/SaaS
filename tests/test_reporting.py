@@ -173,6 +173,20 @@ class TestRevenueTrend:
         db.commit()
         assert rep.revenue_trend(db, tenant_id=tid) == []
 
+    def test_empty(self, db):
+        tid = _tenant(db)
+        assert rep.revenue_trend(db, tenant_id=tid) == []
+
+    def test_date_window(self, db):
+        tid = _tenant(db)
+        _paid_order(db, tid, 10000, _utc(2030, 3, 1, 9))
+        _paid_order(db, tid, 7000, _utc(2030, 3, 5, 10))
+        out = rep.revenue_trend(
+            db, tenant_id=tid,
+            date_from=_utc(2030, 3, 2), date_to=_utc(2030, 3, 6),
+        )
+        assert [b["day"] for b in out] == ["2030-03-05"]
+
 
 class TestReturnRate:
     def test_math(self, db):
