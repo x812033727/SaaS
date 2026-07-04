@@ -357,6 +357,33 @@ class TestFlexMenuUI:
         assert "立即預約" in r.text
         assert "預覽" in r.text
 
+    def test_delete_menu_resets_to_empty(self, client):
+        email = _login(client)
+        client.post("/ui/flex-menu/title", data={"title": "要刪的選單"})
+        client.post("/ui/flex-menu/cards", data={
+            "title": "卡片A", "action_type": "uri", "action_data": "https://example.com",
+            "subtitle": "", "image_url": "", "bg_color": "",
+        })
+        r = client.post("/ui/flex-menu/delete")
+        assert r.status_code == 200
+        # 重設為空選單：卡片與標題都沒了
+        assert "卡片A" not in r.text
+        assert "要刪的選單" not in r.text
+        assert "尚無卡片" in r.text
+        # 卡片列不留孤兒
+        db = _Session()
+        try:
+            from saas_mvp.models.flex_menu_card import FlexMenuCard
+            tid = _tenant_id_for(email)
+            assert (
+                db.query(FlexMenuCard)
+                .filter(FlexMenuCard.tenant_id == tid)
+                .count()
+                == 0
+            )
+        finally:
+            db.close()
+
 
 class TestPortfolioUI:
     def test_page_renders(self, client):

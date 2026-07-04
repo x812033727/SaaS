@@ -2373,6 +2373,27 @@ def flex_menu_set_title(
     return templates.TemplateResponse("_flex_menu.html", _flex_ctx(request, actor, db))
 
 
+@router.post("/flex-menu/delete", response_class=HTMLResponse)
+def flex_menu_delete(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """刪除整個選單（含所有卡片）；重繪時自動重建空選單＝重設。"""
+    if not _require_ui_feature(db, actor, features_svc.FLEX_MENU):
+        return _feature_locked(request, actor, features_svc.FLEX_MENU, "圖文選單卡片")
+    tid = actor.user.tenant_id
+    error = None
+    menu = _get_or_create_flex_menu(db, tid)
+    try:
+        flex_menu_svc.delete_menu(db, tenant_id=tid, menu_id=menu.id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_flex_menu.html", _flex_ctx(request, actor, db, error=error)
+    )
+
+
 @router.post("/flex-menu/cards", response_class=HTMLResponse)
 def flex_menu_add_card(
     request: Request,
