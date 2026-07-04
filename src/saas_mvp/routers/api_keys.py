@@ -4,20 +4,21 @@
   POST   /api-keys/        建立新 key（明文只回傳一次）
   GET    /api-keys/        列出當前租戶 keys（只露 key_prefix，不含明文或 hash）
   DELETE /api-keys/{id}    撤銷 key（軟刪除，is_active=False）
+
+商業邏輯在 services/api_keys.py（與 UI 頁共用）。
 """
 
 from __future__ import annotations
 
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db
-from saas_mvp.models.api_key import ApiKey, generate_api_key, get_key_prefix, hash_api_key
 from saas_mvp.models.user import User
+from saas_mvp.services import api_keys as api_keys_svc
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
@@ -60,21 +61,12 @@ def create_key(
     db: Session = Depends(get_db),
 ) -> ApiKeyCreated:
     """建立 API key。明文 plain_key 僅此一次，請妥善保存。"""
-    plain_key = generate_api_key()
-    # P1: 保留 tzinfo，與 model 的 DateTime(timezone=True) 對齊（移除 .replace(tzinfo=None)）
-    now = datetime.datetime.now(datetime.timezone.utc)
-    api_key = ApiKey(
-        user_id=current_user.id,
+    api_key, plain_key = api_keys_svc.create_key(
+        db,
         tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
         name=body.name,
-        key_prefix=get_key_prefix(plain_key),
-        key_hash=hash_api_key(plain_key),
-        is_active=True,
-        created_at=now,
     )
-    db.add(api_key)
-    db.commit()
-    db.refresh(api_key)
     return ApiKeyCreated(
         id=api_key.id,
         name=api_key.name,
@@ -90,9 +82,7 @@ def list_keys(
     db: Session = Depends(get_db),
 ) -> list[ApiKeyItem]:
     """列出當前租戶所有 API keys（只回 key_prefix，永不回明文或 hash）。"""
-    rows = db.execute(
-        select(ApiKey).where(ApiKey.tenant_id == current_user.tenant_id)
-    ).scalars().all()
+    rows = api_keys_svc.list_keys(db, tenant_id=current_user.tenant_id)
     return [ApiKeyItem.model_validate(r) for r in rows]
 
 
@@ -103,16 +93,7 @@ def revoke_key(
     db: Session = Depends(get_db),
 ) -> Response:
     """撤銷 API key（軟刪除；usage 歷史記錄保留）。撤銷後立即失效。"""
-    row = db.execute(
-        select(ApiKey).where(
-            ApiKey.id == key_id,
-            ApiKey.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one_or_none()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="API key not found")
-
-    row.is_active = False
-    db.commit()
+    api_keys_svc.revoke_key(
+        db, tenant_id=current_user.tenant_id, key_id=key_id
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

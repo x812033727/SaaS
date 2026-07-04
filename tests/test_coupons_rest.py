@@ -101,6 +101,31 @@ class TestCouponRest:
         assert client.get("/booking/coupons/").status_code == 401
 
 
+class TestCouponActiveWindow:
+    def test_create_inverted_window_422(self, client):
+        token = _register(client)
+        r = client.post("/booking/coupons/", headers=_auth(token), json={
+            "code": "WIN1", "name": "顛倒", "discount_type": "percent",
+            "discount_value": 10,
+            "active_from": "2030-06-01T00:00:00+00:00",
+            "active_until": "2030-05-01T00:00:00+00:00",
+        })
+        assert r.status_code == 422
+
+    def test_update_until_before_from_422(self, client):
+        token = _register(client)
+        cid = client.post("/booking/coupons/", headers=_auth(token), json={
+            "code": "WIN2", "name": "正常", "discount_type": "percent",
+            "discount_value": 10,
+            "active_from": "2030-06-01T00:00:00+00:00",
+            "active_until": "2030-07-01T00:00:00+00:00",
+        }).json()["id"]
+        r = client.put(f"/booking/coupons/{cid}", headers=_auth(token), json={
+            "active_until": "2030-05-01T00:00:00+00:00",
+        })
+        assert r.status_code == 422
+
+
 class TestCustomerPointsRest:
     def _make_customer(self, client, token) -> int:
         # 透過建時段 + 建單（帶 line_user_id）自動建顧客

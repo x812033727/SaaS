@@ -1,7 +1,7 @@
-"""顧客 CRM 服務層 — 店家端唯讀查詢 + 補欄位（phone/note）。
+"""顧客 CRM 服務層 — 店家端查詢 + 補欄位（phone/note）+ 刪除（PII）。
 
 顧客檔由 LINE 預約流程自動建立（models/customer.upsert_customer_from_line）；
-此處只提供店家端 list/get/PATCH。所有查詢走 tenant_query 強制隔離。
+所有查詢走 tenant_query 強制隔離。
 """
 
 from __future__ import annotations
@@ -9,7 +9,14 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from saas_mvp.models.campaign_send import CampaignSend
+from saas_mvp.models.coupon_redemption import CouponRedemption
 from saas_mvp.models.customer import Customer
+from saas_mvp.models.customer_tag_link import CustomerTagLink
+from saas_mvp.models.line_message import LineMessage
+from saas_mvp.models.order import Order
+from saas_mvp.models.point_transaction import PointTransaction
+from saas_mvp.models.reservation import Reservation
 from saas_mvp.services.tenants import tenant_query
 
 
@@ -54,3 +61,33 @@ def update_customer(
     db.commit()
     db.refresh(customer)
     return customer
+
+
+# 刪除顧客時的關聯處理（= schema 宣告的 FK ondelete 語意）。
+# SQLite（預設 DB）未開 PRAGMA foreign_keys，DB 層 ondelete 不會發生，
+# 必須在應用層明做，否則留下孤兒/懸空參照。
+_DETACH_MODELS = (Reservation, LineMessage, CouponRedemption, Order)  # SET NULL
+_PURGE_MODELS = (PointTransaction, CustomerTagLink, CampaignSend)  # CASCADE
+
+
+def delete_customer(db: Session, *, tenant_id: int, customer_id: int) -> None:
+    """刪除顧客（PII 清除）。
+
+    - 預約/訊息/兌換/訂單：保留歷史列，customer_id 設 NULL（去識別化）。
+    - 點數異動/標籤掛載/行銷發送：連同個人資料一併刪除。
+    """
+    customer = _get_or_404(db, tenant_id, customer_id)
+    for model in _DETACH_MODELS:
+        (
+            tenant_query(db, model, tenant_id)
+            .filter(model.customer_id == customer_id)
+            .update({"customer_id": None}, synchronize_session=False)
+        )
+    for model in _PURGE_MODELS:
+        (
+            tenant_query(db, model, tenant_id)
+            .filter(model.customer_id == customer_id)
+            .delete(synchronize_session=False)
+        )
+    db.delete(customer)
+    db.commit()

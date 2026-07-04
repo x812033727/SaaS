@@ -18,6 +18,7 @@ from saas_mvp.models.user import User
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services.customers import (
+    delete_customer,
     get_customer,
     list_customers,
     update_customer,
@@ -73,6 +74,11 @@ class TagCreate(BaseModel):
     color: str | None = Field(default=None, max_length=16)
 
 
+class TagUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=64)
+    color: str | None = Field(default=None, max_length=16)
+
+
 class TagResponse(BaseModel):
     id: int
     tenant_id: int
@@ -114,6 +120,35 @@ def list_tags(
 ) -> list[TagResponse]:
     rows = segments_svc.list_tags(db, tenant_id=current_user.tenant_id)
     return [TagResponse.model_validate(t) for t in rows]
+
+
+@router.get("/tags/{tag_id}", response_model=TagResponse)
+def get_tag(
+    tag_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagResponse:
+    tag = segments_svc.get_tag(
+        db, tenant_id=current_user.tenant_id, tag_id=tag_id
+    )
+    return TagResponse.model_validate(tag)
+
+
+@router.put("/tags/{tag_id}", response_model=TagResponse)
+def update_tag(
+    tag_id: int,
+    body: TagUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagResponse:
+    tag = segments_svc.update_tag(
+        db,
+        tenant_id=current_user.tenant_id,
+        tag_id=tag_id,
+        name=body.name,
+        color=body.color,
+    )
+    return TagResponse.model_validate(tag)
 
 
 @router.delete(
@@ -195,6 +230,27 @@ def patch_one(
         note=body.note,
     )
     return CustomerResponse.model_validate(customer)
+
+
+@router.delete(
+    "/{customer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_one(
+    customer_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """刪除顧客（PII 清除）。
+
+    預約/訊息/兌換/訂單歷史保留但 customer_id 去識別化（NULL）；
+    點數異動、標籤掛載、行銷發送紀錄連同刪除。
+    """
+    delete_customer(
+        db, tenant_id=current_user.tenant_id, customer_id=customer_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{customer_id}/points", response_model=list[PointTxResponse])

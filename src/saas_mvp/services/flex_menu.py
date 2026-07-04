@@ -88,7 +88,17 @@ def update_menu(
 
 
 def delete_menu(db: Session, *, tenant_id: int, menu_id: int) -> None:
+    """刪除選單連同其卡片。
+
+    卡片在應用層明刪而非只靠 FK ondelete=CASCADE——SQLite（預設 DB）未開
+    PRAGMA foreign_keys，DB 層 cascade 不會發生，會留下孤兒卡片。
+    """
     menu = _get_menu_or_404(db, tenant_id, menu_id)
+    (
+        tenant_query(db, FlexMenuCard, tenant_id)
+        .filter(FlexMenuCard.menu_id == menu_id)
+        .delete(synchronize_session=False)
+    )
     db.delete(menu)
     db.commit()
 
@@ -181,6 +191,12 @@ def add_card(
     db.commit()
     db.refresh(card)
     return card
+
+
+def get_card(
+    db: Session, *, tenant_id: int, menu_id: int, card_id: int
+) -> FlexMenuCard:
+    return _get_card_or_404(db, tenant_id, menu_id, card_id)
 
 
 def update_card(

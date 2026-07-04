@@ -135,6 +135,165 @@ class TestStaffCrud:
         assert len(client.get(f"/booking/staff/{sid}/leaves", headers=_auth(token)).json()) == 1
         assert client.delete(f"/booking/staff/{sid}/leaves/{lvid}", headers=_auth(token)).status_code == 204
 
+    def test_delete_staff_cascades(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "要刪的"}).json()["id"]
+        client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 1, "start_time": "09:00", "end_time": "18:00",
+        })
+        client.post(f"/booking/staff/{sid}/leaves", headers=_auth(token), json={
+            "start_at": "2030-07-01T00:00:00+00:00",
+            "end_at": "2030-07-02T00:00:00+00:00",
+        })
+        assert client.delete(f"/booking/staff/{sid}", headers=_auth(token)).status_code == 204
+        assert client.get(f"/booking/staff/{sid}", headers=_auth(token)).status_code == 404
+        # 班表/請假隨 FK cascade 清除
+        db = _Session()
+        try:
+            from saas_mvp.models.staff_shift import StaffShift
+            from saas_mvp.models.staff_leave import StaffLeave
+            assert db.query(StaffShift).filter(StaffShift.staff_id == sid).count() == 0
+            assert db.query(StaffLeave).filter(StaffLeave.staff_id == sid).count() == 0
+        finally:
+            db.close()
+
+    def test_delete_staff_cross_tenant_404(self, client):
+        token_a = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token_a),
+                          json={"name": "A員工"}).json()["id"]
+        token_b = _register(client)
+        assert client.delete(f"/booking/staff/{sid}", headers=_auth(token_b)).status_code == 404
+
+    def test_get_one_shift_and_leave(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "單查員"}).json()["id"]
+        shid = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 4, "start_time": "09:00", "end_time": "18:00",
+        }).json()["id"]
+        r = client.get(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token))
+        assert r.status_code == 200 and r.json()["weekday"] == 4
+        assert client.get(f"/booking/staff/{sid}/shifts/999999",
+                          headers=_auth(token)).status_code == 404
+        lvid = client.post(f"/booking/staff/{sid}/leaves", headers=_auth(token), json={
+            "start_at": "2030-10-01T00:00:00+00:00",
+            "end_at": "2030-10-02T00:00:00+00:00",
+        }).json()["id"]
+        r = client.get(f"/booking/staff/{sid}/leaves/{lvid}", headers=_auth(token))
+        assert r.status_code == 200 and r.json()["id"] == lvid
+        # 跨租戶 → 404
+        token_b = _register(client)
+        assert client.get(f"/booking/staff/{sid}/shifts/{shid}",
+                          headers=_auth(token_b)).status_code == 404
+
+    def test_update_shift(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "改班的"}).json()["id"]
+        shid = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "09:00", "end_time": "12:00", "rotation": "day",
+        }).json()["id"]
+        # 改時間 + weekday
+        r = client.put(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token), json={
+            "start_time": "10:00", "end_time": "14:00", "weekday": 2,
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["start_time"] == "10:00" and body["end_time"] == "14:00"
+        assert body["weekday"] == 2
+        assert body["rotation"] == "day"  # 未帶 → 不變
+        # 撞 unique (staff, weekday, start_time) → 409
+        client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 3, "start_time": "10:00", "end_time": "14:00",
+        })
+        dup = client.put(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token),
+                         json={"weekday": 3})
+        assert dup.status_code == 409
+        # 查無 shift → 404
+        assert client.put(f"/booking/staff/{sid}/shifts/999999", headers=_auth(token),
+                          json={"start_time": "08:00"}).status_code == 404
+        # 跨租戶 → 404
+        token_b = _register(client)
+        assert client.put(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token_b),
+                          json={"start_time": "08:00"}).status_code == 404
+
+    def test_update_leave(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "請假的"}).json()["id"]
+        lvid = client.post(f"/booking/staff/{sid}/leaves", headers=_auth(token), json={
+            "start_at": "2030-09-01T00:00:00+00:00",
+            "end_at": "2030-09-02T00:00:00+00:00",
+            "reason": "原因A",
+        }).json()["id"]
+        r = client.put(f"/booking/staff/{sid}/leaves/{lvid}", headers=_auth(token), json={
+            "end_at": "2030-09-03T00:00:00+00:00", "reason": "原因B",
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()["reason"] == "原因B"
+        assert r.json()["end_at"].startswith("2030-09-03")
+        # 合併後 end <= start → 422
+        bad = client.put(f"/booking/staff/{sid}/leaves/{lvid}", headers=_auth(token), json={
+            "end_at": "2030-08-01T00:00:00+00:00",
+        })
+        assert bad.status_code == 422
+        # 查無 → 404
+        assert client.put(f"/booking/staff/{sid}/leaves/999999", headers=_auth(token),
+                          json={"reason": "x"}).status_code == 404
+
+    def test_shift_time_format_validation(self, client):
+        """check_conflict 以字典序比較時間，未補零的輸入必須在寫入前擋下。"""
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "格式哥"}).json()["id"]
+        # 未補零 → 422
+        r = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "9:00", "end_time": "18:00",
+        })
+        assert r.status_code == 422
+        # 不存在的時刻 → 422
+        r = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "09:00", "end_time": "25:00",
+        })
+        assert r.status_code == 422
+        # 結束不晚於開始 → 422
+        r = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "18:00", "end_time": "09:00",
+        })
+        assert r.status_code == 422
+        # 更新為壞值也要擋（合併現值後驗證）
+        shid = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "09:00", "end_time": "18:00",
+        }).json()["id"]
+        r = client.put(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token),
+                       json={"end_time": "08:00"})
+        assert r.status_code == 422
+        # 批量（service 層）也要擋
+        db = _Session()
+        try:
+            import pytest as _pytest
+            from fastapi import HTTPException as _HTTPException
+            tid = _tenant_id_of(token)
+            with _pytest.raises(_HTTPException) as exc:
+                staff_svc.bulk_create_shifts(
+                    db, tenant_id=tid, staff_id=sid,
+                    weekdays=[1, 2], start_time="9:00", end_time="18:00",
+                )
+            assert exc.value.status_code == 422
+        finally:
+            db.close()
+
+    def test_create_leave_inverted_range_422(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "顛倒的"}).json()["id"]
+        r = client.post(f"/booking/staff/{sid}/leaves", headers=_auth(token), json={
+            "start_at": "2030-09-02T00:00:00+00:00",
+            "end_at": "2030-09-01T00:00:00+00:00",
+        })
+        assert r.status_code == 422
+
     def test_tenant_isolation(self, client):
         token_a = _register(client)
         sid = client.post("/booking/staff/", headers=_auth(token_a),

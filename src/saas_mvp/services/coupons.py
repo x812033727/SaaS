@@ -89,6 +89,25 @@ def _get_or_404(db: Session, tenant_id: int, coupon_id: int) -> Coupon:
     return coupon
 
 
+def _naive(dt: datetime.datetime | None) -> datetime.datetime | None:
+    """SQLite 讀回為 naive；比較前統一去 tzinfo 避免 aware/naive 混比。"""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _validate_active_window(
+    active_from: datetime.datetime | None,
+    active_until: datetime.datetime | None,
+) -> None:
+    """有效期間顛倒的優惠券永遠無法兌換（redeem 一律回 expired）——直接擋。"""
+    f, u = _naive(active_from), _naive(active_until)
+    if f is not None and u is not None and u <= f:
+        raise HTTPException(
+            status_code=422, detail="active_until must be after active_from"
+        )
+
+
 def create_coupon(
     db: Session,
     *,
@@ -112,6 +131,7 @@ def create_coupon(
         raise HTTPException(status_code=422, detail="percent discount must be 0-100")
     if min_spend_cents < 0:
         raise HTTPException(status_code=422, detail="min_spend_cents must be >= 0")
+    _validate_active_window(active_from, active_until)
     coupon = Coupon(
         tenant_id=tenant_id,
         code=code,
@@ -155,6 +175,8 @@ def update_coupon(
     is_active: bool | None = None,
 ) -> Coupon:
     coupon = _get_or_404(db, tenant_id, coupon_id)
+    if active_until is not None:
+        _validate_active_window(coupon.active_from, active_until)
     if name is not None:
         coupon.name = name
     if max_redemptions is not None:
