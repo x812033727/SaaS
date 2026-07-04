@@ -797,23 +797,36 @@ def booking_create_slot(
     slot_start: str = Form(...),
     max_capacity: int = Form(...),
     walkin_reserved: int = Form(0),
+    duration_minutes: str = Form(""),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
     tid = actor.user.tenant_id
     error = None
     try:
+        start = _parse_slot_start(slot_start)
+        # 選填時長（分）→ slot_end；供 LINE 引導流程依服務時長過濾時段。
+        duration = _opt_int(duration_minutes)
+        slot_end = None
+        if duration is not None:
+            if duration <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="時長需為正整數（分鐘）",
+                )
+            slot_end = start + datetime.timedelta(minutes=duration)
         slots_svc.create_slot(
             db,
             tenant_id=tid,
-            slot_start=_parse_slot_start(slot_start),
+            slot_start=start,
+            slot_end=slot_end,
             max_capacity=max_capacity,
             walkin_reserved=walkin_reserved,
         )
     except HTTPException as exc:
         error = str(exc.detail)
     except ValueError:
-        error = "時段時間格式錯誤"
+        error = "時段時間或時長格式錯誤"
     return templates.TemplateResponse(
         "_booking_slots.html", _booking_ctx(request, actor, db, error=error)
     )

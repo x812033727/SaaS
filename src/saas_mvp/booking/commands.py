@@ -32,6 +32,11 @@ _TEXT_ALIASES: dict[str, str] = {
     "/waitlist": "waitlist",
     "候補": "waitlist",
     "我的候補": "waitlist",
+    # 顧客自助留聯絡資料（PRIVACY_MODE：回 tokenized PII 表單連結）
+    "/contact": "contact",
+    "留電話": "contact",
+    "填資料": "contact",
+    "留資料": "contact",
     "/help": "help",
     "說明": "help",
     # 圖文選單卡片（Flex carousel）
@@ -70,6 +75,48 @@ def _clamp_party(value: int | None) -> int:
     return value
 
 
+# 中文容錯比對（fuzzy）設定 — 見 _fuzzy_alias()。
+# 意圖前綴：剝除一次後再比對（「我要改期」→「改期」）。
+_INTENT_PREFIXES = ("請幫我", "我想要", "我要", "我想", "幫我")
+# 高風險 action：fuzzy 命中後 remainder 必須為空或純數字（防「取消訂閱」誤觸取消預約）。
+_FUZZY_STRICT_ACTIONS = {"cancel", "reschedule"}
+
+
+def _fuzzy_alias(head: str) -> tuple[str | None, str]:
+    """中文容錯：head 精確比對 miss 後的退路。回 (action, remainder)。
+
+    規則（誤觸防護）：
+      1. 只比對 head token（第一個空白分詞），不掃全句。
+      2. 先剝除一次意圖前綴（「我要/我想/請幫我/幫我」）。
+      3. 非 slash 中文 alias 依長度降冪 startswith 比對
+         （「我的預約」先於「預約」、「查詢時段」先於「時段」）。
+      4. 高風險 action（cancel/reschedule）的 remainder 必須為空或純數字，
+         否則視為未命中（「取消訂閱」→ None）。
+      5. slash 指令不做 fuzzy（打錯回說明）。
+    """
+    if not head or head.startswith("/"):
+        return None, ""
+    for prefix in _INTENT_PREFIXES:
+        if head.startswith(prefix) and len(head) > len(prefix):
+            head = head[len(prefix):]
+            break
+    zh_aliases = sorted(
+        (a for a in _TEXT_ALIASES if not a.startswith("/")),
+        key=len,
+        reverse=True,
+    )
+    for alias in zh_aliases:
+        if head.startswith(alias):
+            action = _TEXT_ALIASES[alias]
+            remainder = head[len(alias):]
+            if action in _FUZZY_STRICT_ACTIONS and not re.fullmatch(
+                r"\d*", remainder
+            ):
+                return None, ""
+            return action, remainder
+    return None, ""
+
+
 def parse_booking_command(text: str) -> tuple[str | None, dict]:
     """解析文字訊息為 (action, params)。
 
@@ -87,6 +134,19 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
         ('my', {})
         >>> parse_booking_command("隨便打字")
         (None, {})
+
+    中文容錯（head 精確比對 miss 後退用 _fuzzy_alias）::
+
+        >>> parse_booking_command("預約明天")
+        ('book', {'party_size': 1})
+        >>> parse_booking_command("我要改期 7")
+        ('reschedule', {'reservation_id': 7})
+        >>> parse_booking_command("取消7")
+        ('cancel', {'reservation_id': 7})
+        >>> parse_booking_command("取消訂閱")
+        (None, {})
+        >>> parse_booking_command("我的預約清單")
+        ('my', {})
     """
     if not text:
         return None, {}
@@ -97,10 +157,17 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
 
     head = parts[0]
     action = _TEXT_ALIASES.get(head)
-    if action is None:
-        return None, {}
-
     args = parts[1:]
+    if action is None:
+        # 中文無空格斷詞：「預約明天」「我要改期」精確比對 miss，退用容錯。
+        action, remainder = _fuzzy_alias(head)
+        if action is None:
+            return None, {}
+        if remainder:
+            # 黏著的參數（「取消7」的 "7"）補回 args 開頭；
+            # 非數字 remainder（「預約明天」的「明天」）由各 action 的
+            # _to_int 容錯自然忽略，落入引導式流程。
+            args = [remainder, *args]
     if action == "book":
         params: dict = {}
         if args:
@@ -162,7 +229,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         "slots", "my", "cancel", "help", "menu",
         "reschedule", "resched_date", "resched_slot",
         "waitlist", "waitlist_join", "waitlist_cancel",
-        "confirm",
+        "confirm", "contact",
         "coupons", "redeem", "points",
         "shop", "buy", "my_orders",
     }:

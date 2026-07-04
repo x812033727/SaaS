@@ -1034,6 +1034,31 @@ def _my_reservations_carousel(db: Session, tenant_id: int, rows: list) -> dict:
     }
 
 
+def _slots_fitting_service(db: Session, tenant_id: int, slots: list, service_id):
+    """依服務時長過濾時段：slot 長度不足者剔除。
+
+    slot_end 為 NULL 的舊資料一律放行（降級不擋，資訊不足不誤殺）；
+    服務不存在或未設時長也放行。
+    """
+    if service_id is None:
+        return slots
+    try:
+        service = catalog_svc.get_service(
+            db, tenant_id=tenant_id, service_id=service_id
+        )
+    except Exception:  # noqa: BLE001 — 服務查無：不套過濾
+        return slots
+    duration = getattr(service, "duration_minutes", None)
+    if not duration:
+        return slots
+    needed = datetime.timedelta(minutes=duration)
+    return [
+        s
+        for s in slots
+        if s.slot_end is None or (s.slot_end - s.slot_start) >= needed
+    ]
+
+
 def _waitlist_join_buttons(
     slot_id: int | None, party_size: int
 ) -> list[tuple[str, str]] | None:
@@ -1376,8 +1401,10 @@ def _try_conversational(
         staff_id = params.get("staff_id")
         date = params.get("date")
         slots = _available_slots_on_date(db, tenant_id, date)
+        # 依服務時長過濾（slot_end 為 NULL 的舊時段放行）。
+        slots = _slots_fitting_service(db, tenant_id, slots, service_id)
         if not slots:
-            return "該日期目前沒有可預約的時段。", None, None
+            return "該日期目前沒有時長足夠的可預約時段。", None, None
         return (
             "請選擇時段：",
             _slot_buttons_with_state(slots, service_id, staff_id),
@@ -1528,6 +1555,25 @@ def _dispatch_booking(
 
     if action == "points":
         return _points_reply(db, tenant_id, line_user_id), None
+
+    # 顧客自助留聯絡資料：PRIVACY_MODE 開通時回 tokenized PII 表單連結
+    # （不在聊天室索取個資）；未開通回引導文案。
+    if action == "contact":
+        if not line_user_id:
+            return "無法識別使用者，請從 LINE 操作。", None
+        if not features_svc.is_enabled(db, tenant_id, features_svc.PRIVACY_MODE):
+            return (
+                "本店未開放線上填寫個資，如需留下聯絡方式請直接告知店家。",
+                None,
+            )
+        from saas_mvp.services import pii as pii_svc
+
+        return (
+            pii_svc.push_form_link(
+                db, tenant_id=tenant_id, line_user_id=line_user_id
+            ),
+            None,
+        )
 
     # ── 額滿候補 ────────────────────────────────────────────────────────────
     if action == "waitlist":
