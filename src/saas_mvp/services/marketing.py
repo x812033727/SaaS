@@ -56,6 +56,25 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _naive(dt: datetime.datetime | None) -> datetime.datetime | None:
+    """SQLite 讀回為 naive；比較前統一去 tzinfo 避免 aware/naive 混比。"""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def validate_schedule_window(
+    schedule_at: datetime.datetime | None,
+    expires_at: datetime.datetime | None,
+) -> None:
+    """排程視窗顛倒的活動永遠不會（或立即過期）發送——直接擋。"""
+    s, e = _naive(schedule_at), _naive(expires_at)
+    if s is not None and e is not None and e <= s:
+        raise HTTPException(
+            status_code=422, detail="expires_at must be after schedule_at"
+        )
+
+
 def _campaign_or_404(db: Session, tenant_id: int, campaign_id: int) -> Campaign:
     campaign = (
         tenant_query(db, Campaign, tenant_id)

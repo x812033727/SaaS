@@ -66,6 +66,10 @@ def create_tag(
     return tag
 
 
+def get_tag(db: Session, *, tenant_id: int, tag_id: int) -> CustomerTag:
+    return _get_tag_or_404(db, tenant_id, tag_id)
+
+
 def list_tags(db: Session, *, tenant_id: int) -> list[CustomerTag]:
     return (
         tenant_query(db, CustomerTag, tenant_id)

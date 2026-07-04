@@ -94,6 +94,7 @@ def create(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CampaignResponse:
+    marketing_svc.validate_schedule_window(body.schedule_at, body.expires_at)
     campaign = Campaign(
         tenant_id=current_user.tenant_id,
         name=body.name,

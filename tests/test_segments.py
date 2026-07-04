@@ -143,6 +143,19 @@ class TestTagCRUD:
             "/booking/customers/tags/999999", headers=_auth(token)
         ).status_code == 404
 
+    def test_get_one_tag(self, client):
+        token = _register(client)
+        tag_id = client.post(
+            "/booking/customers/tags", headers=_auth(token),
+            json={"name": "單查標籤", "color": "#abc123"},
+        ).json()["id"]
+        r = client.get(f"/booking/customers/tags/{tag_id}", headers=_auth(token))
+        assert r.status_code == 200
+        assert r.json()["name"] == "單查標籤" and r.json()["color"] == "#abc123"
+        assert client.get(
+            "/booking/customers/tags/999999", headers=_auth(token)
+        ).status_code == 404
+
     def test_update_rename_and_color(self, client):
         token = _register(client)
         tag_id = client.post(

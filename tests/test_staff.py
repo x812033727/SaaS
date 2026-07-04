@@ -165,6 +165,28 @@ class TestStaffCrud:
         token_b = _register(client)
         assert client.delete(f"/booking/staff/{sid}", headers=_auth(token_b)).status_code == 404
 
+    def test_get_one_shift_and_leave(self, client):
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "單查員"}).json()["id"]
+        shid = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 4, "start_time": "09:00", "end_time": "18:00",
+        }).json()["id"]
+        r = client.get(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token))
+        assert r.status_code == 200 and r.json()["weekday"] == 4
+        assert client.get(f"/booking/staff/{sid}/shifts/999999",
+                          headers=_auth(token)).status_code == 404
+        lvid = client.post(f"/booking/staff/{sid}/leaves", headers=_auth(token), json={
+            "start_at": "2030-10-01T00:00:00+00:00",
+            "end_at": "2030-10-02T00:00:00+00:00",
+        }).json()["id"]
+        r = client.get(f"/booking/staff/{sid}/leaves/{lvid}", headers=_auth(token))
+        assert r.status_code == 200 and r.json()["id"] == lvid
+        # 跨租戶 → 404
+        token_b = _register(client)
+        assert client.get(f"/booking/staff/{sid}/shifts/{shid}",
+                          headers=_auth(token_b)).status_code == 404
+
     def test_update_shift(self, client):
         token = _register(client)
         sid = client.post("/booking/staff/", headers=_auth(token),

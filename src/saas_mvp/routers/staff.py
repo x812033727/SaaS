@@ -248,6 +248,19 @@ def create_shift(
     return ShiftResponse.model_validate(shift)
 
 
+@router.get("/{staff_id}/shifts/{shift_id}", response_model=ShiftResponse)
+def get_shift(
+    staff_id: int,
+    shift_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ShiftResponse:
+    shift = staff_svc.get_shift(
+        db, tenant_id=current_user.tenant_id, staff_id=staff_id, shift_id=shift_id
+    )
+    return ShiftResponse.model_validate(shift)
+
+
 @router.put("/{staff_id}/shifts/{shift_id}", response_model=ShiftResponse)
 def update_shift(
     staff_id: int,
@@ -323,6 +336,19 @@ def create_leave(
         end_at=body.end_at,
         reason=body.reason,
         status_value=body.status,
+    )
+    return LeaveResponse.model_validate(leave)
+
+
+@router.get("/{staff_id}/leaves/{leave_id}", response_model=LeaveResponse)
+def get_leave(
+    staff_id: int,
+    leave_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> LeaveResponse:
+    leave = staff_svc.get_leave(
+        db, tenant_id=current_user.tenant_id, staff_id=staff_id, leave_id=leave_id
     )
     return LeaveResponse.model_validate(leave)
 

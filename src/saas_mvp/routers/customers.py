@@ -121,6 +121,18 @@ def list_tags(
     return [TagResponse.model_validate(t) for t in rows]
 
 
+@router.get("/tags/{tag_id}", response_model=TagResponse)
+def get_tag(
+    tag_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagResponse:
+    tag = segments_svc.get_tag(
+        db, tenant_id=current_user.tenant_id, tag_id=tag_id
+    )
+    return TagResponse.model_validate(tag)
+
+
 @router.put("/tags/{tag_id}", response_model=TagResponse)
 def update_tag(
     tag_id: int,

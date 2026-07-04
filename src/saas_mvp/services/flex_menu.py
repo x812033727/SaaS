@@ -193,6 +193,12 @@ def add_card(
     return card
 
 
+def get_card(
+    db: Session, *, tenant_id: int, menu_id: int, card_id: int
+) -> FlexMenuCard:
+    return _get_card_or_404(db, tenant_id, menu_id, card_id)
+
+
 def update_card(
     db: Session,
     *,

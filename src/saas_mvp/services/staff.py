@@ -315,6 +315,13 @@ def _shift_or_404(
     return shift
 
 
+def get_shift(
+    db: Session, *, tenant_id: int, staff_id: int, shift_id: int
+) -> StaffShift:
+    _get_or_404(db, tenant_id, staff_id)
+    return _shift_or_404(db, tenant_id, staff_id, shift_id)
+
+
 def update_shift(
     db: Session,
     *,
@@ -506,6 +513,13 @@ def _leave_or_404(
             status_code=status.HTTP_404_NOT_FOUND, detail="Leave not found"
         )
     return leave
+
+
+def get_leave(
+    db: Session, *, tenant_id: int, staff_id: int, leave_id: int
+) -> StaffLeave:
+    _get_or_404(db, tenant_id, staff_id)
+    return _leave_or_404(db, tenant_id, staff_id, leave_id)
 
 
 def update_leave(
