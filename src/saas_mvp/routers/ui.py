@@ -51,6 +51,7 @@ from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
+from saas_mvp.services import api_keys as api_keys_svc
 from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import segments as segments_svc
@@ -1144,6 +1145,78 @@ def customers_detach_tag(
     )
     return templates.TemplateResponse(
         "_customers.html", _customers_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：API 金鑰 ────────────────────────────────────────────────────────
+
+def _api_keys_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        api_keys=api_keys_svc.list_keys(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/api-keys", response_class=HTMLResponse)
+def api_keys_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "api_keys.html", _api_keys_ctx(request, actor, db)
+    )
+
+
+@router.post("/api-keys", response_class=HTMLResponse)
+def api_keys_create(
+    request: Request,
+    name: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    created_plain_key = None
+    created_name = None
+    if not name.strip():
+        error = "名稱不可為空"
+    elif len(name) > 128:
+        error = "名稱長度上限 128"
+    else:
+        _, created_plain_key = api_keys_svc.create_key(
+            db, tenant_id=tid, user_id=actor.user.id, name=name.strip()
+        )
+        created_name = name.strip()
+    # 明文 key 只出現在本次回應（created_plain_key），之後永遠無法再取得。
+    return templates.TemplateResponse(
+        "_api_keys.html",
+        _api_keys_ctx(
+            request, actor, db,
+            error=error,
+            created_plain_key=created_plain_key,
+            created_name=created_name,
+        ),
+    )
+
+
+@router.post("/api-keys/{key_id}/revoke", response_class=HTMLResponse)
+def api_keys_revoke(
+    request: Request,
+    key_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        api_keys_svc.revoke_key(db, tenant_id=tid, key_id=key_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_api_keys.html", _api_keys_ctx(request, actor, db, error=error)
     )
 
 

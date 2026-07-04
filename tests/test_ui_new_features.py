@@ -464,6 +464,43 @@ class TestFlexMenuUI:
             db.close()
 
 
+class TestApiKeysUI:
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/api-keys")
+        assert r.status_code == 200
+        assert "API 金鑰" in r.text
+
+    def test_create_shows_plain_key_once_then_revoke(self, client):
+        _login(client)
+        r = client.post("/ui/api-keys", data={"name": "POS 串接"})
+        assert r.status_code == 200
+        assert "僅顯示這一次" in r.text
+        # 明文 key 出現在建立回應
+        import re
+        m = re.search(r"myapp_[A-Za-z0-9_\-]{20,}", r.text)
+        assert m, "建立回應應包含明文 key"
+        plain = m.group(0)
+        # 重新載入頁面 → 明文不再出現，只有前綴
+        page = client.get("/ui/api-keys")
+        assert plain not in page.text
+        assert "POS 串接" in page.text
+        # 撤銷
+        db = _Session()
+        try:
+            from saas_mvp.models.api_key import ApiKey, hash_api_key
+            row = (
+                db.query(ApiKey)
+                .filter(ApiKey.key_hash == hash_api_key(plain))
+                .first()
+            )
+            key_id = row.id
+        finally:
+            db.close()
+        r = client.post(f"/ui/api-keys/{key_id}/revoke")
+        assert "已撤銷" in r.text
+
+
 class TestAutoReplyUI:
     def test_page_renders(self, client):
         _login(client)
