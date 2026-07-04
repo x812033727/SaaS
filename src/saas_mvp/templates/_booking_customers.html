@@ -1,0 +1,46 @@
+<h2>顧客</h2>
+{% if customers %}
+<table>
+  <thead>
+    <tr><th>#</th><th>名稱</th><th>電話</th><th>訂位次數</th><th>點數</th><th>等級</th><th>最後訂位</th><th>黑名單</th></tr>
+  </thead>
+  <tbody>
+    {% for c in customers %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="名稱">
+        {{ c.display_name or '—' }}
+        {% if c.blacklisted %}<span class="badge off">黑名單</span>{% endif %}
+      </td>
+      <td data-label="電話">{{ c.phone or '—' }}</td>
+      <td data-label="訂位次數">{{ c.booking_count }}</td>
+      <td data-label="點數">{{ c.points_balance }}</td>
+      <td data-label="等級"><span class="badge">{{ c.tier }}</span></td>
+      <td data-label="最後訂位">{% if c.last_booked_at %}{{ c.last_booked_at.strftime('%Y-%m-%d %H:%M') }}{% else %}—{% endif %}</td>
+      <td data-label="黑名單">
+        {% if c.blacklisted %}
+        {% if c.blacklist_reason %}<div class="muted" style="font-size:.85em">原因：{{ c.blacklist_reason }}</div>{% endif %}
+        <form hx-post="/ui/booking/customers/{{ c.id }}/blacklist"
+              hx-target="#customers-card" hx-swap="innerHTML" style="display:inline">
+          <input type="hidden" name="blacklisted" value="false">
+          <button type="submit">解除黑名單</button>
+        </form>
+        {% else %}
+        <form hx-post="/ui/booking/customers/{{ c.id }}/blacklist"
+              hx-target="#customers-card" hx-swap="innerHTML"
+              hx-confirm="確定將此顧客加入黑名單？加入後將無法在 LINE 線上預約。"
+              style="display:flex; gap:.3em; flex-wrap:wrap">
+          <input type="hidden" name="blacklisted" value="true">
+          <input type="text" name="reason" placeholder="原因（選填）" maxlength="255"
+                 style="max-width:12em">
+          <button type="submit">加入黑名單</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無顧客資料（顧客透過 LINE 預約後自動建檔）。</p>
+{% endif %}

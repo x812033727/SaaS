@@ -585,6 +585,8 @@ class TestNoRuntimeChange:
         （bot_mode="auto_reply"）路徑再新增 1 個 → 7。翻譯路徑的 5 個
         呼叫點維持不變。預約/自動回覆各自集中於單一呼叫點，
         新增對話功能時應經由 dispatcher 回傳文字，而非增加 reply 呼叫點。
+
+        註：黑名單（blacklist）婉拒訊息走既有預約 reply 呼叫點回覆，未新增呼叫。
         """
         source = _read_source()
         # 排除註解、docstring

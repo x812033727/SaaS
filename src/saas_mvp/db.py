@@ -146,6 +146,7 @@ def legacy_init_db() -> None:
     _migrate_add_customer_ics_token()
     _migrate_add_user_oauth()
     _migrate_add_customer_birthday()
+    _migrate_add_customer_blacklist()
     _migrate_add_coupon_order_fields()
     _migrate_add_tenant_reminder_hours()
     _migrate_add_profile_announcement()
@@ -180,6 +181,20 @@ def _migrate_add_reservation_customer_confirmed() -> None:
     _add_column_if_missing(
         "booking_reservations", "customer_confirmed_at", "TIMESTAMP"
     )
+
+
+def _migrate_add_customer_blacklist() -> None:
+    """為既有 booking_customers 表補上黑名單欄位（blacklisted + blacklist_reason）。
+
+    blacklisted 帶 NOT NULL DEFAULT FALSE，既有顧客自動回填 false（零影響）；
+    blacklist_reason 為 nullable 備註。只做 ADD COLUMN，失敗僅記 warning，不阻擋啟動。
+    （upstream 合併註記：Alembic 納管後的對應 revision 為 0004——legacy DB 走
+    本函式收斂，fresh/managed DB 走 revision;兩者冪等互不衝突。）
+    """
+    _add_column_if_missing(
+        "booking_customers", "blacklisted", "BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    _add_column_if_missing("booking_customers", "blacklist_reason", "VARCHAR(255)")
 
 
 def _migrate_add_coupon_order_fields() -> None:

@@ -16,6 +16,7 @@ from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
 from saas_mvp.services.booking import (
     CrossTenantReferenceError,
+    CustomerBlacklistedError,
     ReservationNotFoundError,
     SlotFullError,
     SlotNotFoundError,
@@ -92,6 +93,11 @@ def create(
             note=body.note,
             staff_id=body.staff_id,
             service_id=body.service_id,
+        )
+    except CustomerBlacklistedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Customer is blacklisted",
         )
     except CrossTenantReferenceError:
         raise HTTPException(
