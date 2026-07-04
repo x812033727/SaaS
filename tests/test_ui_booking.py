@@ -383,6 +383,19 @@ class TestShopUI:
         assert "error" in r.text or ">= 0" in r.text
 
 
+class TestShopMutationGate:
+    def test_mutations_locked_when_disabled(self, client):
+        """未開通 PRODUCT_SALES 時，mutation 端點也要擋（先前只有頁面 GET 有擋）。"""
+        _login(client)
+        client.post("/ui/features/PRODUCT_SALES/unsubscribe")
+        r = client.post("/ui/shop/products", data={
+            "name": "偷渡", "price_cents": "100", "stock": "",
+        })
+        assert "尚未開通" in r.text
+        assert client.post("/ui/shop/products/1/delete").text.find("尚未開通") != -1
+        assert "尚未開通" in client.post("/ui/shop/orders/1/pay").text
+
+
 class TestFeaturesUI:
     def test_features_page_lists(self, client):
         _login(client)

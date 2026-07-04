@@ -946,7 +946,7 @@ def shop_page(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
-    if not features_svc.is_enabled(db, actor.user.tenant_id, features_svc.PRODUCT_SALES):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
         return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     return templates.TemplateResponse("shop.html", _shop_ctx(request, actor, db))
 
@@ -960,6 +960,8 @@ def shop_create_product(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -981,6 +983,8 @@ def shop_deactivate_product(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -997,6 +1001,8 @@ def shop_edit_product_form(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     return templates.TemplateResponse(
         "_shop.html", _shop_ctx(request, actor, db, editing_id=product_id)
     )
@@ -1012,6 +1018,8 @@ def shop_update_product(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     error = None
     editing_id = None
@@ -1039,6 +1047,8 @@ def shop_delete_product(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1057,6 +1067,8 @@ def shop_pay_order(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1075,6 +1087,8 @@ def shop_cancel_order(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
     tid = actor.user.tenant_id
     error = None
     try:
@@ -1175,7 +1189,7 @@ def coupons_page(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
-    if not features_svc.is_enabled(db, actor.user.tenant_id, features_svc.COUPON_SYSTEM):
+    if not _require_ui_feature(db, actor, features_svc.COUPON_SYSTEM):
         return _feature_locked(request, actor, features_svc.COUPON_SYSTEM, "優惠券／會員")
     return templates.TemplateResponse("coupons.html", _coupons_ctx(request, actor, db))
 
@@ -3038,7 +3052,7 @@ def ai_widget_ask(
     tid = actor.user.tenant_id
     answer = None
     error = None
-    if not features_svc.is_enabled(db, tid, features_svc.AI_ASSISTANT):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
         error = "AI 客服未開通（專業版功能）。"
     elif len(question) > _AI_QUESTION_MAX_LEN:
         error = f"問題過長（上限 {_AI_QUESTION_MAX_LEN} 字），請精簡後再試。"

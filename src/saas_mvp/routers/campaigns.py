@@ -143,25 +143,21 @@ def update_one(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CampaignResponse:
-    campaign = _get_or_404(db, current_user.tenant_id, campaign_id)
-    if body.name is not None:
-        campaign.name = body.name
-    if body.message_template is not None:
-        campaign.message_template = body.message_template
-    if body.schedule_at is not None:
-        campaign.schedule_at = body.schedule_at
-    if body.expires_at is not None:
-        campaign.expires_at = body.expires_at
-    if body.segment_json is not None:
-        campaign.segment_json = json.dumps(body.segment_json)
-    if body.reward_type is not None:
-        campaign.reward_type = body.reward_type
-    if body.reward_value is not None:
-        campaign.reward_value = body.reward_value
-    if body.is_active is not None:
-        campaign.is_active = body.is_active
-    db.commit()
-    db.refresh(campaign)
+    campaign = marketing_svc.update_campaign(
+        db,
+        tenant_id=current_user.tenant_id,
+        campaign_id=campaign_id,
+        name=body.name,
+        message_template=body.message_template,
+        schedule_at=body.schedule_at,
+        expires_at=body.expires_at,
+        segment_json=(
+            json.dumps(body.segment_json) if body.segment_json is not None else None
+        ),
+        reward_type=body.reward_type,
+        reward_value=body.reward_value,
+        is_active=body.is_active,
+    )
     return CampaignResponse.model_validate(campaign)
 
 
@@ -173,9 +169,9 @@ def delete_one(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    campaign = _get_or_404(db, current_user.tenant_id, campaign_id)
-    campaign.is_active = False
-    db.commit()
+    marketing_svc.deactivate_campaign(
+        db, tenant_id=current_user.tenant_id, campaign_id=campaign_id
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

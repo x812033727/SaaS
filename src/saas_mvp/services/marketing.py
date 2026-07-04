@@ -95,15 +95,31 @@ def update_campaign(
     campaign_id: int,
     name: str | None = None,
     message_template: str | None = None,
+    schedule_at: datetime.datetime | None = None,
+    expires_at: datetime.datetime | None = None,
+    segment_json: str | None = None,
+    reward_type: str | None = None,
     reward_value: int | None = None,
     is_active: bool | None = None,
 ) -> Campaign:
-    """更新活動欄位（僅帶入者覆寫）。"""
+    """更新活動欄位（僅帶入者覆寫）；排程視窗以合併後的值驗證。"""
     campaign = _campaign_or_404(db, tenant_id, campaign_id)
+    validate_schedule_window(
+        schedule_at if schedule_at is not None else campaign.schedule_at,
+        expires_at if expires_at is not None else campaign.expires_at,
+    )
     if name is not None:
         campaign.name = name
     if message_template is not None:
         campaign.message_template = message_template
+    if schedule_at is not None:
+        campaign.schedule_at = schedule_at
+    if expires_at is not None:
+        campaign.expires_at = expires_at
+    if segment_json is not None:
+        campaign.segment_json = segment_json
+    if reward_type is not None:
+        campaign.reward_type = reward_type
     if reward_value is not None:
         campaign.reward_value = reward_value
     if is_active is not None:
@@ -111,6 +127,13 @@ def update_campaign(
     db.commit()
     db.refresh(campaign)
     return campaign
+
+
+def deactivate_campaign(db: Session, *, tenant_id: int, campaign_id: int) -> None:
+    """軟刪：停用活動（REST DELETE 的既有語意；排程器不再撿取）。"""
+    campaign = _campaign_or_404(db, tenant_id, campaign_id)
+    campaign.is_active = False
+    db.commit()
 
 
 def delete_campaign(db: Session, *, tenant_id: int, campaign_id: int) -> None:
