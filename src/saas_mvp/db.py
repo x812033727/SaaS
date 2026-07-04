@@ -129,6 +129,7 @@ def init_db() -> None:
     _migrate_add_coupon_order_fields()
     _migrate_add_tenant_reminder_hours()
     _migrate_add_profile_announcement()
+    _migrate_add_reservation_customer_confirmed()
 
 
 def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
@@ -151,6 +152,14 @@ def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
             "schema migration for %s.%s skipped due to error: %s",
             table, column, type(exc).__name__,
         )
+
+
+def _migrate_add_reservation_customer_confirmed() -> None:
+    """為既有 booking_reservations 補 customer_confirmed_at 欄
+    （提醒訊息「確認出席」互動；NULL=未確認，向後相容）。"""
+    _add_column_if_missing(
+        "booking_reservations", "customer_confirmed_at", "TIMESTAMP"
+    )
 
 
 def _migrate_add_coupon_order_fields() -> None:

@@ -407,6 +407,38 @@ def reschedule_reservation(
     return reservation
 
 
+def confirm_reservation(
+    db: Session,
+    *,
+    tenant_id: int,
+    reservation_id: int,
+    line_user_id: str,
+) -> Reservation:
+    """顧客自助確認出席（提醒訊息「確認出席」按鈕）。
+
+    擁有者驗證比照 cancel_reservation；重複確認為冪等 no-op
+    （保留首次確認時間）。已取消的預約不可確認。
+    """
+    reservation = (
+        tenant_query(db, Reservation, tenant_id)
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    if reservation.line_user_id != line_user_id:
+        raise ReservationPermissionError("reservation belongs to another LINE user")
+    if reservation.status != RESERVATION_CONFIRMED:
+        raise ReservationNotFoundError(
+            f"reservation {reservation_id} is not active"
+        )
+    if reservation.customer_confirmed_at is None:
+        reservation.customer_confirmed_at = _utcnow()
+        db.commit()
+        db.refresh(reservation)
+    return reservation
+
+
 def mark_attendance(
     db: Session, *, tenant_id: int, reservation_id: int, attended: bool
 ) -> Reservation:

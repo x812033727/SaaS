@@ -74,6 +74,9 @@ class Reservation(Base):
     # 既有 DB 由 _migrate_add_reservation_staff_id() / _migrate_add_reservation_service_id() 補欄。
     staff_id = Column(Integer, nullable=True, index=True)
     service_id = Column(Integer, nullable=True, index=True)
+    # 顧客自助確認出席時間（提醒訊息「確認出席」按鈕）；NULL=未確認。
+    # 既有 DB 由 _migrate_add_reservation_customer_confirmed() 補欄。
+    customer_confirmed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

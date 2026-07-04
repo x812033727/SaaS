@@ -1485,6 +1485,23 @@ def _dispatch_booking(
             f"#{r.id} {r.party_size} 位" for r in rows
         ), None
 
+    if action == "confirm":
+        reservation_id = params.get("reservation_id")
+        if reservation_id is None or not line_user_id:
+            return "請從提醒訊息的「確認出席」按鈕操作。", None
+        try:
+            booking_svc.confirm_reservation(
+                db,
+                tenant_id=tenant_id,
+                reservation_id=reservation_id,
+                line_user_id=line_user_id,
+            )
+        except booking_svc.ReservationNotFoundError:
+            return f"找不到有效的預約 #{reservation_id}。", None
+        except booking_svc.ReservationPermissionError:
+            return "無法確認其他人的預約。", None
+        return f"已為您確認預約 #{reservation_id}，期待您的光臨！", None
+
     if action == "cancel":
         reservation_id = params.get("reservation_id")
         if reservation_id is None:
