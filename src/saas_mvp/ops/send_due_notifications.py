@@ -179,9 +179,10 @@ def _process_one(
         notif.sent_at = now
         notif.attempt_count = (notif.attempt_count or 0) + 1
         notif.updated_at = now
+        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）；
+        # 與標 sent 同交易單一 commit（每筆 2 commits → 1）。
+        push_quota_svc.consume_push_in_txn(db, notif.tenant_id, now=now)
         db.commit()
-        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
-        push_quota_svc.consume_push(db, notif.tenant_id, now=now)
         return NotificationResult(notification_id, "sent", "pushed")
 
 

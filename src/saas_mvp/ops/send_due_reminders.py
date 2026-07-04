@@ -179,9 +179,10 @@ def _process_one(
         rem.sent_at = now
         rem.attempt_count = (rem.attempt_count or 0) + 1
         rem.updated_at = now
+        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）；
+        # 與標 sent 同交易單一 commit（每筆 2 commits → 1）。
+        push_quota_svc.consume_push_in_txn(db, rem.tenant_id, now=now)
         db.commit()
-        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
-        push_quota_svc.consume_push(db, rem.tenant_id, now=now)
         return ReminderResult(reminder_id, "sent", "pushed")
 
 

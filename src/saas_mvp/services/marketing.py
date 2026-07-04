@@ -253,6 +253,12 @@ def _distribute_reward(
     return None
 
 
+# 額度本地快取的校準週期：每送出 N 筆向 DB 重讀一次剩餘額度。
+# 與並發 runner 的計數誤差上限為 N（重複發送另由 unique claim 兜底）；
+# 額度本為軟限制，此誤差可接受，換取每顧客省 2 次額度查詢。
+_QUOTA_RECALIBRATION_INTERVAL = 20
+
+
 def run_campaign(
     db: Session,
     *,
@@ -264,49 +270,83 @@ def run_campaign(
     """執行一個活動：逐顧客 claim → 獎勵 → 推播 → 標 sent/failed。
 
     回傳 dict(sent, skipped)。每位顧客各自 try/except（per-customer isolation）。
+
+    批次化（大量顧客時的 N+1 消除，逐顧客隔離語意不變）：
+      * 迴圈前一次撈本期既有 CampaignSend 建 map，已 sent/failed 直接跳過，
+        免去每人 INSERT→IntegrityError→rollback 來回；INSERT 的 unique 約束
+        仍保留為並發 runner 的最後防線。
+      * 推播額度改本地快取，每 _QUOTA_RECALIBRATION_INTERVAL 筆校準一次。
+      * 「標 sent」與「額度計量」合併單一 commit（每人 2 commits → 1）。
     """
     sent = 0
     skipped = 0
     period_key = period_key_for(campaign, now)
     customers = eligible_customers(db, campaign, now)
 
+    # 本期既有 send 一次撈出（冪等跳過用；只在迴圈起點快照，
+    # 並發下漏掉的仍會被 INSERT unique 擋下走 IntegrityError 舊路徑）。
+    existing_sends: dict[int, CampaignSend] = {
+        row.customer_id: row
+        for row in db.execute(
+            select(CampaignSend).where(
+                CampaignSend.campaign_id == campaign.id,
+                CampaignSend.period_key == period_key,
+            )
+        ).scalars()
+    }
+
+    # 推播額度本地快取；countdown=0 強迫首輪即向 DB 校準。
+    quota_remaining = 0
+    quota_countdown = 0
+
     for customer in customers:
         if sent >= cap:
             break
         try:
             # 1. claim 一筆 CampaignSend（重複/上限由 unique 約束擋）。
-            row = CampaignSend(
-                tenant_id=campaign.tenant_id,
-                campaign_id=campaign.id,
-                customer_id=customer.id,
-                line_user_id=customer.line_user_id,
-                period_key=period_key,
-                status=CAMPAIGN_SEND_PENDING,
-            )
-            db.add(row)
-            try:
-                db.flush()  # 觸發 unique；重複則 IntegrityError
-            except IntegrityError:
-                db.rollback()
-                # 已存在同 period_key 的 send：若仍 pending（例如 welcome 觸發
-                # 時預先入列的 claim），改採該既有列繼續發送；否則（已 sent/failed）
-                # 視為冪等跳過。
-                existing = db.execute(
-                    select(CampaignSend).where(
-                        CampaignSend.campaign_id == campaign.id,
-                        CampaignSend.customer_id == customer.id,
-                        CampaignSend.period_key == period_key,
-                    )
-                ).scalar_one_or_none()
-                if existing is None or existing.status != CAMPAIGN_SEND_PENDING:
-                    skipped += 1
-                    continue
-                row = existing
+            prior = existing_sends.get(customer.id)
+            if prior is not None and prior.status != CAMPAIGN_SEND_PENDING:
+                # 已 sent/failed/skipped：冪等跳過（免 INSERT 來回）。
+                skipped += 1
+                continue
+            if prior is not None:
+                # 既有 pending claim（例如 welcome 觸發時預先入列），沿用續送。
+                row = prior
+            else:
+                row = CampaignSend(
+                    tenant_id=campaign.tenant_id,
+                    campaign_id=campaign.id,
+                    customer_id=customer.id,
+                    line_user_id=customer.line_user_id,
+                    period_key=period_key,
+                    status=CAMPAIGN_SEND_PENDING,
+                )
+                db.add(row)
+                try:
+                    db.flush()  # 觸發 unique；重複（並發 claim）則 IntegrityError
+                except IntegrityError:
+                    db.rollback()
+                    existing = db.execute(
+                        select(CampaignSend).where(
+                            CampaignSend.campaign_id == campaign.id,
+                            CampaignSend.customer_id == customer.id,
+                            CampaignSend.period_key == period_key,
+                        )
+                    ).scalar_one_or_none()
+                    if existing is None or existing.status != CAMPAIGN_SEND_PENDING:
+                        skipped += 1
+                        continue
+                    row = existing
 
             # 2. 月度推播額度閘門：超出本月額度則跳過（不派獎勵、不推播、標
             #    skipped），並中止本活動其餘顧客（額度已罄，後續必同樣超額）。
             #    在派發獎勵前檢查，避免「發了券卻沒送出推播」的白扣。
-            if not push_quota_svc.has_push_quota(db, campaign.tenant_id, now=now):
+            if quota_countdown <= 0:
+                quota_remaining = push_quota_svc.get_push_quota_status(
+                    db, campaign.tenant_id, now=now
+                )["remaining"]
+                quota_countdown = _QUOTA_RECALIBRATION_INTERVAL
+            if quota_remaining <= 0:
                 row.status = CAMPAIGN_SEND_SKIPPED
                 row.attempt_count = (row.attempt_count or 0) + 1
                 row.last_error = "push allowance exceeded"
@@ -332,10 +372,12 @@ def run_campaign(
             row.status = CAMPAIGN_SEND_SENT
             row.sent_at = now
             row.attempt_count = (row.attempt_count or 0) + 1
+            # 後扣：推播成功後才計量；與標 sent 同交易單一 commit。
+            push_quota_svc.consume_push_in_txn(db, campaign.tenant_id, now=now)
             db.commit()
-            # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
-            push_quota_svc.consume_push(db, campaign.tenant_id, now=now)
             sent += 1
+            quota_remaining -= 1
+            quota_countdown -= 1
         except Exception as exc:  # noqa: BLE001 - per-customer failure must not stop batch
             db.rollback()
             # 在新交易把該 claim 標 failed（若已存在）。
