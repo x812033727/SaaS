@@ -57,7 +57,9 @@ python -m saas_mvp.ops.seed_demo
 | `/ui/staff` | 員工（排班/休假） |
 | `/ui/services` | 服務項目 |
 | `/ui/booking` | 預約管理（含到場/未到標記） |
-| `/ui/campaigns` | 行銷活動 |
+| `/ui/customers` | 顧客 CRM（搜尋/分頁、編輯電話/備註、標籤管理、點數調整、預約歷史） |
+| `/ui/campaigns` | 行銷活動（受眾選擇器：標籤/等級/次數/分店，免手填 JSON） |
+| `/ui/notifications` | 通知歷程（預約通知/行銷發送/推播用量三個 tab，唯讀） |
 | `/ui/flex-menu` | Flex 圖文選單 |
 | `/ui/rich-menu` | Rich Menu |
 | `/ui/portfolio` | 作品集 |
@@ -94,6 +96,7 @@ python -m saas_mvp.ops.seed_demo
 | `run_birthday_campaigns` | 每日 09:00 | 生日行銷活動 |
 | `run_reactivation` | 每日 14:00 | 沉睡顧客喚回活動 |
 | `run_scheduled_campaigns` | 每 5–15 分鐘 | 已排程的群發/限時活動 |
+| `purge_webhook_events` | 每日 04:00 | 清理過期的 LINE webhook 冪等事件（`--days` 預設 `SAAS_WEBHOOK_EVENT_TTL_DAYS=30`；`--include-failed` 一併清達重試上限者） |
 
 ```bash
 # 例：每 10 分鐘派送提醒（單實例，避免多 worker 重送）
@@ -224,7 +227,10 @@ SAAS_DATABASE_URL=sqlite:////tmp/demo.db python -m saas_mvp.ops.seed_demo
   cookie-only 請求一律 401）。
 - HTML 永不輸出明文 `channel_secret` / `access_token`，只揭露 `has_*` 與
   `credential_status`。
-- CSRF 目前僅依賴 `SameSite=Lax` + 同源（見 `KNOWN_LIMITATIONS.md`）。
+- CSRF：**double-submit cookie token**——登入時發放非 httpOnly 的 `csrf_token`
+  cookie，所有 `/ui` 非 GET 請求須以 `X-CSRF-Token` header（HTMX 由 `base.html`
+  body 級 `hx-headers` 自動帶出）或表單 hidden field 回傳同值，不符回 403。
+  `SAAS_UI_CSRF_ENABLED=false` 可關閉（僅測試環境）。
 
 ## 認證方式
 
@@ -413,6 +419,9 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 | `SAAS_PUSH_ALLOWANCE_BOOST` | 開通 `PUSH_BOOST` 後的額外推播額度 | `500` |
 | `SAAS_REACTIVATION_DORMANT_DAYS` | 喚回活動判定沉睡的閒置天數 | `90` |
 | `SAAS_REACTIVATION_CAP_PER_SHOP` | 喚回活動每店單次派送上限 | `50` |
+| `SAAS_WEBHOOK_MAX_ATTEMPTS` | LINE webhook failed 事件的重試上限（含首次），達上限後重送視為 duplicate | `5` |
+| `SAAS_WEBHOOK_EVENT_TTL_DAYS` | `ops/purge_webhook_events` 清理 processed 事件的預設保留天數 | `30` |
+| `SAAS_UI_CSRF_ENABLED` | `/ui` CSRF double-submit token 防護開關（僅測試環境可關） | `true` |
 
 ## 執行測試
 
@@ -740,8 +749,12 @@ webhook 接受文字指令與 postback（Rich Menu／quick-reply 按鈕）：
 | 點時段按鈕（postback `action=pick_slot&slot_id=N`） | 回人數 quick-reply 按鈕 |
 | 點人數按鈕（postback `action=book&slot_id=N&party=K`） | 建單；額滿婉拒 |
 | `預約 <時段編號> <人數>` / `/book 12 2` | 一次性文字建單（不需逐步點選） |
-| `我的預約` / `/my` | 列出自己的預約 |
+| `我的預約` / `/my` | 列出自己的預約（Flex carousel，每張卡附**改期**/取消按鈕） |
+| `改期 <預約編號>` / `/reschedule 7` | **引導改期**：選新日期 → 選新時段 → 原子換時段（舊回補、新扣量，單一交易） |
 | `取消 <預約編號>` / `/cancel 7` | 取消（驗證 line_user_id） |
+| `候補` / `/waitlist` | 查看/取消自己的額滿候補 |
+| 額滿回覆的「加入候補」按鈕 | 登記候補；取消/改期釋出名額時自動 LINE 通知第一位人數符合者（附「立即預約」按鈕，計入推播月額度） |
+| 提醒訊息的「確認出席」按鈕 | 寫入 `customer_confirmed_at`（重複確認冪等）；「取消預約」按鈕直接走取消流程 |
 
 > **引導式對話**全靠 postback 攜帶上下文（slot_id → slot_id+party），無需伺服器
 > 對話狀態表。顧客不必記時段編號，逐步點按即可完成。
