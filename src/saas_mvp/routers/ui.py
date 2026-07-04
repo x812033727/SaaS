@@ -63,6 +63,7 @@ from saas_mvp.services import locations as locations_svc
 from saas_mvp.services import staff as staff_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import marketing as marketing_svc
+from saas_mvp.services import notes as notes_svc
 from saas_mvp.services import flex_menu as flex_menu_svc
 from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
@@ -1145,6 +1146,110 @@ def customers_detach_tag(
     )
     return templates.TemplateResponse(
         "_customers.html", _customers_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：備註 ────────────────────────────────────────────────────────────
+
+def _notes_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        notes=notes_svc.list_notes(db, tenant_id=tid),
+        **extra,
+    )
+
+
+@router.get("/notes", response_class=HTMLResponse)
+def notes_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse("notes.html", _notes_ctx(request, actor, db))
+
+
+@router.get("/notes/list", response_class=HTMLResponse)
+def notes_list_partial(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse("_notes.html", _notes_ctx(request, actor, db))
+
+
+@router.post("/notes", response_class=HTMLResponse)
+def notes_create(
+    request: Request,
+    title: str = Form(...),
+    content: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        notes_svc.create_note(
+            db, tenant_id=tid, owner_id=actor.user.id, title=title, content=content,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_notes.html", _notes_ctx(request, actor, db, error=error)
+    )
+
+
+@router.get("/notes/{note_id}/edit", response_class=HTMLResponse)
+def notes_edit_form(
+    request: Request,
+    note_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_notes.html", _notes_ctx(request, actor, db, editing_id=note_id)
+    )
+
+
+@router.post("/notes/{note_id}/update", response_class=HTMLResponse)
+def notes_update(
+    request: Request,
+    note_id: int,
+    title: str = Form(...),
+    content: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    editing_id = None
+    try:
+        notes_svc.update_note(
+            db, tenant_id=tid, note_id=note_id, title=title, content=content,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_id = note_id
+    return templates.TemplateResponse(
+        "_notes.html", _notes_ctx(request, actor, db, error=error, editing_id=editing_id)
+    )
+
+
+@router.post("/notes/{note_id}/delete", response_class=HTMLResponse)
+def notes_delete(
+    request: Request,
+    note_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        notes_svc.delete_note(db, tenant_id=tid, note_id=note_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_notes.html", _notes_ctx(request, actor, db, error=error)
     )
 
 

@@ -464,6 +464,32 @@ class TestFlexMenuUI:
             db.close()
 
 
+class TestNotesUI:
+    def test_page_and_crud_roundtrip(self, client):
+        _login(client)
+        r = client.get("/ui/notes")
+        assert r.status_code == 200 and "備註" in r.text
+        # 新增
+        r = client.post("/ui/notes", data={"title": "採購清單", "content": "衛生紙"})
+        assert "採購清單" in r.text
+        db = _Session()
+        try:
+            from saas_mvp.models.note import Note
+            nid = db.query(Note).filter(Note.title == "採購清單").first().id
+        finally:
+            db.close()
+        # 編輯
+        r = client.get(f"/ui/notes/{nid}/edit")
+        assert 'value="採購清單"' in r.text
+        r = client.post(f"/ui/notes/{nid}/update", data={
+            "title": "採購清單v2", "content": "衛生紙、洗手乳",
+        })
+        assert "採購清單v2" in r.text and "洗手乳" in r.text
+        # 刪除
+        r = client.post(f"/ui/notes/{nid}/delete")
+        assert "採購清單v2" not in r.text
+
+
 class TestApiKeysUI:
     def test_page_renders(self, client):
         _login(client)
