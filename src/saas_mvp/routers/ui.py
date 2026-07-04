@@ -2263,10 +2263,50 @@ def customer_adjust_points(
 
 # ── 店家自助：行銷活動（MARKETING_AUTO） ────────────────────────────────────────
 
+def _describe_segment(segment_json: str | None, tag_names: dict[int, str]) -> list[str]:
+    """把 segment_json 反解成人話 chips（列表頁顯示）。malformed 回原字串。"""
+    import json as _json
+
+    if not segment_json:
+        return []
+    try:
+        filters = _json.loads(segment_json)
+        if not isinstance(filters, dict):
+            return [str(segment_json)]
+    except ValueError:
+        return [str(segment_json)]
+    chips: list[str] = []
+    if filters.get("tag_ids"):
+        names = [
+            tag_names.get(t, f"標籤#{t}")
+            for t in filters["tag_ids"]
+            if isinstance(t, int) or str(t).isdigit()
+        ]
+        if names:
+            chips.append("標籤：" + "、".join(str(n) for n in names))
+    if filters.get("tier"):
+        chips.append(f"等級：{filters['tier']}")
+    if filters.get("min_bookings") is not None:
+        chips.append(f"預約 ≥ {filters['min_bookings']} 次")
+    if filters.get("location_id") is not None:
+        chips.append(f"分店 #{filters['location_id']}")
+    return chips
+
+
 def _campaigns_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
     rows = tenant_query(db, Campaign, tid).order_by(Campaign.id.desc()).all()
-    return _ctx(request, actor, campaigns=rows, **extra)
+    tags = segments_svc.list_tags(db, tenant_id=tid)
+    tag_names = {t.id: t.name for t in tags}
+    locations = locations_svc.list_locations(db, tenant_id=tid)
+    segment_chips = {
+        c.id: _describe_segment(c.segment_json, tag_names) for c in rows
+    }
+    return _ctx(
+        request, actor,
+        campaigns=rows, tags=tags, locations=locations,
+        segment_chips=segment_chips, **extra,
+    )
 
 
 def _campaign_or_none(db: Session, tenant_id: int, campaign_id: int) -> Campaign | None:
@@ -2289,12 +2329,15 @@ def campaigns_page(
 
 
 @router.post("/campaigns", response_class=HTMLResponse)
-def campaigns_create(
+async def campaigns_create(
     request: Request,
     name: str = Form(...),
     type: str = Form(...),
     message_template: str = Form(...),
     schedule_at: str = Form(""),
+    segment_tier: str = Form(""),
+    segment_min_bookings: str = Form(""),
+    segment_location_id: str = Form(""),
     segment_json: str = Form(""),
     reward_type: str = Form(""),
     reward_value: str = Form(""),
@@ -2309,9 +2352,28 @@ def campaigns_create(
     error = None
     try:
         schedule = _parse_slot_start(schedule_at) if schedule_at.strip() else None
+        # 受眾：表單選擇器組 dict；「進階原始 JSON」有填則優先（power-user 相容）。
         seg = segment_json.strip()
         if seg:
             _json.loads(seg)  # 驗證 JSON 合法
+        else:
+            form = await request.form()
+            filters: dict = {}
+            tag_ids = [
+                int(v) for v in form.getlist("segment_tag_ids")
+                if str(v).isdigit()
+            ]
+            if tag_ids:
+                filters["tag_ids"] = tag_ids
+            if segment_tier.strip():
+                filters["tier"] = segment_tier.strip()
+            mb = _opt_int(segment_min_bookings)
+            if mb is not None:
+                filters["min_bookings"] = mb
+            loc = _opt_int(segment_location_id)
+            if loc is not None:
+                filters["location_id"] = loc
+            seg = _json.dumps(filters, ensure_ascii=False) if filters else ""
         campaign = Campaign(
             tenant_id=tid,
             name=name,

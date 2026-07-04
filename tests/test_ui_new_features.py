@@ -242,6 +242,81 @@ class TestCampaignsUI:
         assert r2.status_code == 200
         assert "已執行" in r2.text
 
+    def test_create_with_segment_selector_builds_json(self, client):
+        """表單選擇器（tier/min_bookings）組出 segment_json，列表顯示人話 chips。"""
+        import json as _json
+
+        from saas_mvp.models.campaign import Campaign
+
+        _login(client)
+        r = client.post("/ui/campaigns", data={
+            "name": "分眾活動", "type": "broadcast",
+            "message_template": "hi {name}",
+            "schedule_at": "", "segment_json": "",
+            "segment_tier": "gold", "segment_min_bookings": "3",
+            "segment_location_id": "",
+            "reward_type": "", "reward_value": "",
+        })
+        assert r.status_code == 200
+        assert "分眾活動" in r.text
+        assert "等級：gold" in r.text  # 人話 chips
+        assert "預約 ≥ 3 次" in r.text
+        db = _Session()
+        try:
+            camp = db.query(Campaign).filter(
+                Campaign.name == "分眾活動"
+            ).order_by(Campaign.id.desc()).first()
+            seg = _json.loads(camp.segment_json)
+            assert seg == {"tier": "gold", "min_bookings": 3}
+        finally:
+            db.close()
+
+    def test_raw_json_takes_precedence(self, client):
+        import json as _json
+
+        from saas_mvp.models.campaign import Campaign
+
+        _login(client)
+        r = client.post("/ui/campaigns", data={
+            "name": "原始JSON活動", "type": "broadcast",
+            "message_template": "hi",
+            "schedule_at": "",
+            "segment_json": '{"tier": "silver"}',
+            "segment_tier": "gold",  # 應被原始 JSON 蓋過
+            "segment_min_bookings": "", "segment_location_id": "",
+            "reward_type": "", "reward_value": "",
+        })
+        assert r.status_code == 200
+        db = _Session()
+        try:
+            camp = db.query(Campaign).filter(
+                Campaign.name == "原始JSON活動"
+            ).order_by(Campaign.id.desc()).first()
+            assert _json.loads(camp.segment_json) == {"tier": "silver"}
+        finally:
+            db.close()
+
+    def test_empty_selector_leaves_segment_null(self, client):
+        from saas_mvp.models.campaign import Campaign
+
+        _login(client)
+        client.post("/ui/campaigns", data={
+            "name": "全客群活動", "type": "broadcast",
+            "message_template": "hi",
+            "schedule_at": "", "segment_json": "",
+            "segment_tier": "", "segment_min_bookings": "",
+            "segment_location_id": "",
+            "reward_type": "", "reward_value": "",
+        })
+        db = _Session()
+        try:
+            camp = db.query(Campaign).filter(
+                Campaign.name == "全客群活動"
+            ).order_by(Campaign.id.desc()).first()
+            assert camp.segment_json is None
+        finally:
+            db.close()
+
 
 class TestFlexMenuUI:
     def test_page_renders(self, client):
