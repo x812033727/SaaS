@@ -30,6 +30,11 @@ env/
 .idea/
 .vscode/
 
+# 開發期探測/測試殘留檔 — 不進版控
+*.pid
+full_suite.txt
+_*_probe.py
+
 # --- Ti baseline（自動補上,避免交付沙箱/環境 junk）---
 ENV/
 *.sqlite
