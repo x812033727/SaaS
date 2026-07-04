@@ -135,16 +135,47 @@ def set_enabled(
 
 
 def list_for_tenant(db: Session, tenant_id: int) -> list[dict]:
-    """所有進階功能的開通狀態 + 月費（供自助/管理頁）。"""
-    return [
-        {
+    """所有進階功能的開通狀態 + 月費 + 最新訂閱概況（供自助/管理頁）。
+
+    subscription 欄位：該功能最新一筆 FeatureSubscription 的
+    {status, total_success_times, last_charged_at}（一次查詢取每 feature
+    max(id)，避免 N+1）；無訂閱紀錄（stub 模式開通/從未訂閱）為 None。
+    """
+    from sqlalchemy import func, select
+
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+
+    # 每個 feature 取最新一筆訂閱（id 最大者）。
+    latest_ids = (
+        select(func.max(FeatureSubscription.id))
+        .where(FeatureSubscription.tenant_id == tenant_id)
+        .group_by(FeatureSubscription.feature)
+        .scalar_subquery()
+    )
+    latest_subs = {
+        s.feature: s
+        for s in db.execute(
+            select(FeatureSubscription).where(
+                FeatureSubscription.id.in_(latest_ids)
+            )
+        ).scalars()
+    }
+
+    out = []
+    for key in sorted(VALID_FEATURES):
+        sub = latest_subs.get(key)
+        out.append({
             "key": key,
             "label": _FEATURE_LABELS[key],
             "monthly_price_cents": settings.feature_monthly_price_cents,
             "enabled": is_enabled(db, tenant_id, key),
-        }
-        for key in sorted(VALID_FEATURES)
-    ]
+            "subscription": None if sub is None else {
+                "status": sub.status,
+                "total_success_times": sub.total_success_times or 0,
+                "last_charged_at": sub.last_charged_at,
+            },
+        })
+    return out
 
 
 # ── FastAPI 閘門 dependency（API；未開通 → 403） ──────────────────────────────

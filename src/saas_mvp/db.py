@@ -75,8 +75,9 @@ def import_all_models() -> None:
     from saas_mvp.models import product, order, order_item  # noqa: F401
     # 橫向：進階功能旗標 + 訂閱
     from saas_mvp.models import tenant_feature, feature_change_history  # noqa: F401
-    # 進階功能訂閱月費（綠界信用卡定期定額 recurring）。
+    # 進階功能訂閱月費（綠界信用卡定期定額 recurring）+ 逐期扣款明細。
     from saas_mvp.models import feature_subscription  # noqa: F401
+    from saas_mvp.models import subscription_charge  # noqa: F401
     # PHASE 1：多分店 / 員工排班 / 服務目錄（location 先於 staff，staff 先於 service_staff）。
     from saas_mvp.models import location  # noqa: F401
     from saas_mvp.models import staff, staff_shift, staff_leave  # noqa: F401

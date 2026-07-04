@@ -112,6 +112,42 @@ def latest_active_for(
     ).scalars().first()
 
 
+def _append_charge(
+    db: Session,
+    sub: FeatureSubscription,
+    *,
+    period_no: int,
+    success: bool,
+    gwsr: str | None = None,
+    rtn_msg: str | None = None,
+) -> None:
+    """同交易 append 一筆逐期扣款明細（不 commit，由呼叫端一併提交）。
+
+    以 (subscription_id, period_no, success) 查重：金流回調重放（綠界重送
+    直到收到 1|OK）不會產生重複列。
+    """
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+
+    existing = db.execute(
+        select(SubscriptionCharge.id).where(
+            SubscriptionCharge.subscription_id == sub.id,
+            SubscriptionCharge.period_no == period_no,
+            SubscriptionCharge.success == success,
+        )
+    ).first()
+    if existing is not None:
+        return
+    db.add(SubscriptionCharge(
+        tenant_id=sub.tenant_id,
+        subscription_id=sub.id,
+        period_no=period_no,
+        success=success,
+        amount_cents=sub.period_amount_cents,
+        gwsr=gwsr,
+        rtn_msg=(rtn_msg or "")[:255] or None,
+    ))
+
+
 def activate(
     db: Session,
     sub: FeatureSubscription,
@@ -128,6 +164,9 @@ def activate(
         sub.gwsr = gwsr
     if auth_code:
         sub.auth_code = auth_code
+    _append_charge(
+        db, sub, period_no=sub.total_success_times, success=True, gwsr=gwsr
+    )
     db.commit()
     db.refresh(sub)
     return sub
@@ -150,8 +189,19 @@ def record_period(
         if sub.status == SUB_PENDING:
             sub.status = SUB_ACTIVE
             sub.activated_at = sub.activated_at or _utcnow()
+        _append_charge(
+            db, sub, period_no=sub.total_success_times, success=True
+        )
     else:
         sub.status = SUB_FAILED
+        # 失敗期記「嘗試的期數」= 目前成功數 + 1
+        _append_charge(
+            db,
+            sub,
+            period_no=(sub.total_success_times or 0) + 1,
+            success=False,
+            rtn_msg="period charge failed",
+        )
     db.commit()
     db.refresh(sub)
     return sub
@@ -160,6 +210,9 @@ def record_period(
 def mark_failed(db: Session, sub: FeatureSubscription) -> FeatureSubscription:
     """首期授權失敗。"""
     sub.status = SUB_FAILED
+    _append_charge(
+        db, sub, period_no=1, success=False, rtn_msg="first auth failed"
+    )
     db.commit()
     db.refresh(sub)
     return sub

@@ -1298,9 +1298,27 @@ def coupons_delete(
 # ── 店家自助：進階功能訂閱 ────────────────────────────────────────────────────
 
 def _features_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+
+    tid = actor.user.tenant_id
+    # 扣款紀錄（最新 20 筆,附 feature 名）
+    charges = (
+        db.query(SubscriptionCharge, FeatureSubscription.feature)
+        .join(
+            FeatureSubscription,
+            SubscriptionCharge.subscription_id == FeatureSubscription.id,
+        )
+        .filter(SubscriptionCharge.tenant_id == tid)
+        .order_by(SubscriptionCharge.id.desc())
+        .limit(20)
+        .all()
+    )
     return _ctx(
         request, actor,
-        features=features_svc.list_for_tenant(db, actor.user.tenant_id),
+        features=features_svc.list_for_tenant(db, tid),
+        charges=charges,
+        feature_labels=features_svc._FEATURE_LABELS,
         **extra,
     )
 

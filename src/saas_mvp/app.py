@@ -244,6 +244,18 @@ def create_app() -> FastAPI:
             if not hmac.compare_digest(auth_header, expected):
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
 
+        # 業務 gauges（cancel_failed 訂閱數、卡住的 webhook pending 等）於
+        # scrape 當下即時查 DB；REGISTRY 是 per-process，cron 行程無法曝露，
+        # 故收在端點內。collect 失敗絕不可毀掉 /metrics（HTTP 指標仍要能刮）。
+        try:
+            from saas_mvp.db import SessionLocal
+            from saas_mvp.obs.business import collect_business_gauges
+
+            with SessionLocal() as _db:
+                collect_business_gauges(_db)
+        except Exception:  # noqa: BLE001
+            pass
+
         return PlainTextResponse(REGISTRY.render(), media_type=CONTENT_TYPE)
 
     return app
