@@ -29,6 +29,9 @@ _TEXT_ALIASES: dict[str, str] = {
     "取消": "cancel",
     "/reschedule": "reschedule",
     "改期": "reschedule",
+    "/waitlist": "waitlist",
+    "候補": "waitlist",
+    "我的候補": "waitlist",
     "/help": "help",
     "說明": "help",
     # 圖文選單卡片（Flex carousel）
@@ -158,6 +161,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         "book", "pick_service", "pick_date", "pick_staff", "pick_slot",
         "slots", "my", "cancel", "help", "menu",
         "reschedule", "resched_date", "resched_slot",
+        "waitlist", "waitlist_join", "waitlist_cancel",
         "coupons", "redeem", "points",
         "shop", "buy", "my_orders",
     }:
@@ -262,4 +266,15 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         sid = _qint("slot_id")
         if sid is not None:
             params["slot_id"] = sid
+    elif action == "waitlist_join":
+        # 額滿候補登記（額滿回覆的 quick-reply 按鈕）。
+        sid = _qint("slot_id")
+        if sid is not None:
+            params["slot_id"] = sid
+        party = _to_int(qs["party"][0]) if "party" in qs else None
+        params["party_size"] = _clamp_party(party)
+    elif action == "waitlist_cancel":
+        eid = _qint("entry_id")
+        if eid is not None:
+            params["entry_id"] = eid
     return action, params

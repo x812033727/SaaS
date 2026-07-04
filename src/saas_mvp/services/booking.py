@@ -28,6 +28,7 @@ from saas_mvp.models.reservation import (
 from saas_mvp.services import booking_notify as booking_notify_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import waitlist as waitlist_svc
 from saas_mvp.services.reminders import (
     cancel_reminders_for_reservation,
     enqueue_reminders,
@@ -268,10 +269,22 @@ def cancel_reservation(
             ),
         )
 
+    # 候補：容量回補後在同一交易鎖內挑第一位符合的候補標 notified。
+    waitlist_entry_id = None
+    if slot is not None:
+        waitlist_entry_id = waitlist_svc.pick_first_eligible_in_txn(
+            db, tenant_id=tenant_id, slot=slot
+        )
+
     db.commit()
     db.refresh(reservation)
     # 後台即時通知：取消（狀態變更）推播到後台（best-effort）。
     _publish_reservation_event(tenant_id, "booking_cancel", reservation)
+    # 候補通知（best-effort，絕不影響取消主流程）。
+    if waitlist_entry_id is not None:
+        waitlist_svc.notify_candidate_best_effort(
+            db, tenant_id=tenant_id, entry_id=waitlist_entry_id
+        )
     return reservation
 
 
@@ -377,8 +390,20 @@ def reschedule_reservation(
         ),
     )
 
+    # 候補：舊時段容量回補後在同一交易鎖內挑候補標 notified。
+    waitlist_entry_id = None
+    if old_slot is not None:
+        waitlist_entry_id = waitlist_svc.pick_first_eligible_in_txn(
+            db, tenant_id=tenant_id, slot=old_slot
+        )
+
     db.commit()
     db.refresh(reservation)
+    # 候補通知（best-effort，絕不影響改期主流程）。
+    if waitlist_entry_id is not None:
+        waitlist_svc.notify_candidate_best_effort(
+            db, tenant_id=tenant_id, entry_id=waitlist_entry_id
+        )
     return reservation
 
 

@@ -53,6 +53,7 @@ import saas_mvp.models.customer as _cust  # noqa: F401, E402
 import saas_mvp.models.booking_slot as _bslot  # noqa: F401, E402
 import saas_mvp.models.reservation as _resv  # noqa: F401, E402
 import saas_mvp.models.reservation_reminder as _rem  # noqa: F401, E402
+import saas_mvp.models.booking_waitlist as _wl  # noqa: F401, E402
 import saas_mvp.models.coupon as _coupon  # noqa: F401, E402
 import saas_mvp.models.coupon_redemption as _credeem  # noqa: F401, E402
 import saas_mvp.models.point_transaction as _ptx  # noqa: F401, E402

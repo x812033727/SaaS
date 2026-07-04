@@ -125,6 +125,7 @@ from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import waitlist as waitlist_svc
 from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import coupons as coupons_svc
@@ -810,7 +811,8 @@ _BOOKING_HELP = (
     "・預約 — 引導式預約（或：預約 <時段編號> <人數>）\n"
     "・我的預約 — 查看我的預約\n"
     "・改期 <預約編號> — 引導改到其他時段\n"
-    "・取消 <預約編號> — 例：取消 7"
+    "・取消 <預約編號> — 例：取消 7\n"
+    "・候補 — 查看/取消我的額滿候補"
 )
 # 引導式人數上限（quick-reply 按鈕數）
 _PARTY_CHOICES_MAX = 6
@@ -1030,6 +1032,50 @@ def _my_reservations_carousel(db: Session, tenant_id: int, rows: list) -> dict:
         "altText": "你的預約",
         "contents": {"type": "carousel", "contents": bubbles},
     }
+
+
+def _waitlist_join_buttons(
+    slot_id: int | None, party_size: int
+) -> list[tuple[str, str]] | None:
+    """額滿回覆的「加入候補」quick-reply 按鈕。"""
+    if slot_id is None:
+        return None
+    return [
+        ("加入候補", f"action=waitlist_join&slot_id={slot_id}&party={party_size}")
+    ]
+
+
+def _my_waitlist_reply(
+    db: Session, tenant_id: int, line_user_id: str
+) -> tuple[str, list | None]:
+    """「候補」指令：列出有效候補 + 取消按鈕。"""
+    if not line_user_id:
+        return "無法識別使用者，請從 LINE 操作。", None
+    entries = waitlist_svc.list_my_waitlist(
+        db, tenant_id=tenant_id, line_user_id=line_user_id
+    )
+    if not entries:
+        return "你目前沒有候補。時段額滿時可點「加入候補」登記。", None
+    from saas_mvp.models.booking_slot import BookingSlot
+
+    slot_ids = [e.slot_id for e in entries]
+    slots = {
+        s.id: s
+        for s in db.query(BookingSlot)
+        .filter(BookingSlot.tenant_id == tenant_id, BookingSlot.id.in_(slot_ids))
+        .all()
+    }
+    lines = []
+    buttons: list[tuple[str, str]] = []
+    for e in entries[:13]:
+        slot = slots.get(e.slot_id)
+        when = slot.slot_start.strftime("%m/%d %H:%M") if slot else "—"
+        state = "已通知" if e.status == "notified" else "等候中"
+        lines.append(f"・{when}（{e.party_size} 位，{state}）")
+        buttons.append(
+            (f"取消候補 {when}"[:20], f"action=waitlist_cancel&entry_id={e.id}")
+        )
+    return "你的候補：\n" + "\n".join(lines), buttons
 
 
 def _resched_date_buttons(
@@ -1256,9 +1302,11 @@ def _try_conversational(
         except booking_svc.SlotNotFoundError:
             return f"找不到時段 #{slot_id}，請重新輸入「改期 {reservation_id}」。", None, None
         except booking_svc.SlotFullError:
+            # 原預約保留；可候補新時段（名額釋出通知後再改期）。
             return (
-                f"時段 #{slot_id} 已額滿，請改選其他時段。",
-                None,
+                f"時段 #{slot_id} 已額滿，可加入候補或改選其他時段"
+                f"（原預約 #{reservation_id} 仍保留）。",
+                _waitlist_join_buttons(slot_id, 1),
                 None,
             )
         from saas_mvp.models.booking_slot import BookingSlot
@@ -1360,7 +1408,12 @@ def _try_conversational(
         except booking_svc.SlotNotFoundError:
             return f"找不到時段 #{slot_id}，請重新輸入「預約」查看。", None, None
         except booking_svc.SlotFullError:
-            return f"時段 #{slot_id} 已額滿，請改選其他時段。", None, None
+            return (
+                f"時段 #{slot_id} 已額滿，可加入候補（名額釋出時通知您）"
+                f"或改選其他時段。",
+                _waitlist_join_buttons(slot_id, party_size),
+                None,
+            )
         return _confirm_text(db, tenant_id, resv, slot_id), None, None
 
     return None
@@ -1411,7 +1464,11 @@ def _dispatch_booking(
         except booking_svc.SlotNotFoundError:
             return f"找不到時段 #{slot_id}，請重新輸入「時段」查看。", None
         except booking_svc.SlotFullError:
-            return f"時段 #{slot_id} 已額滿，請改選其他時段。", None
+            return (
+                f"時段 #{slot_id} 已額滿，可加入候補（名額釋出時通知您）"
+                f"或改選其他時段。",
+                _waitlist_join_buttons(slot_id, party_size),
+            )
         return (
             f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
             f"如需取消請輸入：取消 {resv.id}",
@@ -1454,6 +1511,51 @@ def _dispatch_booking(
 
     if action == "points":
         return _points_reply(db, tenant_id, line_user_id), None
+
+    # ── 額滿候補 ────────────────────────────────────────────────────────────
+    if action == "waitlist":
+        return _my_waitlist_reply(db, tenant_id, line_user_id)
+
+    if action == "waitlist_join":
+        slot_id = params.get("slot_id")
+        if slot_id is None or not line_user_id:
+            return "請從額滿時段的「加入候補」按鈕登記。", None
+        try:
+            entry = waitlist_svc.join_waitlist(
+                db,
+                tenant_id=tenant_id,
+                slot_id=slot_id,
+                line_user_id=line_user_id,
+                party_size=params.get("party_size", 1),
+                display_name=display_name,
+            )
+        except waitlist_svc.WaitlistSlotNotFound:
+            return f"找不到時段 #{slot_id}。", None
+        except waitlist_svc.SlotNotFullError:
+            return (
+                f"時段 #{slot_id} 目前有名額，可直接預約！",
+                [("立即預約", f"action=pick_slot&slot_id={slot_id}")],
+            )
+        return (
+            f"已加入候補！時段釋出 {entry.party_size} 位以上名額時會通知您。\n"
+            f"輸入「候補」可查看或取消。",
+            None,
+        )
+
+    if action == "waitlist_cancel":
+        entry_id = params.get("entry_id")
+        if entry_id is None:
+            return "請輸入「候補」查看後，點選要取消的候補。", None
+        try:
+            waitlist_svc.cancel_waitlist(
+                db,
+                tenant_id=tenant_id,
+                entry_id=entry_id,
+                line_user_id=line_user_id,
+            )
+        except waitlist_svc.WaitlistEntryNotFound:
+            return "找不到該筆候補。", None
+        return "候補已取消。", None
 
     # AI 客服 fallback：無法辨識的純文字訊息，若租戶開通 AI_ASSISTANT，
     # 以 get_assistant() 回答（context 由 faq.match 注入）。surgical、behind flag。
