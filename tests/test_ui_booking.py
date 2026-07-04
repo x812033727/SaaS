@@ -267,6 +267,19 @@ class TestSlotEditDelete:
         assert "已有預約紀錄" in r.text
         assert "2031-01-08 10:00" in r.text  # 時段還在
 
+    def test_deactivate_unknown_slot_shows_error(self, client):
+        """靜默吞錯回歸：停用不存在的時段要顯示錯誤，不能假裝成功。"""
+        _login(client)
+        r = client.post("/ui/booking/slots/999999/deactivate")
+        assert r.status_code == 200
+        assert "Slot not found" in r.text
+
+    def test_cancel_unknown_reservation_shows_error(self, client):
+        _login(client)
+        r = client.post("/ui/booking/reservations/999999/cancel")
+        assert r.status_code == 200
+        assert "預約不存在或已取消" in r.text
+
     def test_cancel_edit_returns_plain_list(self, client):
         _login(client)
         client.post("/ui/booking/slots", data={
