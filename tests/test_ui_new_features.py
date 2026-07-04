@@ -243,6 +243,85 @@ class TestStaffUI:
         assert "/shifts/" not in r.text or "/shifts/bulk" in r.text  # 無展開的編輯列
 
 
+class TestCustomersUI:
+    def _seed_customer(self, email: str, name: str = "王小姐") -> int:
+        import uuid as _uuid
+
+        from saas_mvp.models.customer import Customer
+
+        db = _Session()
+        try:
+            c = Customer(
+                tenant_id=_tenant_id_for(email),
+                line_user_id=f"U{_uuid.uuid4().hex[:12]}",
+                display_name=name,
+            )
+            db.add(c)
+            db.commit()
+            return c.id
+        finally:
+            db.close()
+
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/customers")
+        assert r.status_code == 200
+        assert "顧客管理" in r.text and "標籤管理" in r.text
+
+    def test_edit_phone_note(self, client):
+        email = _login(client)
+        cid = self._seed_customer(email)
+        r = client.get(f"/ui/customers/{cid}/edit")
+        assert r.status_code == 200
+        assert f"/ui/customers/{cid}/update" in r.text
+        r = client.post(f"/ui/customers/{cid}/update", data={
+            "phone": "0912345678", "note": "VIP 常客",
+        })
+        assert r.status_code == 200
+        assert "0912345678" in r.text and "VIP 常客" in r.text
+
+    def test_tag_crud_attach_detach(self, client):
+        email = _login(client)
+        cid = self._seed_customer(email, name="標籤客")
+        # 建標籤
+        r = client.post("/ui/customers/tags", data={"name": "熟客", "color": "#00aa00"})
+        assert r.status_code == 200 and "熟客" in r.text
+        db = _Session()
+        try:
+            from saas_mvp.models.customer_tag import CustomerTag
+            tag_id = (
+                db.query(CustomerTag)
+                .filter(CustomerTag.tenant_id == _tenant_id_for(email))
+                .first()
+                .id
+            )
+        finally:
+            db.close()
+        # 掛上
+        r = client.post(f"/ui/customers/{cid}/tags/attach", data={"tag_id": str(tag_id)})
+        assert r.status_code == 200
+        assert f"/ui/customers/{cid}/tags/{tag_id}/detach" in r.text
+        # 卸下
+        r = client.post(f"/ui/customers/{cid}/tags/{tag_id}/detach")
+        assert r.status_code == 200
+        assert f"/ui/customers/{cid}/tags/{tag_id}/detach" not in r.text
+        # 改名
+        r = client.post(f"/ui/customers/tags/{tag_id}/update", data={
+            "name": "超級熟客", "color": "",
+        })
+        assert "超級熟客" in r.text
+        # 刪標籤
+        r = client.post(f"/ui/customers/tags/{tag_id}/delete")
+        assert "超級熟客" not in r.text
+
+    def test_delete_customer(self, client):
+        email = _login(client)
+        cid = self._seed_customer(email, name="要刪除的客")
+        r = client.post(f"/ui/customers/{cid}/delete")
+        assert r.status_code == 200
+        assert "要刪除的客" not in r.text
+
+
 class TestServicesUI:
     def test_page_renders(self, client):
         _login(client)

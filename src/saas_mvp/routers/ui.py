@@ -52,6 +52,7 @@ from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import customers as customers_svc
+from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
 from saas_mvp.services import shop as shop_svc
@@ -918,6 +919,230 @@ def booking_mark_attendance(
         error = "預約不存在或已取消"
     return templates.TemplateResponse(
         "_booking_reservations.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+# ── 店家自助：顧客管理（CRM + 標籤） ─────────────────────────────────────────
+
+def _customers_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    from saas_mvp.models.customer_tag_link import CustomerTagLink
+
+    tid = actor.user.tenant_id
+    tags = segments_svc.list_tags(db, tenant_id=tid)
+    tag_by_id = {t.id: t for t in tags}
+    tags_by_customer: dict[int, list] = {}
+    for link in tenant_query(db, CustomerTagLink, tid).all():
+        tag = tag_by_id.get(link.tag_id)
+        if tag is not None:
+            tags_by_customer.setdefault(link.customer_id, []).append(tag)
+    return _ctx(
+        request, actor,
+        customers=customers_svc.list_customers(db, tenant_id=tid),
+        tags=tags,
+        tags_by_customer=tags_by_customer,
+        **extra,
+    )
+
+
+@router.get("/customers", response_class=HTMLResponse)
+def customers_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "customers.html", _customers_ctx(request, actor, db)
+    )
+
+
+@router.get("/customers/list", response_class=HTMLResponse)
+def customers_list_partial(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """顧客列表 partial（編輯列「取消」的 hx-get 目標）。"""
+    return templates.TemplateResponse(
+        "_customers.html", _customers_ctx(request, actor, db)
+    )
+
+
+@router.post("/customers/tags", response_class=HTMLResponse)
+def customers_create_tag(
+    request: Request,
+    name: str = Form(...),
+    color: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        segments_svc.create_tag(db, tenant_id=tid, name=name, color=color or None)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_customers.html", _customers_ctx(request, actor, db, error=error)
+    )
+
+
+@router.get("/customers/tags/{tag_id}/edit", response_class=HTMLResponse)
+def customers_edit_tag_form(
+    request: Request,
+    tag_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_customers.html",
+        _customers_ctx(request, actor, db, editing_tag_id=tag_id),
+    )
+
+
+@router.post("/customers/tags/{tag_id}/update", response_class=HTMLResponse)
+def customers_update_tag(
+    request: Request,
+    tag_id: int,
+    name: str = Form(...),
+    color: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    editing_tag_id = None
+    try:
+        segments_svc.update_tag(
+            db, tenant_id=tid, tag_id=tag_id, name=name, color=color or None
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_tag_id = tag_id
+    return templates.TemplateResponse(
+        "_customers.html",
+        _customers_ctx(request, actor, db, error=error, editing_tag_id=editing_tag_id),
+    )
+
+
+@router.post("/customers/tags/{tag_id}/delete", response_class=HTMLResponse)
+def customers_delete_tag(
+    request: Request,
+    tag_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        segments_svc.delete_tag(db, tenant_id=tid, tag_id=tag_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_customers.html", _customers_ctx(request, actor, db, error=error)
+    )
+
+
+@router.get("/customers/{customer_id}/edit", response_class=HTMLResponse)
+def customers_edit_form(
+    request: Request,
+    customer_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_customers.html",
+        _customers_ctx(request, actor, db, editing_customer_id=customer_id),
+    )
+
+
+@router.post("/customers/{customer_id}/update", response_class=HTMLResponse)
+def customers_update(
+    request: Request,
+    customer_id: int,
+    phone: str = Form(""),
+    note: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    editing_customer_id = None
+    try:
+        customers_svc.update_customer(
+            db, tenant_id=tid, customer_id=customer_id, phone=phone, note=note,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_customer_id = customer_id
+    return templates.TemplateResponse(
+        "_customers.html",
+        _customers_ctx(
+            request, actor, db, error=error, editing_customer_id=editing_customer_id
+        ),
+    )
+
+
+@router.post("/customers/{customer_id}/delete", response_class=HTMLResponse)
+def customers_delete(
+    request: Request,
+    customer_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        customers_svc.delete_customer(db, tenant_id=tid, customer_id=customer_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_customers.html", _customers_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/customers/{customer_id}/tags/attach", response_class=HTMLResponse)
+def customers_attach_tag(
+    request: Request,
+    customer_id: int,
+    tag_id: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        if not tag_id.strip():
+            error = "請先選擇標籤"
+        else:
+            segments_svc.attach_tag(
+                db, tenant_id=tid, customer_id=customer_id, tag_id=int(tag_id)
+            )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "標籤格式錯誤"
+    return templates.TemplateResponse(
+        "_customers.html", _customers_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post(
+    "/customers/{customer_id}/tags/{tag_id}/detach", response_class=HTMLResponse
+)
+def customers_detach_tag(
+    request: Request,
+    customer_id: int,
+    tag_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    # detach 冪等（未掛載為 no-op），不需錯誤處理
+    segments_svc.detach_tag(
+        db, tenant_id=tid, customer_id=customer_id, tag_id=tag_id
+    )
+    return templates.TemplateResponse(
+        "_customers.html", _customers_ctx(request, actor, db)
     )
 
 
