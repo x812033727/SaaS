@@ -27,6 +27,8 @@ _TEXT_ALIASES: dict[str, str] = {
     "我的預約": "my",
     "/cancel": "cancel",
     "取消": "cancel",
+    "/reschedule": "reschedule",
+    "改期": "reschedule",
     "/help": "help",
     "說明": "help",
     # 圖文選單卡片（Flex carousel）
@@ -104,7 +106,7 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
                 params["slot_id"] = slot_id
         params["party_size"] = _clamp_party(_to_int(args[1]) if len(args) > 1 else None)
         return action, params
-    if action == "cancel":
+    if action in ("cancel", "reschedule"):
         params = {}
         if args:
             rid = _to_int(args[0])
@@ -155,6 +157,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
     if action not in {
         "book", "pick_service", "pick_date", "pick_staff", "pick_slot",
         "slots", "my", "cancel", "help", "menu",
+        "reschedule", "resched_date", "resched_slot",
         "coupons", "redeem", "points",
         "shop", "buy", "my_orders",
     }:
@@ -238,4 +241,25 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
             rid = _to_int(qs["reservation_id"][0])
             if rid is not None:
                 params["reservation_id"] = rid
+    elif action == "reschedule":
+        # 改期第一步：使用者點選「改期」按鈕（帶預約編號）。
+        rid = _qint("reservation_id")
+        if rid is not None:
+            params["reservation_id"] = rid
+    elif action == "resched_date":
+        # 改期第二步：選定新日期（前向攜帶 reservation_id）。
+        rid = _qint("reservation_id")
+        if rid is not None:
+            params["reservation_id"] = rid
+        d = _qdate("date")
+        if d is not None:
+            params["date"] = d
+    elif action == "resched_slot":
+        # 改期第三步：選定新時段 → 原子換 slot。
+        rid = _qint("reservation_id")
+        if rid is not None:
+            params["reservation_id"] = rid
+        sid = _qint("slot_id")
+        if sid is not None:
+            params["slot_id"] = sid
     return action, params

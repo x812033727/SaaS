@@ -296,6 +296,7 @@ def reschedule_reservation(
     tenant_id: int,
     reservation_id: int,
     new_slot_id: int,
+    line_user_id: str | None = None,
 ) -> Reservation:
     """原子改期：把 confirmed 預約移到新時段。
 
@@ -306,6 +307,8 @@ def reschedule_reservation(
       4. 舊時段 booked_count 回補、新時段遞增、reservation.slot_id 改為新時段。
       5. 入列 change 通知（BOOKING_NOTIFY 開通且有 line_user_id 時）。
 
+    line_user_id 非 None 時（LINE 來源改期）額外驗證與建單者相符，
+    防他人改期（比照 cancel_reservation）；店家端（UI/REST）呼叫維持 None。
     new_slot_id == 既有 slot_id 為 no-op（直接回傳，不入列、不動容量）。
     已取消的預約不可改期（拋 ReservationNotFoundError）。
     """
@@ -316,6 +319,8 @@ def reschedule_reservation(
     )
     if reservation is None:
         raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    if line_user_id is not None and reservation.line_user_id != line_user_id:
+        raise ReservationPermissionError("reservation belongs to another LINE user")
     if reservation.status != RESERVATION_CONFIRMED:
         raise ReservationNotFoundError(
             f"reservation {reservation_id} is not active"

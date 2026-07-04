@@ -71,9 +71,11 @@ def test_my_returns_flex_carousel_with_cancel(db):
     body_texts = [c["text"] for c in bubbles[0]["body"]["contents"]]
     assert any(f"#{resv.id}" in t for t in body_texts)
     assert any("07/01 15:00" in t for t in body_texts)
-    # footer 取消按鈕，postback 帶 cancel + reservation_id
-    btn = bubbles[0]["footer"]["contents"][0]
-    assert btn["action"]["data"] == f"action=cancel&reservation_id={resv.id}"
+    # footer 兩顆按鈕：改期（primary）在前、取消在後，postback 各帶 reservation_id
+    buttons = bubbles[0]["footer"]["contents"]
+    datas = [b["action"]["data"] for b in buttons]
+    assert f"action=reschedule&reservation_id={resv.id}" in datas
+    assert f"action=cancel&reservation_id={resv.id}" in datas
 
 
 def test_my_no_reservations_text(db):

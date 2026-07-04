@@ -809,6 +809,7 @@ _BOOKING_HELP = (
     "・時段 — 查看並選擇可預約時段\n"
     "・預約 — 引導式預約（或：預約 <時段編號> <人數>）\n"
     "・我的預約 — 查看我的預約\n"
+    "・改期 <預約編號> — 引導改到其他時段\n"
     "・取消 <預約編號> — 例：取消 7"
 )
 # 引導式人數上限（quick-reply 按鈕數）
@@ -999,7 +1000,18 @@ def _my_reservations_carousel(db: Session, tenant_id: int, rows: list) -> dict:
             "footer": {
                 "type": "box",
                 "layout": "vertical",
+                "spacing": "sm",
                 "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "action": {
+                            "type": "postback",
+                            "label": "改期",
+                            "data": f"action=reschedule&reservation_id={r.id}",
+                            "displayText": f"改期 #{r.id}",
+                        },
+                    },
                     {
                         "type": "button",
                         "style": "secondary",
@@ -1009,7 +1021,7 @@ def _my_reservations_carousel(db: Session, tenant_id: int, rows: list) -> dict:
                             "data": f"action=cancel&reservation_id={r.id}",
                             "displayText": f"取消預約 #{r.id}",
                         },
-                    }
+                    },
                 ],
             },
         })
@@ -1018,6 +1030,60 @@ def _my_reservations_carousel(db: Session, tenant_id: int, rows: list) -> dict:
         "altText": "你的預約",
         "contents": {"type": "carousel", "contents": bubbles},
     }
+
+
+def _resched_date_buttons(
+    reservation_id: int, dates: list[str]
+) -> list[tuple[str, str]]:
+    """改期：日期 → quick-reply（action=resched_date，前向攜帶 reservation_id）。"""
+    _weekday_zh = ("一", "二", "三", "四", "五", "六", "日")
+    buttons: list[tuple[str, str]] = []
+    for d in dates[:_DATE_CHOICES_MAX]:
+        try:
+            dt = datetime.date.fromisoformat(d)
+            label = f"{dt.strftime('%m/%d')} (週{_weekday_zh[dt.weekday()]})"
+        except ValueError:
+            label = d
+        buttons.append(
+            (label, f"action=resched_date&reservation_id={reservation_id}&date={d}")
+        )
+    return buttons
+
+
+def _resched_slot_buttons(
+    reservation_id: int, slots: list
+) -> list[tuple[str, str]]:
+    """改期：時段 → quick-reply（action=resched_slot，前向攜帶 reservation_id）。"""
+    return [
+        (
+            s.slot_start.strftime("%m/%d %H:%M"),
+            f"action=resched_slot&reservation_id={reservation_id}&slot_id={s.id}",
+        )
+        for s in slots
+    ]
+
+
+def _owned_confirmed_reservation(
+    db: Session, tenant_id: int, reservation_id: int, line_user_id: str
+):
+    """取自己的 confirmed 預約；查無/他人/已取消回 (None, 錯誤訊息)。"""
+    from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
+
+    resv = (
+        db.query(Reservation)
+        .filter(
+            Reservation.tenant_id == tenant_id,
+            Reservation.id == reservation_id,
+        )
+        .first()
+    )
+    if resv is None:
+        return None, f"找不到預約 #{reservation_id}。"
+    if resv.line_user_id != line_user_id:
+        return None, "無法改期其他人的預約。"
+    if resv.status != RESERVATION_CONFIRMED:
+        return None, f"預約 #{reservation_id} 已取消，無法改期。"
+    return resv, None
 
 
 def _staff_choice_buttons(
@@ -1133,6 +1199,88 @@ def _try_conversational(
         if not rows:
             return "你目前沒有預約。輸入「時段」開始預約。", None, None
         return None, None, _my_reservations_carousel(db, tenant_id, rows)
+
+    # ── 改期三步（reschedule → resched_date → resched_slot）────────────────
+    # 第一步：驗擁有者 → 日期 quick-reply（前向攜帶 reservation_id）。
+    if action == "reschedule":
+        reservation_id = params.get("reservation_id")
+        if reservation_id is None:
+            return "請指定預約編號，例：改期 7", None, None
+        _resv, err = _owned_confirmed_reservation(
+            db, tenant_id, reservation_id, line_user_id
+        )
+        if err is not None:
+            return err, None, None
+        dates = _available_dates(db, tenant_id)
+        if not dates:
+            return "目前沒有可改期的日期。", None, None
+        return (
+            f"改期預約 #{reservation_id}，請選擇新日期：",
+            _resched_date_buttons(reservation_id, dates),
+            None,
+        )
+
+    # 第二步：選定新日期 → 該日可預約時段 quick-reply。
+    if action == "resched_date":
+        reservation_id = params.get("reservation_id")
+        if reservation_id is None:
+            return "請重新輸入「改期 <預約編號>」開始。", None, None
+        date = params.get("date")
+        slots = _available_slots_on_date(db, tenant_id, date)
+        if not slots:
+            return "該日期目前沒有可預約的時段，請改選其他日期。", None, None
+        return (
+            "請選擇新時段：",
+            _resched_slot_buttons(reservation_id, slots),
+            None,
+        )
+
+    # 第三步：選定新時段 → 原子換 slot（服務層鎖雙 slot、單一 commit）。
+    if action == "resched_slot":
+        reservation_id = params.get("reservation_id")
+        slot_id = params.get("slot_id")
+        if reservation_id is None or slot_id is None:
+            return "請重新輸入「改期 <預約編號>」開始。", None, None
+        try:
+            resv = booking_svc.reschedule_reservation(
+                db,
+                tenant_id=tenant_id,
+                reservation_id=reservation_id,
+                new_slot_id=slot_id,
+                line_user_id=line_user_id,
+            )
+        except booking_svc.ReservationPermissionError:
+            return "無法改期其他人的預約。", None, None
+        except booking_svc.ReservationNotFoundError:
+            return f"找不到可改期的預約 #{reservation_id}。", None, None
+        except booking_svc.SlotNotFoundError:
+            return f"找不到時段 #{slot_id}，請重新輸入「改期 {reservation_id}」。", None, None
+        except booking_svc.SlotFullError:
+            return (
+                f"時段 #{slot_id} 已額滿，請改選其他時段。",
+                None,
+                None,
+            )
+        from saas_mvp.models.booking_slot import BookingSlot
+
+        new_slot = (
+            db.query(BookingSlot)
+            .filter(
+                BookingSlot.tenant_id == tenant_id, BookingSlot.id == resv.slot_id
+            )
+            .first()
+        )
+        when = (
+            new_slot.slot_start.strftime("%m/%d %H:%M")
+            if new_slot is not None
+            else "—"
+        )
+        return (
+            f"改期成功！\n預約 #{resv.id} 已改至 {when}\n"
+            f"人數：{resv.party_size} 位",
+            None,
+            None,
+        )
 
     # 引導式第一步：'book'（無 slot_id）且有上架服務 → 服務 carousel。
     if action == "book" and params.get("slot_id") is None:
