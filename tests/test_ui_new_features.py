@@ -464,6 +464,61 @@ class TestFlexMenuUI:
             db.close()
 
 
+class TestAutoReplyUI:
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/auto-reply")
+        assert r.status_code == 200
+        assert "自動回覆規則" in r.text
+
+    def test_create_edit_toggle_delete(self, client):
+        email = _login(client)
+        # 建立文字規則
+        r = client.post("/ui/auto-reply", data={
+            "keyword": "營業時間", "match_type": "exact", "reply_type": "text",
+            "reply_text": "10:00-22:00", "flex_menu_id": "", "priority": "5",
+        })
+        assert r.status_code == 200
+        assert "營業時間" in r.text and "10:00-22:00" in r.text
+        db = _Session()
+        try:
+            from saas_mvp.models.auto_reply_rule import AutoReplyRule
+            rid = (
+                db.query(AutoReplyRule)
+                .filter(AutoReplyRule.tenant_id == _tenant_id_for(email))
+                .first()
+                .id
+            )
+        finally:
+            db.close()
+        # 編輯表單預填
+        r = client.get(f"/ui/auto-reply/{rid}/edit")
+        assert 'value="營業時間"' in r.text
+        # 更新
+        r = client.post(f"/ui/auto-reply/{rid}/update", data={
+            "keyword": "營業", "match_type": "prefix", "reply_type": "text",
+            "reply_text": "平日 10:00-22:00", "flex_menu_id": "", "priority": "1",
+        })
+        assert "平日 10:00-22:00" in r.text and "開頭" in r.text
+        # 停用/啟用 toggle
+        r = client.post(f"/ui/auto-reply/{rid}/toggle")
+        assert "badge off" in r.text
+        r = client.post(f"/ui/auto-reply/{rid}/toggle")
+        assert "badge on" in r.text
+        # 刪除
+        r = client.post(f"/ui/auto-reply/{rid}/delete")
+        assert "營業" not in r.text or "尚無規則" in r.text
+
+    def test_create_text_rule_without_text_shows_error(self, client):
+        _login(client)
+        r = client.post("/ui/auto-reply", data={
+            "keyword": "測試", "match_type": "contains", "reply_type": "text",
+            "reply_text": "", "flex_menu_id": "", "priority": "0",
+        })
+        assert r.status_code == 200
+        assert "reply_text is required" in r.text
+
+
 class TestPortfolioUI:
     def test_page_renders(self, client):
         _login(client)

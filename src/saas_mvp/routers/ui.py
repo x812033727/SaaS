@@ -51,6 +51,7 @@ from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
+from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import line_config as line_config_svc
@@ -1143,6 +1144,178 @@ def customers_detach_tag(
     )
     return templates.TemplateResponse(
         "_customers.html", _customers_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：自動回覆規則 ────────────────────────────────────────────────────
+
+def _auto_reply_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    cfg = _line_config_or_none(db, tid)
+    return _ctx(
+        request, actor,
+        rules=auto_reply_svc.list_rules(db, tenant_id=tid),
+        flex_menus=flex_menu_svc.list_menus(db, tenant_id=tid),
+        bot_mode=(cfg or {}).get("bot_mode", "translation"),
+        **extra,
+    )
+
+
+def _auto_reply_form_kwargs(
+    keyword: str,
+    match_type: str,
+    reply_type: str,
+    reply_text: str,
+    flex_menu_id: str,
+    priority: str,
+) -> dict:
+    """表單值 → service 參數（空字串正規化為 None；驗證交給 service）。"""
+    return {
+        "keyword": keyword,
+        "match_type": match_type,
+        "reply_type": reply_type,
+        "reply_text": reply_text.strip() or None,
+        "flex_menu_id": int(flex_menu_id) if flex_menu_id.strip() else None,
+        "priority": int(priority) if priority.strip() else 0,
+    }
+
+
+@router.get("/auto-reply", response_class=HTMLResponse)
+def auto_reply_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "auto_reply.html", _auto_reply_ctx(request, actor, db)
+    )
+
+
+@router.get("/auto-reply/list", response_class=HTMLResponse)
+def auto_reply_list_partial(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_auto_reply.html", _auto_reply_ctx(request, actor, db)
+    )
+
+
+@router.post("/auto-reply", response_class=HTMLResponse)
+def auto_reply_create(
+    request: Request,
+    keyword: str = Form(...),
+    match_type: str = Form("contains"),
+    reply_type: str = Form("text"),
+    reply_text: str = Form(""),
+    flex_menu_id: str = Form(""),
+    priority: str = Form("0"),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        auto_reply_svc.create_rule(
+            db, tenant_id=tid,
+            **_auto_reply_form_kwargs(
+                keyword, match_type, reply_type, reply_text, flex_menu_id, priority
+            ),
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "數字欄位格式錯誤"
+    return templates.TemplateResponse(
+        "_auto_reply.html", _auto_reply_ctx(request, actor, db, error=error)
+    )
+
+
+@router.get("/auto-reply/{rule_id}/edit", response_class=HTMLResponse)
+def auto_reply_edit_form(
+    request: Request,
+    rule_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_auto_reply.html",
+        _auto_reply_ctx(request, actor, db, editing_rule_id=rule_id),
+    )
+
+
+@router.post("/auto-reply/{rule_id}/update", response_class=HTMLResponse)
+def auto_reply_update(
+    request: Request,
+    rule_id: int,
+    keyword: str = Form(...),
+    match_type: str = Form("contains"),
+    reply_type: str = Form("text"),
+    reply_text: str = Form(""),
+    flex_menu_id: str = Form(""),
+    priority: str = Form("0"),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    editing_rule_id = None
+    try:
+        auto_reply_svc.update_rule(
+            db, tenant_id=tid, rule_id=rule_id,
+            **_auto_reply_form_kwargs(
+                keyword, match_type, reply_type, reply_text, flex_menu_id, priority
+            ),
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_rule_id = rule_id
+    except ValueError:
+        error = "數字欄位格式錯誤"
+        editing_rule_id = rule_id
+    return templates.TemplateResponse(
+        "_auto_reply.html",
+        _auto_reply_ctx(request, actor, db, error=error, editing_rule_id=editing_rule_id),
+    )
+
+
+@router.post("/auto-reply/{rule_id}/toggle", response_class=HTMLResponse)
+def auto_reply_toggle(
+    request: Request,
+    rule_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        rule = auto_reply_svc.get_rule(db, tenant_id=tid, rule_id=rule_id)
+        auto_reply_svc.update_rule(
+            db, tenant_id=tid, rule_id=rule_id, is_active=not rule.is_active
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_auto_reply.html", _auto_reply_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/auto-reply/{rule_id}/delete", response_class=HTMLResponse)
+def auto_reply_delete(
+    request: Request,
+    rule_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        auto_reply_svc.delete_rule(db, tenant_id=tid, rule_id=rule_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_auto_reply.html", _auto_reply_ctx(request, actor, db, error=error)
     )
 
 
