@@ -40,8 +40,10 @@ class Customer(Base):
         nullable=False,
         index=True,
     )
-    # LINE 來源唯一鍵；店家手動建檔（無 line 來源）時暫不支援，故 nullable=False。
-    line_user_id = Column(String(64), nullable=False, index=True)
+    # LINE 來源唯一鍵；NULL = 店家自建/CSV 匯入的無 LINE 顧客（推播路徑
+    # 一律 guard None）。unique(tenant_id, line_user_id) 對 NULL 不設限
+    #（SQLite/PG 皆允許多 NULL）。Alembic rev 0003 放寬自 NOT NULL。
+    line_user_id = Column(String(64), nullable=True, index=True)
     display_name = Column(String(128), nullable=True)
     phone = Column(String(32), nullable=True)
     booking_count = Column(

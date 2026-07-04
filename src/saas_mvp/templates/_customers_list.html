@@ -1,9 +1,38 @@
 <h2>顧客清單（共 {{ total }} 位）</h2>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if import_report %}
+  {% if import_report.ok %}
+  <div class="success">
+    匯入完成：新增 {{ import_report.created }}、更新 {{ import_report.updated }}、略過 {{ import_report.skipped }}。
+  </div>
+  {% else %}
+  <div class="error">
+    匯入失敗（整批未寫入），請修正後重傳：
+    <ul>
+      {% for e in import_report.errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+{% endif %}
 <form hx-get="/ui/customers" hx-target="#customers-card" hx-swap="innerHTML" class="row">
   <label>搜尋<input name="q" value="{{ q }}" maxlength="64" placeholder="名稱或電話"></label>
   <button type="submit">搜尋</button>
+  <a class="btn" href="/ui/customers/export.csv">匯出 CSV</a>
 </form>
+
+<details>
+  <summary>批次匯入顧客（CSV）</summary>
+  <p class="muted">
+    UTF-8，表頭需含 display_name（必填），可選 phone / birthday(YYYY-MM-DD) / note。
+    上限 5000 列；同電話視為重複（預設略過）。任何列有錯即整批不寫入。
+  </p>
+  <form hx-post="/ui/customers/import" hx-target="#customers-card" hx-swap="innerHTML"
+        hx-encoding="multipart/form-data" enctype="multipart/form-data" class="row">
+    <input type="file" name="file" accept=".csv,text/csv" required>
+    <label><input type="checkbox" name="update_existing" value="1"> 更新既有顧客（同電話時覆寫非空欄位）</label>
+    <button type="submit">匯入</button>
+  </form>
+</details>
 
 {% if customers %}
 <table>

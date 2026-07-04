@@ -2139,6 +2139,125 @@ def customers_page(
     return templates.TemplateResponse("customers.html", ctx)
 
 
+# ── 顧客 CSV 匯入 / 匯出 ──────────────────────────────────────────────────────
+# 註：/customers/import 與 /customers/export.csv 必須宣告於
+# /customers/{customer_id} 之前，否則 "import"/"export.csv" 會被當成 id。
+
+@router.post("/customers/import", response_class=HTMLResponse)
+async def customers_import(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """顧客 CSV 批次匯入（multipart；all-or-nothing，錯誤整批不寫）。"""
+    # 注意:request.form() 產生的是 starlette 的 UploadFile(fastapi.UploadFile
+    # 是其子類,isinstance 檢查必須用 starlette 基類)。
+    from starlette.datastructures import UploadFile
+
+    from saas_mvp.services import customer_import as import_svc
+
+    tid = actor.user.tenant_id
+    form = await request.form()
+    upload = form.get("file")
+    update_existing = bool(form.get("update_existing"))
+    if upload is None or not isinstance(upload, UploadFile):
+        report = import_svc.ImportReport(errors=["請選擇 CSV 檔案"])
+    else:
+        content = await upload.read()
+        report = import_svc.import_customers(
+            db, tenant_id=tid, content=content, update_existing=update_existing
+        )
+    ctx = _customers_ctx(request, actor, db, import_report=report)
+    return templates.TemplateResponse("_customers_list.html", ctx)
+
+
+def _csv_response(rows: list[dict], fieldnames: list[str], filename: str) -> Response:
+    import csv as _csv
+    import io as _io
+
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(r)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/customers/export.csv")
+def customers_export(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """顧客匯出（欄位為匯入格式超集，round-trip 相容）。"""
+    rows = [
+        {
+            "display_name": c.display_name or "",
+            "phone": c.phone or "",
+            "birthday": c.birthday.isoformat() if c.birthday else "",
+            "note": c.note or "",
+            "line_user_id": c.line_user_id or "",
+            "points_balance": c.points_balance,
+            "tier": c.tier,
+            "booking_count": c.booking_count,
+            "last_booked_at": c.last_booked_at.isoformat() if c.last_booked_at else "",
+            "created_at": c.created_at.isoformat() if c.created_at else "",
+        }
+        for c in customers_svc.list_customers(db, tenant_id=actor.user.tenant_id)
+    ]
+    return _csv_response(
+        rows,
+        ["display_name", "phone", "birthday", "note", "line_user_id",
+         "points_balance", "tier", "booking_count", "last_booked_at",
+         "created_at"],
+        "customers.csv",
+    )
+
+
+@router.get("/products/export.csv")
+def products_export(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = [
+        {
+            "name": p.name,
+            "price_cents": p.price_cents,
+            "stock": "" if p.stock is None else p.stock,
+            "is_active": "yes" if p.is_active else "no",
+            "description": p.description or "",
+        }
+        for p in shop_svc.list_products(db, tenant_id=actor.user.tenant_id)
+    ]
+    return _csv_response(
+        rows, ["name", "price_cents", "stock", "is_active", "description"],
+        "products.csv",
+    )
+
+
+@router.get("/services/export.csv")
+def services_export(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = [
+        {
+            "name": s.name,
+            "duration_minutes": s.duration_minutes or "",
+            "price_cents": s.price_cents or 0,
+            "is_active": "yes" if s.is_active else "no",
+        }
+        for s in catalog_svc.list_services(db, tenant_id=actor.user.tenant_id)
+    ]
+    return _csv_response(
+        rows, ["name", "duration_minutes", "price_cents", "is_active"],
+        "services.csv",
+    )
+
+
 @router.get("/customers/{customer_id}", response_class=HTMLResponse)
 def customer_detail_page(
     request: Request,
