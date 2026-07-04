@@ -150,6 +150,98 @@ class TestStaffUI:
         assert r2.status_code == 200
         assert "/s/" in r2.text
 
+    def _create_staff(self, client, name: str) -> int:
+        email = _login(client)
+        client.post("/ui/staff", data={
+            "name": name, "role": "", "location_id": "", "booking_mode": "capacity",
+        })
+        db = _Session()
+        try:
+            from saas_mvp.models.staff import Staff
+            tid = _tenant_id_for(email)
+            return (
+                db.query(Staff)
+                .filter(Staff.tenant_id == tid, Staff.name == name)
+                .first()
+                .id
+            )
+        finally:
+            db.close()
+
+    def test_shift_edit_and_update(self, client):
+        sid = self._create_staff(client, "班表哥")
+        client.post(f"/ui/staff/{sid}/shifts", data={
+            "weekday": "0", "start_time": "09:00", "end_time": "12:00", "rotation": "day",
+        })
+        db = _Session()
+        try:
+            from saas_mvp.models.staff_shift import StaffShift
+            shid = (
+                db.query(StaffShift).filter(StaffShift.staff_id == sid).first().id
+            )
+        finally:
+            db.close()
+        # 編輯表單預填
+        r = client.get(f"/ui/staff/{sid}/shifts/{shid}/edit")
+        assert r.status_code == 200
+        assert f"/ui/staff/{sid}/shifts/{shid}/update" in r.text
+        assert 'value="09:00"' in r.text
+        # 更新（改時間 + 改為每日）
+        r = client.post(f"/ui/staff/{sid}/shifts/{shid}/update", data={
+            "weekday": "", "start_time": "10:00", "end_time": "15:00", "rotation": "night",
+        })
+        assert r.status_code == 200
+        assert "10:00 - 15:00" in r.text and "每日" in r.text
+        assert f"/shifts/{shid}/update" not in r.text  # 編輯列已收合
+        # 撞唯一約束 (staff, weekday, start_time) → 409 錯誤顯示且停在編輯列
+        client.post(f"/ui/staff/{sid}/shifts", data={
+            "weekday": "3", "start_time": "10:00", "end_time": "15:00", "rotation": "",
+        })
+        r = client.post(f"/ui/staff/{sid}/shifts/{shid}/update", data={
+            "weekday": "3", "start_time": "10:00", "end_time": "15:00", "rotation": "",
+        })
+        assert r.status_code == 200
+        assert "already exists" in r.text
+        assert f"/ui/staff/{sid}/shifts/{shid}/update" in r.text
+
+    def test_leave_edit_and_update(self, client):
+        sid = self._create_staff(client, "請假姐")
+        client.post(f"/ui/staff/{sid}/leaves", data={
+            "start_at": "2031-03-01T09:00", "end_at": "2031-03-02T09:00", "reason": "出國",
+        })
+        db = _Session()
+        try:
+            from saas_mvp.models.staff_leave import StaffLeave
+            lvid = (
+                db.query(StaffLeave).filter(StaffLeave.staff_id == sid).first().id
+            )
+        finally:
+            db.close()
+        # 編輯表單預填
+        r = client.get(f"/ui/staff/{sid}/leaves/{lvid}/edit")
+        assert r.status_code == 200
+        assert 'value="2031-03-01T09:00"' in r.text and 'value="出國"' in r.text
+        # 更新
+        r = client.post(f"/ui/staff/{sid}/leaves/{lvid}/update", data={
+            "start_at": "2031-03-01T09:00", "end_at": "2031-03-03T18:00", "reason": "改期",
+        })
+        assert r.status_code == 200
+        assert "2031-03-03 18:00" in r.text and "改期" in r.text
+        # 顛倒區間 → 422 錯誤顯示且停在編輯列
+        r = client.post(f"/ui/staff/{sid}/leaves/{lvid}/update", data={
+            "start_at": "2031-03-05T09:00", "end_at": "2031-03-04T09:00", "reason": "",
+        })
+        assert r.status_code == 200
+        assert "end_at must be after start_at" in r.text
+        assert f"/ui/staff/{sid}/leaves/{lvid}/update" in r.text
+
+    def test_staff_list_partial_for_cancel(self, client):
+        self._create_staff(client, "取消哥")
+        r = client.get("/ui/staff/list")
+        assert r.status_code == 200
+        assert "取消哥" in r.text
+        assert "/shifts/" not in r.text or "/shifts/bulk" in r.text  # 無展開的編輯列
+
 
 class TestServicesUI:
     def test_page_renders(self, client):

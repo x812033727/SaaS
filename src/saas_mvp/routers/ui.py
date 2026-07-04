@@ -1542,6 +1542,20 @@ def staff_page(
     return templates.TemplateResponse("staff.html", _staff_ctx(request, actor, db))
 
 
+@router.get("/staff/list", response_class=HTMLResponse)
+def staff_list_partial(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """員工列表 partial（班表/請假編輯列「取消」的 hx-get 目標）。"""
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db)
+    )
+
+
 @router.post("/staff", response_class=HTMLResponse)
 def staff_create(
     request: Request,
@@ -1724,6 +1738,60 @@ def staff_bulk_shifts(
     )
 
 
+@router.get("/staff/{staff_id}/shifts/{shift_id}/edit", response_class=HTMLResponse)
+def staff_edit_shift_form(
+    request: Request,
+    staff_id: int,
+    shift_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    return templates.TemplateResponse(
+        "_staff_list.html",
+        _staff_ctx(request, actor, db, editing_shift_id=shift_id),
+    )
+
+
+@router.post("/staff/{staff_id}/shifts/{shift_id}/update", response_class=HTMLResponse)
+def staff_update_shift(
+    request: Request,
+    staff_id: int,
+    shift_id: int,
+    start_time: str = Form(...),
+    end_time: str = Form(...),
+    weekday: str = Form(""),
+    rotation: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    tid = actor.user.tenant_id
+    error = None
+    editing_shift_id = None
+    try:
+        # weekday 一律帶明確值（int 或 None=每日）——表單的 select 永遠有值。
+        staff_svc.update_shift(
+            db, tenant_id=tid, staff_id=staff_id, shift_id=shift_id,
+            start_time=start_time, end_time=end_time,
+            weekday=_opt_int(weekday), rotation=rotation or None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_shift_id = shift_id
+    except ValueError:
+        error = "星期格式錯誤"
+        editing_shift_id = shift_id
+    return templates.TemplateResponse(
+        "_staff_list.html",
+        _staff_ctx(
+            request, actor, db, error=error, editing_shift_id=editing_shift_id
+        ),
+    )
+
+
 @router.post("/staff/{staff_id}/shifts/{shift_id}/delete", response_class=HTMLResponse)
 def staff_delete_shift(
     request: Request,
@@ -1769,6 +1837,59 @@ def staff_create_leave(
         error = "請假時間格式錯誤"
     return templates.TemplateResponse(
         "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
+
+
+@router.get("/staff/{staff_id}/leaves/{leave_id}/edit", response_class=HTMLResponse)
+def staff_edit_leave_form(
+    request: Request,
+    staff_id: int,
+    leave_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    return templates.TemplateResponse(
+        "_staff_list.html",
+        _staff_ctx(request, actor, db, editing_leave_id=leave_id),
+    )
+
+
+@router.post("/staff/{staff_id}/leaves/{leave_id}/update", response_class=HTMLResponse)
+def staff_update_leave(
+    request: Request,
+    staff_id: int,
+    leave_id: int,
+    start_at: str = Form(...),
+    end_at: str = Form(...),
+    reason: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    tid = actor.user.tenant_id
+    error = None
+    editing_leave_id = None
+    try:
+        staff_svc.update_leave(
+            db, tenant_id=tid, staff_id=staff_id, leave_id=leave_id,
+            start_at=_parse_slot_start(start_at),
+            end_at=_parse_slot_start(end_at),
+            reason=reason or None,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_leave_id = leave_id
+    except ValueError:
+        error = "請假時間格式錯誤"
+        editing_leave_id = leave_id
+    return templates.TemplateResponse(
+        "_staff_list.html",
+        _staff_ctx(
+            request, actor, db, error=error, editing_leave_id=editing_leave_id
+        ),
     )
 
 
