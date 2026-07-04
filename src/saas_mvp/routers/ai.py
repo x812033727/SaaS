@@ -121,6 +121,16 @@ def list_faqs(
     ]
 
 
+@router.get("/faq/{faq_id}", response_model=FAQResponse)
+def get_faq(
+    faq_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FAQResponse:
+    faq = faq_svc.get_faq(db, tenant_id=current_user.tenant_id, faq_id=faq_id)
+    return FAQResponse.model_validate(faq)
+
+
 @router.put("/faq/{faq_id}", response_model=FAQResponse)
 def update_faq(
     faq_id: int,

@@ -95,13 +95,46 @@
     <thead><tr><th>#</th><th>星期</th><th>時間</th><th>輪值</th><th></th></tr></thead>
     <tbody>
       {% for sh in shifts %}
+      {% if editing_shift_id == sh.id %}
+      <tr>
+        <td data-label="#">{{ sh.id }}</td>
+        <td colspan="4">
+          <form hx-post="/ui/staff/{{ s.id }}/shifts/{{ sh.id }}/update" hx-target="#staff-card" hx-swap="innerHTML" class="row">
+            <label>星期
+              <select name="weekday">
+                <option value="" {{ 'selected' if sh.weekday is none }}>每日</option>
+                {% for i, lbl in [(0,'週一'),(1,'週二'),(2,'週三'),(3,'週四'),(4,'週五'),(5,'週六'),(6,'週日')] %}
+                <option value="{{ i }}" {{ 'selected' if sh.weekday == i }}>{{ lbl }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>開始<input name="start_time" value="{{ sh.start_time }}" maxlength="5" required></label>
+            <label>結束<input name="end_time" value="{{ sh.end_time }}" maxlength="5" required></label>
+            <label>輪值
+              <select name="rotation">
+                <option value="" {{ 'selected' if not sh.rotation }}>—</option>
+                <option value="day" {{ 'selected' if sh.rotation == 'day' }}>日班</option>
+                <option value="night" {{ 'selected' if sh.rotation == 'night' }}>夜班</option>
+                <option value="off" {{ 'selected' if sh.rotation == 'off' }}>休假</option>
+              </select>
+            </label>
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/staff/list" hx-target="#staff-card" hx-swap="innerHTML">取消</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
       <tr>
         <td data-label="#">{{ sh.id }}</td>
         <td data-label="星期">{{ ['週一','週二','週三','週四','週五','週六','週日'][sh.weekday] if sh.weekday is not none else '每日' }}</td>
         <td data-label="時間">{{ sh.start_time }} - {{ sh.end_time }}</td>
         <td data-label="輪值">{{ sh.rotation or '—' }}</td>
-        <td><button hx-post="/ui/staff/{{ s.id }}/shifts/{{ sh.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button></td>
+        <td>
+          <button hx-get="/ui/staff/{{ s.id }}/shifts/{{ sh.id }}/edit" hx-target="#staff-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/staff/{{ s.id }}/shifts/{{ sh.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button>
+        </td>
       </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>
@@ -120,13 +153,31 @@
     <thead><tr><th>#</th><th>開始</th><th>結束</th><th>原因</th><th></th></tr></thead>
     <tbody>
       {% for lv in leaves %}
+      {% if editing_leave_id == lv.id %}
+      <tr>
+        <td data-label="#">{{ lv.id }}</td>
+        <td colspan="4">
+          <form hx-post="/ui/staff/{{ s.id }}/leaves/{{ lv.id }}/update" hx-target="#staff-card" hx-swap="innerHTML" class="row">
+            <label>開始<input name="start_at" type="datetime-local" value="{{ lv.start_at.strftime('%Y-%m-%dT%H:%M') }}" required></label>
+            <label>結束<input name="end_at" type="datetime-local" value="{{ lv.end_at.strftime('%Y-%m-%dT%H:%M') }}" required></label>
+            <label>原因<input name="reason" value="{{ lv.reason or '' }}" maxlength="128"></label>
+            <button type="submit">儲存</button>
+            <button type="button" hx-get="/ui/staff/list" hx-target="#staff-card" hx-swap="innerHTML">取消</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
       <tr>
         <td data-label="#">{{ lv.id }}</td>
         <td data-label="開始">{{ lv.start_at.strftime('%Y-%m-%d %H:%M') }}</td>
         <td data-label="結束">{{ lv.end_at.strftime('%Y-%m-%d %H:%M') }}</td>
         <td data-label="原因">{{ lv.reason or '—' }}</td>
-        <td><button hx-post="/ui/staff/{{ s.id }}/leaves/{{ lv.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button></td>
+        <td>
+          <button hx-get="/ui/staff/{{ s.id }}/leaves/{{ lv.id }}/edit" hx-target="#staff-card" hx-swap="innerHTML">編輯</button>
+          <button hx-post="/ui/staff/{{ s.id }}/leaves/{{ lv.id }}/delete" hx-target="#staff-card" hx-swap="innerHTML">刪除</button>
+        </td>
       </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

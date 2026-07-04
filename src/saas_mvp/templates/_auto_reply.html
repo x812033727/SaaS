@@ -1,0 +1,94 @@
+<h2>自動回覆規則</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if bot_mode != 'auto_reply' %}
+<p class="muted">⚠ 目前 Bot 模式為「{{ bot_mode }}」，規則僅在模式為 auto_reply 時生效——可至 <a href="/ui/booking">預約管理</a> 切換。</p>
+{% endif %}
+<p class="muted">比對優先序：精確 &gt; 開頭 &gt; 包含；同類型以 priority 小者優先。回覆型式可為文字或圖文卡片選單。</p>
+
+<form hx-post="/ui/auto-reply" hx-target="#auto-reply-card" hx-swap="innerHTML" class="row">
+  <label>關鍵字<input name="keyword" maxlength="255" required></label>
+  <label>比對方式
+    <select name="match_type">
+      <option value="contains">包含</option>
+      <option value="prefix">開頭</option>
+      <option value="exact">精確</option>
+    </select>
+  </label>
+  <label>回覆型式
+    <select name="reply_type">
+      <option value="text">文字</option>
+      <option value="flex">圖文選單</option>
+    </select>
+  </label>
+  <label>回覆文字（文字型必填）<input name="reply_text" maxlength="2000"></label>
+  <label>圖文選單（flex 型必填）
+    <select name="flex_menu_id">
+      <option value="">—</option>
+      {% for m in flex_menus %}<option value="{{ m.id }}">#{{ m.id }} {{ m.title or '(未命名)' }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>優先序<input name="priority" type="number" value="0"></label>
+  <button type="submit">新增規則</button>
+</form>
+
+{% if rules %}
+<table>
+  <thead><tr><th>#</th><th>關鍵字</th><th>比對</th><th>回覆</th><th>優先序</th><th>狀態</th><th></th></tr></thead>
+  <tbody>
+    {% for r in rules %}
+    {% if editing_rule_id == r.id %}
+    <tr>
+      <td data-label="#">{{ r.id }}</td>
+      <td colspan="6">
+        <form hx-post="/ui/auto-reply/{{ r.id }}/update" hx-target="#auto-reply-card" hx-swap="innerHTML" class="row">
+          <label>關鍵字<input name="keyword" value="{{ r.keyword }}" maxlength="255" required></label>
+          <label>比對方式
+            <select name="match_type">
+              <option value="contains" {{ 'selected' if r.match_type == 'contains' }}>包含</option>
+              <option value="prefix" {{ 'selected' if r.match_type == 'prefix' }}>開頭</option>
+              <option value="exact" {{ 'selected' if r.match_type == 'exact' }}>精確</option>
+            </select>
+          </label>
+          <label>回覆型式
+            <select name="reply_type">
+              <option value="text" {{ 'selected' if r.reply_type == 'text' }}>文字</option>
+              <option value="flex" {{ 'selected' if r.reply_type == 'flex' }}>圖文選單</option>
+            </select>
+          </label>
+          <label>回覆文字<input name="reply_text" value="{{ r.reply_text or '' }}" maxlength="2000"></label>
+          <label>圖文選單
+            <select name="flex_menu_id">
+              <option value="">—</option>
+              {% for m in flex_menus %}
+              <option value="{{ m.id }}" {{ 'selected' if r.flex_menu_id == m.id }}>#{{ m.id }} {{ m.title or '(未命名)' }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>優先序<input name="priority" type="number" value="{{ r.priority }}"></label>
+          <button type="submit">儲存</button>
+          <button type="button" hx-get="/ui/auto-reply/list" hx-target="#auto-reply-card" hx-swap="innerHTML">取消</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td data-label="#">{{ r.id }}</td>
+      <td data-label="關鍵字">{{ r.keyword }}</td>
+      <td data-label="比對">{{ {'exact': '精確', 'prefix': '開頭', 'contains': '包含'}.get(r.match_type, r.match_type) }}</td>
+      <td data-label="回覆">{% if r.reply_type == 'flex' %}圖文選單 #{{ r.flex_menu_id }}{% else %}{{ r.reply_text }}{% endif %}</td>
+      <td data-label="優先序">{{ r.priority }}</td>
+      <td data-label="狀態"><span class="badge {{ 'on' if r.is_active else 'off' }}">{{ '啟用' if r.is_active else '停用' }}</span></td>
+      <td>
+        <button hx-get="/ui/auto-reply/{{ r.id }}/edit" hx-target="#auto-reply-card" hx-swap="innerHTML">編輯</button>
+        <button hx-post="/ui/auto-reply/{{ r.id }}/toggle" hx-target="#auto-reply-card" hx-swap="innerHTML">{{ '停用' if r.is_active else '啟用' }}</button>
+        <button hx-post="/ui/auto-reply/{{ r.id }}/delete" hx-target="#auto-reply-card" hx-swap="innerHTML"
+                hx-confirm="確定刪除此規則？">刪除</button>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無規則，請先新增。</p>
+{% endif %}

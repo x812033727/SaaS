@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from saas_mvp.models.booking_slot import BookingSlot
+from saas_mvp.models.reservation import Reservation
 from saas_mvp.services.tenants import tenant_query
 
 
@@ -214,4 +215,26 @@ def deactivate_slot(db: Session, *, tenant_id: int, slot_id: int) -> None:
     """軟刪：停用時段（保留既有預約與容量計數）。"""
     slot = _get_or_404(db, tenant_id, slot_id)
     slot.is_active = False
+    db.commit()
+
+
+def delete_slot(db: Session, *, tenant_id: int, slot_id: int) -> None:
+    """硬刪時段。
+
+    只要有任何預約紀錄引用此時段（**含已取消**）即拒絕（409）——
+    Reservation.slot_id 的 FK 為 ondelete=CASCADE，硬刪會連帶消滅預約歷史。
+    有紀錄者請改用 deactivate_slot。
+    """
+    slot = _get_or_404(db, tenant_id, slot_id)
+    has_reservations = (
+        tenant_query(db, Reservation, tenant_id)
+        .filter(Reservation.slot_id == slot_id)
+        .count()
+    )
+    if has_reservations:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="此時段已有預約紀錄，無法刪除，請改用停用",
+        )
+    db.delete(slot)
     db.commit()

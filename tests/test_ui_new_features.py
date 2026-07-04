@@ -150,6 +150,182 @@ class TestStaffUI:
         assert r2.status_code == 200
         assert "/s/" in r2.text
 
+    def _create_staff(self, client, name: str) -> int:
+        email = _login(client)
+        client.post("/ui/staff", data={
+            "name": name, "role": "", "location_id": "", "booking_mode": "capacity",
+        })
+        db = _Session()
+        try:
+            from saas_mvp.models.staff import Staff
+            tid = _tenant_id_for(email)
+            return (
+                db.query(Staff)
+                .filter(Staff.tenant_id == tid, Staff.name == name)
+                .first()
+                .id
+            )
+        finally:
+            db.close()
+
+    def test_shift_edit_and_update(self, client):
+        sid = self._create_staff(client, "班表哥")
+        client.post(f"/ui/staff/{sid}/shifts", data={
+            "weekday": "0", "start_time": "09:00", "end_time": "12:00", "rotation": "day",
+        })
+        db = _Session()
+        try:
+            from saas_mvp.models.staff_shift import StaffShift
+            shid = (
+                db.query(StaffShift).filter(StaffShift.staff_id == sid).first().id
+            )
+        finally:
+            db.close()
+        # 編輯表單預填
+        r = client.get(f"/ui/staff/{sid}/shifts/{shid}/edit")
+        assert r.status_code == 200
+        assert f"/ui/staff/{sid}/shifts/{shid}/update" in r.text
+        assert 'value="09:00"' in r.text
+        # 更新（改時間 + 改為每日）
+        r = client.post(f"/ui/staff/{sid}/shifts/{shid}/update", data={
+            "weekday": "", "start_time": "10:00", "end_time": "15:00", "rotation": "night",
+        })
+        assert r.status_code == 200
+        assert "10:00 - 15:00" in r.text and "每日" in r.text
+        assert f"/shifts/{shid}/update" not in r.text  # 編輯列已收合
+        # 撞唯一約束 (staff, weekday, start_time) → 409 錯誤顯示且停在編輯列
+        client.post(f"/ui/staff/{sid}/shifts", data={
+            "weekday": "3", "start_time": "10:00", "end_time": "15:00", "rotation": "",
+        })
+        r = client.post(f"/ui/staff/{sid}/shifts/{shid}/update", data={
+            "weekday": "3", "start_time": "10:00", "end_time": "15:00", "rotation": "",
+        })
+        assert r.status_code == 200
+        assert "already exists" in r.text
+        assert f"/ui/staff/{sid}/shifts/{shid}/update" in r.text
+
+    def test_leave_edit_and_update(self, client):
+        sid = self._create_staff(client, "請假姐")
+        client.post(f"/ui/staff/{sid}/leaves", data={
+            "start_at": "2031-03-01T09:00", "end_at": "2031-03-02T09:00", "reason": "出國",
+        })
+        db = _Session()
+        try:
+            from saas_mvp.models.staff_leave import StaffLeave
+            lvid = (
+                db.query(StaffLeave).filter(StaffLeave.staff_id == sid).first().id
+            )
+        finally:
+            db.close()
+        # 編輯表單預填
+        r = client.get(f"/ui/staff/{sid}/leaves/{lvid}/edit")
+        assert r.status_code == 200
+        assert 'value="2031-03-01T09:00"' in r.text and 'value="出國"' in r.text
+        # 更新
+        r = client.post(f"/ui/staff/{sid}/leaves/{lvid}/update", data={
+            "start_at": "2031-03-01T09:00", "end_at": "2031-03-03T18:00", "reason": "改期",
+        })
+        assert r.status_code == 200
+        assert "2031-03-03 18:00" in r.text and "改期" in r.text
+        # 顛倒區間 → 422 錯誤顯示且停在編輯列
+        r = client.post(f"/ui/staff/{sid}/leaves/{lvid}/update", data={
+            "start_at": "2031-03-05T09:00", "end_at": "2031-03-04T09:00", "reason": "",
+        })
+        assert r.status_code == 200
+        assert "end_at must be after start_at" in r.text
+        assert f"/ui/staff/{sid}/leaves/{lvid}/update" in r.text
+
+    def test_staff_list_partial_for_cancel(self, client):
+        self._create_staff(client, "取消哥")
+        r = client.get("/ui/staff/list")
+        assert r.status_code == 200
+        assert "取消哥" in r.text
+        assert "/shifts/" not in r.text or "/shifts/bulk" in r.text  # 無展開的編輯列
+
+
+class TestCustomersUI:
+    def _seed_customer(self, email: str, name: str = "王小姐") -> int:
+        import uuid as _uuid
+
+        from saas_mvp.models.customer import Customer
+
+        db = _Session()
+        try:
+            c = Customer(
+                tenant_id=_tenant_id_for(email),
+                line_user_id=f"U{_uuid.uuid4().hex[:12]}",
+                display_name=name,
+            )
+            db.add(c)
+            db.commit()
+            return c.id
+        finally:
+            db.close()
+
+    def test_page_renders(self, client):
+        # upstream 整併：GET /ui/customers 由 CRM 清單頁接手（含「標籤管理」
+        # 入口按鈕）；本區段的管理檢視移至 GET /ui/customers/list。
+        _login(client)
+        r = client.get("/ui/customers")
+        assert r.status_code == 200
+        assert "顧客清單" in r.text and "標籤管理" in r.text
+        r2 = client.get("/ui/customers/list")
+        assert r2.status_code == 200
+        assert "顧客管理" in r2.text
+
+    def test_edit_phone_note(self, client):
+        email = _login(client)
+        cid = self._seed_customer(email)
+        r = client.get(f"/ui/customers/{cid}/edit")
+        assert r.status_code == 200
+        assert f"/ui/customers/{cid}/update" in r.text
+        r = client.post(f"/ui/customers/{cid}/update", data={
+            "phone": "0912345678", "note": "VIP 常客",
+        })
+        assert r.status_code == 200
+        assert "0912345678" in r.text and "VIP 常客" in r.text
+
+    def test_tag_crud_attach_detach(self, client):
+        email = _login(client)
+        cid = self._seed_customer(email, name="標籤客")
+        # 建標籤
+        r = client.post("/ui/customers/tags", data={"name": "熟客", "color": "#00aa00"})
+        assert r.status_code == 200 and "熟客" in r.text
+        db = _Session()
+        try:
+            from saas_mvp.models.customer_tag import CustomerTag
+            tag_id = (
+                db.query(CustomerTag)
+                .filter(CustomerTag.tenant_id == _tenant_id_for(email))
+                .first()
+                .id
+            )
+        finally:
+            db.close()
+        # 掛上
+        r = client.post(f"/ui/customers/{cid}/tags/attach", data={"tag_id": str(tag_id)})
+        assert r.status_code == 200
+        assert f"/ui/customers/{cid}/tags/{tag_id}/detach" in r.text
+        # 卸下
+        r = client.post(f"/ui/customers/{cid}/tags/{tag_id}/detach")
+        assert r.status_code == 200
+        assert f"/ui/customers/{cid}/tags/{tag_id}/detach" not in r.text
+        # 改名
+        r = client.post(f"/ui/customers/tags/{tag_id}/update", data={
+            "name": "超級熟客", "color": "",
+        })
+        assert "超級熟客" in r.text
+        # 刪標籤
+        r = client.post(f"/ui/customers/tags/{tag_id}/delete")
+        assert "超級熟客" not in r.text
+
+    def test_delete_customer(self, client):
+        email = _login(client)
+        cid = self._seed_customer(email, name="要刪除的客")
+        r = client.post(f"/ui/customers/{cid}/delete")
+        assert r.status_code == 200
+        assert "要刪除的客" not in r.text
+
 
 class TestServicesUI:
     def test_page_renders(self, client):
@@ -339,6 +515,151 @@ class TestFlexMenuUI:
         assert r.status_code == 200
         assert "立即預約" in r.text
         assert "預覽" in r.text
+
+    def test_delete_menu_resets_to_empty(self, client):
+        email = _login(client)
+        client.post("/ui/flex-menu/title", data={"title": "要刪的選單"})
+        client.post("/ui/flex-menu/cards", data={
+            "title": "卡片A", "action_type": "uri", "action_data": "https://example.com",
+            "subtitle": "", "image_url": "", "bg_color": "",
+        })
+        r = client.post("/ui/flex-menu/delete")
+        assert r.status_code == 200
+        # 重設為空選單：卡片與標題都沒了
+        assert "卡片A" not in r.text
+        assert "要刪的選單" not in r.text
+        assert "尚無卡片" in r.text
+        # 卡片列不留孤兒
+        db = _Session()
+        try:
+            from saas_mvp.models.flex_menu_card import FlexMenuCard
+            tid = _tenant_id_for(email)
+            assert (
+                db.query(FlexMenuCard)
+                .filter(FlexMenuCard.tenant_id == tid)
+                .count()
+                == 0
+            )
+        finally:
+            db.close()
+
+
+class TestNotesUI:
+    def test_page_and_crud_roundtrip(self, client):
+        _login(client)
+        r = client.get("/ui/notes")
+        assert r.status_code == 200 and "備註" in r.text
+        # 新增
+        r = client.post("/ui/notes", data={"title": "採購清單", "content": "衛生紙"})
+        assert "採購清單" in r.text
+        db = _Session()
+        try:
+            from saas_mvp.models.note import Note
+            nid = db.query(Note).filter(Note.title == "採購清單").first().id
+        finally:
+            db.close()
+        # 編輯
+        r = client.get(f"/ui/notes/{nid}/edit")
+        assert 'value="採購清單"' in r.text
+        r = client.post(f"/ui/notes/{nid}/update", data={
+            "title": "採購清單v2", "content": "衛生紙、洗手乳",
+        })
+        assert "採購清單v2" in r.text and "洗手乳" in r.text
+        # 刪除
+        r = client.post(f"/ui/notes/{nid}/delete")
+        assert "採購清單v2" not in r.text
+
+
+class TestApiKeysUI:
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/api-keys")
+        assert r.status_code == 200
+        assert "API 金鑰" in r.text
+
+    def test_create_shows_plain_key_once_then_revoke(self, client):
+        _login(client)
+        r = client.post("/ui/api-keys", data={"name": "POS 串接"})
+        assert r.status_code == 200
+        assert "僅顯示這一次" in r.text
+        # 明文 key 出現在建立回應
+        import re
+        m = re.search(r"myapp_[A-Za-z0-9_\-]{20,}", r.text)
+        assert m, "建立回應應包含明文 key"
+        plain = m.group(0)
+        # 重新載入頁面 → 明文不再出現，只有前綴
+        page = client.get("/ui/api-keys")
+        assert plain not in page.text
+        assert "POS 串接" in page.text
+        # 撤銷
+        db = _Session()
+        try:
+            from saas_mvp.models.api_key import ApiKey, hash_api_key
+            row = (
+                db.query(ApiKey)
+                .filter(ApiKey.key_hash == hash_api_key(plain))
+                .first()
+            )
+            key_id = row.id
+        finally:
+            db.close()
+        r = client.post(f"/ui/api-keys/{key_id}/revoke")
+        assert "已撤銷" in r.text
+
+
+class TestAutoReplyUI:
+    def test_page_renders(self, client):
+        _login(client)
+        r = client.get("/ui/auto-reply")
+        assert r.status_code == 200
+        assert "自動回覆規則" in r.text
+
+    def test_create_edit_toggle_delete(self, client):
+        email = _login(client)
+        # 建立文字規則
+        r = client.post("/ui/auto-reply", data={
+            "keyword": "營業時間", "match_type": "exact", "reply_type": "text",
+            "reply_text": "10:00-22:00", "flex_menu_id": "", "priority": "5",
+        })
+        assert r.status_code == 200
+        assert "營業時間" in r.text and "10:00-22:00" in r.text
+        db = _Session()
+        try:
+            from saas_mvp.models.auto_reply_rule import AutoReplyRule
+            rid = (
+                db.query(AutoReplyRule)
+                .filter(AutoReplyRule.tenant_id == _tenant_id_for(email))
+                .first()
+                .id
+            )
+        finally:
+            db.close()
+        # 編輯表單預填
+        r = client.get(f"/ui/auto-reply/{rid}/edit")
+        assert 'value="營業時間"' in r.text
+        # 更新
+        r = client.post(f"/ui/auto-reply/{rid}/update", data={
+            "keyword": "營業", "match_type": "prefix", "reply_type": "text",
+            "reply_text": "平日 10:00-22:00", "flex_menu_id": "", "priority": "1",
+        })
+        assert "平日 10:00-22:00" in r.text and "開頭" in r.text
+        # 停用/啟用 toggle
+        r = client.post(f"/ui/auto-reply/{rid}/toggle")
+        assert "badge off" in r.text
+        r = client.post(f"/ui/auto-reply/{rid}/toggle")
+        assert "badge on" in r.text
+        # 刪除
+        r = client.post(f"/ui/auto-reply/{rid}/delete")
+        assert "營業" not in r.text or "尚無規則" in r.text
+
+    def test_create_text_rule_without_text_shows_error(self, client):
+        _login(client)
+        r = client.post("/ui/auto-reply", data={
+            "keyword": "測試", "match_type": "contains", "reply_type": "text",
+            "reply_text": "", "flex_menu_id": "", "priority": "0",
+        })
+        assert r.status_code == 200
+        assert "reply_text is required" in r.text
 
 
 class TestPortfolioUI:

@@ -9,6 +9,9 @@ Usage:
   2. legacy DB（有業務表、無 alembic_version）
        → 先跑 legacy_init_db()（create_all + 全部 _migrate_*,把 schema
          收斂到 baseline 等價）→ alembic stamp <baseline> → upgrade head
+       注意:create_all 以「當前 metadata」補缺表,可能把 post-baseline
+       的新表也先建出來;因此**建表類 revision 必須加 inspect 冪等守衛**
+       （見 versions/0002 的做法）,直到 legacy 路徑退役。
   3. 已納管（有 alembic_version）   → alembic upgrade head
 
 script_location 以套件路徑解析（saas_mvp/migrations 隨 pip install 發佈）,

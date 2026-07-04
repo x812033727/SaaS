@@ -1,0 +1,107 @@
+<h2>顧客管理</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<p class="muted">顧客透過 LINE 預約後自動建檔；此頁可補電話/備註、管理標籤，或刪除顧客（PII 清除）。</p>
+<p><button type="button" hx-get="/ui/customers" hx-target="#customers-card" hx-swap="innerHTML">← 回顧客清單</button></p>
+
+<h3>標籤管理</h3>
+<form hx-post="/ui/customers/tags" hx-target="#customers-card" hx-swap="innerHTML" class="row">
+  <label>名稱<input name="name" maxlength="64" required></label>
+  <label>顏色<input name="color" maxlength="16" placeholder="#ff0000"></label>
+  <button type="submit">新增標籤</button>
+</form>
+{% if tags %}
+<table>
+  <thead><tr><th>#</th><th>名稱</th><th>顏色</th><th></th></tr></thead>
+  <tbody>
+    {% for t in tags %}
+    {% if editing_tag_id == t.id %}
+    <tr>
+      <td data-label="#">{{ t.id }}</td>
+      <td colspan="3">
+        <form hx-post="/ui/customers/tags/{{ t.id }}/update" hx-target="#customers-card" hx-swap="innerHTML" class="row">
+          <label>名稱<input name="name" value="{{ t.name }}" maxlength="64" required></label>
+          <label>顏色<input name="color" value="{{ t.color or '' }}" maxlength="16" placeholder="#ff0000"></label>
+          <button type="submit">儲存</button>
+          <button type="button" hx-get="/ui/customers/list" hx-target="#customers-card" hx-swap="innerHTML">取消</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td data-label="#">{{ t.id }}</td>
+      <td data-label="名稱"><span class="badge">{{ t.name }}</span></td>
+      <td data-label="顏色">{{ t.color or '—' }}</td>
+      <td>
+        <button hx-get="/ui/customers/tags/{{ t.id }}/edit" hx-target="#customers-card" hx-swap="innerHTML">編輯</button>
+        <button hx-post="/ui/customers/tags/{{ t.id }}/delete" hx-target="#customers-card" hx-swap="innerHTML"
+                hx-confirm="確定刪除此標籤？所有顧客身上的此標籤將一併卸下。">刪除</button>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無標籤。</p>
+{% endif %}
+
+<h3>顧客</h3>
+{% if customers %}
+<table>
+  <thead>
+    <tr><th>#</th><th>名稱</th><th>電話</th><th>訂位</th><th>點數</th><th>等級</th><th>標籤</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for c in customers %}
+    {% if editing_customer_id == c.id %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="名稱">{{ c.display_name or '(未提供)' }}</td>
+      <td colspan="6">
+        <form hx-post="/ui/customers/{{ c.id }}/update" hx-target="#customers-card" hx-swap="innerHTML" class="row">
+          <label>電話<input name="phone" value="{{ c.phone or '' }}" maxlength="32"></label>
+          <label>備註<input name="note" value="{{ c.note or '' }}" maxlength="2048"></label>
+          <button type="submit">儲存</button>
+          <button type="button" hx-get="/ui/customers/list" hx-target="#customers-card" hx-swap="innerHTML">取消</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="名稱">{{ c.display_name or '(未提供)' }}{% if c.note %} <span class="muted">({{ c.note }})</span>{% endif %}</td>
+      <td data-label="電話">{{ c.phone or '—' }}</td>
+      <td data-label="訂位">{{ c.booking_count }}</td>
+      <td data-label="點數">{{ c.points_balance }}</td>
+      <td data-label="等級"><span class="badge">{{ c.tier }}</span></td>
+      <td data-label="標籤">
+        {% for t in tags_by_customer.get(c.id, []) %}
+        <span class="badge">{{ t.name }}
+          <button hx-post="/ui/customers/{{ c.id }}/tags/{{ t.id }}/detach"
+                  hx-target="#customers-card" hx-swap="innerHTML"
+                  title="卸下標籤">×</button>
+        </span>
+        {% endfor %}
+        {% if tags %}
+        <form hx-post="/ui/customers/{{ c.id }}/tags/attach" hx-target="#customers-card" hx-swap="innerHTML" class="inline">
+          <select name="tag_id">
+            <option value="">＋標籤</option>
+            {% for t in tags %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+          </select>
+          <button type="submit">掛上</button>
+        </form>
+        {% endif %}
+      </td>
+      <td>
+        <button hx-get="/ui/customers/{{ c.id }}/edit" hx-target="#customers-card" hx-swap="innerHTML">編輯</button>
+        <button hx-post="/ui/customers/{{ c.id }}/delete" hx-target="#customers-card" hx-swap="innerHTML"
+                hx-confirm="確定刪除此顧客？預約/訂單歷史將保留但不再關聯此人；點數與標籤紀錄將一併刪除。">刪除</button>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無顧客資料（顧客透過 LINE 預約後自動建檔）。</p>
+{% endif %}

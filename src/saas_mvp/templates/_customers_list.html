@@ -18,6 +18,7 @@
   <label>搜尋<input name="q" value="{{ q }}" maxlength="64" placeholder="名稱或電話"></label>
   <button type="submit">搜尋</button>
   <a class="btn" href="/ui/customers/export.csv">匯出 CSV</a>
+  <button type="button" hx-get="/ui/customers/list" hx-target="#customers-card" hx-swap="innerHTML">標籤管理</button>
 </form>
 
 <details>

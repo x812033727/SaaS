@@ -4,6 +4,8 @@
 <form hx-post="/ui/flex-menu/title" hx-target="#flex-card" hx-swap="innerHTML" class="row">
   <label>選單標題<input name="title" value="{{ menu.title or '' }}" maxlength="128"></label>
   <button type="submit">儲存標題</button>
+  <button type="button" hx-post="/ui/flex-menu/delete" hx-target="#flex-card" hx-swap="innerHTML"
+          hx-confirm="確定刪除整個選單？所有卡片將一併刪除，並重設為空白選單。">刪除選單</button>
 </form>
 
 <h3>新增卡片（目前 {{ cards|length }} / {{ max_cards }}）</h3>
