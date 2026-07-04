@@ -99,6 +99,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.line_client import (
     LineProfileClient,
@@ -472,7 +473,12 @@ def _claim_failed_webhook_event_for_retry(
     tenant_id: int,
     webhook_event_id: str,
 ) -> bool:
-    """把 reply 前失敗的 row 原子改回 pending；成功者才可重跑。"""
+    """把 reply 前失敗的 row 原子改回 pending；成功者才可重跑。
+
+    attempt_count 達 settings.webhook_max_attempts 後不再 claim，
+    LINE 的後續重送落入 duplicate-skip 分支（回 200 吞掉），
+    避免持續失敗的事件被無限重處理。
+    """
     now = _utcnow()
     result = db.execute(
         update(LineWebhookEvent)
@@ -480,6 +486,7 @@ def _claim_failed_webhook_event_for_retry(
             LineWebhookEvent.tenant_id == tenant_id,
             LineWebhookEvent.webhook_event_id == webhook_event_id,
             LineWebhookEvent.status == LineWebhookEventStatus.FAILED.value,
+            LineWebhookEvent.attempt_count < settings.webhook_max_attempts,
             or_(
                 LineWebhookEvent.last_stage.is_(None),
                 LineWebhookEvent.last_stage.in_(
@@ -549,7 +556,8 @@ def _mark_webhook_event_failed(
     now = _utcnow()
     row.status = LineWebhookEventStatus.FAILED.value
     row.last_stage = stage
-    row.last_error = type(exc).__name__
+    # 類名 + 例外訊息（截斷至欄位上限），供事後診斷；純類名資訊量不足。
+    row.last_error = f"{type(exc).__name__}: {exc}"[:255]
     row.updated_at = now
     db.commit()
 

@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     # SAAS_NOTIFICATION_MAX_PER_RUN: ops 腳本單次最多派送筆數（防推播暴衝）。
     notification_max_per_run: int = 500
 
+    # LINE webhook 事件冪等表（line_webhook_events）維運參數：
+    # SAAS_WEBHOOK_MAX_ATTEMPTS:    reply 前失敗事件的重試上限（含首次），
+    #                               達上限後 LINE 重送一律視為 duplicate 吞掉。
+    # SAAS_WEBHOOK_EVENT_TTL_DAYS:  ops/purge_webhook_events 清理 processed
+    #                               舊事件的預設保留天數。
+    webhook_max_attempts: int = 5
+    webhook_event_ttl_days: int = 30
+
     # 會員集點（P3）：每完成一筆預約給的點數（0 = 停用集點）
     points_per_booking: int = 10
 
