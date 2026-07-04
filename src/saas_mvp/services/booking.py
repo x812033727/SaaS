@@ -28,6 +28,7 @@ from saas_mvp.models.reservation import (
 from saas_mvp.services import booking_notify as booking_notify_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import waitlist as waitlist_svc
 from saas_mvp.services.reminders import (
     cancel_reminders_for_reservation,
     enqueue_reminders,
@@ -288,10 +289,22 @@ def cancel_reservation(
             ),
         )
 
+    # 候補：容量回補後在同一交易鎖內挑第一位符合的候補標 notified。
+    waitlist_entry_id = None
+    if slot is not None:
+        waitlist_entry_id = waitlist_svc.pick_first_eligible_in_txn(
+            db, tenant_id=tenant_id, slot=slot
+        )
+
     db.commit()
     db.refresh(reservation)
     # 後台即時通知：取消（狀態變更）推播到後台（best-effort）。
     _publish_reservation_event(tenant_id, "booking_cancel", reservation)
+    # 候補通知（best-effort，絕不影響取消主流程）。
+    if waitlist_entry_id is not None:
+        waitlist_svc.notify_candidate_best_effort(
+            db, tenant_id=tenant_id, entry_id=waitlist_entry_id
+        )
     return reservation
 
 
@@ -316,6 +329,7 @@ def reschedule_reservation(
     tenant_id: int,
     reservation_id: int,
     new_slot_id: int,
+    line_user_id: str | None = None,
 ) -> Reservation:
     """原子改期：把 confirmed 預約移到新時段。
 
@@ -326,6 +340,8 @@ def reschedule_reservation(
       4. 舊時段 booked_count 回補、新時段遞增、reservation.slot_id 改為新時段。
       5. 入列 change 通知（BOOKING_NOTIFY 開通且有 line_user_id 時）。
 
+    line_user_id 非 None 時（LINE 來源改期）額外驗證與建單者相符，
+    防他人改期（比照 cancel_reservation）；店家端（UI/REST）呼叫維持 None。
     new_slot_id == 既有 slot_id 為 no-op（直接回傳，不入列、不動容量）。
     已取消的預約不可改期（拋 ReservationNotFoundError）。
     """
@@ -336,6 +352,8 @@ def reschedule_reservation(
     )
     if reservation is None:
         raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    if line_user_id is not None and reservation.line_user_id != line_user_id:
+        raise ReservationPermissionError("reservation belongs to another LINE user")
     if reservation.status != RESERVATION_CONFIRMED:
         raise ReservationNotFoundError(
             f"reservation {reservation_id} is not active"
@@ -392,8 +410,52 @@ def reschedule_reservation(
         ),
     )
 
+    # 候補：舊時段容量回補後在同一交易鎖內挑候補標 notified。
+    waitlist_entry_id = None
+    if old_slot is not None:
+        waitlist_entry_id = waitlist_svc.pick_first_eligible_in_txn(
+            db, tenant_id=tenant_id, slot=old_slot
+        )
+
     db.commit()
     db.refresh(reservation)
+    # 候補通知（best-effort，絕不影響改期主流程）。
+    if waitlist_entry_id is not None:
+        waitlist_svc.notify_candidate_best_effort(
+            db, tenant_id=tenant_id, entry_id=waitlist_entry_id
+        )
+    return reservation
+
+
+def confirm_reservation(
+    db: Session,
+    *,
+    tenant_id: int,
+    reservation_id: int,
+    line_user_id: str,
+) -> Reservation:
+    """顧客自助確認出席（提醒訊息「確認出席」按鈕）。
+
+    擁有者驗證比照 cancel_reservation；重複確認為冪等 no-op
+    （保留首次確認時間）。已取消的預約不可確認。
+    """
+    reservation = (
+        tenant_query(db, Reservation, tenant_id)
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if reservation is None:
+        raise ReservationNotFoundError(f"reservation {reservation_id} not found")
+    if reservation.line_user_id != line_user_id:
+        raise ReservationPermissionError("reservation belongs to another LINE user")
+    if reservation.status != RESERVATION_CONFIRMED:
+        raise ReservationNotFoundError(
+            f"reservation {reservation_id} is not active"
+        )
+    if reservation.customer_confirmed_at is None:
+        reservation.customer_confirmed_at = _utcnow()
+        db.commit()
+        db.refresh(reservation)
     return reservation
 
 
@@ -428,15 +490,14 @@ def get_reservation(
     return reservation
 
 
-def list_reservations(
+def _reservations_query(
     db: Session,
     *,
     tenant_id: int,
     status: str | None = None,
     line_user_id: str | None = None,
     slot_id: int | None = None,
-) -> list[Reservation]:
-    """列出租戶預約，可依 status / line_user_id / slot_id 篩選。"""
+):
     q = tenant_query(db, Reservation, tenant_id)
     if status is not None:
         q = q.filter(Reservation.status == status)
@@ -444,7 +505,54 @@ def list_reservations(
         q = q.filter(Reservation.line_user_id == line_user_id)
     if slot_id is not None:
         q = q.filter(Reservation.slot_id == slot_id)
-    return q.order_by(Reservation.id).all()
+    return q
+
+
+def list_reservations(
+    db: Session,
+    *,
+    tenant_id: int,
+    status: str | None = None,
+    line_user_id: str | None = None,
+    slot_id: int | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Reservation]:
+    """列出租戶預約，可依 status / line_user_id / slot_id 篩選。
+
+    limit=None（預設）回傳全部，內部呼叫端行為不變；REST 端點由 router
+    層帶入分頁預設值。
+    """
+    q = _reservations_query(
+        db,
+        tenant_id=tenant_id,
+        status=status,
+        line_user_id=line_user_id,
+        slot_id=slot_id,
+    ).order_by(Reservation.id)
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
+
+
+def count_reservations(
+    db: Session,
+    *,
+    tenant_id: int,
+    status: str | None = None,
+    line_user_id: str | None = None,
+    slot_id: int | None = None,
+) -> int:
+    """同 list_reservations 篩選條件的總筆數（供分頁 X-Total-Count）。"""
+    return _reservations_query(
+        db,
+        tenant_id=tenant_id,
+        status=status,
+        line_user_id=line_user_id,
+        slot_id=slot_id,
+    ).count()
 
 
 def list_my_reservations(

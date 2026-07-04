@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}顧客 #{{ customer.id }} · LINE Bot 管理{% endblock %}
+{% block content %}
+<p><a href="/ui/customers">← 回顧客清單</a></p>
+<div id="customer-card">
+  {% include "_customer_detail.html" %}
+</div>
+{% endblock %}

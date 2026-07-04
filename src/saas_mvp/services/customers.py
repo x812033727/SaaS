@@ -33,12 +33,39 @@ def _get_or_404(db: Session, tenant_id: int, customer_id: int) -> Customer:
     return customer
 
 
-def list_customers(db: Session, *, tenant_id: int) -> list[Customer]:
-    return (
-        tenant_query(db, Customer, tenant_id)
-        .order_by(Customer.id.desc())
-        .all()
-    )
+def _customers_query(db: Session, tenant_id: int, q: str | None = None):
+    query = tenant_query(db, Customer, tenant_id)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            (Customer.display_name.ilike(like)) | (Customer.phone.ilike(like))
+        )
+    return query
+
+
+def list_customers(
+    db: Session,
+    *,
+    tenant_id: int,
+    q: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Customer]:
+    """列出租戶顧客（新→舊）。limit=None 回傳全部，內部呼叫端行為不變。
+
+    q：以顯示名稱 / 電話模糊搜尋（後台顧客頁用）。
+    """
+    query = _customers_query(db, tenant_id, q).order_by(Customer.id.desc())
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
+
+
+def count_customers(db: Session, *, tenant_id: int, q: str | None = None) -> int:
+    """租戶顧客總數（供分頁 X-Total-Count / 後台頁碼）。"""
+    return _customers_query(db, tenant_id, q).count()
 
 
 def get_customer(db: Session, *, tenant_id: int, customer_id: int) -> Customer:

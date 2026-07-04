@@ -97,6 +97,12 @@ class TestUtilization:
         assert by_hour[18]["booked"] == 5 and by_hour[18]["capacity"] == 10
         assert by_hour[18]["utilization"] == 0.5
         assert by_hour[12]["utilization"] == 0.0
+        # 小時遞增排序（SQL GROUP BY 後 ORDER BY）
+        assert [u["hour"] for u in util] == sorted(u["hour"] for u in util)
+
+    def test_empty(self, db):
+        tid = _tenant(db)
+        assert an.slot_utilization(db, tenant_id=tid) == []
 
 
 class TestTopCustomers:

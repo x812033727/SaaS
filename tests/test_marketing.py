@@ -163,6 +163,52 @@ def test_cap_enforcement(db):
     assert fake.call_count == 2
 
 
+def test_rerun_with_many_existing_sent_skips_without_resend(db):
+    """既有大量 sent 記錄時重跑：全部冪等跳過、不重推（批次預撈 map 路徑）。"""
+    tid = _tenant(db)
+    for i in range(8):
+        _customer(db, tid, line=f"UB{i}", birthday=datetime.date(1990, 6, 15))
+    db.commit()
+    camp = Campaign(
+        tenant_id=tid, type=CAMPAIGN_BIRTHDAY, name="bd",
+        message_template="hi {name}",
+    )
+    db.add(camp)
+    db.commit()
+    fake = FakeLinePushClient()
+    r1 = marketing_svc.run_campaign(db, campaign=camp, now=_NOW, cap=100, push_client=fake)
+    assert r1["sent"] == 8
+    r2 = marketing_svc.run_campaign(db, campaign=camp, now=_NOW, cap=100, push_client=fake)
+    assert r2["sent"] == 0
+    assert r2["skipped"] == 8
+    assert fake.call_count == 8  # 未重推
+    sends = db.execute(
+        select(CampaignSend).where(CampaignSend.campaign_id == camp.id)
+    ).scalars().all()
+    assert len(sends) == 8  # 未新增列
+
+
+def test_quota_recalibration_across_interval(db, monkeypatch):
+    """額度大於校準週期（20）時，跨週期校準後仍精準停在額度上限。"""
+    from saas_mvp.config import settings
+
+    monkeypatch.setattr(settings, "push_allowance_base", 25)
+    tid = _tenant(db)
+    for i in range(30):
+        _customer(db, tid, line=f"UQ{i}", birthday=datetime.date(1990, 6, 15))
+    db.commit()
+    camp = Campaign(
+        tenant_id=tid, type=CAMPAIGN_BIRTHDAY, name="bd",
+        message_template="hi {name}",
+    )
+    db.add(camp)
+    db.commit()
+    fake = FakeLinePushClient()
+    r = marketing_svc.run_campaign(db, campaign=camp, now=_NOW, cap=100, push_client=fake)
+    assert r["sent"] == 25
+    assert fake.call_count == 25
+
+
 def test_reward_points_atomic(db):
     tid = _tenant(db)
     c = _customer(db, tid, line="U1", birthday=datetime.date(1990, 6, 15))

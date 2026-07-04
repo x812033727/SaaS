@@ -581,9 +581,10 @@ class TestNoRuntimeChange:
 
         歷史值為 5（翻譯路徑既有呼叫點：配額超量訊息、純 /lang 確認、無效語言碼、
         /lang 持久化確認、6c 翻譯回覆）。預約（booking）功能在**全新獨立路徑**
-        ``_handle_booking_event`` 新增 1 個 reply 呼叫點；自動回覆（auto_reply）
-        規則命中亦在**獨立路徑**新增 1 個 reply 呼叫點 → 7。翻譯路徑的 5 個
-        呼叫點維持不變（bot_mode 非該功能時走原邏輯，零行為改動）。
+        ``_handle_booking_event`` 新增 1 個 reply 呼叫點；關鍵字自動回覆
+        （bot_mode="auto_reply"）路徑再新增 1 個 → 7。翻譯路徑的 5 個
+        呼叫點維持不變。預約/自動回覆各自集中於單一呼叫點，
+        新增對話功能時應經由 dispatcher 回傳文字，而非增加 reply 呼叫點。
 
         註：黑名單（blacklist）婉拒訊息走既有預約 reply 呼叫點回覆，未新增呼叫。
         """

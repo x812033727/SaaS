@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% block title %}顧客管理{% endblock %}
+{% block title %}顧客 · LINE Bot 管理{% endblock %}
 {% block content %}
+<h1>顧客</h1>
 <div class="card" id="customers-card">
-  {% include "_customers.html" %}
+  {% include "_customers_list.html" %}
 </div>
 {% endblock %}

@@ -11,6 +11,10 @@ import pathlib
 # 這裡用 [] 而非 setdefault，確保無論環境原本是什麼值都覆蓋。
 os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"
 
+# 關閉 /ui CSRF（double-submit token），既有 UI 測試不必逐一帶 token；
+# CSRF 行為本身由 tests/test_ui_csrf.py 以 monkeypatch 動態開啟專測。
+os.environ["SAAS_UI_CSRF_ENABLED"] = "false"
+
 # DB URL 設 in-memory：必須在任何 saas_mvp 模組 import 之前設定，
 # 因為 db.py 在模組層級就建立 engine（settings.database_url）。
 # setdefault：若 CI/環境已有真實 DB URL 則不覆蓋。
@@ -49,6 +53,7 @@ import saas_mvp.models.customer as _cust  # noqa: F401, E402
 import saas_mvp.models.booking_slot as _bslot  # noqa: F401, E402
 import saas_mvp.models.reservation as _resv  # noqa: F401, E402
 import saas_mvp.models.reservation_reminder as _rem  # noqa: F401, E402
+import saas_mvp.models.booking_waitlist as _wl  # noqa: F401, E402
 import saas_mvp.models.coupon as _coupon  # noqa: F401, E402
 import saas_mvp.models.coupon_redemption as _credeem  # noqa: F401, E402
 import saas_mvp.models.point_transaction as _ptx  # noqa: F401, E402
@@ -58,6 +63,7 @@ import saas_mvp.models.order_item as _oitem  # noqa: F401, E402
 import saas_mvp.models.tenant_feature as _tf  # noqa: F401, E402
 import saas_mvp.models.feature_change_history as _fch  # noqa: F401, E402
 import saas_mvp.models.feature_subscription as _fsub  # noqa: F401, E402
+import saas_mvp.models.subscription_charge as _subchg  # noqa: F401, E402
 import saas_mvp.models.location as _loc  # noqa: F401, E402
 import saas_mvp.models.staff as _staff  # noqa: F401, E402
 import saas_mvp.models.staff_shift as _sshift  # noqa: F401, E402

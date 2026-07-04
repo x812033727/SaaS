@@ -67,14 +67,17 @@ def import_all_models() -> None:
     # 預約（booking）相關模型：customer 先於 reservation（FK 依賴）。
     from saas_mvp.models import customer, booking_slot  # noqa: F401
     from saas_mvp.models import reservation, reservation_reminder  # noqa: F401
+    # 額滿候補（依賴 booking_slot FK）。
+    from saas_mvp.models import booking_waitlist  # noqa: F401
     # P3 優惠券/會員
     from saas_mvp.models import coupon, coupon_redemption, point_transaction  # noqa: F401
     # P4 商品銷售
     from saas_mvp.models import product, order, order_item  # noqa: F401
     # 橫向：進階功能旗標 + 訂閱
     from saas_mvp.models import tenant_feature, feature_change_history  # noqa: F401
-    # 進階功能訂閱月費（綠界信用卡定期定額 recurring）。
+    # 進階功能訂閱月費（綠界信用卡定期定額 recurring）+ 逐期扣款明細。
     from saas_mvp.models import feature_subscription  # noqa: F401
+    from saas_mvp.models import subscription_charge  # noqa: F401
     # PHASE 1：多分店 / 員工排班 / 服務目錄（location 先於 staff，staff 先於 service_staff）。
     from saas_mvp.models import location  # noqa: F401
     from saas_mvp.models import staff, staff_shift, staff_leave  # noqa: F401
@@ -101,7 +104,26 @@ def import_all_models() -> None:
 
 
 def init_db() -> None:
-    """Create all tables (idempotent)."""
+    """初始化/升級 schema（冪等）——delegate 到 Alembic 遷移三分支。
+
+    保留此函式名：app.py lifespan 與 tests/conftest.py 的 no-op 替換都
+    以 `init_db` 為錨點。實際邏輯見 ops/migrate.run_migrations()：
+    全新 DB → upgrade head；legacy DB → legacy_init_db() 收斂 + stamp；
+    已納管 → upgrade head。容器部署由 entrypoint 先跑
+    `python -m saas_mvp.ops.migrate`，lifespan 再跑一次也只是冪等 no-op。
+    """
+    from saas_mvp.ops.migrate import run_migrations  # 延遲 import 防循環
+
+    run_migrations()
+
+
+def legacy_init_db() -> None:
+    """（過渡保留）Alembic 導入前的建表 + 手寫遷移。
+
+    僅供 ops/migrate 對「未納管的 legacy DB」做一次性收斂到 baseline
+    等價 schema；新的 schema 變更一律寫 Alembic revision，
+    **不要再新增 _migrate_* 函式**。待所有部署皆 stamp 後可整段刪除。
+    """
     # import models so their metadata is registered
     import_all_models()
     Base.metadata.create_all(bind=engine)
@@ -128,6 +150,7 @@ def init_db() -> None:
     _migrate_add_coupon_order_fields()
     _migrate_add_tenant_reminder_hours()
     _migrate_add_profile_announcement()
+    _migrate_add_reservation_customer_confirmed()
 
 
 def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
@@ -152,11 +175,21 @@ def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
         )
 
 
+def _migrate_add_reservation_customer_confirmed() -> None:
+    """為既有 booking_reservations 補 customer_confirmed_at 欄
+    （提醒訊息「確認出席」互動；NULL=未確認，向後相容）。"""
+    _add_column_if_missing(
+        "booking_reservations", "customer_confirmed_at", "TIMESTAMP"
+    )
+
+
 def _migrate_add_customer_blacklist() -> None:
     """為既有 booking_customers 表補上黑名單欄位（blacklisted + blacklist_reason）。
 
     blacklisted 帶 NOT NULL DEFAULT FALSE，既有顧客自動回填 false（零影響）；
     blacklist_reason 為 nullable 備註。只做 ADD COLUMN，失敗僅記 warning，不阻擋啟動。
+    （upstream 合併註記：Alembic 納管後的對應 revision 為 0004——legacy DB 走
+    本函式收斂，fresh/managed DB 走 revision;兩者冪等互不衝突。）
     """
     _add_column_if_missing(
         "booking_customers", "blacklisted", "BOOLEAN NOT NULL DEFAULT FALSE"

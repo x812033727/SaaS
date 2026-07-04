@@ -14,7 +14,39 @@
   </label>
   <label>訊息範本<input name="message_template" required placeholder="您好 {name}"></label>
   <label>排程時間<input name="schedule_at" type="datetime-local"></label>
-  <label>受眾 JSON<input name="segment_json" placeholder='{"tier":"vip"}'></label>
+  <fieldset class="col">
+    <legend>受眾條件（皆選填，未選 = 全部顧客）</legend>
+    {% if tags %}
+    <div class="row">
+      標籤（須全部符合）：
+      {% for t in tags %}
+      <label><input type="checkbox" name="segment_tag_ids" value="{{ t.id }}"> {{ t.name }}</label>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="row">
+      <label>會員等級
+        <select name="segment_tier">
+          <option value="">不限</option>
+          <option value="regular">regular</option>
+          <option value="silver">silver</option>
+          <option value="gold">gold</option>
+        </select>
+      </label>
+      <label>最少預約次數<input name="segment_min_bookings" type="number" min="0" placeholder="不限"></label>
+      {% if locations %}
+      <label>分店
+        <select name="segment_location_id">
+          <option value="">不限</option>
+          {% for loc in locations %}
+          <option value="{{ loc.id }}">{{ loc.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+    </div>
+    <label>進階：原始 JSON（有填則優先）<input name="segment_json" placeholder='{"tier":"vip"}'></label>
+  </fieldset>
   <label>獎勵類型
     <select name="reward_type">
       <option value="">無</option>
@@ -48,7 +80,12 @@
     {% else %}
     <tr>
       <td data-label="#">{{ c.id }}</td>
-      <td data-label="名稱">{{ c.name }}</td>
+      <td data-label="名稱">{{ c.name }}
+        {% set chips = segment_chips.get(c.id) if segment_chips else none %}
+        {% if chips %}
+        <div class="muted">受眾：{{ chips | join("；") }}</div>
+        {% endif %}
+      </td>
       <td data-label="類型">{{ c.type }}</td>
       <td data-label="獎勵">{% if c.reward_type %}{{ c.reward_type }}:{{ c.reward_value }}{% else %}—{% endif %}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if c.is_active else 'off' }}">{{ '啟用' if c.is_active else '停用' }}</span></td>

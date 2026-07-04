@@ -174,7 +174,7 @@ def list_tags_for_customer(
 
 # ── 分眾查詢（Phase 4 行銷 targeting 後端） ────────────────────────────────────
 
-def segment_customers(
+def _segment_query(
     db: Session,
     *,
     tenant_id: int,
@@ -183,15 +183,7 @@ def segment_customers(
     min_bookings: int | None = None,
     last_booked_before: datetime.datetime | None = None,
     location_id: int | None = None,
-) -> list[Customer]:
-    """以多條件組合篩出顧客（純 tenant_query filter 組合）。
-
-    - tag_ids：須同時擁有**所有**指定標籤（AND 語意）。
-    - tier：會員等級精確比對。
-    - min_bookings：booking_count >= min_bookings。
-    - last_booked_before：last_booked_at < 此時間（找久未回訪者）。
-    - location_id：顧客綁定分店精確比對。
-    """
+):
     q = tenant_query(db, Customer, tenant_id)
 
     if tier is not None:
@@ -216,4 +208,63 @@ def segment_customers(
                 link_alias, link_alias.c.customer_id == Customer.id
             )
 
-    return q.order_by(Customer.id).all()
+    return q
+
+
+def segment_customers(
+    db: Session,
+    *,
+    tenant_id: int,
+    tag_ids: list[int] | None = None,
+    tier: str | None = None,
+    min_bookings: int | None = None,
+    last_booked_before: datetime.datetime | None = None,
+    location_id: int | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Customer]:
+    """以多條件組合篩出顧客（純 tenant_query filter 組合）。
+
+    - tag_ids：須同時擁有**所有**指定標籤（AND 語意）。
+    - tier：會員等級精確比對。
+    - min_bookings：booking_count >= min_bookings。
+    - last_booked_before：last_booked_at < 此時間（找久未回訪者）。
+    - location_id：顧客綁定分店精確比對。
+    - limit=None（預設）回傳全部；行銷派送等內部呼叫端行為不變。
+    """
+    q = _segment_query(
+        db,
+        tenant_id=tenant_id,
+        tag_ids=tag_ids,
+        tier=tier,
+        min_bookings=min_bookings,
+        last_booked_before=last_booked_before,
+        location_id=location_id,
+    ).order_by(Customer.id)
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
+
+
+def count_segment_customers(
+    db: Session,
+    *,
+    tenant_id: int,
+    tag_ids: list[int] | None = None,
+    tier: str | None = None,
+    min_bookings: int | None = None,
+    last_booked_before: datetime.datetime | None = None,
+    location_id: int | None = None,
+) -> int:
+    """同 segment_customers 篩選條件的總筆數（供分頁 X-Total-Count）。"""
+    return _segment_query(
+        db,
+        tenant_id=tenant_id,
+        tag_ids=tag_ids,
+        tier=tier,
+        min_bookings=min_bookings,
+        last_booked_before=last_booked_before,
+        location_id=location_id,
+    ).count()

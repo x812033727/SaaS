@@ -1,6 +1,7 @@
 <h2>顧客管理</h2>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 <p class="muted">顧客透過 LINE 預約後自動建檔；此頁可補電話/備註、管理標籤，或刪除顧客（PII 清除）。</p>
+<p><button type="button" hx-get="/ui/customers" hx-target="#customers-card" hx-swap="innerHTML">← 回顧客清單</button></p>
 
 <h3>標籤管理</h3>
 <form hx-post="/ui/customers/tags" hx-target="#customers-card" hx-swap="innerHTML" class="row">

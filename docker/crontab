@@ -1,0 +1,32 @@
+# supercronic crontab（UTC；scheduler 服務由 scheduler.sh exec supercronic 執行）
+# 慣例：
+#  - 每分鐘的提醒 + 異動通知合成一條並以 flock 包裹 → 嚴格串行
+#    （兩者共用推播月配額，維持原 bash 迴圈的串行語意；flock -n = 上一輪
+#    未跑完則本輪直接跳過，不堆積）。
+#  - supercronic 對同一 job 預設不重疊執行；每日/每時任務靠 cron 語意
+#    天然去重（原 /tmp/sched marker 機制已移除）。
+#  - heartbeat：compose healthcheck 判 /tmp/sched/heartbeat 新鮮度 <180s。
+
+# 每分鐘：到期提醒 + 預約異動通知（串行、防重疊）
+* * * * * flock -n /tmp/sched/ops.lock -c "python -m saas_mvp.ops.send_due_reminders --apply && python -m saas_mvp.ops.send_due_notifications --apply"
+
+# 每小時整點：排程/限時行銷活動
+0 * * * * python -m saas_mvp.ops.run_scheduled_campaigns --apply
+
+# 每小時 30 分：重試 cancel_failed 訂閱的綠界停扣
+30 * * * * python -m saas_mvp.ops.retry_cancel_failed --apply
+
+# 每日 09:00 UTC：生日活動
+0 9 * * * python -m saas_mvp.ops.run_birthday_campaigns --apply
+
+# 每日 14:00 UTC：沉睡客戶喚回
+0 14 * * * python -m saas_mvp.ops.run_reactivation --apply
+
+# 每日 04:00 UTC：清理過期 webhook 冪等事件
+0 4 * * * python -m saas_mvp.ops.purge_webhook_events --apply --include-failed
+
+# 每 6 小時（:15）：帳務健康檢查（唯讀報表；異常 exit 1 會出現在容器日誌）
+15 */6 * * * python -m saas_mvp.ops.check_billing_health
+
+# 每分鐘：心跳（compose healthcheck 判活）
+* * * * * touch /tmp/sched/heartbeat

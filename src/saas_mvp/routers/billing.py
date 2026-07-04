@@ -173,7 +173,8 @@ def subscribe(
 
 
 @router.post("/features/{feature}/unsubscribe", response_model=FeatureSubscribeResponse)
-def unsubscribe(
+def unsubscribe(  # 保持 sync def：內含 ECPay cancel_period 阻塞網路呼叫（10s timeout），
+    # FastAPI 會丟 threadpool 執行；改 async def 會阻塞事件迴圈。
     feature: str,
     actor: Actor = Depends(get_current_actor),
     db: Session = Depends(get_db),

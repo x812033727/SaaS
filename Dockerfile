@@ -19,14 +19,35 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
+# supercronic：容器友善 cron（單一 Go binary），供 scheduler 服務跑 docker/crontab。
+# 校驗值為上游 README 公告的 SHA1（aptible/supercronic releases）；升版時以
+# --build-arg 覆寫兩者。用 python 下載（基底映像內建），免安裝 curl。
+ARG SUPERCRONIC_VERSION=v0.2.33
+ARG SUPERCRONIC_SHA1SUM=71b0d58cc53f6bd72cf2f293e09e294b79c666d8
+RUN python - <<EOF
+import hashlib, os, urllib.request
+version = "${SUPERCRONIC_VERSION}"
+expected = "${SUPERCRONIC_SHA1SUM}"
+url = f"https://github.com/aptible/supercronic/releases/download/{version}/supercronic-linux-amd64"
+data = urllib.request.urlopen(url, timeout=120).read()
+actual = hashlib.sha1(data).hexdigest()
+assert actual == expected, f"supercronic checksum mismatch: {actual} != {expected}"
+path = "/usr/local/bin/supercronic"
+with open(path, "wb") as f:
+    f.write(data)
+os.chmod(path, 0o755)
+print(f"supercronic {version} installed ({len(data)} bytes)")
+EOF
+
 # 先只複製套件中繼資料 + 原始碼以利 layer 快取（psycopg[binary]/cryptography 皆有 wheel，
 # 無需系統編譯工具）。安裝含 prod 額外相依（gunicorn + psycopg + redis）。
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install ".[prod]"
 
-# 進入點 + 排程腳本
+# 進入點 + 排程腳本 + crontab
 COPY docker/entrypoint.sh docker/scheduler.sh /usr/local/bin/
+COPY docker/crontab /app/docker/crontab
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/scheduler.sh
 
 # 以非 root 執行（資安最佳實務）

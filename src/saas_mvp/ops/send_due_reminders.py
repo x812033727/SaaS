@@ -156,7 +156,23 @@ def _process_one(
 
         try:
             access_token = cfg.access_token  # Fernet 解密
-            push_client.push(rem.line_user_id, text, access_token=access_token)
+            # 提醒附「確認出席 / 取消預約」互動按鈕（postback 走既有
+            # confirm / cancel 對話分支；擁有者驗證在服務層）。
+            push_client.push(
+                rem.line_user_id,
+                text,
+                access_token=access_token,
+                quick_reply=[
+                    (
+                        "確認出席",
+                        f"action=confirm&reservation_id={rem.reservation_id}",
+                    ),
+                    (
+                        "取消預約",
+                        f"action=cancel&reservation_id={rem.reservation_id}",
+                    ),
+                ],
+            )
         except Exception as exc:  # noqa: BLE001 - per-row failure must not stop batch
             db.rollback()
             # 在新交易標 failed（rollback 後 rem 已過期，重新鎖定）
@@ -179,9 +195,10 @@ def _process_one(
         rem.sent_at = now
         rem.attempt_count = (rem.attempt_count or 0) + 1
         rem.updated_at = now
+        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）；
+        # 與標 sent 同交易單一 commit（每筆 2 commits → 1）。
+        push_quota_svc.consume_push_in_txn(db, rem.tenant_id, now=now)
         db.commit()
-        # 後扣：推播成功後才計量本月推播額度（只計實際送出者）。
-        push_quota_svc.consume_push(db, rem.tenant_id, now=now)
         return ReminderResult(reminder_id, "sent", "pushed")
 
 

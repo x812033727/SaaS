@@ -9,14 +9,19 @@
 `get_current_actor`（仍只認 header）。所有資料一律走既有 service 層，回應永不
 輸出明文 channel_secret / access_token，只揭露 has_* 布林與 credential_status。
 
-CSRF（已知限制）：MVP 僅靠 SameSite=Lax + 同源，未實作 per-request CSRF token。
-若日後將 UI 暴露給不可信的同源來源，應加上 double-submit cookie token。
+CSRF：double-submit cookie token——登入時發非 httpOnly 的 csrf_token cookie，
+所有 /ui 非 GET 請求須以 X-CSRF-Token header（HTMX 由 base.html body 級
+hx-headers 自動帶）或表單欄位 csrf_token 回傳同值，router 級依賴
+_enforce_csrf 常數時間比對，不符回 403。SAAS_UI_CSRF_ENABLED=false 可關閉
+（僅測試環境）。
 """
 
 from __future__ import annotations
 
 import datetime
+import hmac
 import html
+import secrets
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
@@ -69,6 +74,8 @@ from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import segments as segments_svc
+from saas_mvp.services import notifications_history as notif_history_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import line_chat as line_chat_svc
@@ -82,7 +89,57 @@ from fastapi import HTTPException
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
 
-router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
+# ── CSRF（double-submit cookie token）───────────────────────────────────────
+
+_CSRF_COOKIE_NAME = "csrf_token"
+_CSRF_HEADER_NAME = "x-csrf-token"
+_CSRF_FORM_FIELD = "csrf_token"
+# 尚無 session 的端點（登入/註冊表單提交）豁免；其 GET 頁本就放行。
+_CSRF_EXEMPT_PATHS = {"/ui/login", "/ui/register"}
+
+
+async def _enforce_csrf(request: Request) -> None:
+    """/ui 全端點 router 級依賴：非 GET 請求驗 double-submit CSRF token。
+
+    token 來源依序：X-CSRF-Token header（HTMX 走 base.html body 級
+    hx-headers 屬性繼承自動帶）→ 表單欄位 csrf_token（傳統 <form> hidden
+    field）。與 cookie 常數時間比對，不符回 403。
+
+    Starlette 會 cache request._form，此處 await request.form() 不影響
+    後續 handler 的 Form(...)/File(...) 參數解析。
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    if not settings.ui_csrf_enabled:  # 動態讀，測試可 monkeypatch
+        return
+    if request.url.path in _CSRF_EXEMPT_PATHS:
+        return
+    cookie_token = request.cookies.get(_CSRF_COOKIE_NAME, "")
+    supplied = request.headers.get(_CSRF_HEADER_NAME, "")
+    if not supplied:
+        content_type = request.headers.get("content-type", "")
+        if content_type.startswith(
+            ("application/x-www-form-urlencoded", "multipart/form-data")
+        ):
+            form = await request.form()
+            supplied = str(form.get(_CSRF_FORM_FIELD) or "")
+    if (
+        not cookie_token
+        or not supplied
+        or not hmac.compare_digest(cookie_token, supplied)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF token missing or invalid",
+        )
+
+
+router = APIRouter(
+    prefix="/ui",
+    tags=["ui"],
+    include_in_schema=False,
+    dependencies=[Depends(_enforce_csrf)],
+)
 
 # 送往付費 LLM 的問題字數上限（與 routers/ai.py AskRequest 一致），防成本放大。
 _AI_QUESTION_MAX_LEN = 2000
@@ -91,11 +148,25 @@ _AI_QUESTION_MAX_LEN = 2000
 # ── 共用工具 ────────────────────────────────────────────────────────────────
 
 def _set_auth_cookie(response: Response, token: str) -> None:
-    """把 JWT 寫入 httpOnly cookie；prod 加 Secure，dev/test 不加（方便本機/測試）。"""
+    """把 JWT 寫入 httpOnly cookie；prod 加 Secure，dev/test 不加（方便本機/測試）。
+
+    一併發放 double-submit CSRF cookie（非 httpOnly——前端模板/HTMX 需可讀
+    回傳；token 本身不含任何機密，防護力來自「攻擊者跨站無法讀取」）。
+    所有登入路徑（/ui/login、/ui/register、OAuth callback）皆經此函式。
+    """
     response.set_cookie(
         key=_UI_COOKIE_NAME,
         value=token,
         httponly=True,
+        samesite="lax",
+        secure=settings.env not in ("dev", "test"),
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+    )
+    response.set_cookie(
+        key=_CSRF_COOKIE_NAME,
+        value=secrets.token_urlsafe(32),
+        httponly=False,
         samesite="lax",
         secure=settings.env not in ("dev", "test"),
         max_age=settings.access_token_expire_minutes * 60,
@@ -109,6 +180,8 @@ def _ctx(request: Request, actor: Actor | None = None, **extra) -> dict:
         "request": request,
         "current_user": actor.user if actor else None,
         "is_admin": bool(actor and actor.user.is_admin),
+        # CSRF：模板 hidden field 與 base.html hx-headers 用
+        "csrf_token": request.cookies.get(_CSRF_COOKIE_NAME, ""),
     }
     base.update(extra)
     return base
@@ -202,6 +275,7 @@ def register_submit(
 def logout():
     resp = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
     resp.delete_cookie(_UI_COOKIE_NAME, path="/")
+    resp.delete_cookie(_CSRF_COOKIE_NAME, path="/")
     return resp
 
 
@@ -727,23 +801,36 @@ def booking_create_slot(
     slot_start: str = Form(...),
     max_capacity: int = Form(...),
     walkin_reserved: int = Form(0),
+    duration_minutes: str = Form(""),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
     tid = actor.user.tenant_id
     error = None
     try:
+        start = _parse_slot_start(slot_start)
+        # 選填時長（分）→ slot_end；供 LINE 引導流程依服務時長過濾時段。
+        duration = _opt_int(duration_minutes)
+        slot_end = None
+        if duration is not None:
+            if duration <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="時長需為正整數（分鐘）",
+                )
+            slot_end = start + datetime.timedelta(minutes=duration)
         slots_svc.create_slot(
             db,
             tenant_id=tid,
-            slot_start=_parse_slot_start(slot_start),
+            slot_start=start,
+            slot_end=slot_end,
             max_capacity=max_capacity,
             walkin_reserved=walkin_reserved,
         )
     except HTTPException as exc:
         error = str(exc.detail)
     except ValueError:
-        error = "時段時間格式錯誤"
+        error = "時段時間或時長格式錯誤"
     return templates.TemplateResponse(
         "_booking_slots.html", _booking_ctx(request, actor, db, error=error)
     )
@@ -927,7 +1014,7 @@ def booking_mark_attendance(
 
 # ── 店家自助：顧客管理（CRM + 標籤） ─────────────────────────────────────────
 
-def _customers_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+def _customers_admin_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     from saas_mvp.models.customer_tag_link import CustomerTagLink
 
     tid = actor.user.tenant_id
@@ -947,15 +1034,11 @@ def _customers_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict
     )
 
 
-@router.get("/customers", response_class=HTMLResponse)
-def customers_page(
-    request: Request,
-    actor: Actor = Depends(require_ui_user),
-    db: Session = Depends(get_db),
-):
-    return templates.TemplateResponse(
-        "customers.html", _customers_ctx(request, actor, db)
-    )
+# 註：本區段（顧客管理/標籤 CRUD/inline 編輯/刪除）與後方「顧客 CRM」區段
+# （列表/搜尋/分頁/detail/匯入匯出/點數）在 upstream 合併時整併：
+# GET /customers 主頁由 CRM 區段提供；本區段保留 /customers/list（標籤管理
+# 檢視）與 tag 編輯/刪除、顧客 inline 編輯/刪除。建立標籤統一由 CRM 區段的
+# POST /customers/tags 處理（支援帶/不帶 customer_id 兩種來源表單）。
 
 
 @router.get("/customers/list", response_class=HTMLResponse)
@@ -964,28 +1047,9 @@ def customers_list_partial(
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
-    """顧客列表 partial（編輯列「取消」的 hx-get 目標）。"""
+    """顧客管理 partial（標籤 CRUD + inline 編輯檢視；編輯列「取消」的目標）。"""
     return templates.TemplateResponse(
-        "_customers.html", _customers_ctx(request, actor, db)
-    )
-
-
-@router.post("/customers/tags", response_class=HTMLResponse)
-def customers_create_tag(
-    request: Request,
-    name: str = Form(...),
-    color: str = Form(""),
-    actor: Actor = Depends(require_ui_user),
-    db: Session = Depends(get_db),
-):
-    tid = actor.user.tenant_id
-    error = None
-    try:
-        segments_svc.create_tag(db, tenant_id=tid, name=name, color=color or None)
-    except HTTPException as exc:
-        error = str(exc.detail)
-    return templates.TemplateResponse(
-        "_customers.html", _customers_ctx(request, actor, db, error=error)
+        "_customers.html", _customers_admin_ctx(request, actor, db)
     )
 
 
@@ -998,7 +1062,7 @@ def customers_edit_tag_form(
 ):
     return templates.TemplateResponse(
         "_customers.html",
-        _customers_ctx(request, actor, db, editing_tag_id=tag_id),
+        _customers_admin_ctx(request, actor, db, editing_tag_id=tag_id),
     )
 
 
@@ -1023,7 +1087,7 @@ def customers_update_tag(
         editing_tag_id = tag_id
     return templates.TemplateResponse(
         "_customers.html",
-        _customers_ctx(request, actor, db, error=error, editing_tag_id=editing_tag_id),
+        _customers_admin_ctx(request, actor, db, error=error, editing_tag_id=editing_tag_id),
     )
 
 
@@ -1041,7 +1105,7 @@ def customers_delete_tag(
     except HTTPException as exc:
         error = str(exc.detail)
     return templates.TemplateResponse(
-        "_customers.html", _customers_ctx(request, actor, db, error=error)
+        "_customers.html", _customers_admin_ctx(request, actor, db, error=error)
     )
 
 
@@ -1054,7 +1118,7 @@ def customers_edit_form(
 ):
     return templates.TemplateResponse(
         "_customers.html",
-        _customers_ctx(request, actor, db, editing_customer_id=customer_id),
+        _customers_admin_ctx(request, actor, db, editing_customer_id=customer_id),
     )
 
 
@@ -1079,7 +1143,7 @@ def customers_update(
         editing_customer_id = customer_id
     return templates.TemplateResponse(
         "_customers.html",
-        _customers_ctx(
+        _customers_admin_ctx(
             request, actor, db, error=error, editing_customer_id=editing_customer_id
         ),
     )
@@ -1099,7 +1163,7 @@ def customers_delete(
     except HTTPException as exc:
         error = str(exc.detail)
     return templates.TemplateResponse(
-        "_customers.html", _customers_ctx(request, actor, db, error=error)
+        "_customers.html", _customers_admin_ctx(request, actor, db, error=error)
     )
 
 
@@ -1125,7 +1189,7 @@ def customers_attach_tag(
     except ValueError:
         error = "標籤格式錯誤"
     return templates.TemplateResponse(
-        "_customers.html", _customers_ctx(request, actor, db, error=error)
+        "_customers.html", _customers_admin_ctx(request, actor, db, error=error)
     )
 
 
@@ -1145,7 +1209,7 @@ def customers_detach_tag(
         db, tenant_id=tid, customer_id=customer_id, tag_id=tag_id
     )
     return templates.TemplateResponse(
-        "_customers.html", _customers_ctx(request, actor, db)
+        "_customers.html", _customers_admin_ctx(request, actor, db)
     )
 
 
@@ -1912,9 +1976,27 @@ def coupons_delete(
 # ── 店家自助：進階功能訂閱 ────────────────────────────────────────────────────
 
 def _features_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+
+    tid = actor.user.tenant_id
+    # 扣款紀錄（最新 20 筆,附 feature 名）
+    charges = (
+        db.query(SubscriptionCharge, FeatureSubscription.feature)
+        .join(
+            FeatureSubscription,
+            SubscriptionCharge.subscription_id == FeatureSubscription.id,
+        )
+        .filter(SubscriptionCharge.tenant_id == tid)
+        .order_by(SubscriptionCharge.id.desc())
+        .limit(20)
+        .all()
+    )
     return _ctx(
         request, actor,
-        features=features_svc.list_for_tenant(db, actor.user.tenant_id),
+        features=features_svc.list_for_tenant(db, tid),
+        charges=charges,
+        feature_labels=features_svc._FEATURE_LABELS,
         **extra,
     )
 
@@ -2775,12 +2857,504 @@ def services_unassign_staff(
     )
 
 
+# ── 店家自助：顧客 CRM ─────────────────────────────────────────────────────────
+
+_CUSTOMERS_PAGE_SIZE = 20
+
+
+def _customers_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    *,
+    q: str = "",
+    page: int = 1,
+    **extra,
+) -> dict:
+    tid = actor.user.tenant_id
+    total = customers_svc.count_customers(db, tenant_id=tid, q=q or None)
+    pages = max(1, -(-total // _CUSTOMERS_PAGE_SIZE))  # ceil
+    page = min(max(1, page), pages)
+    rows = customers_svc.list_customers(
+        db,
+        tenant_id=tid,
+        q=q or None,
+        limit=_CUSTOMERS_PAGE_SIZE,
+        offset=(page - 1) * _CUSTOMERS_PAGE_SIZE,
+    )
+    return _ctx(
+        request, actor,
+        customers=rows, q=q, page=page, pages=pages, total=total, **extra,
+    )
+
+
+def _customer_detail_ctx(
+    request: Request, actor: Actor, db: Session, customer_id: int, **extra
+) -> dict:
+    from saas_mvp.models.booking_slot import BookingSlot
+    from saas_mvp.models.point_transaction import PointTransaction
+
+    tid = actor.user.tenant_id
+    customer = customers_svc.get_customer(
+        db, tenant_id=tid, customer_id=customer_id
+    )  # 查無/跨租戶 → HTTPException 404
+    all_tags = segments_svc.list_tags(db, tenant_id=tid)
+    customer_tag_ids = {
+        t.id
+        for t in segments_svc.list_tags_for_customer(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+    }
+    reservations = booking_svc.list_reservations(
+        db, tenant_id=tid, line_user_id=customer.line_user_id
+    )[-20:][::-1]  # 近 20 筆，新→舊
+    slot_ids = [r.slot_id for r in reservations if r.slot_id is not None]
+    slots = {}
+    if slot_ids:
+        slots = {
+            s.id: s
+            for s in tenant_query(db, BookingSlot, tid)
+            .filter(BookingSlot.id.in_(slot_ids))
+            .all()
+        }
+    ledger = (
+        tenant_query(db, PointTransaction, tid)
+        .filter(PointTransaction.customer_id == customer_id)
+        .order_by(PointTransaction.id.desc())
+        .limit(20)
+        .all()
+    )
+    return _ctx(
+        request, actor,
+        customer=customer,
+        all_tags=all_tags,
+        customer_tag_ids=customer_tag_ids,
+        reservations=reservations,
+        slots=slots,
+        ledger=ledger,
+        **extra,
+    )
+
+
+@router.get("/customers", response_class=HTMLResponse)
+def customers_page(
+    request: Request,
+    q: str = Query(default="", max_length=64),
+    page: int = Query(default=1, ge=1),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    ctx = _customers_ctx(request, actor, db, q=q, page=page)
+    if _is_htmx(request):
+        return templates.TemplateResponse("_customers_list.html", ctx)
+    return templates.TemplateResponse("customers.html", ctx)
+
+
+# ── 顧客 CSV 匯入 / 匯出 ──────────────────────────────────────────────────────
+# 註：/customers/import 與 /customers/export.csv 必須宣告於
+# /customers/{customer_id} 之前，否則 "import"/"export.csv" 會被當成 id。
+
+@router.post("/customers/import", response_class=HTMLResponse)
+async def customers_import(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """顧客 CSV 批次匯入（multipart；all-or-nothing，錯誤整批不寫）。"""
+    # 注意:request.form() 產生的是 starlette 的 UploadFile(fastapi.UploadFile
+    # 是其子類,isinstance 檢查必須用 starlette 基類)。
+    from starlette.datastructures import UploadFile
+
+    from saas_mvp.services import customer_import as import_svc
+
+    tid = actor.user.tenant_id
+    form = await request.form()
+    upload = form.get("file")
+    update_existing = bool(form.get("update_existing"))
+    if upload is None or not isinstance(upload, UploadFile):
+        report = import_svc.ImportReport(errors=["請選擇 CSV 檔案"])
+    else:
+        content = await upload.read()
+        report = import_svc.import_customers(
+            db, tenant_id=tid, content=content, update_existing=update_existing
+        )
+    ctx = _customers_ctx(request, actor, db, import_report=report)
+    return templates.TemplateResponse("_customers_list.html", ctx)
+
+
+def _csv_response(rows: list[dict], fieldnames: list[str], filename: str) -> Response:
+    import csv as _csv
+    import io as _io
+
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(r)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/customers/export.csv")
+def customers_export(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """顧客匯出（欄位為匯入格式超集，round-trip 相容）。"""
+    rows = [
+        {
+            "display_name": c.display_name or "",
+            "phone": c.phone or "",
+            "birthday": c.birthday.isoformat() if c.birthday else "",
+            "note": c.note or "",
+            "line_user_id": c.line_user_id or "",
+            "points_balance": c.points_balance,
+            "tier": c.tier,
+            "booking_count": c.booking_count,
+            "last_booked_at": c.last_booked_at.isoformat() if c.last_booked_at else "",
+            "created_at": c.created_at.isoformat() if c.created_at else "",
+        }
+        for c in customers_svc.list_customers(db, tenant_id=actor.user.tenant_id)
+    ]
+    return _csv_response(
+        rows,
+        ["display_name", "phone", "birthday", "note", "line_user_id",
+         "points_balance", "tier", "booking_count", "last_booked_at",
+         "created_at"],
+        "customers.csv",
+    )
+
+
+@router.get("/products/export.csv")
+def products_export(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = [
+        {
+            "name": p.name,
+            "price_cents": p.price_cents,
+            "stock": "" if p.stock is None else p.stock,
+            "is_active": "yes" if p.is_active else "no",
+            "description": p.description or "",
+        }
+        for p in shop_svc.list_products(db, tenant_id=actor.user.tenant_id)
+    ]
+    return _csv_response(
+        rows, ["name", "price_cents", "stock", "is_active", "description"],
+        "products.csv",
+    )
+
+
+@router.get("/services/export.csv")
+def services_export(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = [
+        {
+            "name": s.name,
+            "duration_minutes": s.duration_minutes or "",
+            "price_cents": s.price_cents or 0,
+            "is_active": "yes" if s.is_active else "no",
+        }
+        for s in catalog_svc.list_services(db, tenant_id=actor.user.tenant_id)
+    ]
+    return _csv_response(
+        rows, ["name", "duration_minutes", "price_cents", "is_active"],
+        "services.csv",
+    )
+
+
+@router.get("/customers/{customer_id}", response_class=HTMLResponse)
+def customer_detail_page(
+    request: Request,
+    customer_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        ctx = _customer_detail_ctx(request, actor, db, customer_id)
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse("customer_detail.html", ctx)
+
+
+@router.post("/customers/tags", response_class=HTMLResponse)
+def customer_create_tag(
+    request: Request,
+    name: str = Form(..., max_length=64),
+    color: str = Form("", max_length=16),
+    customer_id: int | None = Form(None),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """建立標籤——支援兩種來源表單：
+
+    * 顧客 detail 頁（帶 customer_id）→ 回同一 detail partial。
+    * 標籤管理檢視（_customers.html，無 customer_id）→ 回管理 partial。
+
+    註：本路由須宣告於 /customers/{customer_id} 之前，否則 "tags" 會被
+    當成 customer_id（比照 routers/customers.py 的順序註記）。
+    """
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        segments_svc.create_tag(
+            db, tenant_id=tid, name=name.strip(), color=color.strip() or None
+        )
+    except HTTPException as exc:
+        db.rollback()
+        error = str(exc.detail)
+    if customer_id is None:
+        return templates.TemplateResponse(
+            "_customers.html",
+            _customers_admin_ctx(request, actor, db, error=error),
+        )
+    try:
+        ctx = _customer_detail_ctx(request, actor, db, customer_id, error=error)
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse("_customer_detail.html", ctx)
+
+
+@router.post("/customers/{customer_id}", response_class=HTMLResponse)
+def customer_update(
+    request: Request,
+    customer_id: int,
+    phone: str = Form(""),
+    note: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        customers_svc.update_customer(
+            db,
+            tenant_id=tid,
+            customer_id=customer_id,
+            phone=phone.strip()[:32],
+            note=note.strip()[:2048],
+        )
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(
+            request, actor, db, customer_id,
+            error=error, saved="基本資料已更新",
+        ),
+    )
+
+
+@router.post("/customers/{customer_id}/tags", response_class=HTMLResponse)
+async def customer_sync_tags(
+    request: Request,
+    customer_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """整批同步顧客標籤：checkbox 勾選集合 vs 現況做 attach/detach。"""
+    tid = actor.user.tenant_id
+    form = await request.form()
+    selected = {
+        int(v) for v in form.getlist("tag_ids") if str(v).isdigit()
+    }
+    try:
+        current = {
+            t.id
+            for t in segments_svc.list_tags_for_customer(
+                db, tenant_id=tid, customer_id=customer_id
+            )
+        }
+        for tag_id in selected - current:
+            segments_svc.attach_tag(
+                db, tenant_id=tid, customer_id=customer_id, tag_id=tag_id
+            )
+        for tag_id in current - selected:
+            segments_svc.detach_tag(
+                db, tenant_id=tid, customer_id=customer_id, tag_id=tag_id
+            )
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(request, actor, db, customer_id, saved="標籤已更新"),
+    )
+
+
+@router.post("/customers/{customer_id}/points", response_class=HTMLResponse)
+def customer_adjust_points(
+    request: Request,
+    customer_id: int,
+    delta: int = Form(...),
+    reason: str = Form("manual", max_length=64),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """店家手動調整點數（正加負扣）；扣點不足回錯誤訊息。"""
+    tid = actor.user.tenant_id
+    error = None
+    saved = None
+    try:
+        customer = customers_svc.get_customer(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+        if delta > 0:
+            membership_svc.earn_points(
+                db, tenant_id=tid, customer=customer, delta=delta, reason=reason
+            )
+            db.commit()
+            saved = f"已加 {delta} 點"
+        elif delta < 0:
+            try:
+                membership_svc.redeem_points(
+                    db, tenant_id=tid, customer=customer,
+                    amount=-delta, reason=reason,
+                )
+                db.commit()
+                saved = f"已扣 {-delta} 點"
+            except membership_svc.InsufficientPoints:
+                db.rollback()
+                error = "點數不足，無法扣點"
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(
+            request, actor, db, customer_id, error=error, saved=saved
+        ),
+    )
+
+
+# ── 店家自助：通知與推播歷程（唯讀） ───────────────────────────────────────────
+
+_NOTIF_PAGE_SIZE = 50
+_NOTIF_TABS = ("booking", "campaign", "usage")
+
+
+def _notifications_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    *,
+    tab: str = "booking",
+    status_filter: str = "",
+    page: int = 1,
+    **extra,
+) -> dict:
+    tid = actor.user.tenant_id
+    if tab not in _NOTIF_TABS:
+        tab = "booking"
+    page = max(1, page)
+    offset = (page - 1) * _NOTIF_PAGE_SIZE
+
+    rows: list = []
+    total = 0
+    campaign_names: dict[int, str] = {}
+    usage_history: list[dict] = []
+    push_status: dict | None = None
+
+    if tab == "booking":
+        rows, total = notif_history_svc.list_booking_notifications(
+            db, tenant_id=tid, status=status_filter or None,
+            limit=_NOTIF_PAGE_SIZE, offset=offset,
+        )
+    elif tab == "campaign":
+        rows, total = notif_history_svc.list_campaign_sends(
+            db, tenant_id=tid, status=status_filter or None,
+            limit=_NOTIF_PAGE_SIZE, offset=offset,
+        )
+        campaign_ids = {r.campaign_id for r in rows}
+        if campaign_ids:
+            campaign_names = {
+                c.id: c.name
+                for c in tenant_query(db, Campaign, tid)
+                .filter(Campaign.id.in_(campaign_ids))
+                .all()
+            }
+    else:  # usage
+        usage_history = notif_history_svc.push_usage_history(db, tenant_id=tid)
+        push_status = push_quota_svc.get_push_quota_status(db, tid)
+
+    pages = max(1, -(-total // _NOTIF_PAGE_SIZE))  # ceil
+    return _ctx(
+        request, actor,
+        tab=tab, status_filter=status_filter,
+        rows=rows, total=total, page=min(page, pages), pages=pages,
+        campaign_names=campaign_names,
+        usage_history=usage_history, push_status=push_status,
+        **extra,
+    )
+
+
+@router.get("/notifications", response_class=HTMLResponse)
+def notifications_page(
+    request: Request,
+    tab: str = Query(default="booking"),
+    status_filter: str = Query(default="", alias="status", max_length=16),
+    page: int = Query(default=1, ge=1),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    ctx = _notifications_ctx(
+        request, actor, db, tab=tab, status_filter=status_filter, page=page
+    )
+    if _is_htmx(request):
+        return templates.TemplateResponse("_notifications_list.html", ctx)
+    return templates.TemplateResponse("notifications.html", ctx)
+
+
 # ── 店家自助：行銷活動（MARKETING_AUTO） ────────────────────────────────────────
+
+def _describe_segment(segment_json: str | None, tag_names: dict[int, str]) -> list[str]:
+    """把 segment_json 反解成人話 chips（列表頁顯示）。malformed 回原字串。"""
+    import json as _json
+
+    if not segment_json:
+        return []
+    try:
+        filters = _json.loads(segment_json)
+        if not isinstance(filters, dict):
+            return [str(segment_json)]
+    except ValueError:
+        return [str(segment_json)]
+    chips: list[str] = []
+    if filters.get("tag_ids"):
+        names = [
+            tag_names.get(t, f"標籤#{t}")
+            for t in filters["tag_ids"]
+            if isinstance(t, int) or str(t).isdigit()
+        ]
+        if names:
+            chips.append("標籤：" + "、".join(str(n) for n in names))
+    if filters.get("tier"):
+        chips.append(f"等級：{filters['tier']}")
+    if filters.get("min_bookings") is not None:
+        chips.append(f"預約 ≥ {filters['min_bookings']} 次")
+    if filters.get("location_id") is not None:
+        chips.append(f"分店 #{filters['location_id']}")
+    return chips
+
 
 def _campaigns_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
     rows = tenant_query(db, Campaign, tid).order_by(Campaign.id.desc()).all()
-    return _ctx(request, actor, campaigns=rows, **extra)
+    tags = segments_svc.list_tags(db, tenant_id=tid)
+    tag_names = {t.id: t.name for t in tags}
+    locations = locations_svc.list_locations(db, tenant_id=tid)
+    segment_chips = {
+        c.id: _describe_segment(c.segment_json, tag_names) for c in rows
+    }
+    return _ctx(
+        request, actor,
+        campaigns=rows, tags=tags, locations=locations,
+        segment_chips=segment_chips, **extra,
+    )
 
 
 def _campaign_or_none(db: Session, tenant_id: int, campaign_id: int) -> Campaign | None:
@@ -2803,12 +3377,15 @@ def campaigns_page(
 
 
 @router.post("/campaigns", response_class=HTMLResponse)
-def campaigns_create(
+async def campaigns_create(
     request: Request,
     name: str = Form(...),
     type: str = Form(...),
     message_template: str = Form(...),
     schedule_at: str = Form(""),
+    segment_tier: str = Form(""),
+    segment_min_bookings: str = Form(""),
+    segment_location_id: str = Form(""),
     segment_json: str = Form(""),
     reward_type: str = Form(""),
     reward_value: str = Form(""),
@@ -2823,9 +3400,28 @@ def campaigns_create(
     error = None
     try:
         schedule = _parse_slot_start(schedule_at) if schedule_at.strip() else None
+        # 受眾：表單選擇器組 dict；「進階原始 JSON」有填則優先（power-user 相容）。
         seg = segment_json.strip()
         if seg:
             _json.loads(seg)  # 驗證 JSON 合法
+        else:
+            form = await request.form()
+            filters: dict = {}
+            tag_ids = [
+                int(v) for v in form.getlist("segment_tag_ids")
+                if str(v).isdigit()
+            ]
+            if tag_ids:
+                filters["tag_ids"] = tag_ids
+            if segment_tier.strip():
+                filters["tier"] = segment_tier.strip()
+            mb = _opt_int(segment_min_bookings)
+            if mb is not None:
+                filters["min_bookings"] = mb
+            loc = _opt_int(segment_location_id)
+            if loc is not None:
+                filters["location_id"] = loc
+            seg = _json.dumps(filters, ensure_ascii=False) if filters else ""
         campaign = Campaign(
             tenant_id=tid,
             name=name,

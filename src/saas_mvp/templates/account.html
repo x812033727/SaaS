@@ -26,6 +26,7 @@
   {% if current_user.oauth_provider %}
     <p>目前已連結：<strong>{{ provider_label or current_user.oauth_provider }}</strong></p>
     <form method="post" action="/ui/account/oauth/unlink">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="danger" type="submit">解除連結</button>
     </form>
   {% else %}

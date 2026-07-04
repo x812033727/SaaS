@@ -126,6 +126,19 @@ def _get_or_create_push_usage_locked(
     return row
 
 
+def consume_push_in_txn(
+    db: Session, tenant_id: int, *, now: datetime.datetime | None = None, n: int = 1
+) -> None:
+    """同 consume_push 但**不 commit**，由呼叫端一併提交。
+
+    供批次派送迴圈把「標 sent + 計量」合併為單一 commit（每筆 2 commits → 1），
+    並保證兩者同交易原子落盤。
+    """
+    period = _period_now(now)
+    row = _get_or_create_push_usage_locked(db, tenant_id, period)
+    row.count = (row.count or 0) + n
+
+
 def consume_push(
     db: Session, tenant_id: int, *, now: datetime.datetime | None = None, n: int = 1
 ) -> None:
@@ -134,9 +147,7 @@ def consume_push(
     語意採「後扣」：呼叫端應在推播**成功送出後**才呼叫，只計實際送出的推播。
     額度檢查由 has_push_quota / try_consume 於送出前負責。
     """
-    period = _period_now(now)
-    row = _get_or_create_push_usage_locked(db, tenant_id, period)
-    row.count = (row.count or 0) + n
+    consume_push_in_txn(db, tenant_id, now=now, n=n)
     db.commit()
 
 

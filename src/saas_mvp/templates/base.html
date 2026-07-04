@@ -20,7 +20,7 @@
     .aiw-form input { flex: 1; }
   </style>
 </head>
-<body>
+<body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
   {% if current_user %}
   <header class="nav">
     <span class="brand">LINE Bot 管理</span>
@@ -30,10 +30,10 @@
       <a href="/ui/">儀表板</a>
       <a href="/ui/line-config">LINE 設定</a>
       <a href="/ui/booking">預約管理</a>
+      <a href="/ui/customers">顧客</a>
       <a href="/ui/calendar">行事曆</a>
       <a href="/ui/line-chat">客服訊息</a>
       <a href="/ui/auto-reply">自動回覆</a>
-      <a href="/ui/customers">顧客</a>
       <a href="/ui/locations">分店</a>
       <a href="/ui/staff">員工</a>
       <a href="/ui/services">服務項目</a>
@@ -41,6 +41,7 @@
       <a href="/ui/coupons">優惠券</a>
       <a href="/ui/shop">商品</a>
       <a href="/ui/campaigns">行銷活動</a>
+      <a href="/ui/notifications">通知歷程</a>
       <a href="/ui/rich-menu">圖文選單</a>
       <a href="/ui/flex-menu">圖文卡片</a>
       <a href="/ui/portfolio">作品集</a>
