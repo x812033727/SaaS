@@ -110,13 +110,22 @@ class LinePushClient(ABC):
     """
 
     @abstractmethod
-    def push(self, to_user_id: str, text: str, *, access_token: str) -> None:
+    def push(
+        self,
+        to_user_id: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
         """透過 LINE push API 推播文字訊息給指定使用者。
 
         Args:
             to_user_id: 接收者的 LINE userId。
             text: 要推播的文字內容。
             access_token: 該 LINE channel 的 channel access token（Bearer）。
+            quick_reply: 選填 `(label, postback_data)` 清單，附加為
+                LINE quick reply 按鈕（供「確認出席」「立即預約」等互動）。
 
         Raises:
             LinePushError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。

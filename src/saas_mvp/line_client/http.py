@@ -194,16 +194,26 @@ class HttpLinePushClient(LinePushClient):
         """HTTP client 一律視為可用（連線能力由 push() 的例外反映）。"""
         return True
 
-    def push(self, to_user_id: str, text: str, *, access_token: str) -> None:
+    def push(
+        self,
+        to_user_id: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
         """呼叫 LINE push API，主動推播單則文字訊息。
 
         Raises:
             LinePushError: 任何網路或 API 錯誤。
         """
+        message: dict = {"type": "text", "text": text}
+        if quick_reply:
+            message["quickReply"] = {"items": _quick_reply_items(quick_reply)}
         payload = json.dumps(
             {
                 "to": to_user_id,
-                "messages": [{"type": "text", "text": text}],
+                "messages": [message],
             }
         ).encode()
 

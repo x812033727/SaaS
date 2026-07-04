@@ -42,6 +42,7 @@ class SentPush:
     to_user_id: str
     text: str
     access_token: str
+    quick_reply: list[tuple[str, str]] | None = None
 
 
 class FakeLineReplyClient(LineReplyClient):
@@ -146,7 +147,14 @@ class FakeLinePushClient(LinePushClient):
         self._available = available
         self._fail = fail
 
-    def push(self, to_user_id: str, text: str, *, access_token: str) -> None:
+    def push(
+        self,
+        to_user_id: str,
+        text: str,
+        *,
+        access_token: str,
+        quick_reply: list[tuple[str, str]] | None = None,
+    ) -> None:
         """捕捉推播（不發網路請求）；fail=True 時拋 LinePushError。"""
         if self._fail:
             raise LinePushError("fake push failure")
@@ -154,6 +162,7 @@ class FakeLinePushClient(LinePushClient):
             to_user_id=to_user_id,
             text=text,
             access_token=access_token,
+            quick_reply=quick_reply,
         ))
 
     def is_available(self) -> bool:
