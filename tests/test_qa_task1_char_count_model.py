@@ -361,21 +361,30 @@ class TestInitDbSourceMountsBackfill:
         assert "_migrate_backfill_char_count" in source, (
             "db.py 必須定義 _migrate_backfill_char_count() 函式"
         )
-        # 進一步驗證 init_db() 內有呼叫它
-        # 用 str.split 抓 init_db 區段（簡化版；不依賴 import 時的 module attr）
-        marker = "def init_db"
+        # 進一步驗證掛載鏈：Alembic 導入後 init_db() delegate 到
+        # ops/migrate 三分支；legacy DB 由 legacy_init_db() 收斂——
+        # backfill 必須掛在 legacy_init_db() 內（fresh DB 無既有列免 backfill，
+        # 由 baseline 直接建含 char_count 的表）。
+        marker = "def legacy_init_db"
         idx = source.find(marker)
-        assert idx != -1, "db.py 必須有 init_db 函式"
+        assert idx != -1, "db.py 必須有 legacy_init_db 函式（legacy 收斂路徑）"
         # 抓到下一個 top-level def / if __name__ 為止
         end = source.find("\ndef ", idx + len(marker))
         if end == -1:
             end = source.find("\nif __name__", idx)
         if end == -1:
             end = len(source)
-        init_db_body = source[idx:end]
-        assert "_migrate_backfill_char_count()" in init_db_body, (
-            "init_db() 內必須呼叫 _migrate_backfill_char_count()，"
-            "確保 production 啟動時 backfill 被自動執行"
+        legacy_body = source[idx:end]
+        assert "_migrate_backfill_char_count()" in legacy_body, (
+            "legacy_init_db() 內必須呼叫 _migrate_backfill_char_count()，"
+            "確保既有 DB 首次啟動（Alembic 收斂路徑）時 backfill 被自動執行"
+        )
+        # init_db 必須 delegate 到遷移三分支（legacy DB 才會經過 legacy_init_db）
+        init_idx = source.find("def init_db")
+        assert init_idx != -1, "db.py 必須有 init_db 函式"
+        init_end = source.find("\ndef ", init_idx + 10)
+        assert "run_migrations" in source[init_idx:init_end], (
+            "init_db() 必須 delegate 到 ops/migrate.run_migrations"
         )
 
 

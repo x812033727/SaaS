@@ -32,9 +32,24 @@ def test_scheduler_service_overrides_healthcheck_with_heartbeat():
     assert "heartbeat" in block, "scheduler healthcheck 必須檢查心跳檔，而非 HTTP /healthz"
 
 
-def test_scheduler_script_writes_heartbeat_in_loop():
+def test_scheduler_writes_heartbeat_continuously():
+    """supercronic 版排程器的心跳鏈：啟動先寫一次（start_period 防誤判），
+    之後由 crontab 每分鐘 touch——compose healthcheck 判新鮮度 <180s。
+    （原 bash while-loop 版每輪 touch 的斷言隨 supercronic 改版更新。）"""
     src = _SCHEDULER.read_text(encoding="utf-8")
-    assert 'HEARTBEAT=' in src, "scheduler.sh 必須定義 HEARTBEAT 路徑"
-    # 迴圈內須更新心跳（while 之後至少一次 touch "$HEARTBEAT"）
-    after_loop = src[src.index("while true"):]
-    assert 'touch "$HEARTBEAT"' in after_loop, "排程迴圈每輪必須更新心跳檔"
+    assert "touch /tmp/sched/heartbeat" in src, (
+        "scheduler.sh 啟動必須先寫一次心跳檔（避免 start_period 內被判 unhealthy）"
+    )
+    assert "supercronic" in src, "scheduler.sh 必須以 supercronic 執行 crontab"
+
+    crontab = (_ROOT / "docker" / "crontab").read_text(encoding="utf-8")
+    heartbeat_lines = [
+        line for line in crontab.splitlines()
+        if not line.strip().startswith("#")
+        and "touch /tmp/sched/heartbeat" in line
+    ]
+    assert heartbeat_lines, "crontab 必須有心跳排程項"
+    # 心跳必須是每分鐘（healthcheck 判 <180s 新鮮度）
+    assert any(l.split()[:5] == ["*", "*", "*", "*", "*"] for l in heartbeat_lines), (
+        "心跳排程必須每分鐘執行（compose healthcheck 判 180 秒新鮮度）"
+    )
