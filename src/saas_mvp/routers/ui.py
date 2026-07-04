@@ -9,14 +9,19 @@
 `get_current_actor`（仍只認 header）。所有資料一律走既有 service 層，回應永不
 輸出明文 channel_secret / access_token，只揭露 has_* 布林與 credential_status。
 
-CSRF（已知限制）：MVP 僅靠 SameSite=Lax + 同源，未實作 per-request CSRF token。
-若日後將 UI 暴露給不可信的同源來源，應加上 double-submit cookie token。
+CSRF：double-submit cookie token——登入時發非 httpOnly 的 csrf_token cookie，
+所有 /ui 非 GET 請求須以 X-CSRF-Token header（HTMX 由 base.html body 級
+hx-headers 自動帶）或表單欄位 csrf_token 回傳同值，router 級依賴
+_enforce_csrf 常數時間比對，不符回 403。SAAS_UI_CSRF_ENABLED=false 可關閉
+（僅測試環境）。
 """
 
 from __future__ import annotations
 
 import datetime
+import hmac
 import html
+import secrets
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
@@ -78,7 +83,57 @@ from fastapi import HTTPException
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
 
-router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
+# ── CSRF（double-submit cookie token）───────────────────────────────────────
+
+_CSRF_COOKIE_NAME = "csrf_token"
+_CSRF_HEADER_NAME = "x-csrf-token"
+_CSRF_FORM_FIELD = "csrf_token"
+# 尚無 session 的端點（登入/註冊表單提交）豁免；其 GET 頁本就放行。
+_CSRF_EXEMPT_PATHS = {"/ui/login", "/ui/register"}
+
+
+async def _enforce_csrf(request: Request) -> None:
+    """/ui 全端點 router 級依賴：非 GET 請求驗 double-submit CSRF token。
+
+    token 來源依序：X-CSRF-Token header（HTMX 走 base.html body 級
+    hx-headers 屬性繼承自動帶）→ 表單欄位 csrf_token（傳統 <form> hidden
+    field）。與 cookie 常數時間比對，不符回 403。
+
+    Starlette 會 cache request._form，此處 await request.form() 不影響
+    後續 handler 的 Form(...)/File(...) 參數解析。
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    if not settings.ui_csrf_enabled:  # 動態讀，測試可 monkeypatch
+        return
+    if request.url.path in _CSRF_EXEMPT_PATHS:
+        return
+    cookie_token = request.cookies.get(_CSRF_COOKIE_NAME, "")
+    supplied = request.headers.get(_CSRF_HEADER_NAME, "")
+    if not supplied:
+        content_type = request.headers.get("content-type", "")
+        if content_type.startswith(
+            ("application/x-www-form-urlencoded", "multipart/form-data")
+        ):
+            form = await request.form()
+            supplied = str(form.get(_CSRF_FORM_FIELD) or "")
+    if (
+        not cookie_token
+        or not supplied
+        or not hmac.compare_digest(cookie_token, supplied)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF token missing or invalid",
+        )
+
+
+router = APIRouter(
+    prefix="/ui",
+    tags=["ui"],
+    include_in_schema=False,
+    dependencies=[Depends(_enforce_csrf)],
+)
 
 # 送往付費 LLM 的問題字數上限（與 routers/ai.py AskRequest 一致），防成本放大。
 _AI_QUESTION_MAX_LEN = 2000
@@ -87,11 +142,25 @@ _AI_QUESTION_MAX_LEN = 2000
 # ── 共用工具 ────────────────────────────────────────────────────────────────
 
 def _set_auth_cookie(response: Response, token: str) -> None:
-    """把 JWT 寫入 httpOnly cookie；prod 加 Secure，dev/test 不加（方便本機/測試）。"""
+    """把 JWT 寫入 httpOnly cookie；prod 加 Secure，dev/test 不加（方便本機/測試）。
+
+    一併發放 double-submit CSRF cookie（非 httpOnly——前端模板/HTMX 需可讀
+    回傳；token 本身不含任何機密，防護力來自「攻擊者跨站無法讀取」）。
+    所有登入路徑（/ui/login、/ui/register、OAuth callback）皆經此函式。
+    """
     response.set_cookie(
         key=_UI_COOKIE_NAME,
         value=token,
         httponly=True,
+        samesite="lax",
+        secure=settings.env not in ("dev", "test"),
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+    )
+    response.set_cookie(
+        key=_CSRF_COOKIE_NAME,
+        value=secrets.token_urlsafe(32),
+        httponly=False,
         samesite="lax",
         secure=settings.env not in ("dev", "test"),
         max_age=settings.access_token_expire_minutes * 60,
@@ -105,6 +174,8 @@ def _ctx(request: Request, actor: Actor | None = None, **extra) -> dict:
         "request": request,
         "current_user": actor.user if actor else None,
         "is_admin": bool(actor and actor.user.is_admin),
+        # CSRF：模板 hidden field 與 base.html hx-headers 用
+        "csrf_token": request.cookies.get(_CSRF_COOKIE_NAME, ""),
     }
     base.update(extra)
     return base
@@ -198,6 +269,7 @@ def register_submit(
 def logout():
     resp = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
     resp.delete_cookie(_UI_COOKIE_NAME, path="/")
+    resp.delete_cookie(_CSRF_COOKIE_NAME, path="/")
     return resp
 
 

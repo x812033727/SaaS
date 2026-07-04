@@ -11,6 +11,10 @@ import pathlib
 # 這裡用 [] 而非 setdefault，確保無論環境原本是什麼值都覆蓋。
 os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"
 
+# 關閉 /ui CSRF（double-submit token），既有 UI 測試不必逐一帶 token；
+# CSRF 行為本身由 tests/test_ui_csrf.py 以 monkeypatch 動態開啟專測。
+os.environ["SAAS_UI_CSRF_ENABLED"] = "false"
+
 # DB URL 設 in-memory：必須在任何 saas_mvp 模組 import 之前設定，
 # 因為 db.py 在模組層級就建立 engine（settings.database_url）。
 # setdefault：若 CI/環境已有真實 DB URL 則不覆蓋。

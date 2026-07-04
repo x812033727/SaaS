@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     webhook_max_attempts: int = 5
     webhook_event_ttl_days: int = 30
 
+    # 管理 UI CSRF 防護（double-submit cookie token）。
+    # SAAS_UI_CSRF_ENABLED=false 可關閉（測試環境用；正式環境勿關）。
+    ui_csrf_enabled: bool = True
+
     # 會員集點（P3）：每完成一筆預約給的點數（0 = 停用集點）
     points_per_booking: int = 10
 
