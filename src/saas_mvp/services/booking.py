@@ -408,15 +408,14 @@ def get_reservation(
     return reservation
 
 
-def list_reservations(
+def _reservations_query(
     db: Session,
     *,
     tenant_id: int,
     status: str | None = None,
     line_user_id: str | None = None,
     slot_id: int | None = None,
-) -> list[Reservation]:
-    """列出租戶預約，可依 status / line_user_id / slot_id 篩選。"""
+):
     q = tenant_query(db, Reservation, tenant_id)
     if status is not None:
         q = q.filter(Reservation.status == status)
@@ -424,7 +423,54 @@ def list_reservations(
         q = q.filter(Reservation.line_user_id == line_user_id)
     if slot_id is not None:
         q = q.filter(Reservation.slot_id == slot_id)
-    return q.order_by(Reservation.id).all()
+    return q
+
+
+def list_reservations(
+    db: Session,
+    *,
+    tenant_id: int,
+    status: str | None = None,
+    line_user_id: str | None = None,
+    slot_id: int | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Reservation]:
+    """列出租戶預約，可依 status / line_user_id / slot_id 篩選。
+
+    limit=None（預設）回傳全部，內部呼叫端行為不變；REST 端點由 router
+    層帶入分頁預設值。
+    """
+    q = _reservations_query(
+        db,
+        tenant_id=tenant_id,
+        status=status,
+        line_user_id=line_user_id,
+        slot_id=slot_id,
+    ).order_by(Reservation.id)
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
+
+
+def count_reservations(
+    db: Session,
+    *,
+    tenant_id: int,
+    status: str | None = None,
+    line_user_id: str | None = None,
+    slot_id: int | None = None,
+) -> int:
+    """同 list_reservations 篩選條件的總筆數（供分頁 X-Total-Count）。"""
+    return _reservations_query(
+        db,
+        tenant_id=tenant_id,
+        status=status,
+        line_user_id=line_user_id,
+        slot_id=slot_id,
+    ).count()
 
 
 def list_my_reservations(

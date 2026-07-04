@@ -18,6 +18,7 @@ from saas_mvp.models.user import User
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services.customers import (
+    count_customers,
     get_customer,
     list_customers,
     update_customer,
@@ -86,10 +87,19 @@ class TagResponse(BaseModel):
 
 @router.get("/", response_model=list[CustomerResponse])
 def list_all(
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[CustomerResponse]:
-    rows = list_customers(db, tenant_id=current_user.tenant_id)
+    rows = list_customers(
+        db, tenant_id=current_user.tenant_id, limit=limit, offset=offset
+    )
+    # 分頁截斷偵測：呼叫端可由總數判斷是否需要翻頁。
+    response.headers["X-Total-Count"] = str(
+        count_customers(db, tenant_id=current_user.tenant_id)
+    )
     return [CustomerResponse.model_validate(c) for c in rows]
 
 
@@ -134,6 +144,7 @@ def delete_tag(
 
 @router.get("/segment", response_model=list[CustomerResponse])
 def segment(
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     tag_ids: str | None = Query(default=None, description="逗號分隔的 tag id"),
@@ -141,6 +152,8 @@ def segment(
     min_bookings: int | None = Query(default=None, ge=0),
     last_booked_before: datetime.date | None = Query(default=None),
     location_id: int | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[CustomerResponse]:
     parsed_tag_ids: list[int] | None = None
     if tag_ids:
@@ -164,6 +177,19 @@ def segment(
         min_bookings=min_bookings,
         last_booked_before=before_dt,
         location_id=location_id,
+        limit=limit,
+        offset=offset,
+    )
+    response.headers["X-Total-Count"] = str(
+        segments_svc.count_segment_customers(
+            db,
+            tenant_id=current_user.tenant_id,
+            tag_ids=parsed_tag_ids,
+            tier=tier,
+            min_bookings=min_bookings,
+            last_booked_before=before_dt,
+            location_id=location_id,
+        )
     )
     return [CustomerResponse.model_validate(c) for c in rows]
 
@@ -200,14 +226,22 @@ def patch_one(
 @router.get("/{customer_id}/points", response_model=list[PointTxResponse])
 def points_ledger(
     customer_id: int,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[PointTxResponse]:
     get_customer(db, tenant_id=current_user.tenant_id, customer_id=customer_id)
-    rows = (
+    q = (
         tenant_query(db, PointTransaction, current_user.tenant_id)
         .filter(PointTransaction.customer_id == customer_id)
-        .order_by(PointTransaction.id.desc())
+    )
+    response.headers["X-Total-Count"] = str(q.count())
+    rows = (
+        q.order_by(PointTransaction.id.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [PointTxResponse.model_validate(r) for r in rows]

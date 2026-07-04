@@ -26,12 +26,25 @@ def _get_or_404(db: Session, tenant_id: int, customer_id: int) -> Customer:
     return customer
 
 
-def list_customers(db: Session, *, tenant_id: int) -> list[Customer]:
-    return (
-        tenant_query(db, Customer, tenant_id)
-        .order_by(Customer.id.desc())
-        .all()
-    )
+def list_customers(
+    db: Session,
+    *,
+    tenant_id: int,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[Customer]:
+    """列出租戶顧客（新→舊）。limit=None 回傳全部，內部呼叫端行為不變。"""
+    q = tenant_query(db, Customer, tenant_id).order_by(Customer.id.desc())
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+    return q.all()
+
+
+def count_customers(db: Session, *, tenant_id: int) -> int:
+    """租戶顧客總數（供分頁 X-Total-Count）。"""
+    return tenant_query(db, Customer, tenant_id).count()
 
 
 def get_customer(db: Session, *, tenant_id: int, customer_id: int) -> Customer:

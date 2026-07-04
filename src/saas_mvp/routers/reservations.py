@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from saas_mvp.services.booking import (
     SlotNotFoundError,
     book_slot,
     cancel_reservation,
+    count_reservations,
     get_reservation,
     list_reservations,
     mark_attendance,
@@ -110,16 +111,30 @@ def create(
 
 @router.get("/", response_model=list[ReservationResponse])
 def list_all(
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     status_filter: str | None = Query(default=None, alias="status"),
     slot_id: int | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[ReservationResponse]:
     rows = list_reservations(
         db,
         tenant_id=current_user.tenant_id,
         status=status_filter,
         slot_id=slot_id,
+        limit=limit,
+        offset=offset,
+    )
+    # 分頁截斷偵測：呼叫端可由總數判斷是否需要翻頁。
+    response.headers["X-Total-Count"] = str(
+        count_reservations(
+            db,
+            tenant_id=current_user.tenant_id,
+            status=status_filter,
+            slot_id=slot_id,
+        )
     )
     return [ReservationResponse.model_validate(r) for r in rows]
 
