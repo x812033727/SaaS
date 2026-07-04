@@ -102,6 +102,24 @@ class TestCardCrud:
             )
         assert ei.value.status_code == 422
 
+    def test_get_one_card(self, db):
+        tid = _tenant(db)
+        menu = flex_svc.create_menu(db, tenant_id=tid)
+        c = flex_svc.add_card(
+            db, tenant_id=tid, menu_id=menu.id, title="單查",
+            action_type="message", action_data="hi",
+        )
+        got = flex_svc.get_card(db, tenant_id=tid, menu_id=menu.id, card_id=c.id)
+        assert got.id == c.id and got.title == "單查"
+        with pytest.raises(HTTPException) as ei:
+            flex_svc.get_card(db, tenant_id=tid, menu_id=menu.id, card_id=999999)
+        assert ei.value.status_code == 404
+        # 跨租戶 → 404
+        tid_b = _tenant(db, name="flex-b")
+        with pytest.raises(HTTPException) as ei:
+            flex_svc.get_card(db, tenant_id=tid_b, menu_id=menu.id, card_id=c.id)
+        assert ei.value.status_code == 404
+
     def test_delete_card(self, db):
         tid = _tenant(db)
         menu = flex_svc.create_menu(db, tenant_id=tid)

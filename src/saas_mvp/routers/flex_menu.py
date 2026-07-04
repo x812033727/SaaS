@@ -185,6 +185,19 @@ def add_card(
     return CardResponse.model_validate(card)
 
 
+@router.get("/{menu_id}/cards/{card_id}", response_model=CardResponse)
+def get_card(
+    menu_id: int,
+    card_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CardResponse:
+    card = flex_svc.get_card(
+        db, tenant_id=current_user.tenant_id, menu_id=menu_id, card_id=card_id
+    )
+    return CardResponse.model_validate(card)
+
+
 @router.put("/{menu_id}/cards/{card_id}", response_model=CardResponse)
 def update_card(
     menu_id: int,

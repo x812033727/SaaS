@@ -1,0 +1,39 @@
+<h2>API 金鑰</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if created_plain_key %}
+<div class="success">
+  已建立金鑰「{{ created_name }}」。<strong>明文金鑰僅顯示這一次，請立即複製保存：</strong><br>
+  <code>{{ created_plain_key }}</code>
+</div>
+{% endif %}
+<p class="muted">API 金鑰用於 REST API 認證（X-API-Key 或 Bearer）。系統只儲存雜湊，遺失明文請撤銷後重建。</p>
+
+<form hx-post="/ui/api-keys" hx-target="#api-keys-card" hx-swap="innerHTML" class="row">
+  <label>名稱<input name="name" maxlength="128" required placeholder="例：POS 串接"></label>
+  <button type="submit">建立金鑰</button>
+</form>
+
+{% if api_keys %}
+<table>
+  <thead><tr><th>#</th><th>名稱</th><th>金鑰前綴</th><th>狀態</th><th>建立時間</th><th></th></tr></thead>
+  <tbody>
+    {% for k in api_keys %}
+    <tr>
+      <td data-label="#">{{ k.id }}</td>
+      <td data-label="名稱">{{ k.name }}</td>
+      <td data-label="金鑰前綴"><code>myapp_{{ k.key_prefix }}…</code></td>
+      <td data-label="狀態"><span class="badge {{ 'on' if k.is_active else 'off' }}">{{ '有效' if k.is_active else '已撤銷' }}</span></td>
+      <td data-label="建立時間">{{ k.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>
+        {% if k.is_active %}
+        <button hx-post="/ui/api-keys/{{ k.id }}/revoke" hx-target="#api-keys-card" hx-swap="innerHTML"
+                hx-confirm="確定撤銷此金鑰？撤銷後立即失效且無法復原（使用紀錄保留）。">撤銷</button>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">尚無 API 金鑰。</p>
+{% endif %}

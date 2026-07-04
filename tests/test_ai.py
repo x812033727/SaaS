@@ -158,6 +158,23 @@ def test_ai_ask_returns_answer_with_stub(client, monkeypatch):
     assert "10:00-22:00" in body["answer"]
 
 
+def test_faq_get_one(client):
+    token = _register(client)
+    client.post("/billing/features/AI_ASSISTANT/subscribe", headers=_auth(token))
+    faq_id = client.post("/ai/faq", headers=_auth(token), json={
+        "question": "退款政策", "answer": "七天內可退",
+    }).json()["id"]
+    r = client.get(f"/ai/faq/{faq_id}", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["question"] == "退款政策" and r.json()["answer"] == "七天內可退"
+    # 查無 → 404
+    assert client.get("/ai/faq/999999", headers=_auth(token)).status_code == 404
+    # 跨租戶 → 404
+    token_b = _register(client)
+    client.post("/billing/features/AI_ASSISTANT/subscribe", headers=_auth(token_b))
+    assert client.get(f"/ai/faq/{faq_id}", headers=_auth(token_b)).status_code == 404
+
+
 def test_ai_ask_stub_returns_only_top_faq(client, monkeypatch):
     """多筆 FAQ 都相關時，stub 只回最相關那筆，不把整排 FAQ 全列出來。"""
     from saas_mvp import config as cfg

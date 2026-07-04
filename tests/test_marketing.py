@@ -274,6 +274,17 @@ def test_feature_gating_403_when_disabled(client):
     assert r.status_code == 403
 
 
+def test_campaign_inverted_schedule_window_422(client):
+    token = _register(client)
+    _enable(client, token, "MARKETING_AUTO")
+    r = client.post("/booking/campaigns/", headers=_auth(token), json={
+        "name": "顛倒排程", "type": "broadcast", "message_template": "hi",
+        "schedule_at": "2030-06-01T00:00:00+00:00",
+        "expires_at": "2030-05-01T00:00:00+00:00",
+    })
+    assert r.status_code == 422
+
+
 def test_campaign_crud_and_run(client):
     token = _register(client)
     _enable(client, token, "MARKETING_AUTO")
