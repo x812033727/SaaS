@@ -58,8 +58,8 @@ class StaffResponse(BaseModel):
 
 
 class ShiftCreate(BaseModel):
-    start_time: str = Field(max_length=5)
-    end_time: str = Field(max_length=5)
+    start_time: str = Field(max_length=5, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    end_time: str = Field(max_length=5, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     weekday: int | None = Field(default=None, ge=0, le=6)
     rotation: str | None = Field(default=None, max_length=8)
 
@@ -67,8 +67,12 @@ class ShiftCreate(BaseModel):
 class ShiftUpdate(BaseModel):
     """全欄位選填；weekday=None 表示「不變」（改回每日請走 UI 或重建）。"""
 
-    start_time: str | None = Field(default=None, max_length=5)
-    end_time: str | None = Field(default=None, max_length=5)
+    start_time: str | None = Field(
+        default=None, max_length=5, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
+    )
+    end_time: str | None = Field(
+        default=None, max_length=5, pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
+    )
     weekday: int | None = Field(default=None, ge=0, le=6)
     rotation: str | None = Field(default=None, max_length=8)
     is_active: bool | None = None

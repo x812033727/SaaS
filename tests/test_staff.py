@@ -220,6 +220,48 @@ class TestStaffCrud:
         assert client.put(f"/booking/staff/{sid}/leaves/999999", headers=_auth(token),
                           json={"reason": "x"}).status_code == 404
 
+    def test_shift_time_format_validation(self, client):
+        """check_conflict 以字典序比較時間，未補零的輸入必須在寫入前擋下。"""
+        token = _register(client)
+        sid = client.post("/booking/staff/", headers=_auth(token),
+                          json={"name": "格式哥"}).json()["id"]
+        # 未補零 → 422
+        r = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "9:00", "end_time": "18:00",
+        })
+        assert r.status_code == 422
+        # 不存在的時刻 → 422
+        r = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "09:00", "end_time": "25:00",
+        })
+        assert r.status_code == 422
+        # 結束不晚於開始 → 422
+        r = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "18:00", "end_time": "09:00",
+        })
+        assert r.status_code == 422
+        # 更新為壞值也要擋（合併現值後驗證）
+        shid = client.post(f"/booking/staff/{sid}/shifts", headers=_auth(token), json={
+            "weekday": 0, "start_time": "09:00", "end_time": "18:00",
+        }).json()["id"]
+        r = client.put(f"/booking/staff/{sid}/shifts/{shid}", headers=_auth(token),
+                       json={"end_time": "08:00"})
+        assert r.status_code == 422
+        # 批量（service 層）也要擋
+        db = _Session()
+        try:
+            import pytest as _pytest
+            from fastapi import HTTPException as _HTTPException
+            tid = _tenant_id_of(token)
+            with _pytest.raises(_HTTPException) as exc:
+                staff_svc.bulk_create_shifts(
+                    db, tenant_id=tid, staff_id=sid,
+                    weekdays=[1, 2], start_time="9:00", end_time="18:00",
+                )
+            assert exc.value.status_code == 422
+        finally:
+            db.close()
+
     def test_create_leave_inverted_range_422(self, client):
         token = _register(client)
         sid = client.post("/booking/staff/", headers=_auth(token),
