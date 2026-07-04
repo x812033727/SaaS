@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
 from saas_mvp.models.booking_slot import BookingSlot
-from saas_mvp.models.customer import upsert_customer_from_line
+from saas_mvp.models.customer import Customer, upsert_customer_from_line
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.reservation import (
     RESERVATION_CANCELLED,
@@ -60,6 +60,10 @@ class CrossTenantReferenceError(BookingError):
     """建單帶入的 staff_id / service_id 不屬於本租戶（偽造或跨租戶引用）。"""
 
 
+class CustomerBlacklistedError(BookingError):
+    """此 LINE 顧客被店家列入黑名單，禁止線上預約。"""
+
+
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -86,6 +90,22 @@ def book_slot(
     """
     if party_size < 1:
         raise ValueError(f"party_size must be >= 1, got {party_size}")
+
+    # 黑名單早退：被列入黑名單的 LINE 顧客禁止線上預約（在鎖時段前快速失敗，
+    # 不佔用名額、不建顧客檔）。店家手動建單（無 line_user_id）不受影響。
+    if line_user_id:
+        blocked = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(
+                Customer.line_user_id == line_user_id,
+                Customer.blacklisted.is_(True),
+            )
+            .first()
+        )
+        if blocked is not None:
+            raise CustomerBlacklistedError(
+                f"customer {line_user_id} is blacklisted for tenant {tenant_id}"
+            )
 
     # 鎖定時段列（序列化並發建單）
     slot = db.execute(

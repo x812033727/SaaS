@@ -124,6 +124,7 @@ def init_db() -> None:
     _migrate_add_customer_ics_token()
     _migrate_add_user_oauth()
     _migrate_add_customer_birthday()
+    _migrate_add_customer_blacklist()
     _migrate_add_coupon_order_fields()
     _migrate_add_tenant_reminder_hours()
     _migrate_add_profile_announcement()
@@ -149,6 +150,18 @@ def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
             "schema migration for %s.%s skipped due to error: %s",
             table, column, type(exc).__name__,
         )
+
+
+def _migrate_add_customer_blacklist() -> None:
+    """為既有 booking_customers 表補上黑名單欄位（blacklisted + blacklist_reason）。
+
+    blacklisted 帶 NOT NULL DEFAULT FALSE，既有顧客自動回填 false（零影響）；
+    blacklist_reason 為 nullable 備註。只做 ADD COLUMN，失敗僅記 warning，不阻擋啟動。
+    """
+    _add_column_if_missing(
+        "booking_customers", "blacklisted", "BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    _add_column_if_missing("booking_customers", "blacklist_reason", "VARCHAR(255)")
 
 
 def _migrate_add_coupon_order_fields() -> None:
