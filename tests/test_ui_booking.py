@@ -168,6 +168,116 @@ class TestBookingUI:
         assert r.headers["location"] == "/ui/login"
 
 
+def _slot_id_by_start(start: str) -> int:
+    """以 slot_start（naive UTC datetime 字串）反查時段 id。"""
+    import datetime as _dt
+
+    from saas_mvp.models.booking_slot import BookingSlot
+
+    db = _Session()
+    try:
+        row = (
+            db.query(BookingSlot)
+            .filter(BookingSlot.slot_start == _dt.datetime.fromisoformat(start))
+            .first()
+        )
+        assert row is not None, f"slot {start} not found"
+        return row.id
+    finally:
+        db.close()
+
+
+class TestSlotEditDelete:
+    def test_edit_form_prefilled_and_update(self, client):
+        _login(client)
+        client.post("/ui/booking/slots", data={
+            "slot_start": "2031-01-05T10:00", "max_capacity": "8", "walkin_reserved": "2",
+        })
+        slot_id = _slot_id_by_start("2031-01-05 10:00")
+        # 編輯表單預填現值
+        r = client.get(f"/ui/booking/slots/{slot_id}/edit")
+        assert r.status_code == 200
+        assert f"/ui/booking/slots/{slot_id}/update" in r.text
+        assert 'value="8"' in r.text and 'value="2"' in r.text
+        # 更新 roundtrip
+        r = client.post(f"/ui/booking/slots/{slot_id}/update", data={
+            "max_capacity": "12", "walkin_reserved": "3",
+        })
+        assert r.status_code == 200
+        assert "/update" not in r.text  # 編輯列已收合
+        assert "<td data-label=\"容量\">12</td>" in r.text
+
+    def test_update_shrink_below_booked_shows_error(self, client):
+        _login(client)
+        client.post("/ui/booking/slots", data={
+            "slot_start": "2031-01-06T10:00", "max_capacity": "10", "walkin_reserved": "0",
+        })
+        slot_id = _slot_id_by_start("2031-01-06 10:00")
+        db = _Session()
+        try:
+            from saas_mvp.models.booking_slot import BookingSlot
+            db.query(BookingSlot).filter(BookingSlot.id == slot_id).update(
+                {"booked_count": 5}
+            )
+            db.commit()
+        finally:
+            db.close()
+        r = client.post(f"/ui/booking/slots/{slot_id}/update", data={
+            "max_capacity": "3", "walkin_reserved": "0",
+        })
+        assert r.status_code == 200
+        assert "Cannot shrink capacity" in r.text
+        # 失敗時停留在編輯列
+        assert f"/ui/booking/slots/{slot_id}/update" in r.text
+
+    def test_delete_slot(self, client):
+        _login(client)
+        client.post("/ui/booking/slots", data={
+            "slot_start": "2031-01-07T10:00", "max_capacity": "5", "walkin_reserved": "0",
+        })
+        slot_id = _slot_id_by_start("2031-01-07 10:00")
+        r = client.post(f"/ui/booking/slots/{slot_id}/delete")
+        assert r.status_code == 200
+        assert "2031-01-07 10:00" not in r.text
+
+    def test_delete_blocked_when_reserved(self, client):
+        _login(client)
+        client.post("/ui/booking/slots", data={
+            "slot_start": "2031-01-08T10:00", "max_capacity": "5", "walkin_reserved": "0",
+        })
+        slot_id = _slot_id_by_start("2031-01-08 10:00")
+        db = _Session()
+        try:
+            from saas_mvp.models.booking_slot import BookingSlot
+            from saas_mvp.models.reservation import (
+                RESERVATION_CANCELLED,
+                Reservation,
+            )
+            slot = db.query(BookingSlot).filter(BookingSlot.id == slot_id).first()
+            # 已取消的預約也算歷史紀錄，仍須擋刪
+            db.add(Reservation(
+                tenant_id=slot.tenant_id, slot_id=slot_id,
+                party_size=1, status=RESERVATION_CANCELLED,
+            ))
+            db.commit()
+        finally:
+            db.close()
+        r = client.post(f"/ui/booking/slots/{slot_id}/delete")
+        assert r.status_code == 200
+        assert "已有預約紀錄" in r.text
+        assert "2031-01-08 10:00" in r.text  # 時段還在
+
+    def test_cancel_edit_returns_plain_list(self, client):
+        _login(client)
+        client.post("/ui/booking/slots", data={
+            "slot_start": "2031-01-09T10:00", "max_capacity": "5", "walkin_reserved": "0",
+        })
+        r = client.get("/ui/booking/slots")
+        assert r.status_code == 200
+        assert "2031-01-09 10:00" in r.text
+        assert "/update" not in r.text
+
+
 class TestRichMenuUI:
     def test_page_requires_line_config(self, client):
         _login(client)

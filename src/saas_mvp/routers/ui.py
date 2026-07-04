@@ -787,6 +787,80 @@ def booking_bulk_slots(
     )
 
 
+@router.get("/booking/slots", response_class=HTMLResponse)
+def booking_slots_partial(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """時段列表 partial（編輯列「取消」的 hx-get 目標）。"""
+    return templates.TemplateResponse(
+        "_booking_slots.html", _booking_ctx(request, actor, db)
+    )
+
+
+@router.get("/booking/slots/{slot_id}/edit", response_class=HTMLResponse)
+def booking_edit_slot_form(
+    request: Request,
+    slot_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "_booking_slots.html",
+        _booking_ctx(request, actor, db, editing_slot_id=slot_id),
+    )
+
+
+@router.post("/booking/slots/{slot_id}/update", response_class=HTMLResponse)
+def booking_update_slot(
+    request: Request,
+    slot_id: int,
+    max_capacity: int = Form(...),
+    walkin_reserved: int = Form(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    editing_slot_id = None
+    try:
+        slots_svc.update_slot(
+            db,
+            tenant_id=tid,
+            slot_id=slot_id,
+            max_capacity=max_capacity,
+            walkin_reserved=walkin_reserved,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        editing_slot_id = slot_id  # 失敗時停在編輯列，讓使用者修正
+    return templates.TemplateResponse(
+        "_booking_slots.html",
+        _booking_ctx(
+            request, actor, db, error=error, editing_slot_id=editing_slot_id
+        ),
+    )
+
+
+@router.post("/booking/slots/{slot_id}/delete", response_class=HTMLResponse)
+def booking_delete_slot(
+    request: Request,
+    slot_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        slots_svc.delete_slot(db, tenant_id=tid, slot_id=slot_id)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_booking_slots.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
 @router.post("/booking/slots/{slot_id}/deactivate", response_class=HTMLResponse)
 def booking_deactivate_slot(
     request: Request,

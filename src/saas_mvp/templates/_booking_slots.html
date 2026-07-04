@@ -65,6 +65,26 @@
   </thead>
   <tbody>
     {% for s in slots %}
+    {% if editing_slot_id == s.id %}
+    <tr>
+      <td data-label="#">{{ s.id }}</td>
+      <td data-label="開始">{{ s.slot_start.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td colspan="6">
+        <form hx-post="/ui/booking/slots/{{ s.id }}/update"
+              hx-target="#slots-card" hx-swap="innerHTML" class="row">
+          <label>總容量
+            <input name="max_capacity" type="number" min="0" value="{{ s.max_capacity }}" required>
+          </label>
+          <label>保留現場
+            <input name="walkin_reserved" type="number" min="0" value="{{ s.walkin_reserved }}">
+          </label>
+          <button type="submit">儲存</button>
+          <button type="button" hx-get="/ui/booking/slots"
+                  hx-target="#slots-card" hx-swap="innerHTML">取消</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
     <tr>
       <td data-label="#">{{ s.id }}</td>
       <td data-label="開始">{{ s.slot_start.strftime('%Y-%m-%d %H:%M') }}</td>
@@ -74,13 +94,19 @@
       <td data-label="線上可訂">{{ s.online_available }}</td>
       <td data-label="狀態"><span class="badge {{ 'on' if s.is_active else 'off' }}">{{ '啟用' if s.is_active else '停用' }}</span></td>
       <td>
+        <button hx-get="/ui/booking/slots/{{ s.id }}/edit"
+                hx-target="#slots-card" hx-swap="innerHTML">編輯</button>
         {% if s.is_active %}
         <button hx-post="/ui/booking/slots/{{ s.id }}/deactivate"
                 hx-target="#slots-card" hx-swap="innerHTML"
                 hx-confirm="確定停用此時段？">停用</button>
-        {% else %}<span class="muted">—</span>{% endif %}
+        {% endif %}
+        <button hx-post="/ui/booking/slots/{{ s.id }}/delete"
+                hx-target="#slots-card" hx-swap="innerHTML"
+                hx-confirm="確定永久刪除此時段？已有預約紀錄的時段會被擋下，請改用停用。">刪除</button>
       </td>
     </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
 </table>
