@@ -71,6 +71,7 @@ from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import segments as segments_svc
+from saas_mvp.services import notifications_history as notif_history_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import line_chat as line_chat_svc
@@ -2259,6 +2260,84 @@ def customer_adjust_points(
             request, actor, db, customer_id, error=error, saved=saved
         ),
     )
+
+
+# ── 店家自助：通知與推播歷程（唯讀） ───────────────────────────────────────────
+
+_NOTIF_PAGE_SIZE = 50
+_NOTIF_TABS = ("booking", "campaign", "usage")
+
+
+def _notifications_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    *,
+    tab: str = "booking",
+    status_filter: str = "",
+    page: int = 1,
+    **extra,
+) -> dict:
+    tid = actor.user.tenant_id
+    if tab not in _NOTIF_TABS:
+        tab = "booking"
+    page = max(1, page)
+    offset = (page - 1) * _NOTIF_PAGE_SIZE
+
+    rows: list = []
+    total = 0
+    campaign_names: dict[int, str] = {}
+    usage_history: list[dict] = []
+    push_status: dict | None = None
+
+    if tab == "booking":
+        rows, total = notif_history_svc.list_booking_notifications(
+            db, tenant_id=tid, status=status_filter or None,
+            limit=_NOTIF_PAGE_SIZE, offset=offset,
+        )
+    elif tab == "campaign":
+        rows, total = notif_history_svc.list_campaign_sends(
+            db, tenant_id=tid, status=status_filter or None,
+            limit=_NOTIF_PAGE_SIZE, offset=offset,
+        )
+        campaign_ids = {r.campaign_id for r in rows}
+        if campaign_ids:
+            campaign_names = {
+                c.id: c.name
+                for c in tenant_query(db, Campaign, tid)
+                .filter(Campaign.id.in_(campaign_ids))
+                .all()
+            }
+    else:  # usage
+        usage_history = notif_history_svc.push_usage_history(db, tenant_id=tid)
+        push_status = push_quota_svc.get_push_quota_status(db, tid)
+
+    pages = max(1, -(-total // _NOTIF_PAGE_SIZE))  # ceil
+    return _ctx(
+        request, actor,
+        tab=tab, status_filter=status_filter,
+        rows=rows, total=total, page=min(page, pages), pages=pages,
+        campaign_names=campaign_names,
+        usage_history=usage_history, push_status=push_status,
+        **extra,
+    )
+
+
+@router.get("/notifications", response_class=HTMLResponse)
+def notifications_page(
+    request: Request,
+    tab: str = Query(default="booking"),
+    status_filter: str = Query(default="", alias="status", max_length=16),
+    page: int = Query(default=1, ge=1),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    ctx = _notifications_ctx(
+        request, actor, db, tab=tab, status_filter=status_filter, page=page
+    )
+    if _is_htmx(request):
+        return templates.TemplateResponse("_notifications_list.html", ctx)
+    return templates.TemplateResponse("notifications.html", ctx)
 
 
 # ── 店家自助：行銷活動（MARKETING_AUTO） ────────────────────────────────────────
