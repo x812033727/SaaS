@@ -18,6 +18,7 @@ from saas_mvp.models.user import User
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services.customers import (
+    delete_customer,
     get_customer,
     list_customers,
     update_customer,
@@ -229,6 +230,27 @@ def patch_one(
         note=body.note,
     )
     return CustomerResponse.model_validate(customer)
+
+
+@router.delete(
+    "/{customer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_one(
+    customer_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """刪除顧客（PII 清除）。
+
+    預約/訊息/兌換/訂單歷史保留但 customer_id 去識別化（NULL）；
+    點數異動、標籤掛載、行銷發送紀錄連同刪除。
+    """
+    delete_customer(
+        db, tenant_id=current_user.tenant_id, customer_id=customer_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{customer_id}/points", response_model=list[PointTxResponse])
