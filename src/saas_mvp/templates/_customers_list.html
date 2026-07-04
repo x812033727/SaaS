@@ -1,0 +1,39 @@
+<h2>顧客清單（共 {{ total }} 位）</h2>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-get="/ui/customers" hx-target="#customers-card" hx-swap="innerHTML" class="row">
+  <label>搜尋<input name="q" value="{{ q }}" maxlength="64" placeholder="名稱或電話"></label>
+  <button type="submit">搜尋</button>
+</form>
+
+{% if customers %}
+<table>
+  <thead><tr><th>#</th><th>名稱</th><th>電話</th><th>等級</th><th>點數</th><th>預約數</th><th>最近預約</th><th></th></tr></thead>
+  <tbody>
+    {% for c in customers %}
+    <tr>
+      <td data-label="#">{{ c.id }}</td>
+      <td data-label="名稱">{{ c.display_name or "（未提供）" }}</td>
+      <td data-label="電話">{{ c.phone or "—" }}</td>
+      <td data-label="等級">{{ c.tier }}</td>
+      <td data-label="點數">{{ c.points_balance }}</td>
+      <td data-label="預約數">{{ c.booking_count }}</td>
+      <td data-label="最近預約">{{ c.last_booked_at.strftime("%Y-%m-%d") if c.last_booked_at else "—" }}</td>
+      <td><a class="btn" href="/ui/customers/{{ c.id }}">管理</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if pages > 1 %}
+<div class="row">
+  {% if page > 1 %}
+  <button hx-get="/ui/customers?q={{ q|urlencode }}&page={{ page - 1 }}" hx-target="#customers-card" hx-swap="innerHTML">上一頁</button>
+  {% endif %}
+  <span>第 {{ page }} / {{ pages }} 頁</span>
+  {% if page < pages %}
+  <button hx-get="/ui/customers?q={{ q|urlencode }}&page={{ page + 1 }}" hx-target="#customers-card" hx-swap="innerHTML">下一頁</button>
+  {% endif %}
+</div>
+{% endif %}
+{% else %}
+<p>{% if q %}找不到符合「{{ q }}」的顧客。{% else %}尚無顧客。顧客於 LINE 首次預約時自動建檔。{% endif %}</p>
+{% endif %}

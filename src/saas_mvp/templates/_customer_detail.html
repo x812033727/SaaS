@@ -1,0 +1,92 @@
+<h1>顧客 #{{ customer.id }}：{{ customer.display_name or "（未提供名稱）" }}</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if saved %}<div class="success">{{ saved }}</div>{% endif %}
+
+<div class="card">
+  <h2>基本資料</h2>
+  <p>
+    LINE ID：<code>{{ customer.line_user_id }}</code>
+    等級：<strong>{{ customer.tier }}</strong>
+    點數：<strong>{{ customer.points_balance }}</strong>
+    累計預約：{{ customer.booking_count }} 次
+    {% if customer.birthday %}　生日：{{ customer.birthday.strftime("%m/%d") }}{% endif %}
+  </p>
+  <form hx-post="/ui/customers/{{ customer.id }}" hx-target="#customer-card" hx-swap="innerHTML" class="col">
+    <label>電話<input name="phone" value="{{ customer.phone or '' }}" maxlength="32"></label>
+    <label>備註<textarea name="note" maxlength="2048">{{ customer.note or '' }}</textarea></label>
+    <button type="submit">儲存基本資料</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>標籤</h2>
+  <form hx-post="/ui/customers/{{ customer.id }}/tags" hx-target="#customer-card" hx-swap="innerHTML" class="col">
+    {% if all_tags %}
+    <div class="row">
+      {% for t in all_tags %}
+      <label>
+        <input type="checkbox" name="tag_ids" value="{{ t.id }}"
+               {% if t.id in customer_tag_ids %}checked{% endif %}>
+        {{ t.name }}
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit">更新標籤</button>
+    {% else %}
+    <p>尚無標籤，先在下方建立。</p>
+    {% endif %}
+  </form>
+  <form hx-post="/ui/customers/tags" hx-target="#customer-card" hx-swap="innerHTML" class="row">
+    <input type="hidden" name="customer_id" value="{{ customer.id }}">
+    <label>新標籤<input name="name" maxlength="64" required placeholder="例如：VIP"></label>
+    <label>顏色<input name="color" maxlength="16" placeholder="#ff6600（選填）"></label>
+    <button type="submit">建立標籤</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>點數調整</h2>
+  <form hx-post="/ui/customers/{{ customer.id }}/points" hx-target="#customer-card" hx-swap="innerHTML" class="row">
+    <label>增減點數<input name="delta" type="number" required placeholder="正加負扣"></label>
+    <label>原因<input name="reason" maxlength="64" value="manual"></label>
+    <button type="submit">調整</button>
+  </form>
+  {% if ledger %}
+  <table>
+    <thead><tr><th>#</th><th>增減</th><th>原因</th><th>時間</th></tr></thead>
+    <tbody>
+      {% for tx in ledger %}
+      <tr>
+        <td data-label="#">{{ tx.id }}</td>
+        <td data-label="增減">{{ "+" if tx.delta > 0 else "" }}{{ tx.delta }}</td>
+        <td data-label="原因">{{ tx.reason or "—" }}</td>
+        <td data-label="時間">{{ tx.created_at.strftime("%Y-%m-%d %H:%M") if tx.created_at else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>預約歷史（近 20 筆）</h2>
+  {% if reservations %}
+  <table>
+    <thead><tr><th>#</th><th>時間</th><th>人數</th><th>狀態</th><th>到場</th></tr></thead>
+    <tbody>
+      {% for r in reservations %}
+      {% set slot = slots.get(r.slot_id) %}
+      <tr>
+        <td data-label="#">{{ r.id }}</td>
+        <td data-label="時間">{{ slot.slot_start.strftime("%Y-%m-%d %H:%M") if slot else "—" }}</td>
+        <td data-label="人數">{{ r.party_size }}</td>
+        <td data-label="狀態">{{ "已取消" if r.status == "cancelled" else "有效" }}</td>
+        <td data-label="到場">{% if r.attended is none %}—{% elif r.attended %}到場{% else %}未到{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>尚無預約紀錄。</p>
+  {% endif %}
+</div>

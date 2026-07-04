@@ -70,6 +70,7 @@ from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import line_chat as line_chat_svc
@@ -2010,6 +2011,253 @@ def services_unassign_staff(
         pass
     return templates.TemplateResponse(
         "_services_list.html", _services_ctx(request, actor, db)
+    )
+
+
+# ── 店家自助：顧客 CRM ─────────────────────────────────────────────────────────
+
+_CUSTOMERS_PAGE_SIZE = 20
+
+
+def _customers_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    *,
+    q: str = "",
+    page: int = 1,
+    **extra,
+) -> dict:
+    tid = actor.user.tenant_id
+    total = customers_svc.count_customers(db, tenant_id=tid, q=q or None)
+    pages = max(1, -(-total // _CUSTOMERS_PAGE_SIZE))  # ceil
+    page = min(max(1, page), pages)
+    rows = customers_svc.list_customers(
+        db,
+        tenant_id=tid,
+        q=q or None,
+        limit=_CUSTOMERS_PAGE_SIZE,
+        offset=(page - 1) * _CUSTOMERS_PAGE_SIZE,
+    )
+    return _ctx(
+        request, actor,
+        customers=rows, q=q, page=page, pages=pages, total=total, **extra,
+    )
+
+
+def _customer_detail_ctx(
+    request: Request, actor: Actor, db: Session, customer_id: int, **extra
+) -> dict:
+    from saas_mvp.models.booking_slot import BookingSlot
+    from saas_mvp.models.point_transaction import PointTransaction
+
+    tid = actor.user.tenant_id
+    customer = customers_svc.get_customer(
+        db, tenant_id=tid, customer_id=customer_id
+    )  # 查無/跨租戶 → HTTPException 404
+    all_tags = segments_svc.list_tags(db, tenant_id=tid)
+    customer_tag_ids = {
+        t.id
+        for t in segments_svc.list_tags_for_customer(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+    }
+    reservations = booking_svc.list_reservations(
+        db, tenant_id=tid, line_user_id=customer.line_user_id
+    )[-20:][::-1]  # 近 20 筆，新→舊
+    slot_ids = [r.slot_id for r in reservations if r.slot_id is not None]
+    slots = {}
+    if slot_ids:
+        slots = {
+            s.id: s
+            for s in tenant_query(db, BookingSlot, tid)
+            .filter(BookingSlot.id.in_(slot_ids))
+            .all()
+        }
+    ledger = (
+        tenant_query(db, PointTransaction, tid)
+        .filter(PointTransaction.customer_id == customer_id)
+        .order_by(PointTransaction.id.desc())
+        .limit(20)
+        .all()
+    )
+    return _ctx(
+        request, actor,
+        customer=customer,
+        all_tags=all_tags,
+        customer_tag_ids=customer_tag_ids,
+        reservations=reservations,
+        slots=slots,
+        ledger=ledger,
+        **extra,
+    )
+
+
+@router.get("/customers", response_class=HTMLResponse)
+def customers_page(
+    request: Request,
+    q: str = Query(default="", max_length=64),
+    page: int = Query(default=1, ge=1),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    ctx = _customers_ctx(request, actor, db, q=q, page=page)
+    if _is_htmx(request):
+        return templates.TemplateResponse("_customers_list.html", ctx)
+    return templates.TemplateResponse("customers.html", ctx)
+
+
+@router.get("/customers/{customer_id}", response_class=HTMLResponse)
+def customer_detail_page(
+    request: Request,
+    customer_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        ctx = _customer_detail_ctx(request, actor, db, customer_id)
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse("customer_detail.html", ctx)
+
+
+@router.post("/customers/tags", response_class=HTMLResponse)
+def customer_create_tag(
+    request: Request,
+    name: str = Form(..., max_length=64),
+    color: str = Form("", max_length=16),
+    customer_id: int = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """從顧客 detail 頁快速建標籤（建後回同一 detail partial）。
+
+    註：本路由須宣告於 /customers/{customer_id} 之前，否則 "tags" 會被
+    當成 customer_id（比照 routers/customers.py 的順序註記）。
+    """
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        segments_svc.create_tag(
+            db, tenant_id=tid, name=name.strip(), color=color.strip() or None
+        )
+    except HTTPException as exc:
+        db.rollback()
+        error = str(exc.detail)
+    try:
+        ctx = _customer_detail_ctx(request, actor, db, customer_id, error=error)
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse("_customer_detail.html", ctx)
+
+
+@router.post("/customers/{customer_id}", response_class=HTMLResponse)
+def customer_update(
+    request: Request,
+    customer_id: int,
+    phone: str = Form(""),
+    note: str = Form(""),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    tid = actor.user.tenant_id
+    error = None
+    try:
+        customers_svc.update_customer(
+            db,
+            tenant_id=tid,
+            customer_id=customer_id,
+            phone=phone.strip()[:32],
+            note=note.strip()[:2048],
+        )
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(
+            request, actor, db, customer_id,
+            error=error, saved="基本資料已更新",
+        ),
+    )
+
+
+@router.post("/customers/{customer_id}/tags", response_class=HTMLResponse)
+async def customer_sync_tags(
+    request: Request,
+    customer_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """整批同步顧客標籤：checkbox 勾選集合 vs 現況做 attach/detach。"""
+    tid = actor.user.tenant_id
+    form = await request.form()
+    selected = {
+        int(v) for v in form.getlist("tag_ids") if str(v).isdigit()
+    }
+    try:
+        current = {
+            t.id
+            for t in segments_svc.list_tags_for_customer(
+                db, tenant_id=tid, customer_id=customer_id
+            )
+        }
+        for tag_id in selected - current:
+            segments_svc.attach_tag(
+                db, tenant_id=tid, customer_id=customer_id, tag_id=tag_id
+            )
+        for tag_id in current - selected:
+            segments_svc.detach_tag(
+                db, tenant_id=tid, customer_id=customer_id, tag_id=tag_id
+            )
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(request, actor, db, customer_id, saved="標籤已更新"),
+    )
+
+
+@router.post("/customers/{customer_id}/points", response_class=HTMLResponse)
+def customer_adjust_points(
+    request: Request,
+    customer_id: int,
+    delta: int = Form(...),
+    reason: str = Form("manual", max_length=64),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """店家手動調整點數（正加負扣）；扣點不足回錯誤訊息。"""
+    tid = actor.user.tenant_id
+    error = None
+    saved = None
+    try:
+        customer = customers_svc.get_customer(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+        if delta > 0:
+            membership_svc.earn_points(
+                db, tenant_id=tid, customer=customer, delta=delta, reason=reason
+            )
+            db.commit()
+            saved = f"已加 {delta} 點"
+        elif delta < 0:
+            try:
+                membership_svc.redeem_points(
+                    db, tenant_id=tid, customer=customer,
+                    amount=-delta, reason=reason,
+                )
+                db.commit()
+                saved = f"已扣 {-delta} 點"
+            except membership_svc.InsufficientPoints:
+                db.rollback()
+                error = "點數不足，無法扣點"
+    except HTTPException:
+        return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(
+            request, actor, db, customer_id, error=error, saved=saved
+        ),
     )
 
 
