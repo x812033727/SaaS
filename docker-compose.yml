@@ -46,6 +46,8 @@ services:
     environment:
       SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
       SAAS_RATE_LIMIT_BACKEND: redis
+      # SSE 即時通知跨 worker 廣播（多 worker 部署必需；否則只在單一 worker 內即時）。
+      SAAS_EVENTS_BACKEND: redis
       SAAS_REDIS_URL: redis://redis:6379/0
       SAAS_HOST: 0.0.0.0
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}

@@ -77,6 +77,7 @@ import saas_mvp.models.faq_entry as _faq  # noqa: F401, E402
 import saas_mvp.models.pii_request as _pii  # noqa: F401, E402
 import saas_mvp.models.flex_menu as _flexmenu  # noqa: F401, E402
 import saas_mvp.models.flex_menu_card as _flexcard  # noqa: F401, E402
+import saas_mvp.models.auto_reply_rule as _autorule  # noqa: F401, E402
 import saas_mvp.models.push_usage as _pushusage  # noqa: F401, E402
 
 # ── 測試提速：bcrypt 預設 12 rounds，每次 hash/verify 成本高，數百個 register/login

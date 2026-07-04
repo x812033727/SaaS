@@ -94,6 +94,34 @@ def get_staff(db: Session, *, tenant_id: int, staff_id: int) -> Staff:
     return _get_or_404(db, tenant_id, staff_id)
 
 
+def _enforce_staff_limit(db: Session, tenant_id: int) -> None:
+    """免費版員工數上限閘門：未開通 UNLIMITED_STAFF 時，啟用中員工數不得超過
+    settings.free_staff_limit（預設 3）。對標 vibeaico「無限員工」進階功能。
+
+    僅計「啟用中」（is_active=True）員工——停用者不佔額度。
+    開通（輕量版以上）後完全不限。
+    """
+    # 延遲 import 避免 services.features ↔ auth.dependencies 載入期循環。
+    from saas_mvp.config import settings
+    from saas_mvp.services import features as features_svc
+
+    if features_svc.is_enabled(db, tenant_id, features_svc.UNLIMITED_STAFF):
+        return
+    active_count = (
+        tenant_query(db, Staff, tenant_id)
+        .filter(Staff.is_active.is_(True))
+        .count()
+    )
+    if active_count >= settings.free_staff_limit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"免費版員工上限為 {settings.free_staff_limit} 位。"
+                "升級「無限員工」(輕量版以上) 即可解除上限。"
+            ),
+        )
+
+
 def create_staff(
     db: Session,
     *,
@@ -107,6 +135,7 @@ def create_staff(
         raise HTTPException(
             status_code=422, detail=f"Invalid booking_mode: {booking_mode!r}"
         )
+    _enforce_staff_limit(db, tenant_id)
     _assert_location_owned(db, tenant_id, location_id)
     staff = Staff(
         tenant_id=tenant_id,
@@ -150,6 +179,10 @@ def update_staff(
             )
         staff.booking_mode = booking_mode
     if is_active is not None:
+        # 重新啟用（停用→啟用）也要過員工上限閘門，否則可「停用一個→補一個→
+        # 再啟用舊的」繞過免費版上限。停用方向不檢查。
+        if is_active and not staff.is_active:
+            _enforce_staff_limit(db, tenant_id)
         staff.is_active = is_active
     db.commit()
     db.refresh(staff)
@@ -227,6 +260,85 @@ def create_shift(
         )
     db.refresh(shift)
     return shift
+
+
+# 內建班表模板（對標 vibeaico「內建模板一鍵套用」）。
+SHIFT_TEMPLATES: dict[str, dict] = {
+    "early": {"label": "早班", "start": "09:00", "end": "13:00", "rotation": "day"},
+    "late": {"label": "晚班", "start": "14:00", "end": "18:00", "rotation": "night"},
+    "fullday": {"label": "全日班", "start": "09:00", "end": "18:00", "rotation": "day"},
+}
+
+
+def bulk_create_shifts(
+    db: Session,
+    *,
+    tenant_id: int,
+    staff_id: int,
+    weekdays: list[int],
+    start_time: str,
+    end_time: str,
+    rotation: str | None = None,
+) -> dict:
+    """為一名員工在多個 weekday 批量建立相同時段班表（對標 vibeaico 批量排班）。
+
+    冪等：(staff_id, weekday, start_time) 已存在者略過。回傳 {created, skipped}。
+    """
+    _get_or_404(db, tenant_id, staff_id)
+    if not weekdays:
+        raise HTTPException(status_code=422, detail="weekdays must not be empty")
+    for wd in weekdays:
+        if not (0 <= wd <= 6):
+            raise HTTPException(status_code=422, detail="weekday must be 0-6")
+    if not start_time or not end_time:
+        raise HTTPException(status_code=422, detail="start_time/end_time required")
+
+    existing = {
+        (sh.weekday, sh.start_time)
+        for sh in list_shifts(db, tenant_id=tenant_id, staff_id=staff_id)
+    }
+    created = 0
+    skipped = 0
+    for wd in sorted(set(weekdays)):
+        if (wd, start_time) in existing:
+            skipped += 1
+            continue
+        db.add(StaffShift(
+            tenant_id=tenant_id,
+            staff_id=staff_id,
+            weekday=wd,
+            start_time=start_time,
+            end_time=end_time,
+            rotation=rotation,
+        ))
+        created += 1
+    db.commit()
+    return {"created": created, "skipped": skipped}
+
+
+def bulk_create_shifts_from_template(
+    db: Session,
+    *,
+    tenant_id: int,
+    staff_id: int,
+    template: str,
+    weekdays: list[int],
+) -> dict:
+    """以內建模板批量排班；未知模板 → 422。"""
+    tpl = SHIFT_TEMPLATES.get(template)
+    if tpl is None:
+        raise HTTPException(
+            status_code=422, detail=f"Unknown shift template: {template!r}"
+        )
+    return bulk_create_shifts(
+        db,
+        tenant_id=tenant_id,
+        staff_id=staff_id,
+        weekdays=weekdays,
+        start_time=tpl["start"],
+        end_time=tpl["end"],
+        rotation=tpl["rotation"],
+    )
 
 
 def delete_shift(db: Session, *, tenant_id: int, staff_id: int, shift_id: int) -> None:

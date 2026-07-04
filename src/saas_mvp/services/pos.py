@@ -27,7 +27,6 @@ from saas_mvp.models.order import ORDER_PENDING, Order
 from saas_mvp.models.order_item import OrderItem
 from saas_mvp.models.product import Product
 from saas_mvp.models.reservation import Reservation
-from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.tenants import tenant_query
 
@@ -79,17 +78,10 @@ def lookup_by_phone(db: Session, *, tenant_id: int, phone: str) -> dict | None:
     return {
         "customer": customer,
         "points_balance": customer.points_balance or 0,
+        "tier": customer.tier or "regular",
+        "tier_discount_percent": membership_svc.tier_discount_percent(customer.tier),
         "active_coupons": _active_coupons(db, tenant_id),
     }
-
-
-def _coupon_discount(coupon: Coupon, subtotal: int) -> int:
-    """依券種算折扣金額（cents），不超過 subtotal。"""
-    if coupon.discount_type == "percent":
-        disc = subtotal * (coupon.discount_value or 0) // 100
-    else:  # amount
-        disc = coupon.discount_value or 0
-    return max(0, min(disc, subtotal))
 
 
 def checkout(
@@ -175,22 +167,14 @@ def checkout(
             line_total_cents=line_total,
         ))
 
-    total = subtotal
+    # 會員等級折扣 + 優惠券：三條結帳路徑共用 pricing.apply_order_discounts。
+    # 設定 order.discount_cents（等級+券）、order.coupon_code；回傳折後（未扣點）金額。
+    from saas_mvp.services import pricing as pricing_svc
 
-    # 套用優惠券折扣（核銷需 line_user_id；散客或無 line_user_id 不可用券）。
-    if coupon_code:
-        if customer is None or not customer.line_user_id:
-            raise coupons_svc.CouponError("coupon requires a member with LINE id")
-        coupon = db.execute(
-            select(Coupon).where(
-                Coupon.tenant_id == tenant_id, Coupon.code == coupon_code
-            ).with_for_update()
-        ).scalar_one_or_none()
-        if coupon is None:
-            raise coupons_svc.CouponNotFound(f"coupon {coupon_code!r} not found")
-        # 核銷（鎖內重驗有效性/額度/一人一券；同一交易）。
-        _redeem_coupon_inline(db, coupon, customer)
-        total -= _coupon_discount(coupon, subtotal)
+    total = pricing_svc.apply_order_discounts(
+        db, tenant_id=tenant_id, order=order, customer=customer,
+        subtotal_cents=subtotal, line_user_id=None, coupon_code=coupon_code,
+    )
 
     # 折抵點數（不足拋 InsufficientPoints → 整筆 rollback）。
     if points_to_redeem > 0:
@@ -237,48 +221,3 @@ def checkout(
     db.commit()
     db.refresh(order)
     return order
-
-
-def _redeem_coupon_inline(db: Session, coupon: Coupon, customer: Customer) -> None:
-    """在已鎖券列的 checkout 交易內完成核銷（不另開交易、不 commit）。
-
-    複用 coupons 的有效性/額度/一人一券檢查語意，但不 commit（由 checkout 統一 commit）。
-    """
-    from sqlalchemy.exc import IntegrityError
-
-    from saas_mvp.models.coupon_redemption import CouponRedemption
-
-    now = _utcnow().replace(tzinfo=None)
-
-    def _naive(dt):
-        if dt is None:
-            return None
-        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-
-    if not coupon.is_active:
-        raise coupons_svc.CouponInactive(f"coupon {coupon.code!r} is inactive")
-    af = _naive(coupon.active_from)
-    au = _naive(coupon.active_until)
-    if (af is not None and now < af) or (au is not None and now > au):
-        raise coupons_svc.CouponExpired(f"coupon {coupon.code!r} not in active window")
-    if (
-        coupon.max_redemptions is not None
-        and (coupon.redeemed_count or 0) >= coupon.max_redemptions
-    ):
-        raise coupons_svc.CouponExhausted(f"coupon {coupon.code!r} fully redeemed")
-
-    redemption = CouponRedemption(
-        tenant_id=coupon.tenant_id,
-        coupon_id=coupon.id,
-        customer_id=customer.id,
-        line_user_id=customer.line_user_id,
-    )
-    db.add(redemption)
-    try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        raise coupons_svc.AlreadyRedeemed(
-            f"coupon {coupon.code!r} already redeemed by this user"
-        )
-    coupon.redeemed_count = (coupon.redeemed_count or 0) + 1

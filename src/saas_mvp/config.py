@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     rate_limit_backend: str = "memory"
     redis_url: str = ""
 
+    # SSE 即時通知後端（後台客服/預約推送）：
+    # SAAS_EVENTS_BACKEND: "memory"（預設，行內、僅同一 worker）
+    #   | "redis"（以 redis pub/sub 跨 worker 廣播，多 worker 部署需此項）。
+    # 共用 SAAS_REDIS_URL；url 空 / 連不上 / 未裝 redis 時記 warning 並 fallback memory。
+    events_backend: str = "memory"
+
     # Translation backend
     # SAAS_DEEPL_API_KEY: set to your DeepL auth key to enable real HTTP translation.
     #   If empty (default), get_translator() returns StubTranslator (offline, deterministic).
@@ -60,6 +66,8 @@ class Settings(BaseSettings):
     reminder_enabled: bool = True
     reminder_day_of_lead_minutes: int = 180
     reminder_max_per_run: int = 500
+    # 「預約前提醒」預設提前小時數；per-tenant 可由 Tenant.reminder_hours_before 覆寫。
+    reminder_hours_before_default: int = 24
 
     # 預約異動通知（PHASE 2）：店家修改/取消預約時 LINE 推播；
     # SAAS_NOTIFICATION_MAX_PER_RUN: ops 腳本單次最多派送筆數（防推播暴衝）。
@@ -110,6 +118,15 @@ class Settings(BaseSettings):
 
     # 多分店（PHASE 1）：每租戶可建的「啟用中」分店數量上限。
     max_locations_per_tenant: int = 5
+
+    # 免費版員工數上限；開通 UNLIMITED_STAFF（輕量版以上）解除。
+    free_staff_limit: int = 3
+
+    # 會員等級結帳折扣（百分比）。對標 vibeaico「不同等級不同折扣」。
+    # 0 = 該等級不折扣；於 POS 結帳對商品小計套用（在優惠券之前）。
+    tier_discount_gold_percent: int = 10
+    tier_discount_silver_percent: int = 5
+    tier_discount_regular_percent: int = 0
 
     # OAuth 登入（PHASE 3：LINE Login + Google）。任一 provider 的 client_id/secret
     # 留空時，get_provider() 回傳 StubOAuthProvider（離線、決定性，供測試/dev）。

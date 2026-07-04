@@ -40,6 +40,7 @@ class LookupResponse(BaseModel):
     phone: str | None
     points_balance: int
     tier: str
+    tier_discount_percent: int = 0
     active_coupons: list[CouponBrief]
 
 
@@ -62,6 +63,7 @@ class CheckoutResponse(BaseModel):
     customer_id: int | None
     status: str
     total_cents: int
+    discount_cents: int = 0
     currency: str
 
     model_config = {"from_attributes": True}
@@ -85,6 +87,7 @@ def lookup(
         phone=customer.phone,
         points_balance=result["points_balance"],
         tier=customer.tier or "regular",
+        tier_discount_percent=result["tier_discount_percent"],
         active_coupons=[
             CouponBrief.model_validate(c) for c in result["active_coupons"]
         ],

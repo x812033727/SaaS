@@ -369,7 +369,7 @@
 - 時間：2026-06-16 08:00
 - 理由：高級工程師點出「第一道擋下後第二道不應誤觸」是測試覆蓋盲點，必須補。
 
-## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 開 issue tracker 留待 M2**。
+## 「翻譯/回覆成功但 `increment_usage` 失敗 = 已服務未計費」是**既有**失敗模式（次數軸沿用至今），本輪字數軸不修，**PR 描述必須點名此已知模式 + 登記 issue tracker 留待 M2**。
 - 時間：2026-06-16 08:00
 - 理由：修這個需先定義「成功副作用邊界」（何時算服務完成、何時算未完成），跨整個 webhook 設計面，超出本輪 scope；明文化是當前最值錢的處置。
 
@@ -405,7 +405,7 @@
 ## 文件化語意 — line_webhook.py 步驟 6c 註解改述「reply 阻塞 I/O 在 BackgroundTasks 機制下已自動被 run_in_threadpool 移出 event loop，等同 asyncio.to_thread 效果；threadpool 線程佔用（高 RPS × 多 worker）見 M2 async 化技術債」；模組 docstring M2 段落更新為「HttpLineReplyClient 改用 httpx.AsyncClient（lifespan 管理單一 instance）+ _process_events 改 async def + AsyncSession 整套重構；asyncio.to_thread 包裝為錯誤方向、不再列入技術債」
 - 時間：2026-06-16 13:57
 
-## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #XXX") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
+## 外部缺口處置 — 既有 7 個 test_line_task2_char_quota / test_qa_task3_webhook_char_metering 失敗加 @pytest.mark.xfail(reason="has_char_quota 簽名缺口，issue #L2-quota-migration") 或 skip，從 baseline 噪音中隔出；PR 描述明列 xfail count
 - 時間：2026-06-16 13:57
 - 理由：直接合進 master 會讓 CI baseline 永久 7 紅，未來提 PR 的人分不清「已知缺口」vs「本次 regression」；xfail 讓 CI 綠、缺口可被追蹤、reviewer 一眼看清狀態。
 - 否決方案：(a) 留紅直接合——CI 噪音永久化；(b) 本輪順手修——超出本輪 scope、PR 失焦。
@@ -810,3 +810,108 @@
 - 接點（查官方 SDK 確認）：AIO 定期定額參數 ChoosePayment=Credit + PeriodAmount/PeriodType(M)/Frequency/ExecTimes/PeriodReturnURL；停扣 CreditCardPeriodAction(Action=Cancel,TimeStamp)；查詢 QueryCreditCardPeriodInfo。CheckMacValue 沿用第四輪 EcpayClient（同演算法）。
 - 關鍵正確性：(1) 首期 ReturnURL RtnCode==1 才 set_enabled(True)，pending 期間不開通；(2) 退訂先 cancel_period 停扣再關功能，停扣失敗標 cancel_failed + log（待 ops 重試），絕不關功能卻續扣；(3) 兩回調先驗簽再信任、set_enabled 冪等；(4) S2S HTTP 走 EcpayClient 注入縫 _urllib_post，測試以 fake 不打真實網路；(5) ExecTimes=99 月扣上限，屆滿自動停需重訂。
 - 實作：models/feature_subscription（狀態 pending/active/failed/cancelled/cancel_failed）；services/subscriptions；EcpayClient.build_period_form/cancel_period；billing.subscribe_feature 回 SubscribeResult（stub→payment_id+即時開通；ecpay→checkout_url+pending）；routers/payments 加 subscribe 頁 + subscribe-callback + period-callback。
+## 冪等邊界唯一收斂點為 _claim_webhook_event()——router 主流程對 isRedelivery 完全無感知。
+- 時間：2026-06-28 00:36
+- 理由：邊界集中才可測、可維護；分散到多處會讓「哪裡去重」變成隱性知識。
+- 否決方案：在 _process_events 迴圈頂層加 isRedelivery 條件 skip——會漏處理首次送達失敗後的合法 redelivery。
+
+## DB 唯一約束 (tenant_id, webhook_event_id) 是冪等的唯一真相來源，以 IntegrityError + rollback 跨方言處理衝突。
+- 時間：2026-06-28 00:36
+- 理由：DB 約束是多實例下的正確保底，應用層鎖反而製造額外狀態；SQLite/PostgreSQL 均適用。
+- 否決方案：應用層鎖（threading.Lock / Redis SETNX）——M1 單實例 + 共用 DB 場景下過度設計；M2 多實例若有 DB 壓力問題再評估 Redis，但唯一約束仍是最終保底，Redis 只降壓不替代。
+
+## reply 前/後重試邊界以 _FAILED_RETRYABLE_STAGES_BEFORE_REPLY 常數明確列舉，reply_sent 刻意不列入。
+- 時間：2026-06-28 00:36
+- 理由：保守優先——寧可少重試，不可重複 reply；reply 後重試的唯一效果是建單/計費重複，成本高於損失一次翻譯。
+- 否決方案：所有 failed 狀態均允許重試——reply 後也重試會造成重複回覆，違反 LINE Messaging API 語意。
+
+## isRedelivery 在 router 中只出現於 log 診斷（line_webhook.py:568–573），永不作為任何 skip/continue 條件。
+- 時間：2026-06-28 00:36
+- 理由：isRedelivery 是 LINE 的提示欄位，不是冪等契約；webhookEventId 才是去重鍵，混用兩者會讓邏輯出現兩套不對稱路徑。
+
+## 缺 webhookEventId 時退化為直接處理（return None, True），不攔截也不報錯。
+- 時間：2026-06-28 00:36
+- 理由：前向相容——LINE 未來可能有不帶此欄的 event 類型；攔截會造成靜默丟棄，違反「儘量處理」原則。
+
+## attempt_count 本輪不設上限（MAX_ATTEMPTS 守衛移交 M2）。
+- 時間：2026-06-28 00:36
+- 理由：LINE 正常 redelivery 窗口 < 1 小時，M1 流量下同 ID 無限卡 pending 無真實場景；加上限本輪須補狀態分支與測試，膨脹驗收範圍。
+- 否決方案：本輪補 MAX_ATTEMPTS = 5——高工確認 M1 可接受，且無具體失敗場景支撐其必要性，議程子題二未能舉證「無上限破壞本輪冪等契約」，故否決納入本輪。
+
+## last_error 只存 type(exc).__name__，不存完整 message 或 traceback。
+- 時間：2026-06-28 00:36
+- 理由：防 PII 與內部路徑洩漏至 DB；debug 完整資訊走 log，DB 只存分類索引。
+- 否決方案：補 line_webhook_event_errors 子表存完整訊息——屬 M2 技術債，本輪不納入。
+
+## TTL 清理 job（processed_at < now - 7d）移交 M2，不進本輪 PR。
+- 時間：2026-06-28 00:36
+- 理由：M1 每日數百筆、數 MB 等級，累積速度不影響當前效能；本輪加清理 job 屬鍍金。
+
+## 本輪驗收閉環定義為——四組指定測試全綠 + grep 確認 isRedelivery 無 skip/continue 路徑，不補新程式碼。
+- 時間：2026-06-28 00:36
+
+## M2 移交項目必須開成具體 issue 追蹤，不可口頭承諾——MAX_ATTEMPTS 守衛、TTL 清理、last_error 完整訊息、pending > 5 min 監控告警各開一票。
+- 時間：2026-06-28 00:36
+- 理由：高工明確警示「M2 不具體開票，半年後變資料累積與卡 pending 難查問題」，這是本輪唯一需要額外行動的輸出。
+
+## **本輪零開發，純驗收關單**——webhook 接收與驗簽已 100% 覆蓋 LINE 官方要求，且在 timing 防護、列舉防護、destination 二次驗證、解密失敗 200 fall-back 四個面向比官方最低要求更嚴謹。
+- 時間：2026-06-28 16:16
+- 理由：改動只會引入迴歸風險，ROI 為負；「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開」即為本輪完整閉環。
+- 否決方案：引入 LINE Bot SDK、補 IP allowlist、改 `request.stream()`——三者皆為無效或破壞性鍍金，被否決。
+
+## **`raw-body 先於 parse` 列為明確 grep 門檻**——`await request.body()` 必須出現在 `json.loads(body)` 之前，以 grep 行號順序驗證；任何重構不得打破此順序，違反即阻擋合入。
+- 時間：2026-06-28 16:16
+- 理由：工程師指出此順序若被移位，HMAC 驗簽會靜默失效，且現有測試無法偵測（test 不驗行號順序）。
+
+## **`_constant_time_verify` 為驗簽唯一實作點，新增拒絕路徑一律流入此 helper**——任何新 rejection 分支不得自行計算 HMAC；以 grep 確認 `hmac.new` 在整個 router 只出現在 helper 函式體內。
+- 時間：2026-06-28 16:16
+- 理由：分散的 inline HMAC 會打破 timing 收斂保證；單一入口確保未來換 signature scheme 只改一處。
+- 否決方案：各分支 inline `hmac.new`——破壞 timing side-channel 防護，被否決。
+
+## **`isRedelivery` 永只作診斷 log，冪等鍵固定為 `webhookEventId`**——grep 確認 `isRedelivery` 在 `line_webhook.py` 無任何 `skip`/`continue`/`return`/`raise` 相鄰控制流；此規則隨新功能擴充持續有效。
+- 時間：2026-06-28 16:16
+- 理由：`isRedelivery` 是 LINE 的提示欄位，非冪等契約；混用兩者會產生不對稱雙路徑。
+- 否決方案：用 `isRedelivery` 做去重條件——破壞單一冪等鍵原則，被否決。
+
+## **JSON parse 失敗 detail 差異列為 M2 hardening，本輪不阻擋**——「Request body is not valid JSON」與 `_INVALID_SIGNATURE_DETAIL` 字串不同，此差異的 M2 issue 需有明確驗收條件：handler parse 失敗路徑改回 400 + `_INVALID_SIGNATURE_DETAIL`，且補對應 negative test case。
+- 時間：2026-06-28 16:16
+- 理由：攻擊者需先通過 HMAC 才能觸發此分支，風險極低，不值得在本輪擴大測試範圍。
+
+## **M2 四票各須有 issue tracker ID，每票附具體驗收條件，不可停留在文件「待開」文字**——四票：MAX_ATTEMPTS 守衛（驗收：attempt_count > N 時 row 標 `failed`，不再 claim）、TTL 清理 job（驗收：processed_at < now-7d 的 row 被定期刪除）、`last_error` 完整訊息（驗收：DB 欄位存 exception message，log 仍有 traceback）、pending>5min 監控告警（驗收：Prometheus/alerting rule 設定，含 runbook 連結）。
+- 時間：2026-06-28 16:16
+- 理由：高工明確警示「無 issue ID 的 M2 半年後變孤兒技術債、難查卡 pending 問題」；模糊 hardening bucket 無法排程。
+- 否決方案：把 M2 待辦寫進 `NOTES.md` 或 docstring 的未開票占位文字——無追蹤 ID 即視為未開，被否決。
+
+## **驗收閉環定義不擴充**——僅「五組測試全綠 + 兩項 grep 確認 + 四張 M2 issue 已開（含 issue ID）」，不新增程式碼；任何「順手補強」提案須先舉證對上述三項的必要性，否則駁回。
+- 時間：2026-06-28 16:16
+## `match()` 比對優先序固定為「型別階層優先（exact > prefix > contains），同型別內 priority asc，同 priority 再 id asc 為 tie-breaker」——廢除「全域 priority 取第一」歧義說法。
+- 時間：2026-06-28 17:04
+- 理由：確保 deterministic；商家只需管型別與 priority 兩個維度，id 作保底 tie-breaker 無需額外配置。
+- 否決方案：全域 priority 唯一排序——exact 規則容易被低 priority 的 contains 規則蓋掉，反直覺且難除錯。
+
+## CRUD 層強制 invariant 驗證：`reply_type=text` 必須 `reply_text` 非空；`reply_type=flex` 必須 `flex_menu_id` 非 None；`keyword.strip()` 不可為空字串；違反者 422 拒絕。
+- 時間：2026-06-28 17:04
+- 理由：`keyword` 為空時 `contains`/`prefix` 會全命中所有訊息，屬安全性缺陷而非業務邊界問題，不可留到 runtime 才爆。
+
+## `flex_menu_id` 跨租戶校驗**本輪必做，不延到 M2**：CRUD create/update 時額外 `db.query(FlexMenu).filter(FlexMenu.id==flex_menu_id, FlexMenu.tenant_id==current_tenant_id).first()` 確認所有權，查無回傳 404；webhook 取 FlexMenu 時同樣加 `tenant_id` filter。
+- 時間：2026-06-28 17:04
+- 理由：高工指出 FK 無法保證同租戶，此為跨租戶內容外洩，不是性能問題，MVP 必須堵死。
+- 否決方案：依賴 FK 隱式保護——FK 只管參照存在，不管所有權。
+
+## Router 形狀對齊現有自助 API 慣例，改用 `current_user.tenant_id`，不在 path 暴露 `{tenant_id}`；prefix 改為 `/api/auto-reply-rules`，所有 query 與 filter 均帶 `tenant_id=current_user.tenant_id`。
+- 時間：2026-06-28 17:04
+- 理由：沿用既有慣例降低維護認知負擔，避免引入新的 `require_same_tenant` 依賴檢查。
+- 否決方案：`/api/tenants/{tenant_id}/auto-reply-rules` + filter——需額外顯式校驗 path tenant_id 與 token 一致，漏加即洞開。
+
+## `LineMessage` 落表透過 `services/line_chat.py`（或等效現有服務函式）寫入，不在 webhook 直接 `db.add`；若該服務無現成 `record_in`/`record_out` 函式，本輪在 `services/line_chat.py` 補兩個輕薄 helper，webhook 只呼叫 helper。
+- 時間：2026-06-28 17:04
+- 理由：沿用現有集中寫入模式，避免雙頭落表邏輯，未來欄位擴充只改一處。
+- 否決方案：webhook 直接 db.add——打破既有集中模式，未來欄位新增需改兩處。
+
+## `models/auto_reply_rule.py` 建立後必須加入 `db.import_all_models()`（或等效 metadata 收集點），`routers/auto_reply_rules.py` 必須在 `app.py` 的 `include_router` 區段登記，兩者作為任務 #1/#4 的 DoD 必要項。
+- 時間：2026-06-28 17:04
+- 理由：高工與工程師均指出遺漏會讓 `create_all` 不建表、路由 404，本輪把它寫進定案而非靠口頭記憶。
+
+## 上輪其餘六條決策維持不變（獨立 `auto_reply` 分支、per-request DB query、純函式 `match()` 無副作用、`exact` case-sensitive 其餘 lower()、MVP 不快取、不含 HTML 管理頁）。
+- 時間：2026-06-28 17:04
+

@@ -20,7 +20,12 @@ import html
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -62,6 +67,9 @@ from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.services import line_chat as line_chat_svc
+from saas_mvp.services import calendar_view as calendar_view_svc
+from saas_mvp.services.events import broker as event_broker
 from saas_mvp.ai import AIError, get_assistant
 from saas_mvp.models.campaign import Campaign
 from saas_mvp.services.tenants import tenant_query
@@ -634,6 +642,11 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
     cfg = _line_config_or_none(db, tid)
     customers = customers_svc.list_customers(db, tenant_id=tid)
+    tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
+    reminder_hours = (
+        (tenant_row.reminder_hours_before if tenant_row else None)
+        or settings.reminder_hours_before_default
+    )
     return _ctx(
         request,
         actor,
@@ -643,6 +656,7 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         slots=slots_svc.list_slots(db, tenant_id=tid),
         reservations=booking_svc.list_reservations(db, tenant_id=tid),
         customers=customers,
+        reminder_hours=reminder_hours,
         # 預約列以 customer_id 對應顧客檔，顯示可核對的 LINE 名稱/電話（免額外查詢）。
         customer_by_id={c.id: c for c in customers},
         **extra,
@@ -675,6 +689,31 @@ def booking_set_bot_mode(
         error = str(exc.detail)
     return templates.TemplateResponse(
         "_booking_botmode.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/booking/reminder-hours", response_class=HTMLResponse)
+def booking_set_reminder_hours(
+    request: Request,
+    reminder_hours_before: int = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """設定「預約前幾小時提醒」（對標 vibeaico「自訂提醒時間（小時）」）。"""
+    tid = actor.user.tenant_id
+    error = None
+    saved = False
+    if reminder_hours_before < 1 or reminder_hours_before > 168:
+        error = "提醒時間需介於 1 ～ 168 小時。"
+    else:
+        tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
+        if tenant_row is not None:
+            tenant_row.reminder_hours_before = reminder_hours_before
+            db.commit()
+            saved = True
+    return templates.TemplateResponse(
+        "_booking_reminder.html",
+        _booking_ctx(request, actor, db, error=error, saved=saved),
     )
 
 
@@ -1438,6 +1477,7 @@ def _staff_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         staff_rows=rows,
         staff_shifts=shifts,
         staff_leaves=leaves,
+        shift_templates=staff_svc.SHIFT_TEMPLATES,
         locations=locations_svc.list_locations(db, tenant_id=tid),
         **extra,
     )
@@ -1603,6 +1643,36 @@ def staff_create_shift(
         error = "星期格式錯誤"
     return templates.TemplateResponse(
         "_staff_list.html", _staff_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/staff/{staff_id}/shifts/bulk", response_class=HTMLResponse)
+def staff_bulk_shifts(
+    request: Request,
+    staff_id: int,
+    template: str = Form(...),
+    weekdays: list[str] = Form(default=[]),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """以內建模板批量排班（對標 vibeaico「內建模板一鍵套用」）。"""
+    if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
+        return _feature_locked(request, actor, features_svc.STAFF_SCHEDULING, "員工排班")
+    tid = actor.user.tenant_id
+    error = None
+    saved = None
+    try:
+        wd = [int(w) for w in weekdays if w != ""]
+        result = staff_svc.bulk_create_shifts_from_template(
+            db, tenant_id=tid, staff_id=staff_id, template=template, weekdays=wd,
+        )
+        saved = f"已套用模板：新增 {result['created']} 筆、略過 {result['skipped']} 筆（已存在）。"
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except ValueError:
+        error = "星期格式錯誤"
+    return templates.TemplateResponse(
+        "_staff_list.html", _staff_ctx(request, actor, db, error=error, bulk_msg=saved)
     )
 
 
@@ -2458,6 +2528,7 @@ def profile_save(
     seo_title: str = Form(""),
     seo_description: str = Form(""),
     intro: str = Form(""),
+    announcement: str = Form(""),
     is_published: str = Form(""),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
@@ -2478,6 +2549,7 @@ def profile_save(
             seo_title=seo_title or None,
             seo_description=seo_description or None,
             intro=intro or None,
+            announcement=announcement or None,
             is_published=(is_published == "true"),
         )
         saved = True
@@ -2528,6 +2600,7 @@ def pos_lookup(
         extra.update(
             customer=result["customer"],
             points_balance=result["points_balance"],
+            tier_discount_percent=result["tier_discount_percent"],
             active_coupons=result["active_coupons"],
         )
     return templates.TemplateResponse("_pos.html", _pos_ctx(request, actor, db, **extra))
@@ -2737,6 +2810,37 @@ def faq_update(
     )
 
 
+@router.post("/ai-widget/ask", response_class=HTMLResponse)
+def ai_widget_ask(
+    request: Request,
+    question: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """右下角浮動 AI 客服 widget 的問答端點（對標 vibeaico AI 客服 widget）。"""
+    tid = actor.user.tenant_id
+    answer = None
+    error = None
+    if not features_svc.is_enabled(db, tid, features_svc.AI_ASSISTANT):
+        error = "AI 客服未開通（專業版功能）。"
+    elif len(question) > _AI_QUESTION_MAX_LEN:
+        error = f"問題過長（上限 {_AI_QUESTION_MAX_LEN} 字），請精簡後再試。"
+    else:
+        assistant = get_assistant()
+        context = faq_svc.build_context(
+            db, tid, question, max_entries=assistant.context_max_entries
+        )
+        try:
+            result = assistant.answer(question, context)
+            answer = result.answer
+        except AIError as exc:
+            error = f"AI 後端錯誤：{exc}"
+    return templates.TemplateResponse(
+        "_ai_widget_answer.html",
+        _ctx(request, actor, question=question, answer=answer, error=error),
+    )
+
+
 @router.post("/faq/ask", response_class=HTMLResponse)
 def faq_ask(
     request: Request,
@@ -2770,4 +2874,169 @@ def faq_ask(
     return templates.TemplateResponse(
         "_ai_test.html",
         _ctx(request, actor, question=question, answer=answer, source=source, error=error),
+    )
+
+
+# ── 後台 LINE 客服訊息 + SSE 即時通知 ────────────────────────────────────────
+@router.get("/line-chat", response_class=HTMLResponse)
+def line_chat_page(
+    request: Request,
+    u: str | None = Query(default=None),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """客服對話頁：左側對話列表，右側選定對話的訊息序列 + 回覆框。"""
+    tid = actor.user.tenant_id
+    conversations = line_chat_svc.list_conversations(db, tenant_id=tid)
+    selected = u
+    selected_name = None
+    messages = []
+    if selected:
+        messages = line_chat_svc.list_messages(
+            db, tenant_id=tid, line_user_id=selected
+        )
+        for c in conversations:
+            if c["line_user_id"] == selected:
+                selected_name = c["display_name"]
+                break
+    return templates.TemplateResponse(
+        "line_chat.html",
+        _ctx(
+            request, actor,
+            conversations=conversations,
+            selected=selected,
+            selected_name=selected_name,
+            line_user_id=selected,
+            messages=messages,
+        ),
+    )
+
+
+@router.post("/line-chat/{line_user_id}/reply", response_class=HTMLResponse)
+def line_chat_reply(
+    request: Request,
+    line_user_id: str,
+    text: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    push_client: LinePushClient = Depends(get_push_client),
+):
+    """店家從後台回覆顧客：LINE push → 存檔 outbound → SSE 廣播。"""
+    from saas_mvp.line_client import LinePushError
+    from saas_mvp.models.line_channel_config import LineChannelConfig
+    from saas_mvp.services.events import publish_event
+
+    tid = actor.user.tenant_id
+    text = (text or "").strip()
+    error = None
+    if not text:
+        error = "回覆內容不可為空。"
+    else:
+        cfg = (
+            db.query(LineChannelConfig)
+            .filter(LineChannelConfig.tenant_id == tid)
+            .first()
+        )
+        token = None
+        try:
+            token = cfg.access_token if cfg else None
+        except Exception:  # noqa: BLE001 — 解密失敗視同未設定
+            token = None
+        if not token:
+            error = "尚未設定 LINE channel access token，無法回覆。"
+        else:
+            try:
+                push_client.push(line_user_id, text, access_token=token)
+                line_chat_svc.record_outbound(
+                    db, tenant_id=tid, line_user_id=line_user_id, text=text
+                )
+                publish_event(
+                    tid, "line_message",
+                    line_user_id=line_user_id, text=text, direction="out",
+                )
+            except LinePushError as exc:
+                error = f"LINE 推播失敗：{exc}"
+
+    messages = line_chat_svc.list_messages(db, tenant_id=tid, line_user_id=line_user_id)
+    return templates.TemplateResponse(
+        "_line_chat_messages.html",
+        _ctx(request, actor, messages=messages, line_user_id=line_user_id, error=error),
+    )
+
+
+@router.get("/events")
+async def line_events_stream(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+):
+    """SSE 即時通知串流：新預約 / 取消 / 新訊息即時推送到後台。
+
+    以 cookie 認證（EventSource 會自動帶上同源 cookie）。每租戶一條訂閱。
+    """
+    import asyncio
+    import json as _json
+
+    tenant_id = actor.user.tenant_id
+    queue = await event_broker.subscribe(tenant_id)
+
+    async def gen():
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"  # 心跳，維持連線
+                    continue
+                etype = event.get("type", "message")
+                data = _json.dumps(event, ensure_ascii=False)
+                yield f"event: {etype}\ndata: {data}\n\n"
+        finally:
+            event_broker.unsubscribe(tenant_id, queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── 預約行事曆（月曆 / 週曆 + 雙模式：顧客預約 / 員工排班） ─────────────────────
+@router.get("/calendar", response_class=HTMLResponse)
+def calendar_page(
+    request: Request,
+    view: str = Query(default="month"),
+    mode: str = Query(default="reservations"),
+    date: str | None = Query(default=None),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """後台預約行事曆。view=month|week；mode=reservations|staff；date=錨點(YYYY-MM-DD)。"""
+    tid = actor.user.tenant_id
+    today = datetime.date.today()
+    try:
+        anchor = datetime.date.fromisoformat(date) if date else today
+    except ValueError:
+        anchor = today
+
+    month_data = week_data = staff_grid = None
+    if mode == "staff":
+        staff_grid = calendar_view_svc.build_staff_grid(db, tenant_id=tid)
+    elif view == "week":
+        week_data = calendar_view_svc.build_week(db, tenant_id=tid, anchor=anchor)
+    else:
+        view = "month"
+        month_data = calendar_view_svc.build_month(
+            db, tenant_id=tid, year=anchor.year, month=anchor.month
+        )
+
+    return templates.TemplateResponse(
+        "calendar.html",
+        _ctx(
+            request, actor,
+            view=view, mode=mode, today=today,
+            month_data=month_data, week_data=week_data, staff_grid=staff_grid,
+        ),
     )

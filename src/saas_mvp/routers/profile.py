@@ -36,6 +36,7 @@ class ProfileUpsert(BaseModel):
     seo_title: str | None = Field(default=None, max_length=256)
     seo_description: str | None = Field(default=None, max_length=512)
     intro: str | None = None
+    announcement: str | None = None
     is_published: bool | None = None
 
 
@@ -50,6 +51,7 @@ class ProfileResponse(BaseModel):
     seo_title: str | None
     seo_description: str | None
     intro: str | None
+    announcement: str | None
     is_published: bool
 
     model_config = {"from_attributes": True}

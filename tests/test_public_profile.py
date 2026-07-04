@@ -203,3 +203,51 @@ class TestProfileManagement:
     def test_get_before_setup_404(self, client):
         token = _register(client)
         assert client.get("/booking/profile", headers=_auth(token)).status_code == 404
+
+
+def _seed_staff_with_shift(tid: int, *, name: str) -> None:
+    from saas_mvp.services import staff as staff_svc
+    db = _Session()
+    try:
+        s = staff_svc.create_staff(db, tenant_id=tid, name=name)
+        staff_svc.create_shift(
+            db, tenant_id=tid, staff_id=s.id,
+            weekday=0, start_time="10:00", end_time="18:00",
+        )
+    finally:
+        db.close()
+
+
+class TestPublicProfileNewFeatures:
+    def test_announcement_and_jsonld_and_team(self, client):
+        token = _register(client)
+        tid = _tenant_id_of(token)
+        _seed_tenant_content(tid, prefix="beta")
+        _seed_staff_with_shift(tid, name="設計師Amy")
+        slug = f"slug-{uuid.uuid4().hex[:8]}"
+        r = _upsert_profile(
+            client, token,
+            slug=slug, display_name="Beta 店",
+            announcement="本週四公休一天",
+            is_published=True,
+        )
+        assert r.status_code == 200, r.text
+        html = client.get(f"/p/{slug}").text
+        # 公告
+        assert "本週四公休一天" in html
+        # JSON-LD 結構化資料
+        assert 'application/ld+json' in html
+        assert '"@type": "LocalBusiness"' in html
+        # 員工排班即時顯示
+        assert "團隊排班" in html
+        assert "設計師Amy" in html
+        assert "週一" in html and "10:00" in html
+
+    def test_announcement_optional(self, client):
+        token = _register(client)
+        tid = _tenant_id_of(token)
+        slug = f"slug-{uuid.uuid4().hex[:8]}"
+        _upsert_profile(client, token, slug=slug, display_name="無公告店", is_published=True)
+        html = client.get(f"/p/{slug}").text
+        assert "class=\"announce\"" not in html  # 無公告不渲染公告區
+        assert 'application/ld+json' in html  # JSON-LD 仍輸出

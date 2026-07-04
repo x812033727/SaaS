@@ -23,9 +23,9 @@ from saas_mvp.db import Base
 # 僅允許合法字元，防止下游 API 注入。
 _BCP47_RE = re.compile(r"^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8})*$")
 
-# bot 行為模式：translation（現狀翻譯，預設）/ booking（預約）。
+# bot 行為模式：translation（現狀翻譯，預設）/ booking（預約）/ auto_reply（關鍵字自動回覆）。
 # 並存設計——webhook 依此值分流，既有翻譯店家不受影響。
-VALID_BOT_MODES: frozenset[str] = frozenset({"translation", "booking"})
+VALID_BOT_MODES: frozenset[str] = frozenset({"translation", "booking", "auto_reply"})
 DEFAULT_BOT_MODE = "translation"
 
 
@@ -131,7 +131,7 @@ class LineChannelConfig(Base):
     # 預設翻譯目標語言（BCP-47 tag，如 "zh-TW", "en", "ja"）
     default_target_lang = Column(String(16), nullable=False, default="zh-TW")
 
-    # bot 行為模式：translation（預設）/ booking。
+    # bot 行為模式：translation（預設）/ booking / auto_reply。
     # 雙 default/server_default：server_default 讓 ALTER TABLE 對既有列回填
     # 'translation'，避免 NOT NULL 無預設失敗或殘留 NULL 打到 @validates。
     bot_mode = Column(

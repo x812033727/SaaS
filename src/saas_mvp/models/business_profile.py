@@ -49,6 +49,8 @@ class BusinessProfile(Base):
     seo_title = Column(String(256), nullable=True)
     seo_description = Column(String(512), nullable=True)
     intro = Column(Text, nullable=True)
+    # 公告文字（對標 vibeaico 公開頁「公告」）；既有 DB 由 _migrate_add_profile_announcement 補欄。
+    announcement = Column(Text, nullable=True)
 
     is_published = Column(
         Boolean, nullable=False, default=False, server_default=text("false")

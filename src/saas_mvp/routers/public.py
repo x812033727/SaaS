@@ -26,7 +26,34 @@ from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import shop as shop_svc
+from saas_mvp.services import staff as staff_svc
 from saas_mvp.services.calendar_ics import google_calendar_url
+
+_WEEKDAY_LABELS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+
+
+def _staff_schedule(db: Session, tenant_id: int) -> list[dict]:
+    """公開頁「員工排班即時顯示」：啟用中員工 + 其班表（排除 off）。"""
+    out: list[dict] = []
+    for s in staff_svc.list_staff(db, tenant_id=tenant_id):
+        if not s.is_active:
+            continue
+        shifts = []
+        for sh in staff_svc.list_shifts(db, tenant_id=tenant_id, staff_id=s.id):
+            if not sh.is_active or sh.rotation == "off":
+                continue
+            wd = (
+                _WEEKDAY_LABELS[sh.weekday]
+                if sh.weekday is not None and 0 <= sh.weekday <= 6
+                else "每日"
+            )
+            shifts.append({
+                "weekday": wd,
+                "start": sh.start_time,
+                "end": sh.end_time,
+            })
+        out.append({"name": s.name, "role": s.role, "shifts": shifts})
+    return out
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
@@ -140,6 +167,34 @@ def public_profile(
     seo_title = profile.seo_title or display_name
     seo_description = profile.seo_description or (profile.intro or display_name)
 
+    # 員工排班即時顯示。
+    staff_schedule = _staff_schedule(db, tenant_id)
+
+    # JSON-LD 結構化資料（schema.org/LocalBusiness）：利於 SEO 與搜尋呈現。
+    json_ld: dict = {
+        "@context": "https://schema.org",
+        "@type": "LocalBusiness",
+        "name": display_name,
+        "description": seo_description,
+        "url": str(request.url),
+    }
+    if safe_banner_url:
+        json_ld["image"] = safe_banner_url
+    if services:
+        json_ld["makesOffer"] = [
+            {
+                "@type": "Offer",
+                "itemOffered": {"@type": "Service", "name": s["name"]},
+                "price": f"{(s['price_cents'] or 0) / 100:.2f}",
+                "priceCurrency": "TWD",
+            }
+            for s in services
+        ]
+    if social:
+        json_ld["sameAs"] = list(social.values())
+    # 轉義 '<' 防止 display_name 等含 '</script>' 破壞 JSON-LD script 區塊（XSS）。
+    json_ld_str = json.dumps(json_ld, ensure_ascii=False).replace("<", "\\u003c")
+
     return templates.TemplateResponse(
         "public/profile.html",
         {
@@ -154,5 +209,8 @@ def public_profile(
             "banner_url": safe_banner_url,
             "seo_title": seo_title,
             "seo_description": seo_description,
+            "announcement": profile.announcement,
+            "staff_schedule": staff_schedule,
+            "json_ld": json_ld_str,
         },
     )

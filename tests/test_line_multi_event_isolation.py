@@ -234,6 +234,19 @@ def _webhook_event_rows(tenant_id: int) -> list[tuple[str, str, str | None, bool
         db.close()
 
 
+def _webhook_event_attempt_count(tenant_id: int, webhook_event_id: str) -> int:
+    db = _Session()
+    try:
+        return db.execute(
+            select(LineWebhookEvent.attempt_count).where(
+                LineWebhookEvent.tenant_id == tenant_id,
+                LineWebhookEvent.webhook_event_id == webhook_event_id,
+            )
+        ).scalar_one()
+    finally:
+        db.close()
+
+
 def test_first_event_translate_failure_does_not_stop_second_event(app_client):
     client, translator, line_client = app_client
     tenant_id = _seed_tenant()
@@ -487,6 +500,61 @@ def test_failed_event_before_reply_is_retried_on_same_webhook_event_id(app_clien
     assert _usage_count(tenant_id) == 1
     assert _webhook_event_rows(tenant_id) == [
         ("evt-retry-failed", "processed", "usage_incremented", True)
+    ]
+
+
+@pytest.mark.parametrize(
+    "failed_stage",
+    ["claimed", "quota_checked", "translated"],
+)
+def test_failed_pre_reply_stages_are_retried_on_same_webhook_event_id(
+    app_client,
+    failed_stage,
+):
+    client, _, line_client = app_client
+    client.app.dependency_overrides[get_translator] = lambda: StubTranslator()
+    tenant_id = _seed_tenant()
+    webhook_event_id = f"evt-{failed_stage}-failed"
+
+    db = _Session()
+    try:
+        db.add(
+            LineWebhookEvent(
+                tenant_id=tenant_id,
+                webhook_event_id=webhook_event_id,
+                status="failed",
+                attempt_count=2,
+                last_error="TranslationError",
+                last_stage=failed_stage,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    body = _payload(
+        _text_event(
+            f"retry-{failed_stage}",
+            f"rt-{failed_stage}-retry",
+            "UretryStage",
+            webhook_event_id=webhook_event_id,
+            is_redelivery=True,
+        )
+    )
+    response = client.post(
+        f"/line/webhook/{tenant_id}",
+        content=body,
+        headers=_headers(body),
+    )
+
+    assert response.status_code == 200
+    assert line_client.call_count == 1
+    assert line_client.sent[0].reply_token == f"rt-{failed_stage}-retry"
+    assert line_client.sent[0].text == f"[ZH-TW] retry-{failed_stage}"
+    assert _usage_count(tenant_id) == 1
+    assert _webhook_event_attempt_count(tenant_id, webhook_event_id) == 3
+    assert _webhook_event_rows(tenant_id) == [
+        (webhook_event_id, "processed", "usage_incremented", True)
     ]
 
 

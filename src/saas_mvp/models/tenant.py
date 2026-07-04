@@ -35,6 +35,9 @@ class Tenant(Base):
     # 行事曆 ICS 訂閱憑證（店家整店 feed）；token 即能力，NULL = 尚未產生。
     # 既有 DB 由 _migrate_add_tenant_ics_token() 補欄 + unique index。
     ics_token = Column(String(64), nullable=True, unique=True)
+    # 自動提醒：預約前幾小時推播提醒（對標 vibeaico「自訂提醒時間（小時）」）。
+    # NULL = 沿用全域預設（24 小時）。既有 DB 由 _migrate_add_tenant_reminder_hours() 補欄。
+    reminder_hours_before = Column(Integer, nullable=True, default=None)
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     notes = relationship("Note", back_populates="tenant", cascade="all, delete-orphan")

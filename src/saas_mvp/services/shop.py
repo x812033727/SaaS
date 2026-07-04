@@ -46,6 +46,10 @@ class OrderNotFound(ShopError):
     pass
 
 
+class CouponApplyError(ShopError):
+    """套用優惠券失敗（無效/過期/已用/未達最低消費）。"""
+
+
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -161,8 +165,13 @@ def create_order(
     items: list[tuple[int, int]],
     line_user_id: str | None = None,
     customer_id: int | None = None,
+    coupon_code: str | None = None,
 ) -> Order:
-    """原子建單：鎖商品（固定順序）→ 驗庫存 → 扣庫存 + 快照單價 → 建 Order+Items。"""
+    """原子建單：鎖商品（固定順序）→ 驗庫存 → 扣庫存 + 快照單價 → 建 Order+Items。
+
+    傳入 ``coupon_code`` 時於同一交易內套券：核銷（鎖券、驗額度/最低消費/一人一券）
+    後折抵 total_cents。需有 ``line_user_id``（券以 LINE 領取／一人一券為單位）。
+    """
     if not items:
         raise HTTPException(status_code=422, detail="items must not be empty")
 
@@ -212,7 +221,37 @@ def create_order(
             line_total_cents=line_total,
         ))
 
-    order.total_cents = total
+    # ── 折扣（會員等級 + 優惠券）：三條結帳路徑共用 pricing.apply_order_discounts ──
+    from saas_mvp.models.customer import Customer
+    from saas_mvp.services import coupons as coupons_svc
+    from saas_mvp.services import pricing as pricing_svc
+
+    # 套券需有 line_user_id（券以 LINE 一人一券為單位）；先驗，維持 422 語意。
+    if coupon_code and not line_user_id:
+        raise HTTPException(status_code=422, detail="套用優惠券需要 line_user_id")
+
+    # 解析會員（customer_id 優先，否則以 line_user_id 對應建檔顧客）；散客不折。
+    customer = None
+    if customer_id is not None:
+        customer = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(Customer.id == customer_id).first()
+        )
+    elif line_user_id:
+        customer = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(Customer.line_user_id == line_user_id).first()
+        )
+
+    try:
+        order.total_cents = pricing_svc.apply_order_discounts(
+            db, tenant_id=tenant_id, order=order, customer=customer,
+            subtotal_cents=total, line_user_id=line_user_id, coupon_code=coupon_code,
+        )
+    except coupons_svc.CouponError as exc:
+        db.rollback()
+        raise CouponApplyError(str(exc)) from exc
+
     db.commit()
     db.refresh(order)
     return order

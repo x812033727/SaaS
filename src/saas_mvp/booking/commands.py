@@ -123,6 +123,9 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
             if pid is not None:
                 params["product_id"] = pid
         params["qty"] = (_to_int(args[1]) if len(args) > 1 else None) or 1
+        # 第三個 token 為選用券碼：「購買 <商品> <數量> <券碼>」。
+        if len(args) > 2 and args[2]:
+            params["coupon"] = args[2]
         return action, params
     # slots / my / help / coupons / points / shop / my_orders 無參數
     return action, {}
@@ -228,6 +231,8 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
                 params["product_id"] = pid
         qty = _to_int(qs["qty"][0]) if "qty" in qs else None
         params["qty"] = qty or 1
+        if "coupon" in qs:
+            params["coupon"] = qs["coupon"][0]
     elif action == "cancel":
         if "reservation_id" in qs:
             rid = _to_int(qs["reservation_id"][0])

@@ -38,6 +38,28 @@ def recompute_tier(points_balance: int) -> str:
     return "regular"
 
 
+def tier_discount_percent(tier: str | None) -> int:
+    """會員等級對應的結帳折扣百分比（對標 vibeaico「不同等級不同折扣」）。
+
+    取自 settings（可由環境覆寫）；未知等級回 0。
+    """
+    from saas_mvp.config import settings
+
+    return {
+        "gold": settings.tier_discount_gold_percent,
+        "silver": settings.tier_discount_silver_percent,
+        "regular": settings.tier_discount_regular_percent,
+    }.get(tier or "regular", 0)
+
+
+def tier_discount_for(tier: str | None, subtotal_cents: int) -> int:
+    """等級折扣金額（cents），不超過小計。"""
+    pct = tier_discount_percent(tier)
+    if pct <= 0 or subtotal_cents <= 0:
+        return 0
+    return min(subtotal_cents * pct // 100, subtotal_cents)
+
+
 def earn_points(
     db: Session,
     *,
