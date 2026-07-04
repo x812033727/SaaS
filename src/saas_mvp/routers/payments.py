@@ -18,6 +18,7 @@ import time
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from saas_mvp.config import settings
 from saas_mvp.db import get_db
@@ -100,8 +101,14 @@ async def ecpay_callback(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    # 動態表單欄位須 await request.form()（保持 async）；
+    # 驗簽 + sync DB 工作移入 threadpool，避免佔用事件迴圈。
     form = await request.form()
     params = {k: str(v) for k, v in form.items()}
+    return await run_in_threadpool(_handle_ecpay_callback, db, params)
+
+
+def _handle_ecpay_callback(db: Session, params: dict) -> PlainTextResponse:
     client = EcpayClient()
 
     # 1) 先驗簽（拒絕偽造）
@@ -189,6 +196,10 @@ async def ecpay_subscribe_callback(
     """首期授權結果（ReturnURL）：驗簽 → RtnCode==1 才開通功能。"""
     form = await request.form()
     params = {k: str(v) for k, v in form.items()}
+    return await run_in_threadpool(_handle_ecpay_subscribe_callback, db, params)
+
+
+def _handle_ecpay_subscribe_callback(db: Session, params: dict) -> PlainTextResponse:
     client = EcpayClient()
     if not client.verify(params):
         _log.warning("ecpay subscribe-callback rejected: bad CheckMacValue")
@@ -222,6 +233,10 @@ async def ecpay_period_callback(
     """每期授權結果（PeriodReturnURL）：成功維持開通；失敗關閉。"""
     form = await request.form()
     params = {k: str(v) for k, v in form.items()}
+    return await run_in_threadpool(_handle_ecpay_period_callback, db, params)
+
+
+def _handle_ecpay_period_callback(db: Session, params: dict) -> PlainTextResponse:
     client = EcpayClient()
     if not client.verify(params):
         _log.warning("ecpay period-callback rejected: bad CheckMacValue")
@@ -310,6 +325,10 @@ async def newebpay_notify(
 ):
     form = await request.form()
     params = {k: str(v) for k, v in form.items()}
+    return await run_in_threadpool(_handle_newebpay_notify, db, params)
+
+
+def _handle_newebpay_notify(db: Session, params: dict) -> PlainTextResponse:
     client = NewebPayClient()
 
     # 1) 先驗 TradeSha（拒絕偽造）
