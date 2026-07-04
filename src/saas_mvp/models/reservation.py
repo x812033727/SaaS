@@ -74,6 +74,9 @@ class Reservation(Base):
     # 既有 DB 由 _migrate_add_reservation_staff_id() / _migrate_add_reservation_service_id() 補欄。
     staff_id = Column(Integer, nullable=True, index=True)
     service_id = Column(Integer, nullable=True, index=True)
+    # 分店綁定（多分店，nullable = 不限分店）；歷史上由 _migrate_add_location_id()
+    # 對舊 DB 補欄，model 現已宣告使 metadata 成為 schema 唯一真相（Alembic baseline）。
+    location_id = Column(Integer, nullable=True)
     # 顧客自助確認出席時間（提醒訊息「確認出席」按鈕）；NULL=未確認。
     # 既有 DB 由 _migrate_add_reservation_customer_confirmed() 補欄。
     customer_confirmed_at = Column(DateTime(timezone=True), nullable=True)

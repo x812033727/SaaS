@@ -52,6 +52,9 @@ class BookingSlot(Base):
     is_active = Column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
+    # 分店綁定（多分店，nullable = 不限分店）；歷史上由 _migrate_add_location_id()
+    # 對舊 DB 補欄，model 現已宣告使 metadata 成為 schema 唯一真相（Alembic baseline）。
+    location_id = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

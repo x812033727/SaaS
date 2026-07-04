@@ -103,7 +103,26 @@ def import_all_models() -> None:
 
 
 def init_db() -> None:
-    """Create all tables (idempotent)."""
+    """初始化/升級 schema（冪等）——delegate 到 Alembic 遷移三分支。
+
+    保留此函式名：app.py lifespan 與 tests/conftest.py 的 no-op 替換都
+    以 `init_db` 為錨點。實際邏輯見 ops/migrate.run_migrations()：
+    全新 DB → upgrade head；legacy DB → legacy_init_db() 收斂 + stamp；
+    已納管 → upgrade head。容器部署由 entrypoint 先跑
+    `python -m saas_mvp.ops.migrate`，lifespan 再跑一次也只是冪等 no-op。
+    """
+    from saas_mvp.ops.migrate import run_migrations  # 延遲 import 防循環
+
+    run_migrations()
+
+
+def legacy_init_db() -> None:
+    """（過渡保留）Alembic 導入前的建表 + 手寫遷移。
+
+    僅供 ops/migrate 對「未納管的 legacy DB」做一次性收斂到 baseline
+    等價 schema；新的 schema 變更一律寫 Alembic revision，
+    **不要再新增 _migrate_* 函式**。待所有部署皆 stamp 後可整段刪除。
+    """
     # import models so their metadata is registered
     import_all_models()
     Base.metadata.create_all(bind=engine)

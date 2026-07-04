@@ -26,8 +26,11 @@ PY
 }
 
 run_migrations() {
-  echo "[entrypoint] 執行 init_db（建表 + 冪等遷移）…"
-  python -c "from saas_mvp.db import init_db; init_db()"
+  echo "[entrypoint] 執行 Alembic 遷移（saas_mvp.ops.migrate，冪等）…"
+  # 三分支：全新 DB → upgrade head；legacy DB（無 alembic_version）→
+  # 先以 legacy init 收斂再 stamp baseline；已納管 → upgrade head。
+  # 必須在 gunicorn 多 worker 啟動前單次執行，避免並發遷移競態。
+  python -m saas_mvp.ops.migrate
 }
 
 case "${1:-web}" in
