@@ -127,6 +127,28 @@ class TestPortfolioCRUD:
         r = client.get("/booking/portfolio/items/999999", headers=_auth(token))
         assert r.status_code == 404
 
+    def test_get_one_category(self, client):
+        token = _register(client)
+        cat_id = client.post(
+            "/booking/portfolio/categories",
+            headers=_auth(token),
+            json={"name": "單查", "sort_order": 3},
+        ).json()["id"]
+        r = client.get(
+            f"/booking/portfolio/categories/{cat_id}", headers=_auth(token)
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "單查" and r.json()["sort_order"] == 3
+        # 查無 → 404
+        assert client.get(
+            "/booking/portfolio/categories/999999", headers=_auth(token)
+        ).status_code == 404
+        # 跨租戶 → 404
+        token_b = _register(client)
+        assert client.get(
+            f"/booking/portfolio/categories/{cat_id}", headers=_auth(token_b)
+        ).status_code == 404
+
 
 class TestListPublic:
     def test_ordering_and_active_filter(self, client):

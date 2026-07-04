@@ -73,6 +73,11 @@ class TagCreate(BaseModel):
     color: str | None = Field(default=None, max_length=16)
 
 
+class TagUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=64)
+    color: str | None = Field(default=None, max_length=16)
+
+
 class TagResponse(BaseModel):
     id: int
     tenant_id: int
@@ -114,6 +119,23 @@ def list_tags(
 ) -> list[TagResponse]:
     rows = segments_svc.list_tags(db, tenant_id=current_user.tenant_id)
     return [TagResponse.model_validate(t) for t in rows]
+
+
+@router.put("/tags/{tag_id}", response_model=TagResponse)
+def update_tag(
+    tag_id: int,
+    body: TagUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TagResponse:
+    tag = segments_svc.update_tag(
+        db,
+        tenant_id=current_user.tenant_id,
+        tag_id=tag_id,
+        name=body.name,
+        color=body.color,
+    )
+    return TagResponse.model_validate(tag)
 
 
 @router.delete(

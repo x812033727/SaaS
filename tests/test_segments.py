@@ -143,6 +143,63 @@ class TestTagCRUD:
             "/booking/customers/tags/999999", headers=_auth(token)
         ).status_code == 404
 
+    def test_update_rename_and_color(self, client):
+        token = _register(client)
+        tag_id = client.post(
+            "/booking/customers/tags",
+            headers=_auth(token),
+            json={"name": "舊名", "color": "#111111"},
+        ).json()["id"]
+
+        r = client.put(
+            f"/booking/customers/tags/{tag_id}",
+            headers=_auth(token),
+            json={"name": "新名"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "新名"
+        assert r.json()["color"] == "#111111"  # 未帶 color → 不變
+
+        r = client.put(
+            f"/booking/customers/tags/{tag_id}",
+            headers=_auth(token),
+            json={"color": "#22cc22"},
+        )
+        assert r.status_code == 200
+        assert r.json()["name"] == "新名" and r.json()["color"] == "#22cc22"
+
+    def test_update_duplicate_name_409(self, client):
+        token = _register(client)
+        client.post(
+            "/booking/customers/tags", headers=_auth(token), json={"name": "佔用"}
+        )
+        tag_id = client.post(
+            "/booking/customers/tags", headers=_auth(token), json={"name": "改我"}
+        ).json()["id"]
+        r = client.put(
+            f"/booking/customers/tags/{tag_id}",
+            headers=_auth(token),
+            json={"name": "佔用"},
+        )
+        assert r.status_code == 409
+
+    def test_update_unknown_and_cross_tenant_404(self, client):
+        token_a = _register(client)
+        token_b = _register(client)
+        assert client.put(
+            "/booking/customers/tags/999999",
+            headers=_auth(token_a),
+            json={"name": "x"},
+        ).status_code == 404
+        tag_id = client.post(
+            "/booking/customers/tags", headers=_auth(token_a), json={"name": "A牌"}
+        ).json()["id"]
+        assert client.put(
+            f"/booking/customers/tags/{tag_id}",
+            headers=_auth(token_b),
+            json={"name": "偷改"},
+        ).status_code == 404
+
 
 # ── 掛 / 卸標籤 ──────────────────────────────────────────────────────────────
 

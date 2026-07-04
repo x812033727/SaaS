@@ -64,6 +64,16 @@ class ShiftCreate(BaseModel):
     rotation: str | None = Field(default=None, max_length=8)
 
 
+class ShiftUpdate(BaseModel):
+    """全欄位選填；weekday=None 表示「不變」（改回每日請走 UI 或重建）。"""
+
+    start_time: str | None = Field(default=None, max_length=5)
+    end_time: str | None = Field(default=None, max_length=5)
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    rotation: str | None = Field(default=None, max_length=8)
+    is_active: bool | None = None
+
+
 class ShiftResponse(BaseModel):
     id: int
     tenant_id: int
@@ -82,6 +92,13 @@ class LeaveCreate(BaseModel):
     end_at: datetime.datetime
     reason: str | None = Field(default=None, max_length=255)
     status: str = Field(default="approved", max_length=16)
+
+
+class LeaveUpdate(BaseModel):
+    start_at: datetime.datetime | None = None
+    end_at: datetime.datetime | None = None
+    reason: str | None = Field(default=None, max_length=255)
+    status: str | None = Field(default=None, max_length=16)
 
 
 class LeaveResponse(BaseModel):
@@ -161,6 +178,23 @@ def update_one(
     return StaffResponse.model_validate(staff)
 
 
+@router.delete(
+    "/{staff_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_one(
+    staff_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """刪除員工；其班表/請假/服務指派由 FK ondelete=CASCADE 連帶清除。"""
+    staff_svc.delete_staff(
+        db, tenant_id=current_user.tenant_id, staff_id=staff_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/{staff_id}/rotate-token", response_model=StaffResponse)
 def rotate_token(
     staff_id: int,
@@ -206,6 +240,31 @@ def create_shift(
         end_time=body.end_time,
         weekday=body.weekday,
         rotation=body.rotation,
+    )
+    return ShiftResponse.model_validate(shift)
+
+
+@router.put("/{staff_id}/shifts/{shift_id}", response_model=ShiftResponse)
+def update_shift(
+    staff_id: int,
+    shift_id: int,
+    body: ShiftUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ShiftResponse:
+    kwargs: dict = {}
+    if body.weekday is not None:
+        kwargs["weekday"] = body.weekday
+    shift = staff_svc.update_shift(
+        db,
+        tenant_id=current_user.tenant_id,
+        staff_id=staff_id,
+        shift_id=shift_id,
+        start_time=body.start_time,
+        end_time=body.end_time,
+        rotation=body.rotation,
+        is_active=body.is_active,
+        **kwargs,
     )
     return ShiftResponse.model_validate(shift)
 
@@ -256,6 +315,27 @@ def create_leave(
         db,
         tenant_id=current_user.tenant_id,
         staff_id=staff_id,
+        start_at=body.start_at,
+        end_at=body.end_at,
+        reason=body.reason,
+        status_value=body.status,
+    )
+    return LeaveResponse.model_validate(leave)
+
+
+@router.put("/{staff_id}/leaves/{leave_id}", response_model=LeaveResponse)
+def update_leave(
+    staff_id: int,
+    leave_id: int,
+    body: LeaveUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> LeaveResponse:
+    leave = staff_svc.update_leave(
+        db,
+        tenant_id=current_user.tenant_id,
+        staff_id=staff_id,
+        leave_id=leave_id,
         start_at=body.start_at,
         end_at=body.end_at,
         reason=body.reason,

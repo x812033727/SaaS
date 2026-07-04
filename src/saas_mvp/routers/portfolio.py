@@ -102,6 +102,18 @@ def list_categories(
     return [CategoryResponse.model_validate(r) for r in rows]
 
 
+@router.get("/categories/{category_id}", response_model=CategoryResponse)
+def get_category(
+    category_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CategoryResponse:
+    cat = portfolio_svc.get_category(
+        db, tenant_id=current_user.tenant_id, category_id=category_id
+    )
+    return CategoryResponse.model_validate(cat)
+
+
 @router.put("/categories/{category_id}", response_model=CategoryResponse)
 def update_category(
     category_id: int,
