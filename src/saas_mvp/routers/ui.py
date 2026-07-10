@@ -32,6 +32,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
@@ -61,6 +62,7 @@ from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import account_email as account_email_svc
+from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import onboarding as onboarding_svc
 from saas_mvp.services import plans as plans_svc
@@ -184,6 +186,8 @@ def _ctx(request: Request, actor: Actor | None = None, **extra) -> dict:
         "request": request,
         "current_user": actor.user if actor else None,
         "is_admin": bool(actor and actor.user.is_admin),
+        # F2 代管:banner 顯示 + 稽核聯動
+        "impersonating": bool(actor and actor.impersonator_user_id is not None),
         # CSRF：模板 hidden field 與 base.html hx-headers 用
         "csrf_token": request.cookies.get(_CSRF_COOKIE_NAME, ""),
     }
@@ -478,6 +482,12 @@ def plan_subscribe(
             ),
             status_code=exc.status_code,
         )
+    audit_svc.record_from_actor(
+        db, actor, action="billing.plan.subscribe",
+        target=f"tenant:{tenant.id}",
+        detail={"plan": plan, "mode": result.mode}, request=request,
+    )
+    db.commit()
     if result.checkout_url:
         url = html.escape(result.checkout_url)
         label = html.escape(plans_svc.plan_label(plan))
@@ -493,12 +503,18 @@ def plan_subscribe(
 
 @router.post("/plan/unsubscribe", response_class=HTMLResponse)
 def plan_unsubscribe(
+    request: Request,
     actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     """退訂方案 → 降 free（已付費者保留原方案至最後扣款日 + 31 天）。"""
     tenant = db.get(Tenant, actor.user.tenant_id)
     billing_svc.unsubscribe_bundle(db, tenant, actor.user.id)
+    audit_svc.record_from_actor(
+        db, actor, action="billing.plan.unsubscribe",
+        target=f"tenant:{tenant.id}", request=request,
+    )
+    db.commit()
     return RedirectResponse("/ui/plan", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -590,6 +606,11 @@ def members_invite(
         expires_at=_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=7),
     ))
     db.commit()
+    audit_svc.record_from_actor(
+        db, actor, action="member.invite",
+        target=f"tenant:{actor.user.tenant_id}", request=request,
+    )
+    db.commit()
     base = settings.public_base_url.rstrip("/") or ""
     invite_url = f"{base}/ui/join/{token}"
     users = db.query(User).filter(User.tenant_id == actor.user.tenant_id).all()
@@ -642,6 +663,11 @@ def join_submit(
     db.add(user)
     db.commit()
     db.refresh(user)
+    audit_svc.record(
+        db, action="member.join", actor_user_id=user.id,
+        tenant_id=user.tenant_id, target=f"user:{user.id}",
+    )
+    db.commit()
 
     jwt_token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
@@ -713,6 +739,11 @@ def line_config_save(
             _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid), error=str(exc.detail)),
             status_code=exc.status_code,
         )
+    audit_svc.record_from_actor(
+        db, actor, action="line_config.upsert",
+        target=f"tenant:{tid}", detail={"by": "owner"}, request=request,
+    )
+    db.commit()
     return templates.TemplateResponse(
         "_line_config_status.html",
         _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
@@ -924,6 +955,110 @@ def admin_overview(
     )
 
 
+@router.get("/admin/audit", response_class=HTMLResponse)
+def admin_audit(
+    request: Request,
+    tenant_id: int | None = Query(None),
+    action: str = Query(""),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """稽核日誌檢視（F1）：篩 tenant/action、分頁。"""
+    from saas_mvp.models.audit_log import AuditLog
+
+    stmt = select(AuditLog).order_by(AuditLog.id.desc())
+    if tenant_id is not None:
+        stmt = stmt.where(AuditLog.tenant_id == tenant_id)
+    if action.strip():
+        stmt = stmt.where(AuditLog.action.like(f"{action.strip()}%"))
+    rows = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
+    ctx = _ctx(
+        request, actor, rows=rows,
+        filters={"tenant_id": tenant_id, "action": action, "skip": skip, "limit": limit},
+    )
+    template = (
+        "admin/_audit_table.html" if _is_htmx(request) else "admin/audit.html"
+    )
+    return templates.TemplateResponse(template, ctx)
+
+
+@router.post("/admin/tenants/{tenant_id}/impersonate", response_class=HTMLResponse)
+def admin_impersonate(
+    request: Request,
+    tenant_id: int,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """代管（F2）:以該租戶 owner 身分開 30 分鐘短票 session。
+
+    安全:拒絕代管 admin(禁權限橫向移動)、拒絕鏈式代管、audit start、
+    代管票 actor=owner 天然進不了 /ui/admin。
+    """
+    if actor.impersonator_user_id is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="已在代管中,不可鏈式代管")
+    target_owner = db.execute(
+        select(User).where(
+            User.tenant_id == tenant_id,
+            User.role == "owner",
+        ).order_by(User.id)
+    ).scalars().first()
+    if target_owner is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="該租戶沒有 owner 帳號")
+    if target_owner.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="不可代管平台管理員帳號")
+
+    audit_svc.record(
+        db, action="impersonation.start",
+        actor_user_id=target_owner.id,
+        impersonator_user_id=actor.user.id,
+        tenant_id=tenant_id,
+        target=f"user:{target_owner.id}",
+    )
+    db.commit()
+    token = create_access_token(
+        user_id=target_owner.id, tenant_id=tenant_id,
+        impersonator_id=actor.user.id,
+    )
+    resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+    _set_auth_cookie(resp, token)
+    return resp
+
+
+@router.post("/impersonation/stop", response_class=HTMLResponse)
+def impersonation_stop(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """結束代管:以 imp 身分重簽正常 admin token(再驗仍是 admin)覆寫 cookie。"""
+    if actor.impersonator_user_id is None:
+        return RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+    admin_user = db.get(User, actor.impersonator_user_id)
+    if admin_user is None or not admin_user.is_admin:
+        # fail-closed:admin 已失效 → 直接登出
+        resp = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+        resp.delete_cookie(_UI_COOKIE_NAME, path="/")
+        return resp
+    audit_svc.record(
+        db, action="impersonation.stop",
+        actor_user_id=actor.user.id,
+        impersonator_user_id=admin_user.id,
+        tenant_id=actor.user.tenant_id,
+    )
+    db.commit()
+    token = create_access_token(user_id=admin_user.id, tenant_id=admin_user.tenant_id)
+    resp = RedirectResponse(
+        f"/ui/admin/tenants/{actor.user.tenant_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    _set_auth_cookie(resp, token)
+    return resp
+
+
 @router.get("/admin/bots", response_class=HTMLResponse)
 def admin_bots(
     request: Request,
@@ -993,6 +1128,13 @@ def admin_set_feature(
             db, tenant_id, feature, enabled == "true",
             actor_user_id=actor.user.id, source="admin",
         )
+        audit_svc.record_from_actor(
+            db, actor, action="admin.feature.set",
+            target=f"tenant:{tenant_id}",
+            detail={"feature": feature, "enabled": enabled == "true"},
+            request=request,
+        )
+        db.commit()  # set_enabled 已自行 commit;這筆補稽核
     except features_svc.UnknownFeatureError:
         pass
     return templates.TemplateResponse(
@@ -1028,6 +1170,13 @@ def admin_tenant_patch(
             _ctx(request, actor, tenant=tenant, error=str(exc.detail)),
             status_code=exc.status_code,
         )
+    audit_svc.record_from_actor(
+        db, actor, action="admin.tenant.patch",
+        target=f"tenant:{tenant_id}",
+        detail={"plan": plan, "is_active": is_active == "true", "store_type": store_type},
+        request=request,
+    )
+    db.commit()  # patch_tenant 已自行 commit;這筆補稽核
     tenant = db.get(Tenant, tenant_id)
     return templates.TemplateResponse(
         "admin/_tenant_summary.html",
@@ -1061,6 +1210,11 @@ def admin_line_config_save(
                  action_base=f"/ui/admin/tenants/{tenant_id}/line-config", error=str(exc.detail)),
             status_code=exc.status_code,
         )
+    audit_svc.record_from_actor(
+        db, actor, action="line_config.upsert",
+        target=f"tenant:{tenant_id}", detail={"by": "admin"}, request=request,
+    )
+    db.commit()
     return templates.TemplateResponse(
         "_line_config_status.html",
         _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tenant_id),
@@ -1101,6 +1255,11 @@ def admin_line_config_delete(
 ):
     try:
         line_config_svc.delete_line_config(db, tenant_id)
+        audit_svc.record_from_actor(
+            db, actor, action="line_config.delete",
+            target=f"tenant:{tenant_id}", detail={"by": "admin"}, request=request,
+        )
+        db.commit()
     except HTTPException:
         pass
     return templates.TemplateResponse(
@@ -2426,6 +2585,12 @@ def features_subscribe(
     try:
         features_svc.validate_feature(feature)
         result = billing_svc.subscribe_feature(db, tenant, feature, actor.user.id)
+        audit_svc.record_from_actor(
+            db, actor, action="billing.feature.subscribe",
+            target=f"tenant:{tenant.id}", detail={"feature": feature},
+            request=request,
+        )
+        db.commit()
     except features_svc.UnknownFeatureError:
         result = None
     # ecpay 模式：尚未開通，導向綠界定期定額付款頁（首期授權成功後自動開通）。
@@ -2452,6 +2617,12 @@ def features_unsubscribe(
     try:
         features_svc.validate_feature(feature)
         billing_svc.unsubscribe_feature(db, tenant, feature, actor.user.id)
+        audit_svc.record_from_actor(
+            db, actor, action="billing.feature.unsubscribe",
+            target=f"tenant:{tenant.id}", detail={"feature": feature},
+            request=request,
+        )
+        db.commit()
     except features_svc.UnknownFeatureError:
         pass
     return templates.TemplateResponse("_features_list.html", _features_ctx(request, actor, db))

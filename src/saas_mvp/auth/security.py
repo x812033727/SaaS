@@ -60,15 +60,24 @@ def create_access_token(
     tenant_id: int,
     *,
     expires_delta: timedelta | None = None,
+    impersonator_id: int | None = None,
 ) -> str:
-    """Sign a JWT with sub=<user_id>, tenant_id, exp claims."""
+    """Sign a JWT with sub=<user_id>, tenant_id, exp claims.
+
+    impersonator_id（F2 代管）:有值時 payload 加 ``imp`` claim,且 exp
+    **強制縮短為 30 分鐘**(代管票短命,降低外洩風險)。
+    """
     delta = expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
+    if impersonator_id is not None:
+        delta = min(delta, timedelta(minutes=30))
     expire = datetime.now(timezone.utc) + delta
     payload: dict = {
         "sub": str(user_id),
         "tenant_id": tenant_id,
         "exp": expire,
     }
+    if impersonator_id is not None:
+        payload["imp"] = impersonator_id
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 

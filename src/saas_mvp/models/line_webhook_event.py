@@ -64,6 +64,10 @@ class LineWebhookEvent(Base):
     # 原始 event JSON（A0.2 outbox）：claim 時落盤，worker 中途死掉可由
     # ops/retry_stuck_webhook_events 重放。Alembic rev 0011 補欄。
     payload_json = Column(Text, nullable=True)
+    # 事件型別（F3/M2-003）：claim 時抽 event.type,健康報表分組用。rev 0013。
+    event_type = Column(String(32), nullable=True)
+    # 失敗診斷（F3/M2-003）：遮罩後 traceback 摘要（last_error 維持 class 名）。rev 0013。
+    error_detail = Column(Text, nullable=True)
     last_stage = Column(String(32), nullable=True)
     created_at = Column(
         DateTime(timezone=True),

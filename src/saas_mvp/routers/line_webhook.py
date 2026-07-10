@@ -441,6 +441,7 @@ def _claim_webhook_event(
         # ops/retry_stuck_webhook_events 有完整素材可重放（LINE 已收到 200
         # 不會重送，此前這類 in-flight 任務直接蒸發）。
         payload_json=json.dumps(event, ensure_ascii=False),
+        event_type=(event.get("type") or "")[:32] or None,
     )
     db.add(row)
     try:
@@ -568,6 +569,10 @@ def _mark_webhook_event_failed(
     row.last_stage = stage
     # 類名 + 例外訊息（截斷至欄位上限），供事後診斷；純類名資訊量不足。
     row.last_error = f"{type(exc).__name__}: {exc}"[:255]
+    # F3/M2-003:遮罩後 traceback 摘要供診斷(不含 locals、截 4000 字)。
+    from saas_mvp.obs.errors import safe_traceback
+
+    row.error_detail = safe_traceback(exc)
     row.updated_at = now
     db.commit()
 

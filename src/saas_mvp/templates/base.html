@@ -21,6 +21,15 @@
   </style>
 </head>
 <body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
+  {% if impersonating %}
+  <div style="background:#b91c1c;color:#fff;padding:.5rem 1rem;display:flex;align-items:center;gap:1rem">
+    <strong>⚠️ 代管中</strong>
+    <span>你正以「{{ current_user.email }}」(店家 owner)身分操作;所有操作以你的管理員身分記入稽核。</span>
+    <form method="post" action="/ui/impersonation/stop" style="margin-left:auto">
+      <button type="submit" class="btn" style="background:#fff;color:#b91c1c">結束代管</button>
+    </form>
+  </div>
+  {% endif %}
   {% if current_user %}
   <header class="nav">
     <span class="brand">LINE Bot 管理</span>
@@ -56,6 +65,7 @@
       {% if is_admin %}
       <a href="/ui/admin">平台總覽</a>
       <a href="/ui/admin/bots">跨店總覽</a>
+      <a href="/ui/admin/audit">稽核</a>
       {% endif %}
       <span class="spacer"></span>
       <a href="/ui/members">成員</a>

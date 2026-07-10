@@ -66,3 +66,26 @@ def install_error_handlers(app: FastAPI) -> None:
         }
         headers = {"X-Request-ID": rid} if rid else None
         return JSONResponse(body, status_code=500, headers=headers)
+
+
+# ── F3/M2-003:遮罩後 traceback 摘要 ─────────────────────────────────────────
+
+_TB_SENSITIVE_PATTERNS = ("Bearer ", "access_token", "channel_secret", "Authorization")
+
+
+def safe_traceback(exc: BaseException, *, limit: int = 8, max_chars: int = 4000) -> str:
+    """取例外 traceback 摘要供落 DB 診斷:最後 N 個 frame、不含 locals、
+    截斷長度、遮罩已知敏感 pattern 所在行。永不拋錯。"""
+    import traceback as _tb
+
+    try:
+        lines = _tb.format_exception(type(exc), exc, exc.__traceback__, limit=limit)
+        out = []
+        for ln in lines:
+            if any(pat in ln for pat in _TB_SENSITIVE_PATTERNS):
+                out.append("    [redacted line]\n")
+            else:
+                out.append(ln)
+        return "".join(out)[:max_chars]
+    except Exception:  # noqa: BLE001 — 診斷輔助不得拋錯
+        return f"{type(exc).__name__} (traceback unavailable)"

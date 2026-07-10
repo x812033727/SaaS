@@ -34,6 +34,9 @@
 # 每 5 分鐘：重放卡住的 webhook 事件（A0.2 outbox；worker 死掉的 in-flight 補救）
 */5 * * * * python -m saas_mvp.ops.retry_stuck_webhook_events --apply
 
+# 每 10 分鐘:webhook 健康檢查(pending 超時/失敗率;異常 capture_alert + exit 1)
+*/10 * * * * python -m saas_mvp.ops.check_webhook_health
+
 # 每 6 小時（:15）：帳務健康檢查（唯讀報表；異常 exit 1 會出現在容器日誌）
 15 */6 * * * python -m saas_mvp.ops.check_billing_health
 

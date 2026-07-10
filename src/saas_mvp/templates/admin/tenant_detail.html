@@ -3,6 +3,13 @@
 {% block content %}
 {% if not_found %}
   <h1>找不到租戶 #{{ tenant_id }}</h1>
+<div class="card">
+  <form method="post" action="/ui/admin/tenants/{{ tenant.id if tenant else tenant_id }}/impersonate"
+        onsubmit="return confirm('以此租戶 owner 身分開啟 30 分鐘代管 session?全程記入稽核。')">
+    <button type="submit" class="btn">🔑 代管此租戶(30 分鐘)</button>
+  </form>
+</div>
+
   <a class="btn secondary" href="/ui/admin/bots">返回總覽</a>
 {% else %}
 <h1>管理：{{ tenant.name }} <span class="muted">#{{ tenant.id }}</span></h1>
