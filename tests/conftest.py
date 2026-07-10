@@ -56,6 +56,11 @@ import saas_mvp.db as _saas_db  # noqa: E402
 
 _saas_db.init_db = lambda: None
 
+# 讓 SQLAlchemy registry 在任何測試模組的 create_all 之前就完整：
+# 各測試模組只 import 自己需要的 model,但 webhook 等跨模組路徑可能觸及
+# 其他表(例:AI 對話狀態表);此處統一註冊,避免「no such table」順序雷。
+_saas_db.import_all_models()
+
 # 確保所有 relationship 字串引用的 model 都進入 SQLAlchemy class registry；
 # 各測試檔才能單獨執行，不靠其他測試先 import 的順序副作用。
 from saas_mvp.models import api_key as _ak  # noqa: F401, E402

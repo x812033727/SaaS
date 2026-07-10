@@ -1805,6 +1805,18 @@ def _dispatch_booking(
             return "找不到該筆候補。", None
         return "候補已取消。", None
 
+    # AI 預約 agent（A2）：無法辨識的純文字先給 agent 補槽（AI_BOOKING_AGENT
+    # 開通時）；agent 只填槽，建單走既有 pick_slot postback 確定性路徑。
+    # 未開通 / LLM 失敗回 None → 落回下方既有 AI_ASSISTANT QA / 說明。
+    if action is None and raw_text and line_user_id:
+        from saas_mvp.services import ai_conversation as ai_conversation_svc
+
+        agent_out = ai_conversation_svc.handle_free_text(
+            db, tenant_id, line_user_id, raw_text
+        )
+        if agent_out is not None:
+            return agent_out
+
     # AI 客服 fallback：無法辨識的純文字訊息，若租戶開通 AI_ASSISTANT，
     # 以 get_assistant() 回答（context 由 faq.match 注入）。surgical、behind flag。
     if action is None and raw_text and features_svc.is_enabled(

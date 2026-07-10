@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     # 驗證信 / 重設密碼連結有效分鐘數。
     email_token_ttl_minutes: int = 1440
 
+    # AI 對話額度（A2.4）：每租戶每月 AI 回覆則數。
+    # SAAS_AI_ALLOWANCE_BASE: 基本月度額度；SAAS_AI_ALLOWANCE_BOOST: AI_BOOST 加購增量。
+    ai_allowance_base: int = 300
+    ai_allowance_boost: int = 1000
+
     # Sentry（B4）：DSN 非空且 sentry-sdk 已安裝才啟用（未裝僅記 warning）。
     # 金流回調驗簽失敗等關鍵事件另以 capture_message 主動上報。
     sentry_dsn: str = ""
