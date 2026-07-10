@@ -420,6 +420,62 @@ def ecpay_done():
     )
 
 
+# ── LINE Pay（E2,一次性訂單）────────────────────────────────────────────────
+
+@router.get("/linepay/confirm", response_class=HTMLResponse)
+def linepay_confirm(
+    transactionId: str = "",
+    orderId: str = "",
+    db: Session = Depends(get_db),
+):
+    """LINE Pay 付款完成 redirect → Confirm API → 標 paid(冪等)。
+
+    金額以 **DB order.total_cents 為準**傳入 Confirm(不信 query string);
+    已 paid 直接回成功頁(重整/重放安全)。
+    """
+    from saas_mvp.obs.alerts import capture_alert
+    from saas_mvp.services.payment_linepay import LinePayClient, LinePayError
+
+    try:
+        order_pk = int(orderId)
+    except (TypeError, ValueError):
+        return HTMLResponse("<h1>訂單參數錯誤</h1>", status_code=400)
+    order = db.get(Order, order_pk)
+    if order is None:
+        return HTMLResponse("<h1>找不到訂單</h1>", status_code=404)
+    if order.status == "paid":
+        return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
+    if not transactionId:
+        return HTMLResponse("<h1>缺少交易編號</h1>", status_code=400)
+
+    try:
+        LinePayClient().confirm_payment(
+            transaction_id=transactionId,
+            amount_twd=order.total_cents // 100,
+            currency=settings.currency or "TWD",
+        )
+    except LinePayError as exc:
+        _log.warning("linepay confirm failed order=%d: %s", order.id, exc)
+        capture_alert(f"payment: linepay confirm failed order={order.id}")
+        return HTMLResponse(
+            "<h1>付款確認失敗</h1><p>請回 LINE Pay 重試或聯繫店家。</p>",
+            status_code=502,
+        )
+
+    order.status = "paid"
+    order.merchant_trade_no = f"LP{transactionId}"[:20]
+    db.commit()
+    return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
+
+
+@router.get("/linepay/cancel", response_class=HTMLResponse)
+def linepay_cancel(orderId: str = ""):
+    """顧客在 LINE Pay 取消:不動訂單狀態。"""
+    return HTMLResponse(
+        "<h1>已取消付款</h1><p>訂單仍保留為未付款,可稍後重新付款。</p>"
+    )
+
+
 # ── 藍新金流 NewebPay（MPG 幕前） ──────────────────────────────────────────────
 
 

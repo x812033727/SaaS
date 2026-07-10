@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 {% block title %}預約行事曆 · LINE Bot 管理{% endblock %}
 {% block content %}
+<div class="card">
+  <h2>同步到 Google 日曆</h2>
+  {% if gcal_cred %}
+    <p>✅ 已連結 Google 日曆({{ gcal_cred.status }});新預約/改期/取消會自動同步。
+       {% if gcal_cred.last_error %}<span class="error">最近錯誤:{{ gcal_cred.last_error }}</span>{% endif %}</p>
+    <form method="post" action="/ui/gcal/disconnect" style="display:inline">
+      <button type="submit" class="btn">解除連結</button>
+    </form>
+  {% else %}
+    <p class="muted">兩種方式:</p>
+    <p>① <strong>即時同步(建議)</strong>:
+      <a class="btn" href="/ui/gcal/connect">連結 Google 日曆</a>
+      — 新預約/改期/取消即時寫入你的 Google 日曆。</p>
+    <p>② <strong>ICS 訂閱(免設定)</strong>:複製本頁下方的行事曆訂閱連結,
+      到 Google 日曆「其他日曆 → 透過網址新增」貼上。
+      <span class="muted">注意:Google 對網址訂閱的刷新間隔不可控(數小時以上),
+      不適合需要即時看到新預約的場景。</span></p>
+  {% endif %}
+</div>
+
 <style>
   .cal-toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .5rem 0 1rem; }
   .cal-toolbar .seg a { padding: .35rem .7rem; border: 1px solid #ddd; text-decoration: none; color: #555; }

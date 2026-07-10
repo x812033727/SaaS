@@ -242,6 +242,11 @@ def book_slot(
     db.refresh(reservation)
     # 後台即時通知：新預約推播到後台（best-effort）。
     _publish_reservation_event(tenant_id, "booking_new", reservation)
+    # Google Calendar 同步（E1,best-effort 永不拋)。
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_svc.sync_reservation(db, reservation, "create")
+    db.commit()
     return reservation
 
 
@@ -309,6 +314,11 @@ def cancel_reservation(
     db.refresh(reservation)
     # 後台即時通知：取消（狀態變更）推播到後台（best-effort）。
     _publish_reservation_event(tenant_id, "booking_cancel", reservation)
+    # Google Calendar 同步（E1,best-effort)。
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_svc.sync_reservation(db, reservation, "cancel")
+    db.commit()
     # 候補通知（best-effort，絕不影響取消主流程）。
     if waitlist_entry_id is not None:
         waitlist_svc.notify_candidate_best_effort(
@@ -428,6 +438,11 @@ def reschedule_reservation(
 
     db.commit()
     db.refresh(reservation)
+    # Google Calendar 同步（E1,best-effort)。
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_svc.sync_reservation(db, reservation, "reschedule")
+    db.commit()
     # 候補通知（best-effort，絕不影響改期主流程）。
     if waitlist_entry_id is not None:
         waitlist_svc.notify_candidate_best_effort(

@@ -47,4 +47,7 @@ def get_payment_provider() -> PaymentProvider:
     if settings.payment_provider == "newebpay":
         from saas_mvp.services.payment_newebpay import NewebPayProvider
         return NewebPayProvider()
+    if settings.payment_provider == "linepay":
+        from saas_mvp.services.payment_linepay import LinePayPaymentProvider
+        return LinePayPaymentProvider()
     return StubPaymentProvider()
