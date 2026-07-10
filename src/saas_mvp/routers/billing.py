@@ -19,7 +19,9 @@ from saas_mvp.quota import PLAN_DAILY_LIMITS
 from saas_mvp.services import features as features_svc
 from saas_mvp.services.billing import (
     downgrade_plan,
+    subscribe_bundle,
     subscribe_feature,
+    unsubscribe_bundle,
     unsubscribe_feature,
     upgrade_plan,
 )
@@ -183,3 +185,64 @@ def unsubscribe(  # 保持 sync def：內含 ECPay cancel_period 阻塞網路呼
     tenant = _get_tenant(actor, db)
     unsubscribe_feature(db, tenant, feature, actor.user.id)
     return FeatureSubscribeResponse(ok=True, feature=feature, enabled=False)
+
+
+# ── 方案 bundle 訂閱（B2）─────────────────────────────────────────────────────
+
+class PlanSubscribeResponse(BaseModel):
+    ok: bool
+    plan: str
+    enabled: bool
+    payment_id: str | None = None
+    # ecpay 模式：導向綠界定期定額付款頁；方案待首期授權成功才生效。
+    checkout_url: str | None = None
+
+
+_PLAN_TO_BUNDLE = {v: k for k, v in features_svc.BUNDLE_TO_PLAN.items()}
+
+
+@router.get("/plans")
+def list_plans(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """方案清單（含價格與目前方案標記）。"""
+    from saas_mvp.services import plans as plans_svc
+
+    tenant = _get_tenant(actor, db)
+    return plans_svc.list_plans(current=plans_svc.effective_plan(tenant))
+
+
+@router.post("/plans/{plan}/subscribe", response_model=PlanSubscribeResponse)
+def subscribe_plan(  # sync def：ecpay 模式含停舊約的阻塞網路呼叫
+    plan: str,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> PlanSubscribeResponse:
+    """訂閱方案（standard/pro）。stub 立即生效；ecpay 回綠界付款頁網址。"""
+    bundle_key = _PLAN_TO_BUNDLE.get(plan)
+    if bundle_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown paid plan: {plan!r}. Valid: {sorted(_PLAN_TO_BUNDLE)}",
+        )
+    tenant = _get_tenant(actor, db)
+    result = subscribe_bundle(db, tenant, bundle_key, actor.user.id)
+    return PlanSubscribeResponse(
+        ok=True,
+        plan=plan,
+        enabled=result.enabled,
+        payment_id=result.payment_id,
+        checkout_url=result.checkout_url,
+    )
+
+
+@router.post("/plans/unsubscribe", response_model=PlanSubscribeResponse)
+def unsubscribe_plan(  # sync def：含 ECPay cancel_period 阻塞網路呼叫
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+) -> PlanSubscribeResponse:
+    """退訂方案 → 降 free（已付費者保留原方案至最後扣款日 + 31 天）。"""
+    tenant = _get_tenant(actor, db)
+    unsubscribe_bundle(db, tenant, actor.user.id)
+    return PlanSubscribeResponse(ok=True, plan="free", enabled=True)

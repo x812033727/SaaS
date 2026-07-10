@@ -334,6 +334,103 @@ def plan_page(
     )
 
 
+@router.post("/plan/{plan}/subscribe", response_class=HTMLResponse)
+def plan_subscribe(
+    plan: str,
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """訂閱方案。stub 立即生效導回；ecpay 顯示前往綠界付款卡片。"""
+    bundle_key = {v: k for k, v in features_svc.BUNDLE_TO_PLAN.items()}.get(plan)
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    if bundle_key is None:
+        return RedirectResponse("/ui/plan", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        result = billing_svc.subscribe_bundle(db, tenant, bundle_key, actor.user.id)
+    except HTTPException as exc:
+        info = _plan_info(tenant)
+        return templates.TemplateResponse(
+            "plan.html",
+            _ctx(
+                request, actor,
+                plans=plans_svc.list_plans(current=info["effective"]),
+                plan_info=info, error=str(exc.detail),
+            ),
+            status_code=exc.status_code,
+        )
+    if result.checkout_url:
+        url = html.escape(result.checkout_url)
+        label = html.escape(plans_svc.plan_label(plan))
+        return HTMLResponse(
+            '<div class="card success">'
+            f"<p>請完成綠界信用卡定期定額授權以啟用「{label}」。</p>"
+            f'<a class="btn" href="{url}" target="_blank" rel="noopener">前往綠界付款</a>'
+            "<p class=\"muted\">完成首期授權後方案自動生效；可回<a href=\"/ui/plan\">方案頁</a>查看狀態。</p>"
+            "</div>"
+        )
+    return RedirectResponse("/ui/plan", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/plan/unsubscribe", response_class=HTMLResponse)
+def plan_unsubscribe(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """退訂方案 → 降 free（已付費者保留原方案至最後扣款日 + 31 天）。"""
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    billing_svc.unsubscribe_bundle(db, tenant, actor.user.id)
+    return RedirectResponse("/ui/plan", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/billing", response_class=HTMLResponse)
+def billing_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """帳單頁：目前方案、bundle 訂閱狀態、逐期扣款明細（即收據）。"""
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+    from sqlalchemy import select as _select
+
+    tid = actor.user.tenant_id
+    tenant = db.get(Tenant, tid)
+    sub = db.execute(
+        _select(FeatureSubscription)
+        .where(
+            FeatureSubscription.tenant_id == tid,
+            FeatureSubscription.feature.in_(features_svc.VALID_BUNDLES),
+        )
+        .order_by(FeatureSubscription.id.desc())
+    ).scalars().first()
+    charges = []
+    next_charge_at = None
+    if sub is not None:
+        charges = db.execute(
+            _select(SubscriptionCharge)
+            .where(SubscriptionCharge.subscription_id == sub.id)
+            .order_by(SubscriptionCharge.id.desc())
+            .limit(24)
+        ).scalars().all()
+        if sub.status == "active" and sub.last_charged_at is not None:
+            import datetime as _dt
+            next_charge_at = sub.last_charged_at + _dt.timedelta(days=30)
+    return templates.TemplateResponse(
+        "billing.html",
+        _ctx(
+            request, actor,
+            plan_info=_plan_info(tenant),
+            subscription=sub,
+            bundle_label=(
+                features_svc.BUNDLE_LABELS.get(sub.feature, sub.feature) if sub else None
+            ),
+            charges=charges,
+            next_charge_at=next_charge_at,
+        ),
+    )
+
+
 # ── 店家自助 ────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
