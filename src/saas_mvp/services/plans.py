@@ -33,6 +33,8 @@ PLAN_FREE = "free"
 PLAN_STANDARD = "standard"
 PLAN_PRO = "pro"
 VALID_PLANS: tuple[str, ...] = (PLAN_FREE, PLAN_STANDARD, PLAN_PRO)
+# 方案等級(C3 降級判斷用);未知值 normalize 後必在表內。
+PLAN_RANK: dict[str, int] = {PLAN_FREE: 0, PLAN_STANDARD: 1, PLAN_PRO: 2}
 
 _PLAN_LABELS: dict[str, str] = {
     PLAN_FREE: "免費版",

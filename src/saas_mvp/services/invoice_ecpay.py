@@ -1,0 +1,181 @@
+"""電子發票 issuer（C2）— Stub + 綠界 B2C 雙模式。
+
+⚠️ 綠界**電子發票 API 與金流 AIO 完全不同**:JSON API,`Data` 欄位為
+「JSON → URL-encode → AES-128-CBC(HashKey/HashIV) → base64」,非 CheckMacValue;
+發票的 MerchantID/HashKey/HashIV 也是**獨立一組**(發票商店),與金流不共用。
+端點:stage `https://einvoice-stage.ecpay.com.tw/B2CInvoice/Issue`、
+prod `https://einvoice.ecpay.com.tw/B2CInvoice/Issue`。
+
+比照 payment_ecpay.py 慣例:stdlib urllib、`_urllib_post` 可注入、不引 SDK。
+"""
+
+from __future__ import annotations
+
+import base64
+import dataclasses
+import datetime
+import hashlib
+import json
+import time
+import urllib.parse
+import urllib.request
+
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+from saas_mvp.config import settings
+
+_STAGE_URL = "https://einvoice-stage.ecpay.com.tw/B2CInvoice/Issue"
+_PROD_URL = "https://einvoice.ecpay.com.tw/B2CInvoice/Issue"
+
+
+class InvoiceError(Exception):
+    """開立失敗(網路/API/解密錯誤統一包裝)。"""
+
+
+@dataclasses.dataclass(frozen=True)
+class IssueResult:
+    invoice_no: str
+    invoice_date: str
+    random_number: str
+    raw: dict
+
+
+class InvoiceIssuer:
+    """介面:issue() 成功回 IssueResult,失敗拋 InvoiceError。"""
+
+    def issue(
+        self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
+    ) -> IssueResult:
+        raise NotImplementedError
+
+
+class StubInvoiceIssuer(InvoiceIssuer):
+    """離線 stub:決定性假號(ST + relate hash),issued 清單供測試斷言。"""
+
+    def __init__(self) -> None:
+        self.issued: list[dict] = []
+
+    def issue(
+        self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
+    ) -> IssueResult:
+        digest = hashlib.sha1(relate_number.encode()).hexdigest()[:8].upper()
+        record = {
+            "relate_number": relate_number,
+            "amount_twd": amount_twd,
+            "buyer_email": buyer_email,
+            "item_name": item_name,
+        }
+        self.issued.append(record)
+        return IssueResult(
+            invoice_no=f"ST{digest}",
+            invoice_date=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+            random_number=digest[:4],
+            raw=record,
+        )
+
+
+def _urllib_post(url: str, body: bytes) -> str:
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode()
+
+
+def aes_encrypt_data(payload: dict, hash_key: str, hash_iv: str) -> str:
+    """綠界發票 Data 加密:JSON → URL-encode → AES-128-CBC → base64。"""
+    plain = urllib.parse.quote(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    ).encode()
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded = padder.update(plain) + padder.finalize()
+    encryptor = Cipher(
+        algorithms.AES(hash_key.encode()), modes.CBC(hash_iv.encode())
+    ).encryptor()
+    return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode()
+
+
+def aes_decrypt_data(data_b64: str, hash_key: str, hash_iv: str) -> dict:
+    """綠界發票 Data 解密(base64 → AES → unquote → JSON)。"""
+    ct = base64.b64decode(data_b64)
+    decryptor = Cipher(
+        algorithms.AES(hash_key.encode()), modes.CBC(hash_iv.encode())
+    ).decryptor()
+    padded = decryptor.update(ct) + decryptor.finalize()
+    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    plain = unpadder.update(padded) + unpadder.finalize()
+    return json.loads(urllib.parse.unquote(plain.decode()))
+
+
+class EcpayInvoiceIssuer(InvoiceIssuer):
+    """綠界 B2C 發票(個人、電子發票寄 email、含稅價;統編/載具延後)。"""
+
+    def __init__(self, *, http_post=None) -> None:
+        self._merchant_id = settings.ecpay_invoice_merchant_id
+        self._hash_key = settings.ecpay_invoice_hash_key
+        self._hash_iv = settings.ecpay_invoice_hash_iv
+        self._url = _PROD_URL if settings.ecpay_invoice_env == "prod" else _STAGE_URL
+        self._http_post = http_post or _urllib_post
+
+    def issue(
+        self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
+    ) -> IssueResult:
+        if not (self._merchant_id and self._hash_key and self._hash_iv):
+            raise InvoiceError("ecpay invoice credentials not configured")
+        data = {
+            "MerchantID": self._merchant_id,
+            "RelateNumber": relate_number,
+            "CustomerEmail": buyer_email,
+            "Print": "0",
+            "Donation": "0",
+            "CarrierType": "1",       # 綠界會員載具(email);雲端/手機條碼延後
+            "TaxType": "1",           # 應稅
+            "SalesAmount": amount_twd,  # 含稅總額
+            "InvType": "07",
+            "Items": [{
+                "ItemName": item_name[:100],
+                "ItemCount": 1,
+                "ItemWord": "式",
+                "ItemPrice": amount_twd,
+                "ItemAmount": amount_twd,
+            }],
+        }
+        envelope = {
+            "MerchantID": self._merchant_id,
+            "RqHeader": {"Timestamp": int(time.time())},
+            "Data": aes_encrypt_data(data, self._hash_key, self._hash_iv),
+        }
+        try:
+            raw = self._http_post(self._url, json.dumps(envelope).encode())
+            resp = json.loads(raw)
+            if str(resp.get("TransCode")) != "1":
+                raise InvoiceError(f"transport error: {resp.get('TransMsg')}")
+            payload = aes_decrypt_data(resp["Data"], self._hash_key, self._hash_iv)
+        except InvoiceError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 統一包裝
+            raise InvoiceError(f"ecpay invoice request failed: {exc}") from exc
+
+        if str(payload.get("RtnCode")) != "1":
+            raise InvoiceError(
+                f"issue rejected: {payload.get('RtnCode')} {payload.get('RtnMsg')}"
+            )
+        return IssueResult(
+            invoice_no=str(payload.get("InvoiceNo") or ""),
+            invoice_date=str(payload.get("InvoiceDate") or ""),
+            random_number=str(payload.get("RandomNumber") or ""),
+            raw=payload,
+        )
+
+
+_stub_singleton = StubInvoiceIssuer()
+
+
+def get_invoice_issuer() -> InvoiceIssuer:
+    """factory:SAAS_INVOICE_PROVIDER=ecpay 走真實,否則 Stub 單例。"""
+    if settings.invoice_provider == "ecpay":
+        return EcpayInvoiceIssuer()
+    return _stub_singleton

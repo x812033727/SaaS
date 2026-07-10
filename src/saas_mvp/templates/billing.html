@@ -26,7 +26,7 @@
 <div class="card">
   <h2>扣款明細（近 24 期）</h2>
   <table>
-    <thead><tr><th>期數</th><th>結果</th><th>金額</th><th>時間</th><th>備註</th></tr></thead>
+    <thead><tr><th>期數</th><th>結果</th><th>金額</th><th>時間</th><th>發票</th><th>備註</th></tr></thead>
     <tbody>
       {% for ch in charges %}
       <tr>
@@ -34,6 +34,7 @@
         <td>{{ '✅ 成功' if ch.success else '❌ 失敗' }}</td>
         <td>NT$ {{ ch.amount_cents // 100 }}</td>
         <td>{{ ch.charged_at.strftime('%Y-%m-%d %H:%M') if ch.charged_at else '—' }}</td>
+        <td>{{ invoice_by_charge.get(ch.id).invoice_no if invoice_by_charge.get(ch.id) and invoice_by_charge.get(ch.id).invoice_no else '—' }}</td>
         <td>{{ ch.rtn_msg or '' }}</td>
       </tr>
       {% endfor %}

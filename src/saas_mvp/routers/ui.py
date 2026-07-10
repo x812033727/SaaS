@@ -551,6 +551,17 @@ def billing_page(
         if sub.status == "active" and sub.last_charged_at is not None:
             import datetime as _dt
             next_charge_at = sub.last_charged_at + _dt.timedelta(days=30)
+    # C2:發票對照(charge_id → Invoice)
+    invoice_by_charge: dict = {}
+    if charges:
+        from saas_mvp.models.invoice import Invoice
+
+        rows = db.execute(
+            _select(Invoice).where(
+                Invoice.subscription_charge_id.in_([c.id for c in charges])
+            )
+        ).scalars().all()
+        invoice_by_charge = {r.subscription_charge_id: r for r in rows}
     return templates.TemplateResponse(
         "billing.html",
         _ctx(
@@ -562,6 +573,7 @@ def billing_page(
             ),
             charges=charges,
             next_charge_at=next_charge_at,
+            invoice_by_charge=invoice_by_charge,
         ),
     )
 

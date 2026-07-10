@@ -232,6 +232,7 @@ def _handle_ecpay_subscribe_callback(db: Session, params: dict) -> PlainTextResp
                 db, sub.tenant_id, sub.feature, True,
                 actor_user_id=None, source="subscribe", reason=trade_no,
             )
+        _issue_invoice_for_latest_charge(db, sub)  # C2:發票失敗絕不擋回調
         return PlainTextResponse("1|OK")
 
     subs_svc.mark_failed(db, sub)
@@ -276,7 +277,31 @@ def _handle_ecpay_period_callback(db: Session, params: dict) -> PlainTextRespons
             db, sub.tenant_id, sub.feature, success,
             actor_user_id=None, source="period",
         )
+    if success:
+        _issue_invoice_for_latest_charge(db, sub)  # C2:發票失敗絕不擋回調
     return PlainTextResponse("1|OK")
+
+
+def _issue_invoice_for_latest_charge(db, sub) -> None:
+    """取該訂閱最新一筆成功扣款開發票(C2)。永不拋錯。"""
+    try:
+        from sqlalchemy import select as _select
+
+        from saas_mvp.models.subscription_charge import SubscriptionCharge
+        from saas_mvp.services import invoices as invoices_svc
+
+        charge = db.execute(
+            _select(SubscriptionCharge)
+            .where(
+                SubscriptionCharge.subscription_id == sub.id,
+                SubscriptionCharge.success.is_(True),
+            )
+            .order_by(SubscriptionCharge.id.desc())
+        ).scalars().first()
+        if charge is not None:
+            invoices_svc.issue_for_charge(db, charge)
+    except Exception:  # noqa: BLE001 — 發票絕不影響金流回調
+        _log.warning("invoice hook failed sub=%s", getattr(sub, "id", "?"), exc_info=True)
 
 
 @router.get("/ecpay/done", response_class=HTMLResponse)
