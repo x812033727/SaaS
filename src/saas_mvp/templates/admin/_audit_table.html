@@ -1,0 +1,25 @@
+{% if rows %}
+<table>
+  <thead><tr><th>時間(UTC)</th><th>動作</th><th>租戶</th><th>操作者</th><th>代管者</th><th>目標</th><th>摘要</th><th>IP</th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.created_at.strftime('%m-%d %H:%M:%S') if r.created_at else '—' }}</td>
+      <td><code>{{ r.action }}</code></td>
+      <td>{{ r.tenant_id if r.tenant_id is not none else '—' }}</td>
+      <td>{{ r.actor_user_id if r.actor_user_id is not none else '—' }}</td>
+      <td>{% if r.impersonator_user_id %}<strong>#{{ r.impersonator_user_id }}</strong>{% else %}—{% endif %}</td>
+      <td>{{ r.target or '—' }}</td>
+      <td class="muted">{{ (r.detail_json or '')[:120] }}</td>
+      <td class="muted">{{ r.ip or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if rows | length == filters.limit %}
+<p><a hx-get="/ui/admin/audit?skip={{ filters.skip + filters.limit }}&limit={{ filters.limit }}{% if filters.tenant_id is not none %}&tenant_id={{ filters.tenant_id }}{% endif %}{% if filters.action %}&action={{ filters.action }}{% endif %}"
+      hx-target="#audit-table" hx-swap="innerHTML" href="#">下一頁 →</a></p>
+{% endif %}
+{% else %}
+<p class="muted">沒有符合條件的稽核紀錄。</p>
+{% endif %}

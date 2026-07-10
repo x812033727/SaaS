@@ -41,9 +41,14 @@ _401 = HTTPException(
 
 @dataclass
 class Actor:
-    """已驗證的請求者：一個 User，外加可選的 API key ID。"""
+    """已驗證的請求者：一個 User，外加可選的 API key ID。
+
+    impersonator_user_id（F2 代管）:UI cookie 帶合法 ``imp`` claim 時 =
+    admin 的 user id;稽核統一由此取得,代管期間所有操作自動記 admin 身分。
+    """
     user: User
     api_key_id: Optional[int] = None
+    impersonator_user_id: Optional[int] = None
 
 
 def _resolve_api_key(key_str: str, db: Session) -> Actor:
@@ -186,7 +191,23 @@ def get_ui_actor_optional(
         return None
     if user.tenant and not user.tenant.is_active:
         raise UITenantDisabled()
-    return Actor(user=user, api_key_id=None)
+
+    # F2 代管:imp claim 需指向「存在且仍是 admin」的 user,否則整張票失效
+    # (admin 被降權/刪除即刻切斷所有在外代管票;fail-closed)。
+    impersonator_user_id: Optional[int] = None
+    imp_raw = payload.get("imp")
+    if imp_raw is not None:
+        try:
+            imp_id = int(imp_raw)
+        except (TypeError, ValueError):
+            return None
+        imp_user = db.get(User, imp_id)
+        if imp_user is None or not imp_user.is_admin:
+            return None
+        impersonator_user_id = imp_id
+    return Actor(
+        user=user, api_key_id=None, impersonator_user_id=impersonator_user_id
+    )
 
 
 def require_ui_user(

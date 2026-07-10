@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}稽核日誌 · 平台管理{% endblock %}
+{% block content %}
+<h1>稽核日誌</h1>
+
+<div class="card">
+  <form hx-get="/ui/admin/audit" hx-target="#audit-table" hx-swap="innerHTML" class="row">
+    <label>租戶 ID<input name="tenant_id" type="number" min="1"
+           value="{{ filters.tenant_id if filters.tenant_id is not none else '' }}"></label>
+    <label>動作前綴<input name="action" placeholder="admin. / billing. / impersonation."
+           value="{{ filters.action }}"></label>
+    <button type="submit">篩選</button>
+  </form>
+</div>
+
+<div class="card" id="audit-table">
+  {% include "admin/_audit_table.html" %}
+</div>
+{% endblock %}
