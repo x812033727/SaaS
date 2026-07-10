@@ -146,6 +146,34 @@ def test_idempotent_send_one_per_period(db):
     assert fake.call_count == 1
 
 
+def test_unfollowed_customer_skipped_without_push(db):
+    """已封鎖者（line_followed=False）跳過:不推播、不扣額度、標 skipped。"""
+    tid = _tenant(db)
+    _customer(db, tid, line="Ufollowed", birthday=datetime.date(1990, 6, 15))
+    blocked = _customer(db, tid, line="Ublocked", birthday=datetime.date(1990, 6, 15))
+    blocked.line_followed = False
+    db.commit()
+    camp = Campaign(
+        tenant_id=tid, type=CAMPAIGN_BIRTHDAY, name="bd",
+        message_template="hi {name}",
+    )
+    db.add(camp)
+    db.commit()
+    fake = FakeLinePushClient()
+    r = marketing_svc.run_campaign(db, campaign=camp, now=_NOW, cap=100, push_client=fake)
+    assert r["sent"] == 1
+    assert r["skipped"] == 1
+    assert fake.call_count == 1  # 只推給仍是好友的那位
+    skipped_row = db.execute(
+        select(CampaignSend).where(
+            CampaignSend.campaign_id == camp.id,
+            CampaignSend.customer_id == blocked.id,
+        )
+    ).scalar_one()
+    assert skipped_row.status == "skipped"
+    assert skipped_row.last_error == "line_unfollowed"
+
+
 def test_cap_enforcement(db):
     tid = _tenant(db)
     for i in range(5):

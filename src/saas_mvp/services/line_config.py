@@ -64,6 +64,7 @@ def _to_response(cfg: LineChannelConfig) -> dict:
         "has_access_token": bool(cfg.access_token_enc),
         "default_target_lang": cfg.default_target_lang,
         "bot_mode": cfg.bot_mode or DEFAULT_BOT_MODE,
+        "welcome_message": cfg.welcome_message,
         "credential_status": _normalize_credential_status(cfg.credential_status),
         "credential_last_error": cfg.credential_last_error,
         "credential_checked_at": (
@@ -337,6 +338,40 @@ def set_bot_mode(db: Session, tenant_id: int, bot_mode: str) -> dict:
             detail="line channel config not found for this tenant",
         )
     cfg.bot_mode = bot_mode
+    db.commit()
+    db.refresh(cfg)
+    return _to_response(cfg)
+
+
+# 歡迎訊息長度上限：LINE text message 上限 5000 字，取保守值防灌爆。
+WELCOME_MESSAGE_MAX_LEN = 1000
+
+
+def set_welcome_message(db: Session, tenant_id: int, welcome_message: str | None) -> dict:
+    """僅更新 follow 歡迎訊息（不需重輸憑證）；空白/None 清空＝回內建預設文案。
+
+    Raises
+    ------
+    404 tenant or line config not found
+    400 too long
+    """
+    normalized = (welcome_message or "").strip() or None
+    if normalized is not None and len(normalized) > WELCOME_MESSAGE_MAX_LEN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"welcome_message too long (max {WELCOME_MESSAGE_MAX_LEN} chars)",
+        )
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    cfg = tenant.line_channel_config
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="line channel config not found for this tenant",
+        )
+    cfg.welcome_message = normalized
     db.commit()
     db.refresh(cfg)
     return _to_response(cfg)

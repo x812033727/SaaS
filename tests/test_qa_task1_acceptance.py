@@ -577,13 +577,14 @@ class TestNoRuntimeChange:
     """
 
     def test_reply_call_count_unchanged_in_line_webhook(self):
-        """line_webhook.py 內 ``line_client.reply`` 呼叫數量 = 7。
+        """line_webhook.py 內 ``line_client.reply`` 呼叫數量 = 9。
 
         歷史值為 5（翻譯路徑既有呼叫點：配額超量訊息、純 /lang 確認、無效語言碼、
         /lang 持久化確認、6c 翻譯回覆）。預約（booking）功能在**全新獨立路徑**
         ``_handle_booking_event`` 新增 1 個 reply 呼叫點；關鍵字自動回覆
-        （bot_mode="auto_reply"）路徑再新增 1 個 → 7。翻譯路徑的 5 個
-        呼叫點維持不變。預約/自動回覆各自集中於單一呼叫點，
+        （bot_mode="auto_reply"）路徑再新增 1 個 → 7。follow 歡迎訊息
+        （``_handle_follow_event``）+ booking 非文字訊息引導各 1 個 → 9。
+        翻譯路徑的 5 個呼叫點維持不變。各功能各自集中於單一呼叫點，
         新增對話功能時應經由 dispatcher 回傳文字，而非增加 reply 呼叫點。
 
         註：黑名單（blacklist）婉拒訊息走既有預約 reply 呼叫點回覆，未新增呼叫。
@@ -592,10 +593,10 @@ class TestNoRuntimeChange:
         # 排除註解、docstring
         # 簡化：以行內 ``line_client.reply(`` 計數
         reply_calls = re.findall(r"\bline_client\.reply\s*\(", source)
-        # 5 翻譯路徑（不變）+ 1 預約路徑 + 1 自動回覆路徑 = 7
-        assert len(reply_calls) == 7, (
+        # 5 翻譯路徑（不變）+ 1 預約 + 1 自動回覆 + 1 follow 歡迎 + 1 非文字引導 = 9
+        assert len(reply_calls) == 9, (
             f"line_webhook.py 內 line_client.reply( 呼叫數量 = {len(reply_calls)}，"
-            f"應 = 7（5 翻譯既有 + 1 預約 + 1 自動回覆）。"
+            f"應 = 9（5 翻譯既有 + 1 預約 + 1 自動回覆 + 1 follow 歡迎 + 1 非文字引導）。"
         )
 
     def test_pyproject_does_not_add_httpx_runtime_dep(self):

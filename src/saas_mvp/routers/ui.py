@@ -344,6 +344,23 @@ def line_config_save(
     )
 
 
+@router.post("/line-config/welcome", response_class=HTMLResponse)
+def line_config_welcome_save(
+    welcome_message: str = Form("", max_length=1000),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """更新 follow 歡迎訊息（HTMX 局部回應）；空白＝清空、回內建預設。"""
+    tid = actor.user.tenant_id
+    try:
+        line_config_svc.set_welcome_message(db, tid, welcome_message)
+    except HTTPException as exc:
+        return HTMLResponse(
+            f'<p class="error">儲存失敗：{exc.detail}</p>', status_code=exc.status_code
+        )
+    return HTMLResponse('<p class="muted">✅ 歡迎訊息已更新</p>')
+
+
 @router.post("/line-config/verify", response_class=HTMLResponse)
 def line_config_verify(
     request: Request,

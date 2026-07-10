@@ -139,16 +139,18 @@ def _text_event(text: str, reply_token: str = "rt-qa4", uid: str = "Uqa4001") ->
     }
 
 
-def _follow_event(uid: str = "Uct002") -> dict:
-    """非 message 事件（follow）— 觸發 handler 丟背景，但 ``_process_events``
-    內層 guard ``event_type != "message"`` 直接 continue，**不**觸發 reply。
+def _join_event(gid: str = "Cct002") -> dict:
+    """未處理事件（join）— 觸發 handler 丟背景，但 ``_process_events``
+    內層 guard 直接 continue，**不**觸發 reply。
 
     用作反向樣本：證明 BackgroundTasks dispatch ≠ 一定 reply，測試有真判別力。
+    （原本以 follow 為反向樣本；follow 現已升級為「回歡迎訊息」的已處理
+    事件，改用仍未處理的 join 保持語意。）
     """
     return {
-        "type": "follow",
-        "replyToken": "rt-follow",
-        "source": {"type": "user", "userId": uid},
+        "type": "join",
+        "replyToken": "rt-join",
+        "source": {"type": "group", "groupId": gid},
     }
 
 
@@ -309,7 +311,7 @@ class TestBackgroundDispatchContract:
     def test_non_message_event_dispatches_but_does_not_reply(
         self, client, tenant, monkeypatch
     ):
-        """反向樣本：非 message 事件（follow）觸發 dispatch 但**不**觸發 reply。
+        """反向樣本：未處理事件（join）觸發 dispatch 但**不**觸發 reply。
 
         與 positive test 配對證明測試有真判別力：
           * handler 一律丟 _process_events 到 BackgroundTasks（dispatch 與 event
@@ -331,18 +333,18 @@ class TestBackgroundDispatchContract:
         monkeypatch.setattr(BackgroundTasks, "add_task", spy_add_task)
 
         tid = tenant
-        body = _payload(_follow_event(uid="UctFollow"))
+        body = _payload(_join_event(gid="CctJoin"))
         r = client.post(f"/line/webhook/{tid}", content=body, headers=_headers(body))
 
         assert r.status_code == 200
         # handler 仍丟 _process_events（dispatch 對所有合法事件無條件）
         assert any(c["name"] == "_process_events" for c in captured), (
-            "handler 對非 message 事件也必須 dispatch _process_events（內層 guard 才會跳過）"
+            "handler 對未處理事件也必須 dispatch _process_events（內層 guard 才會跳過）"
             f"實際 add_task 呼叫 = {captured!r}"
         )
         # 內層 guard 生效：reply **未**被呼叫
         assert _fake_line_client.call_count == 0, (
-            f"非 message 事件不應觸發 reply，實際 call_count = "
+            f"未處理事件不應觸發 reply，實際 call_count = "
             f"{_fake_line_client.call_count}，last_text = {_fake_line_client.last_text!r}"
         )
 

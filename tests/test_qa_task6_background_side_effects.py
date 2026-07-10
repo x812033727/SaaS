@@ -493,8 +493,10 @@ class TestMultipleEventsPreserved:
         assert cc == 14
 
     def test_non_text_event_skipped_no_translate(self, client):
-        """非 text event（如 follow）→ 不翻譯、不計量。
-        驗收 #4 語意不變：非文字事件略過。
+        """非 text event → 不翻譯、不計量。驗收 #4 核心語意不變。
+
+        follow 事件現已升級為「回歡迎訊息」的已處理事件（reply=1），但
+        翻譯/計量仍必須為零；另以 join 事件保留「完全靜默」的反向樣本。
         """
         tid = _new_tenant(client)
         follow_event = {
@@ -506,10 +508,23 @@ class TestMultipleEventsPreserved:
         assert r.status_code == 200
 
         assert _spy_translator.translate_call_count == 0
-        assert _spy_line_client.reply_call_count == 0
+        assert _spy_line_client.reply_call_count == 1  # 歡迎訊息（非翻譯結果）
         c, cc = _read_usage(tid)
         assert c == 0
         assert cc == 0
+
+        # join：仍屬未處理事件，完全靜默。
+        join_event = {
+            "type": "join",
+            "replyToken": "rt-j",
+            "source": {"type": "group", "groupId": "CqJ"},
+        }
+        r = _post(client, tid, join_event)
+        assert r.status_code == 200
+        assert _spy_translator.translate_call_count == 0
+        assert _spy_line_client.reply_call_count == 1  # 未增加
+        c, cc = _read_usage(tid)
+        assert c == 0 and cc == 0
 
 
 # ── 3. Quota 超額 → 副作用不計（既有語意保留） ──────────────────────────────

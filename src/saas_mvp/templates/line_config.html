@@ -24,4 +24,16 @@
     <button type="submit">儲存並驗證</button>
   </form>
 </div>
+
+<div class="card">
+  <h2>加好友歡迎訊息</h2>
+  <p class="muted">顧客加入好友（follow）時自動回覆的文字；留空則依 bot 模式使用內建預設文案。</p>
+  <form hx-post="/ui/line-config/welcome" hx-target="#welcome-result" hx-swap="innerHTML">
+    <label for="welcome_message">歡迎訊息（最多 1000 字）</label>
+    <textarea id="welcome_message" name="welcome_message" rows="4" maxlength="1000"
+              placeholder="感謝加入好友！">{{ cfg.welcome_message or '' if cfg else '' }}</textarea>
+    <button type="submit">儲存歡迎訊息</button>
+  </form>
+  <div id="welcome-result"></div>
+</div>
 {% endblock %}
