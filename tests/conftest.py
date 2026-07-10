@@ -13,6 +13,10 @@ import pathlib
 # 用 [] 硬覆蓋(env var 優先權高於 .env),確保在本機/CI 一律以 test 身分跑。
 os.environ["SAAS_ENV"] = "test"
 
+# 同理隔離主機 .env 的 SAAS_METRICS_TOKEN:非空時 /metrics 要求 Bearer,
+# 觀測性測試會整批 401。測試一律以「不設限」預設跑。
+os.environ["SAAS_METRICS_TOKEN"] = ""
+
 # 關閉 auth rate limit，避免多個測試累積超過 20 req/60s 的限制。
 # 這裡用 [] 而非 setdefault，確保無論環境原本是什麼值都覆蓋。
 os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"
