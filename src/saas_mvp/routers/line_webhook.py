@@ -314,10 +314,13 @@ async def line_webhook(
     bind = db.get_bind()
     # bot_mode 為純字串，現在（request session 仍活）讀出後當資料傳入背景。
     bot_mode = cfg.bot_mode or "translation"
+    # 配額用 effective_plan（含試用）；純字串，request session 活著時算出。
+    from saas_mvp.services.plans import effective_plan
+
     background_tasks.add_task(
         _process_events,
         tenant_id,
-        tenant.plan,
+        effective_plan(tenant),
         cfg.default_target_lang,
         access_token,
         events,

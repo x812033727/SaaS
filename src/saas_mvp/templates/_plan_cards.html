@@ -1,0 +1,25 @@
+{# 方案卡片（pricing.html 與 plan.html 共用）。context: plans #}
+<div class="grid">
+  {% for p in plans %}
+  <div class="card" {% if p.is_current %}style="border-color:#22c55e"{% endif %}>
+    <h2>{{ p.label }}{% if p.is_current %} <span class="muted">（目前方案）</span>{% endif %}</h2>
+    <p class="value">
+      {% if p.monthly_price_cents == 0 %}免費
+      {% else %}NT$ {{ p.monthly_price_cents // 100 }} <span class="muted">/月</span>{% endif %}
+    </p>
+    <ul>
+      <li>預約核心／顧客 CRM／LINE 綁定</li>
+      {% if p.key == 'free' %}<li>員工上限 3 人</li>{% endif %}
+      {% for label in p.feature_labels %}
+        {% if label != '服務項目' %}<li>{{ label }}</li>{% endif %}
+      {% endfor %}
+      {% if p.key == 'free' %}<li>月推播額度 200 則</li>{% endif %}
+      {% if p.key == 'standard' %}<li>月推播額度 700 則</li>{% endif %}
+      {% if p.key == 'pro' %}<li>月推播額度 1,500 則</li>{% endif %}
+    </ul>
+    {% if show_cta and not p.is_current and p.monthly_price_cents > 0 %}
+      <a class="btn" href="/ui/plan">升級到{{ p.label }}</a>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>

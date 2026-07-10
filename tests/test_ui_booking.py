@@ -410,7 +410,8 @@ class TestFeaturesUI:
         assert r.status_code == 200
         assert "未開通" in r.text
         locked = client.get("/ui/coupons")
-        assert "尚未開通" in locked.text and "前往訂閱" in locked.text
+        # B1 後鎖定頁導購改為「查看方案與升級」（主推 bundle）+「單點訂閱」
+        assert "尚未開通" in locked.text and "查看方案與升級" in locked.text
         # 重新訂閱 → 可進入管理頁
         client.post("/ui/features/COUPON_SYSTEM/subscribe")
         assert client.get("/ui/coupons").status_code == 200
