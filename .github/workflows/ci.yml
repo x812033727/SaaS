@@ -1,0 +1,23 @@
+# CI:push main / PR 時跑全量測試。
+# 部署門檻:主機 saas-deploy.sh 會等此 workflow 對該 SHA 轉綠才部署(docs/AUTODEPLOY.md)。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[test]"
+      - name: Run tests
+        run: bash run_tests.sh
