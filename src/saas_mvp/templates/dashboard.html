@@ -3,6 +3,31 @@
 {% block content %}
 <h1>{{ tenant.name }} 的儀表板</h1>
 
+{% if email_unverified %}
+<div class="card" style="border-color:#f59e0b">
+  <p>✉️ 尚未驗證 Email。請至信箱點擊驗證連結；沒收到？
+    <form method="post" action="/ui/resend-verification" style="display:inline">
+      <button type="submit" class="btn">重寄驗證信</button>
+    </form>
+  </p>
+</div>
+{% endif %}
+
+{% if onboarding and not onboarding_done %}
+<div class="card">
+  <h2>開店設定進度</h2>
+  <ul>
+    {% for step in onboarding %}
+    <li>
+      {{ '✅' if step.done else '⬜' }}
+      {% if step.done %}{{ step.label }}{% else %}<a href="{{ step.href }}">{{ step.label }}</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="muted">完成以上步驟即可開始接受 LINE 預約。</p>
+</div>
+{% endif %}
+
 {% if plan_info and plan_info.trial_active %}
 <div class="card" style="border-color:#f59e0b">
   <p>🎁 <strong>{{ plan_info.effective_label }}試用中</strong>，
