@@ -1,3 +1,6 @@
+> **[DEPRECATED]** 本文件為早期藍圖,已與產品現況脫節,僅供歷史參考。
+> 功能現況以 [README.md](README.md) 功能總覽為唯一真相;上線程序見 docs/GO_LIVE.md。
+
 # 產品藍圖：saas-Line bot
 
 ## 願景

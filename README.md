@@ -42,6 +42,16 @@ python -m saas_mvp.ops.seed_demo
 | 進階報表 | `ADVANCED_REPORTING` | `/booking/analytics` | 摘要、時段使用率、常客、CSV 匯出 |
 | 隱私模式 | `PRIVACY_MODE` | `/pii/{token}` | tokenized PII 表單（公開、免登入） |
 | 推播額度 / 加量 | `PUSH_BOOST` | `/quota`、`/usage` | 月度推播額度計量，加購提升額度 |
+| 網頁預約表單 | `WEB_BOOKING` | `/booking/f/{token}` | bot 發 tokenized 深連結，免登入三步建單 |
+| 滿意度調查 | `FEEDBACK_SURVEY` | （webhook postback） | 消費後自動邀評，1–5 星 + 追問 |
+| AI 預約 agent | `AI_BOOKING_AGENT` | （webhook 對話） | 自由句建單/改期/取消/查詢；AI 只提案、確認按鈕走擁有者驗證 |
+| AI 用量加購 | `AI_BOOST` | `/ui/features` | AI 對話月額度加量 |
+| 定金收款 | `DEPOSIT_PAYMENT`（pro） | `/payments/ecpay/deposit/{id}` | 防 no-show：線上建單收定金，逾時自動取消回補名額 |
+| 方案 bundle / 試用 | `BUNDLE_*` | `/ui/plan` | 免費/標準 399/專業 899；14 天試用；降級期末生效 |
+| 電子發票 | —（隨訂閱扣款） | （cron 重試） | 綠界 B2C 發票，期扣成功自動開立、失敗每小時重試 |
+| LINE Pay | —（隨 POS） | `/payments/linepay/*` | 一次性訂單結帳（sandbox/prod 由 env 切換） |
+| Google 日曆同步 | —（隨預約） | `/ui/gcal/*` | OAuth 單向寫入：建單/改期/取消即時同步店家日曆 |
+| 稽核日誌 / 代管 | —（平台） | `/ui/admin/audit` | 管理操作全留痕；admin 可代管店家（30 分自動過期） |
 
 ## 管理後台 `/ui`
 
@@ -68,7 +78,7 @@ python -m saas_mvp.ops.seed_demo
 | `/ui/faq` | AI 客服 FAQ |
 | `/ui/shop` | 商品 |
 | `/ui/coupons` | 優惠券 |
-| `/ui/reports` | 進階報表 |
+| `/ui/reports` | 進階報表（摘要/使用率/常客/營收/趨勢/產能/回訪） |
 | `/ui/features` | 進階功能訂閱（含訂閱狀態、`cancel_failed` 警示、逐期扣款紀錄） |
 | `/ui/account` | 帳號設定（變更登入密碼、連結／解除 LINE 帳戶以一鍵登入） |
 | `/ui/admin/bots`、`/ui/admin/tenants/{id}` | 平台管理員：跨店家 bot 總覽 / 單一租戶管理 |
