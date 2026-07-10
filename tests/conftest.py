@@ -7,6 +7,12 @@ pytest 在 import 任何 test_*.py 之前先 import conftest.py，
 import os
 import pathlib
 
+# 強制測試環境身分:主機正式部署的 /opt/saas/.env 有 SAAS_ENV=prod,
+# pydantic-settings 會從 cwd 讀 .env,導致 UI auth cookie 帶 Secure 屬性,
+# TestClient(http)不回送 → 所有需登入的 UI 測試整批 303 回 login。
+# 用 [] 硬覆蓋(env var 優先權高於 .env),確保在本機/CI 一律以 test 身分跑。
+os.environ["SAAS_ENV"] = "test"
+
 # 關閉 auth rate limit，避免多個測試累積超過 20 req/60s 的限制。
 # 這裡用 [] 而非 setdefault，確保無論環境原本是什麼值都覆蓋。
 os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"
