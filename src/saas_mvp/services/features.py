@@ -55,6 +55,10 @@ UNLIMITED_STAFF = "UNLIMITED_STAFF"
 WEB_BOOKING = "WEB_BOOKING"
 # 預約後滿意度調查（A3.3）：服務結束後推 1–5 分 quick-reply、後台看均分。
 FEEDBACK_SURVEY = "FEEDBACK_SURVEY"
+# AI 預約 agent（A2）：自然語言多輪補槽 → 既有確定性建單；與 AI_ASSISTANT（QA）分開計費。
+AI_BOOKING_AGENT = "AI_BOOKING_AGENT"
+# AI 對話額度加購（比照 PUSH_BOOST：必須明確訂閱）。
+AI_BOOST = "AI_BOOST"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -75,6 +79,8 @@ _FEATURE_LABELS: dict[str, str] = {
     UNLIMITED_STAFF: "無限員工",
     WEB_BOOKING: "網頁預約表單",
     FEEDBACK_SURVEY: "滿意度調查",
+    AI_BOOKING_AGENT: "AI 預約助理",
+    AI_BOOST: "加購 AI 對話額度",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 
