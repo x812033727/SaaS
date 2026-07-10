@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>線上預約</title>
+  <style>
+    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 420px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.3rem; }
+    label { display: block; margin: 1rem 0 0.3rem; font-weight: 600; }
+    select, input { width: 100%; padding: 0.6rem; box-sizing: border-box;
+            border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+    button { margin-top: 1.5rem; width: 100%; padding: 0.8rem; font-size: 1rem;
+             background: #06c755; color: #fff; border: none; border-radius: 6px; }
+    .choice { display: block; margin: 0.5rem 0; padding: 0.8rem 1rem;
+              border: 1px solid #ddd; border-radius: 8px; text-decoration: none;
+              color: #222; }
+    .choice small { color: #888; display: block; }
+    .state { padding: 1.5rem; background: #f6f6f6; border-radius: 8px; text-align: center; }
+    .error { padding: 1rem; background: #fdecea; border-radius: 8px; color: #b3261e; }
+    .back { display: inline-block; margin-top: 1rem; color: #06c755; }
+    .slot-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.4rem 0;
+                padding: 0.6rem 0.8rem; border: 1px solid #ddd; border-radius: 8px; }
+    .slot-row input[type="radio"] { width: auto; }
+  </style>
+</head>
+<body>
+  {% if state == "expired" %}
+    <div class="state"><h1>連結已過期</h1><p>請回 LINE 重新點「用網頁預約」取得新連結。</p></div>
+
+  {% elif state == "used" %}
+    <div class="state"><h1>此連結已完成預約</h1><p>要再預約請回 LINE 重新點「用網頁預約」。</p></div>
+
+  {% elif state == "error" %}
+    <div class="error"><p>{{ message }}</p></div>
+    <a class="back" href="/booking/f/{{ token }}{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 回上一步重新選擇</a>
+
+  {% elif state == "pick_service" %}
+    <h1>線上預約 — 選擇服務</h1>
+    {% for s in services %}
+      <a class="choice" href="/booking/f/{{ token }}?service_id={{ s.id }}">
+        {{ s.name }}
+        <small>
+          {% if s.duration_minutes %}{{ s.duration_minutes }} 分鐘{% endif %}
+          {% if s.price_cents %}｜NT$ {{ s.price_cents // 100 }}{% endif %}
+        </small>
+      </a>
+    {% endfor %}
+
+  {% elif state == "pick_date" %}
+    <h1>線上預約 — 選擇日期</h1>
+    {% if dates %}
+      {% for d in dates %}
+        <a class="choice" href="/booking/f/{{ token }}?{% if service_id is not none %}service_id={{ service_id }}&{% endif %}date={{ d }}">{{ d }}</a>
+      {% endfor %}
+    {% else %}
+      <div class="state"><p>目前沒有可預約的日期，請稍後再試。</p></div>
+    {% endif %}
+    {% if service_id is not none %}
+      <a class="back" href="/booking/f/{{ token }}">← 重選服務</a>
+    {% endif %}
+
+  {% elif state == "pick_slot" %}
+    <h1>線上預約 — 選擇時段</h1>
+    {% if slots %}
+      <form method="post" action="/booking/f/{{ token }}">
+        {% if service_id is not none %}
+          <input type="hidden" name="service_id" value="{{ service_id }}">
+        {% endif %}
+        {% for s in slots %}
+          <label class="slot-row">
+            <input type="radio" name="slot_id" value="{{ s.id }}" {% if loop.first %}checked{% endif %}>
+            {{ s.slot_start.strftime('%H:%M') }}
+            {%- if s.slot_end %} – {{ s.slot_end.strftime('%H:%M') }}{% endif %}
+            <small>（尚餘 {{ s.online_available }} 位）</small>
+          </label>
+        {% endfor %}
+        {% if staff %}
+          <label for="staff_id">指定服務人員（選填）</label>
+          <select id="staff_id" name="staff_id">
+            <option value="">不指定</option>
+            {% for st in staff %}
+              <option value="{{ st.id }}">{{ st.name }}</option>
+            {% endfor %}
+          </select>
+        {% endif %}
+        <label for="party_size">人數</label>
+        <select id="party_size" name="party_size">
+          {% for n in range(1, 7) %}<option value="{{ n }}">{{ n }} 位</option>{% endfor %}
+        </select>
+        <button type="submit">確認預約 {{ date }}</button>
+      </form>
+    {% else %}
+      <div class="state"><p>{{ date }} 沒有可預約的時段。</p></div>
+    {% endif %}
+    <a class="back" href="/booking/f/{{ token }}{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 重選日期</a>
+  {% endif %}
+</body>
+</html>

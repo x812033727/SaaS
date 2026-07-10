@@ -51,7 +51,7 @@ class LineReplyClient(ABC):
         text: str,
         *,
         access_token: str,
-        quick_reply: list[tuple[str, str]] | None = None,
+        quick_reply: list | None = None,
     ) -> None:
         """透過 LINE reply API 回覆文字訊息（可附 quick-reply postback 按鈕）。
 
@@ -59,9 +59,10 @@ class LineReplyClient(ABC):
             reply_token: LINE 事件中的 replyToken（一次性，5 分鐘內有效）。
             text: 要回覆的文字內容。
             access_token: 該 LINE channel 的 channel access token（Bearer）。
-            quick_reply: 選填，`(label, postback_data)` 清單；每筆轉為一個
-                postback quick-reply 按鈕（供引導式預約逐步選擇）。最多 13 筆，
-                label 上限 20 字（LINE 限制），超過自動截斷。
+            quick_reply: 選填，項目為 `(label, postback_data)` tuple（轉
+                postback 按鈕）或 LINE action dict（uri / datetimepicker…
+                直接透傳，呼叫端自組完整 action），可混用。最多 13 筆，
+                tuple 的 label 上限 20 字（LINE 限制），超過自動截斷。
 
         Raises:
             LineReplyError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。
@@ -116,7 +117,7 @@ class LinePushClient(ABC):
         text: str,
         *,
         access_token: str,
-        quick_reply: list[tuple[str, str]] | None = None,
+        quick_reply: list | None = None,
     ) -> None:
         """透過 LINE push API 推播文字訊息給指定使用者。
 

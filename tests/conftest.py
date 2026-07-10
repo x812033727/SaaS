@@ -17,6 +17,10 @@ os.environ["SAAS_ENV"] = "test"
 # 觀測性測試會整批 401。測試一律以「不設限」預設跑。
 os.environ["SAAS_METRICS_TOKEN"] = ""
 
+# 同理隔離 SAAS_PUBLIC_BASE_URL:非空會讓 booking 回覆附網頁預約 URI 按鈕,
+# 與 CI(無 .env、預設空)行為分岔。要測 URI 行為的測試自行 monkeypatch。
+os.environ["SAAS_PUBLIC_BASE_URL"] = ""
+
 # 關閉 auth rate limit，避免多個測試累積超過 20 req/60s 的限制。
 # 這裡用 [] 而非 setdefault，確保無論環境原本是什麼值都覆蓋。
 os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"

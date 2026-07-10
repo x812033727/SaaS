@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>預約完成</title>
+  <style>
+    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 420px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    .state { padding: 1.5rem; background: #eafaf0; border-radius: 8px; text-align: center; }
+    .muted { color: #888; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="state">
+    <h1>✅ 預約完成</h1>
+    <p>預約編號 <strong>#{{ reservation.id }}</strong>，共 {{ reservation.party_size }} 位。</p>
+    <p class="muted">可關閉此頁回到 LINE；輸入「我的預約」隨時查看或改期/取消。</p>
+  </div>
+</body>
+</html>
