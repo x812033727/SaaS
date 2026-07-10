@@ -238,3 +238,29 @@ def report_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=report.pdf"},
     )
+
+
+# ── F4:POS 實收摘要 + 週期趨勢(bookings+實收;/report/* 為既有進階報表)──────
+
+@router.get("/revenue")
+def revenue(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    date_from: datetime.datetime | None = Query(default=None),
+    date_to: datetime.datetime | None = Query(default=None),
+) -> dict:
+    return analytics_svc.revenue_summary(
+        db, tenant_id=current_user.tenant_id, date_from=date_from, date_to=date_to
+    )
+
+
+@router.get("/trend")
+def trend(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    period: str = Query(default="week", pattern="^(week|month)$"),
+    periods: int = Query(default=12, ge=1, le=36),
+) -> list[dict]:
+    return analytics_svc.trend_series(
+        db, tenant_id=current_user.tenant_id, period=period, periods=periods
+    )

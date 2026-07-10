@@ -53,6 +53,7 @@ from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import analytics as analytics_svc
+from saas_mvp.services import reporting as reporting_svc
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
@@ -2502,6 +2503,11 @@ def reports_page(
             summary=analytics_svc.booking_summary(db, tenant_id=tid),
             utilization=analytics_svc.slot_utilization(db, tenant_id=tid),
             top=analytics_svc.top_customers(db, tenant_id=tid, limit=10),
+            revenue=analytics_svc.revenue_summary(db, tenant_id=tid),
+            trend=analytics_svc.trend_series(db, tenant_id=tid, period="week", periods=12),
+            staff_prod=reporting_svc.staff_performance(db, tenant_id=tid),
+            service_prod=reporting_svc.popular_services(db, tenant_id=tid),
+            retention=reporting_svc.return_rate(db, tenant_id=tid),
         ),
     )
 

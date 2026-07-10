@@ -49,4 +49,76 @@
   </table>
   {% else %}<p class="muted">尚無顧客資料。</p>{% endif %}
 </div>
+
+<div class="card">
+  <h2>營收(POS 已付訂單)</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">已付訂單</div><div class="value">{{ revenue.paid_orders }}</div></div>
+    <div class="stat"><div class="label">總營收</div><div class="value">NT${{ revenue.revenue_cents // 100 }}</div></div>
+    <div class="stat"><div class="label">平均客單</div><div class="value">NT${{ revenue.avg_order_cents // 100 }}</div></div>
+  </div>
+  <p class="muted">僅計線上已付款訂單;店內現金交易不在此列。</p>
+</div>
+
+<div class="card">
+  <h2>近 12 週趨勢</h2>
+  {% set max_b = trend | map(attribute='bookings') | max %}
+  {% set max_r = trend | map(attribute='revenue_cents') | max %}
+  <table>
+    <thead><tr><th>週</th><th>預約</th><th></th><th>營收</th><th></th></tr></thead>
+    <tbody>
+      {% for t in trend %}
+      <tr>
+        <td data-label="週">{{ t.period }}</td>
+        <td data-label="預約">{{ t.bookings }}</td>
+        <td><div style="background:var(--accent,#4a90d9);height:10px;border-radius:3px;width:{{ (t.bookings / max_b * 100) | round if max_b else 0 }}%"></div></td>
+        <td data-label="營收">NT${{ t.revenue_cents // 100 }}</td>
+        <td><div style="background:var(--ok,#3aa76d);height:10px;border-radius:3px;width:{{ (t.revenue_cents / max_r * 100) | round if max_r else 0 }}%"></div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>員工產能</h2>
+  {% if staff_prod %}
+  <table>
+    <thead><tr><th>員工</th><th>接單</th><th>推估營收</th><th>到場</th><th>爽約</th><th>出席率</th></tr></thead>
+    <tbody>
+      {% for a in staff_prod %}
+      <tr><td data-label="員工">{{ a.staff_name }}</td><td data-label="接單">{{ a.reservation_count }}</td>
+          <td data-label="推估營收">NT${{ a.revenue_cents // 100 }}</td>
+          <td data-label="到場">{{ a.attended }}</td><td data-label="爽約">{{ a.no_show }}</td>
+          <td data-label="出席率">{% if a.attendance_rate is none %}<span class="muted">需標記</span>{% else %}{{ (a.attendance_rate * 100) | round(1) }}%{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">推估營收以服務定價 × 接單數計,非實收。</p>
+  {% else %}<p class="muted">尚無指定員工的預約(預約需選擇員工才會列入)。</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>熱門服務</h2>
+  {% if service_prod %}
+  <table>
+    <thead><tr><th>服務</th><th>預約數</th></tr></thead>
+    <tbody>
+      {% for a in service_prod %}
+      <tr><td data-label="服務">{{ a.service_name }}</td><td data-label="預約數">{{ a.reservation_count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無指定服務的預約。</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>回訪率</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">有預約顧客</div><div class="value">{{ retention.total_customers }}</div></div>
+    <div class="stat"><div class="label">回訪(≥2 次)</div><div class="value">{{ retention.repeat_customers }}</div></div>
+    <div class="stat"><div class="label">回訪率</div>
+      <div class="value">{{ (retention.return_rate * 100) | round(1) }}%</div></div>
+  </div>
+</div>
 {% endblock %}
