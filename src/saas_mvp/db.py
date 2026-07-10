@@ -97,11 +97,8 @@ def import_all_models() -> None:
     from saas_mvp.models import booking_form_token  # noqa: F401
     # B3：Email 用途 token（驗證/重設密碼/邀請）。
     from saas_mvp.models import email_token  # noqa: F401
-<<<<<<< HEAD
     # A3.3：預約後滿意度調查。
     from saas_mvp.models import reservation_feedback  # noqa: F401
-=======
->>>>>>> origin/main
     # PHASE 5：Flex 圖文選單卡片（menu 先於 card，FK 依賴）。
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
     # LINE 自動回覆規則（依賴 flex_menu FK）。
