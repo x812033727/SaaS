@@ -25,6 +25,11 @@ os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"
 # CSRF 行為本身由 tests/test_ui_csrf.py 以 monkeypatch 動態開啟專測。
 os.environ["SAAS_UI_CSRF_ENABLED"] = "false"
 
+# 功能旗標 fallback 顯式開 True：正式預設已翻 False（B1 嚴格 freemium），
+# 既有測試大多假設「未設定旗標＝功能可用」；三層判定與 False 行為由
+# tests/test_plans.py 以 monkeypatch 專測。
+os.environ["SAAS_FEATURES_DEFAULT_ENABLED"] = "true"
+
 # DB URL 設 in-memory：必須在任何 saas_mvp 模組 import 之前設定，
 # 因為 db.py 在模組層級就建立 engine（settings.database_url）。
 # setdefault：若 CI/環境已有真實 DB URL 則不覆蓋。

@@ -1,6 +1,6 @@
 """Tenant model."""
 
-from sqlalchemy import Boolean, Column, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.orm import relationship
 
 from saas_mvp.db import Base
@@ -28,8 +28,13 @@ class Tenant(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(128), unique=True, nullable=False, index=True)
-    plan = Column(String(32), nullable=False, default="free")  # "free" | "pro"
+    plan = Column(String(32), nullable=False, default="free")  # "free"|"standard"|"pro"
     is_active = Column(Boolean, nullable=False, default=True)
+    # 試用（B1）：trial_ends_at 未來 + trial_plan 合法 → effective_plan 回 trial_plan
+    #（services/plans.py 純計算，到期即刻生效，無需 cron）。既有租戶 grandfathering
+    # 亦用此機制（ops/backfill_trial_grandfather.py）。Alembic rev 0006 補欄。
+    trial_plan = Column(String(32), nullable=True, default=None)
+    trial_ends_at = Column(DateTime(timezone=True), nullable=True, default=None)
     # 店家類型（標籤 + 篩選用，無 unique）；NULL = 未分類。
     store_type = Column(String(32), nullable=True, default=None)
     # 行事曆 ICS 訂閱憑證（店家整店 feed）；token 即能力，NULL = 尚未產生。

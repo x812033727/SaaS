@@ -61,6 +61,7 @@ from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import line_config as line_config_svc
+from saas_mvp.services import plans as plans_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
@@ -260,6 +261,8 @@ def register_submit(
     tenant = Tenant(name=tenant_name, plan="free")
     db.add(tenant)
     db.flush()
+    # 註冊即開試用（預設 pro 14 天；SAAS_TRIAL_DAYS=0 停用）。
+    plans_svc.start_trial(tenant)
     user = User(email=email, hashed_password=hash_password(password), tenant_id=tenant.id)
     db.add(user)
     db.commit()
@@ -279,6 +282,58 @@ def logout():
     return resp
 
 
+# ── 方案 / 定價（B1） ───────────────────────────────────────────────────────
+
+def _plan_info(tenant: Tenant) -> dict:
+    """dashboard/選方案頁的方案摘要：生效方案、試用倒數。"""
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    effective = plans_svc.effective_plan(tenant, now=now)
+    on_trial = plans_svc.trial_active(tenant, now=now)
+    days_left = None
+    if on_trial:
+        ends = tenant.trial_ends_at
+        if ends.tzinfo is None:
+            ends = ends.replace(tzinfo=_dt.timezone.utc)
+        days_left = max(0, (ends - now).days)
+    return {
+        "effective": effective,
+        "effective_label": plans_svc.plan_label(effective),
+        "paid": plans_svc.normalize_plan(tenant.plan),
+        "paid_label": plans_svc.plan_label(plans_svc.normalize_plan(tenant.plan)),
+        "trial_active": on_trial,
+        "trial_days_left": days_left,
+    }
+
+
+@router.get("/pricing", response_class=HTMLResponse)
+def pricing_page(request: Request):
+    """公開定價頁（免登入）。"""
+    return templates.TemplateResponse(
+        "pricing.html", _ctx(request, plans=plans_svc.list_plans())
+    )
+
+
+@router.get("/plan", response_class=HTMLResponse)
+def plan_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """登入後選方案頁：目前方案 + 各方案內容；訂閱按鈕（B2 接金流）。"""
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    info = _plan_info(tenant)
+    return templates.TemplateResponse(
+        "plan.html",
+        _ctx(
+            request, actor,
+            plans=plans_svc.list_plans(current=info["effective"]),
+            plan_info=info,
+        ),
+    )
+
+
 # ── 店家自助 ────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
@@ -290,12 +345,12 @@ def dashboard(
     tid = actor.user.tenant_id
     tenant = db.get(Tenant, tid)
     line_config = _line_config_or_none(db, tid)
-    usage = get_quota_status(db, tid, tenant.plan)
+    usage = get_quota_status(db, tid, plans_svc.effective_plan(tenant))
     push = push_quota_svc.get_push_quota_status(db, tid)
     return templates.TemplateResponse(
         "dashboard.html",
         _ctx(request, actor, tenant=tenant, line_config=line_config, usage=usage,
-             push_quota=push),
+             push_quota=push, plan_info=_plan_info(tenant)),
     )
 
 

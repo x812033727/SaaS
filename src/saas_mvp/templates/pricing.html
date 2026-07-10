@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}方案與定價 · LINE 預約平台{% endblock %}
+{% block content %}
+<h1>方案與定價</h1>
+<p class="muted">註冊即享 14 天專業版免費試用，不需信用卡；到期自動轉為免費版，資料完整保留。</p>
+{% set show_cta = false %}
+{% include "_plan_cards.html" %}
+<div class="card">
+  <p><a class="btn" href="/ui/register">免費註冊，開始試用</a>
+     <a class="btn" href="/ui/login">已有帳號？登入</a></p>
+</div>
+{% endblock %}

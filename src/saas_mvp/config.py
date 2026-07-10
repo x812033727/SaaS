@@ -116,17 +116,32 @@ class Settings(BaseSettings):
 
     # 月度推播額度（vibeaico「Additional Push Notification Allowance」）：
     # 每租戶每月可推播則數，跨所有 LINE push 路徑（提醒/異動通知/行銷）共用。
-    # SAAS_PUSH_ALLOWANCE_BASE:  基本月度額度（預設 200）。
-    # SAAS_PUSH_ALLOWANCE_BOOST: 加購 PUSH_BOOST 旗標時額外增加的額度（預設 +500）。
+    # SAAS_PUSH_ALLOWANCE_BASE:     free 方案月度額度（預設 200）。
+    # SAAS_PUSH_ALLOWANCE_STANDARD: standard 方案月度額度（預設 700）。
+    # SAAS_PUSH_ALLOWANCE_PRO:      pro 方案月度額度（預設 1500）。
+    # SAAS_PUSH_ALLOWANCE_BOOST:    加購 PUSH_BOOST 旗標時額外增加的額度（預設 +500）。
     push_allowance_base: int = 200
+    push_allowance_standard: int = 700
+    push_allowance_pro: int = 1500
     push_allowance_boost: int = 500
 
     # 進階功能旗標 + 訂閱（橫向）
-    # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列時的預設。
-    #   True  = 向後相容（進階功能預設開，不破壞既有/dev 易用）
-    #   False = 嚴格 freemium（預設關，需訂閱才開）
-    features_default_enabled: bool = True
-    feature_monthly_price_cents: int = 20000  # NT$200
+    # SAAS_FEATURES_DEFAULT_ENABLED: 無 TenantFeature 列、方案 bundle 也未含時的
+    # 最後 fallback（features.is_enabled 第 3 層）。
+    #   False = 嚴格 freemium（正式預設；需方案/訂閱才開）
+    #   True  = dev/測試易用（全功能開；正式環境勿開）
+    features_default_enabled: bool = False
+    feature_monthly_price_cents: int = 20000  # NT$200（單點加購，保留）
+
+    # 方案 bundle 定價（B1；services/plans.py 取用）。
+    # SAAS_PLAN_STANDARD_PRICE_CENTS / SAAS_PLAN_PRO_PRICE_CENTS 可環境覆寫。
+    plan_standard_price_cents: int = 39900   # NT$399/月
+    plan_pro_price_cents: int = 89900        # NT$899/月
+
+    # 註冊試用（B1）：新租戶註冊即開 trial_plan 試用 trial_days 天。
+    # SAAS_TRIAL_DAYS=0 停用試用。到期由 effective_plan 即刻降回 tenant.plan。
+    trial_days: int = 14
+    trial_plan: str = "pro"
 
     # 多分店（PHASE 1）：每租戶可建的「啟用中」分店數量上限。
     max_locations_per_tenant: int = 5

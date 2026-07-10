@@ -42,14 +42,16 @@ from saas_mvp.models.user import User
 # ── 配額常數 ─────────────────────────────────────────────────
 PLAN_DAILY_LIMITS: dict[str, int] = {
     "free": 100,
+    "standard": 2_000,
     "pro": 10_000,
 }
 
 # 字數上限（每日）。與次數軸同形 dict：plan → 上限字元數。
-# PM 議程拍板：free=1000、pro=100000。值若需調整改本常數即可，呼叫端
-# 一律透過 PLAN_DAILY_CHAR_LIMITS.get(plan, ...) 取用，無硬碼。
+# PM 議程拍板：free=1000、pro=100000；B1 新增 standard=20000。值若需調整改
+# 本常數即可，呼叫端一律透過 PLAN_DAILY_CHAR_LIMITS.get(plan, ...) 取用，無硬碼。
 PLAN_DAILY_CHAR_LIMITS: dict[str, int] = {
     "free": 1_000,
+    "standard": 20_000,
     "pro": 100_000,
 }
 
@@ -358,8 +360,11 @@ def require_quota(
     邊界；(b) 重新評估上述單次溢出是否仍可接受、以及兩套路徑的整合。
     在此之前，兩種語意刻意並存。
     """
-    # 1. tenant-level 配額檢查（超量拋 429）
-    check_and_increment(db, actor.user.tenant_id, actor.user.tenant.plan)
+    # 1. tenant-level 配額檢查（超量拋 429）；用 effective_plan 讓試用中租戶
+    #    享試用方案的配額（延遲 import 避免 quota ↔ services 循環）。
+    from saas_mvp.services.plans import effective_plan
+
+    check_and_increment(db, actor.user.tenant_id, effective_plan(actor.user.tenant))
     # 2. per-key 計量（僅 API key 認證時，DB 例外一律傳播回 500）
     if actor.api_key_id is not None:
         check_and_increment_key(db, actor.api_key_id, actor.user.tenant_id)

@@ -3,8 +3,16 @@
 {% block content %}
 <h1>{{ tenant.name }} 的儀表板</h1>
 
+{% if plan_info and plan_info.trial_active %}
+<div class="card" style="border-color:#f59e0b">
+  <p>🎁 <strong>{{ plan_info.effective_label }}試用中</strong>，
+     剩餘 <strong>{{ plan_info.trial_days_left }}</strong> 天。
+     <a href="/ui/plan">查看方案</a></p>
+</div>
+{% endif %}
+
 <div class="card">
-  <h2>今日用量（方案：{{ usage.plan }}）</h2>
+  <h2>今日用量（方案：{{ plan_info.effective_label if plan_info else usage.plan }}）</h2>
   <div class="grid">
     <div class="stat"><div class="label">API 呼叫</div><div class="value">{{ usage.used }} / {{ usage.limit }}</div></div>
     <div class="stat"><div class="label">剩餘呼叫</div><div class="value">{{ usage.remaining }}</div></div>

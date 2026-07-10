@@ -56,9 +56,28 @@ def boost_enabled(db: Session, tenant_id: int) -> bool:
     return bool(row.enabled) if row is not None else False
 
 
+def _plan_base_allowance(db: Session, tenant_id: int) -> int:
+    """依 effective_plan（含試用）取方案基本推播額度。
+
+    延遲 import plans 避免循環；tenant 查不到（防禦）回 free 基本值。
+    """
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.services import plans as plans_svc
+
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:  # pragma: no cover - 防禦性
+        return settings.push_allowance_base
+    plan = plans_svc.effective_plan(tenant)
+    if plan == plans_svc.PLAN_PRO:
+        return settings.push_allowance_pro
+    if plan == plans_svc.PLAN_STANDARD:
+        return settings.push_allowance_standard
+    return settings.push_allowance_base
+
+
 def allowance(db: Session, tenant_id: int) -> int:
-    """該租戶本月推播額度上限：base（+ boost 若加購 PUSH_BOOST）。"""
-    base = settings.push_allowance_base
+    """該租戶本月推播額度上限：方案基本額度（+ boost 若加購 PUSH_BOOST）。"""
+    base = _plan_base_allowance(db, tenant_id)
     if boost_enabled(db, tenant_id):
         return base + settings.push_allowance_boost
     return base
