@@ -388,3 +388,59 @@ def apply_bundle_period(db: Session, sub, *, success: bool) -> None:
         db, tenant, "free", None,
         reason=f"bundle_charge_failed:{sub.merchant_trade_no}",
     )
+    # 期扣失敗通知店家（C1）：扣款失敗是最大流失點。best-effort — 寄信失敗
+    # 絕不影響回調結果（綠界收不到 1|OK 會重放，反覆觸發降級路徑）。
+    notify_charge_failed(
+        db,
+        tenant,
+        plan_label=features_svc.BUNDLE_LABELS.get(sub.feature, sub.feature),
+        period_no=(sub.total_success_times or 0) + 1,
+    )
+
+
+def notify_charge_failed(
+    db: Session,
+    tenant: Tenant,
+    *,
+    plan_label: str,
+    period_no: int,
+    mailer=None,
+) -> None:
+    """期扣失敗 email 通知該租戶所有 owner（C1）。永不拋錯（best-effort）。"""
+    from saas_mvp.models.user import User
+    from saas_mvp.services.mailer import get_mailer
+
+    try:
+        owners = db.execute(
+            select(User).where(
+                User.tenant_id == tenant.id,
+                User.role == "owner",
+            )
+        ).scalars().all()
+        if not owners:
+            return
+        effective_mailer = mailer or get_mailer()
+        base = settings.public_base_url.rstrip("/") or ""
+        body = (
+            f"您好！\n\n「{tenant.name}」的「{plan_label}」第 {period_no} 期"
+            "信用卡扣款失敗，帳號已轉為免費版（資料完整保留）。\n\n"
+            "常見原因：卡片過期、額度不足或銀行拒絕。更新卡片後重新訂閱即可"
+            f"無縫恢復：{base}/ui/plan\n"
+        )
+        for owner in owners:
+            try:
+                effective_mailer.send(
+                    to=owner.email,
+                    subject=f"「{plan_label}」扣款失敗，已轉為免費版 — LINE 預約平台",
+                    body=body,
+                )
+            except Exception:  # noqa: BLE001 — 單封失敗不影響其他收件人
+                _log.warning(
+                    "charge-failed email send failed tenant=%d to=%s",
+                    tenant.id, owner.email, exc_info=True,
+                )
+    except Exception:  # noqa: BLE001 — 通知永不影響金流回調
+        _log.warning(
+            "notify_charge_failed unexpected failure tenant=%d",
+            tenant.id, exc_info=True,
+        )

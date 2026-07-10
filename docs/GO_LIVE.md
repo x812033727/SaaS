@@ -1,5 +1,12 @@
 # 收款上線 checklist（stub → ECPay 正式）
 
+## 第 0 步:就緒檢查（每次上線前先跑）
+```bash
+cd /opt/saas && docker-compose exec web python -m saas_mvp.ops.check_readiness
+```
+逐項 PASS/WARN/FAIL + 修復提示;有 FAIL 修完再往下走。
+
+
 ## 0. 商務前置（lead time 最長，第一天就送件）
 - [ ] 申請綠界**正式商店**（需公司/行號統編；個人可評估藍新或個人賣家方案）
 - [ ] 向綠界申請開通「**信用卡定期定額**」功能（需另外申請，非預設開通）
