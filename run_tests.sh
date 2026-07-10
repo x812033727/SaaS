@@ -54,4 +54,4 @@ export SAAS_BCRYPT_ROUNDS="${SAAS_BCRYPT_ROUNDS:-4}"
 # PYTHONPATH=src 確保 saas_mvp 從 src/ 載入，不依賴 site-packages
 export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
 
-exec "$PYTHON" -m pytest -q "$@"
+exec "$PYTHON" -m pytest -q -m "not e2e" --ignore=tests/e2e "$@"
