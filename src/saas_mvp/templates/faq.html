@@ -5,6 +5,33 @@
 <div class="card" id="faq-card">
   {% include "_faq_list.html" %}
 </div>
+
+{% if unanswered %}
+<div class="card" id="unanswered-card">
+  <h2>AI 答不好的問題</h2>
+  <p class="muted">顧客問了、但 FAQ 沒接住的問題(重複被問會累計)。補上答案即成為正式 FAQ。</p>
+  <table>
+    <thead><tr><th>問題</th><th>被問次數</th><th>處理</th></tr></thead>
+    <tbody>
+      {% for u in unanswered %}
+      <tr>
+        <td data-label="問題">{{ u.question }}</td>
+        <td data-label="被問次數">{{ u.hit_count }}</td>
+        <td data-label="處理">
+          <form method="post" action="/ui/faq/unanswered/{{ u.id }}/convert" style="display:flex;gap:6px">
+            <input type="text" name="answer" placeholder="輸入答案後轉為 FAQ" required>
+            <button type="submit" class="btn">轉為 FAQ</button>
+          </form>
+          <form method="post" action="/ui/faq/unanswered/{{ u.id }}/dismiss" style="display:inline">
+            <button type="submit" class="btn-sub">忽略</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 <div class="card" id="ai-test-card">
   {% include "_ai_test.html" %}
 </div>

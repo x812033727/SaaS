@@ -4861,8 +4861,47 @@ def _faq_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     return _ctx(
         request, actor,
         faqs=faq_svc.list_faqs(db, tenant_id=tid),
+        unanswered=faq_svc.list_unanswered(db, tenant_id=tid),
         **extra,
     )
+
+
+@router.post("/faq/unanswered/{unanswered_id}/convert", response_class=HTMLResponse)
+def faq_unanswered_convert(
+    unanswered_id: int,
+    request: Request,
+    answer: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    error = None
+    try:
+        faq_svc.convert_unanswered(
+            db, tenant_id=actor.user.tenant_id,
+            unanswered_id=unanswered_id, answer=answer,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "faq.html", _faq_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/faq/unanswered/{unanswered_id}/dismiss", response_class=HTMLResponse)
+def faq_unanswered_dismiss(
+    unanswered_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    faq_svc.dismiss_unanswered(
+        db, tenant_id=actor.user.tenant_id, unanswered_id=unanswered_id
+    )
+    return templates.TemplateResponse("faq.html", _faq_ctx(request, actor, db))
 
 
 @router.get("/faq", response_class=HTMLResponse)
