@@ -779,6 +779,19 @@ def account_change_password(
 
 # ── 平台管理 ────────────────────────────────────────────────────────────────
 
+@router.get("/admin", response_class=HTMLResponse)
+def admin_overview(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """平台總覽（B4）：租戶/方案分佈/試用/MRR/本月扣款。"""
+    return templates.TemplateResponse(
+        "admin/overview.html",
+        _ctx(request, actor, overview=admin_svc.platform_overview(db)),
+    )
+
+
 @router.get("/admin/bots", response_class=HTMLResponse)
 def admin_bots(
     request: Request,

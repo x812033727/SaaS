@@ -24,6 +24,7 @@ from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.feature_subscription import SUB_PENDING
 from saas_mvp.models.order import ORDER_PENDING, Order
+from saas_mvp.obs.alerts import capture_alert
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import shop as shop_svc
@@ -115,6 +116,7 @@ def _handle_ecpay_callback(db: Session, params: dict) -> PlainTextResponse:
     # 1) 先驗簽（拒絕偽造）
     if not client.verify(params):
         _log.warning("ecpay callback rejected: bad CheckMacValue")
+        capture_alert("payment: ecpay callback bad CheckMacValue")
         return PlainTextResponse("0|CheckMacValue Error")
 
     trade_no = params.get("MerchantTradeNo", "")
@@ -134,6 +136,7 @@ def _handle_ecpay_callback(db: Session, params: dict) -> PlainTextResponse:
                 "ecpay callback amount mismatch order=%s expected=%s got=%s",
                 order.id, order.total_cents // 100, params.get("TradeAmt"),
             )
+            capture_alert("payment: callback amount mismatch")
             return PlainTextResponse("0|amount mismatch")
         shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
         return PlainTextResponse("1|OK")
@@ -208,6 +211,7 @@ def _handle_ecpay_subscribe_callback(db: Session, params: dict) -> PlainTextResp
     client = EcpayClient()
     if not client.verify(params):
         _log.warning("ecpay subscribe-callback rejected: bad CheckMacValue")
+        capture_alert("payment: ecpay subscribe-callback bad CheckMacValue")
         return PlainTextResponse("0|CheckMacValue Error")
 
     trade_no = params.get("MerchantTradeNo", "")
@@ -249,6 +253,7 @@ def _handle_ecpay_period_callback(db: Session, params: dict) -> PlainTextRespons
     client = EcpayClient()
     if not client.verify(params):
         _log.warning("ecpay period-callback rejected: bad CheckMacValue")
+        capture_alert("payment: ecpay period-callback bad CheckMacValue")
         return PlainTextResponse("0|CheckMacValue Error")
 
     trade_no = params.get("MerchantTradeNo", "")
@@ -347,6 +352,7 @@ def _handle_newebpay_notify(db: Session, params: dict) -> PlainTextResponse:
     # 1) 先驗 TradeSha（拒絕偽造）
     if not client.verify(params):
         _log.warning("newebpay notify rejected: bad TradeSha")
+        capture_alert("payment: newebpay notify bad TradeSha")
         return PlainTextResponse("0|TradeSha Error")
 
     # 2) 解密 TradeInfo 取交易結果。解析（含 Result 取值）一律包在 try 內：
@@ -377,6 +383,7 @@ def _handle_newebpay_notify(db: Session, params: dict) -> PlainTextResponse:
                 "newebpay notify amount mismatch order=%s expected=%s got=%s",
                 order.id, order.total_cents // 100, paid_amt,
             )
+            capture_alert("payment: callback amount mismatch")
             return PlainTextResponse("0|amount mismatch")
         shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
         return PlainTextResponse("1|OK")

@@ -73,6 +73,11 @@ def create_app() -> FastAPI:
     # 結構化日誌（JSON/text）：在建立 app、掛 middleware 之前先設定好 root logger。
     configure_logging()
 
+    # Sentry（B4）：SAAS_SENTRY_DSN 非空才啟用；未設定/未安裝皆 no-op。
+    from saas_mvp.obs.alerts import init_sentry
+
+    init_sentry()
+
     app = FastAPI(
         title="SaaS MVP",
         description="Multi-tenant SaaS REST API",
