@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 _MAX_CONTEXT_CHARS = 3000
 
 
-def build_agent_context(db: Session, tenant_id: int) -> str:
+def build_agent_context(
+    db: Session, tenant_id: int, *, line_user_id: str | None = None
+) -> str:
     from saas_mvp.models.tenant import Tenant
     from saas_mvp.services import catalog as catalog_svc
     from saas_mvp.services import faq as faq_svc
@@ -39,6 +41,20 @@ def build_agent_context(db: Session, tenant_id: int) -> str:
     dates = available_dates(db, tenant_id, limit=7)
     if dates:
         parts.append("近期可預約日期：" + "、".join(dates))
+
+    # D1:顧客現有預約(改期/取消意圖需要對出正確編號)。
+    if line_user_id:
+        from saas_mvp.services import booking as booking_svc
+
+        mine = booking_svc.list_my_reservations(
+            db, tenant_id=tenant_id, line_user_id=line_user_id
+        )
+        if mine:
+            parts.append(
+                "顧客現有預約:\n" + "\n".join(
+                    f"#{r.id} {r.party_size} 位" for r in mine[:10]
+                )
+            )
 
     try:
         faq_ctx = faq_svc.build_context(db, tenant_id, "", max_entries=3)
