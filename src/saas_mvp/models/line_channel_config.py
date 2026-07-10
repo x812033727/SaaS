@@ -151,11 +151,14 @@ class LineChannelConfig(Base):
     # 既有 DB 由 Alembic rev 0005 補欄。
     welcome_message = Column(Text, nullable=True)
 
+<<<<<<< HEAD
     # 進階選配（A1.1）：租戶自建 LINE Login channel 的 LIFF app id；有值時網頁
     # 預約未來可改以 https://liff.line.me/{liff_id} 開啟（本版僅留欄位）。
     # NULL = 走 token 深連結（預設）。Alembic rev 0007 補欄。
     liff_id = Column(String(64), nullable=True)
 
+=======
+>>>>>>> origin/main
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

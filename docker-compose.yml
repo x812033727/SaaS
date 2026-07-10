@@ -119,6 +119,11 @@ services:
   scheduler:
     build: .
     command: ["scheduler"]
+    # ⚠️ 必要：supercronic v0.2.33 當 PID 1（scheduler.sh exec）時，啟動即
+    # fatal「Failed to fork exec: no such file or directory」→ 容器無限
+    # crash loop（2026-07-04 上線起 8000+ 次重啟，cron 全停）。init: true
+    # 讓 tini 當 PID 1、supercronic 退居子行程（自動停用 reaping）即正常。
+    init: true
     env_file: .env
     environment:
       SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
