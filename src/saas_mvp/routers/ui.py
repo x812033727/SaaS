@@ -60,8 +60,11 @@ from saas_mvp.services import api_keys as api_keys_svc
 from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import customers as customers_svc
 from saas_mvp.services import segments as segments_svc
+from saas_mvp.services import account_email as account_email_svc
 from saas_mvp.services import line_config as line_config_svc
+from saas_mvp.services import onboarding as onboarding_svc
 from saas_mvp.services import plans as plans_svc
+from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
@@ -242,6 +245,7 @@ def register_submit(
     password: str = Form(...),
     tenant_name: str = Form(...),
     db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
 ):
     # 與 auth.register 同款守衛：重複 email、租戶名唯一、密碼長度
     def _err(msg: str):
@@ -267,11 +271,94 @@ def register_submit(
     db.add(user)
     db.commit()
     db.refresh(user)
+    # 驗證信 best-effort：寄失敗不阻擋註冊（dashboard banner 可重寄）。
+    account_email_svc.send_verification_email(db, user, mailer)
 
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
     return resp
+
+
+# ── Email 驗證 / 忘記密碼（B3） ─────────────────────────────────────────────
+
+@router.get("/verify-email/{token}", response_class=HTMLResponse)
+def verify_email(token: str, db: Session = Depends(get_db)):
+    try:
+        account_email_svc.verify_email(db, token)
+    except account_email_svc.TokenInvalid:
+        return HTMLResponse(
+            "<h1>連結無效或已過期</h1><p>請登入後台重新寄送驗證信。</p>",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse("/ui/?verified=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/resend-verification", response_class=HTMLResponse)
+def resend_verification(
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
+):
+    if actor.user.email_verified_at is None:
+        account_email_svc.send_verification_email(db, actor.user, mailer)
+    return RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_form(request: Request):
+    return templates.TemplateResponse("forgot_password.html", _ctx(request))
+
+
+@router.post("/forgot-password", response_class=HTMLResponse)
+def forgot_password_submit(
+    request: Request,
+    email: str = Form(...),
+    db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
+):
+    try:
+        account_email_svc.request_password_reset(db, email, mailer)
+    except MailerError:
+        return templates.TemplateResponse(
+            "forgot_password.html",
+            _ctx(request, error="寄送失敗，請稍後再試或聯絡平台管理員。"),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    # 查無 email 也回相同訊息（防帳號列舉）。
+    return templates.TemplateResponse(
+        "forgot_password.html", _ctx(request, sent=True)
+    )
+
+
+@router.get("/reset-password/{token}", response_class=HTMLResponse)
+def reset_password_form(token: str, request: Request):
+    return templates.TemplateResponse(
+        "reset_password.html", _ctx(request, token=token)
+    )
+
+
+@router.post("/reset-password/{token}", response_class=HTMLResponse)
+def reset_password_submit(
+    token: str,
+    request: Request,
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    if len(password) < 8:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            _ctx(request, token=token, error="密碼至少需 8 個字元"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        account_email_svc.reset_password(db, token, password)
+    except account_email_svc.TokenInvalid:
+        return HTMLResponse(
+            "<h1>連結無效或已過期</h1><p>請重新申請重設密碼。</p>",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse("/ui/login?reset=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/logout")
@@ -444,10 +531,14 @@ def dashboard(
     line_config = _line_config_or_none(db, tid)
     usage = get_quota_status(db, tid, plans_svc.effective_plan(tenant))
     push = push_quota_svc.get_push_quota_status(db, tid)
+    checklist = onboarding_svc.checklist(db, tenant=tenant, user=actor.user)
     return templates.TemplateResponse(
         "dashboard.html",
         _ctx(request, actor, tenant=tenant, line_config=line_config, usage=usage,
-             push_quota=push, plan_info=_plan_info(tenant)),
+             push_quota=push, plan_info=_plan_info(tenant),
+             onboarding=checklist,
+             onboarding_done=onboarding_svc.all_done(checklist),
+             email_unverified=actor.user.email_verified_at is None),
     )
 
 

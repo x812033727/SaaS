@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     # 網頁預約表單（A1.1）：token 深連結有效分鐘數。
     booking_form_ttl_minutes: int = 30
 
+    # Email 寄送（B3）：SAAS_SMTP_HOST 非空走真實 SMTP（STARTTLS），否則 Stub。
+    # 建議用外部服務（Gmail SMTP / Mailgun…），自架 MTA 易進垃圾桶。
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    # 驗證信 / 重設密碼連結有效分鐘數。
+    email_token_ttl_minutes: int = 1440
+
     # 月度推播額度（vibeaico「Additional Push Notification Allowance」）：
     # 每租戶每月可推播則數，跨所有 LINE push 路徑（提醒/異動通知/行銷）共用。
     # SAAS_PUSH_ALLOWANCE_BASE:     free 方案月度額度（預設 200）。
