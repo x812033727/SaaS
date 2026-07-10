@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import logging
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -88,6 +89,32 @@ def _due_reminder_ids(
     return list(db.execute(stmt).scalars())
 
 
+_log = logging.getLogger(__name__)
+
+
+def _sms_fallback(db, tenant_id: int, line_user_id: str | None, text: str) -> None:
+    """LINE 推播失敗時的簡訊補送(E3)。旗標關/查無手機 → no-op;失敗只記 log。"""
+    from saas_mvp.config import settings
+
+    if not settings.sms_fallback_enabled or not line_user_id:
+        return
+    try:
+        from saas_mvp.models.customer import Customer
+        from saas_mvp.services.sms import get_sms_provider
+
+        customer = db.execute(
+            select(Customer).where(
+                Customer.tenant_id == tenant_id,
+                Customer.line_user_id == line_user_id,
+            )
+        ).scalar_one_or_none()
+        if customer is None or not customer.phone:
+            return
+        get_sms_provider().send(to=customer.phone, body=text[:300])
+    except Exception:  # noqa: BLE001 — fallback 絕不影響批次
+        _log.warning("sms fallback failed", exc_info=True)
+
+
 def _process_one(
     session_factory: sessionmaker,
     push_client: LinePushClient,
@@ -143,6 +170,9 @@ def _process_one(
             db.rollback()
             return ReminderResult(reminder_id, "would_send", "dry_run")
 
+        # E3 fallback 用:rollback 會 expire ORM 物件,先抓純值
+        fallback_tenant_id, fallback_user_id = rem.tenant_id, rem.line_user_id
+
         # 月度推播額度閘門：超出本月額度則跳過（不推播、標 skipped），
         # 同租戶超額不影響其他列（per-row isolation）。
         if not push_quota_svc.has_push_quota(db, rem.tenant_id, now=now):
@@ -187,6 +217,8 @@ def _process_one(
                 rem2.last_error = type(exc).__name__[:255]
                 rem2.updated_at = now
                 db.commit()
+            # E3:簡訊 fallback(旗標開 + 顧客有手機才送;best-effort 永不拋)
+            _sms_fallback(db, fallback_tenant_id, fallback_user_id, text)
             return ReminderResult(
                 reminder_id, "failed", "push_error", error_type=type(exc).__name__
             )

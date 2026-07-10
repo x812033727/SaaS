@@ -167,3 +167,102 @@ def reminder_effectiveness(db: Session, *, tenant_id: int) -> dict:
         .group_by(ReservationReminder.status)
     ).all()
     return {status: count for status, count in rows}
+
+
+# ── F4 報表深度:營收/趨勢/產能/回訪(即時聚合,無新表)────────────────────────
+
+def revenue_summary(
+    db: Session,
+    *,
+    tenant_id: int,
+    date_from: datetime.datetime | None = None,
+    date_to: datetime.datetime | None = None,
+) -> dict:
+    """POS 已付訂單營收(以 paid_at 過濾;僅計 paid,退款個案不扣)。"""
+    from saas_mvp.models.order import ORDER_PAID, Order
+
+    stmt = select(
+        func.count(),
+        func.coalesce(func.sum(Order.total_cents), 0),
+    ).where(Order.tenant_id == tenant_id, Order.status == ORDER_PAID)
+    if date_from is not None:
+        stmt = stmt.where(Order.paid_at >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(Order.paid_at <= date_to)
+    count, total_cents = db.execute(stmt).one()
+    count = int(count)
+    total_cents = int(total_cents)
+    return {
+        "paid_orders": count,
+        "revenue_cents": total_cents,
+        "avg_order_cents": (total_cents // count) if count else 0,
+    }
+
+
+def _period_key(dt: datetime.datetime, period: str) -> str:
+    if period == "month":
+        return dt.strftime("%Y-%m")
+    # week:ISO 週(YYYY-Www)
+    iso = dt.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _period_starts(now: datetime.datetime, period: str, periods: int) -> list[str]:
+    """近 N 期 key(含本期),舊到新。"""
+    keys: list[str] = []
+    cur = now
+    for _ in range(periods):
+        keys.append(_period_key(cur, period))
+        if period == "month":
+            cur = (cur.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
+        else:
+            cur = cur - datetime.timedelta(days=7)
+    return list(reversed(keys))
+
+
+def trend_series(
+    db: Session,
+    *,
+    tenant_id: int,
+    period: str = "week",
+    periods: int = 12,
+    now: datetime.datetime | None = None,
+) -> list[dict]:
+    """近 N 期預約量 + 營收趨勢(週/月;Python 端聚合避免方言 strftime 差異)。"""
+    from saas_mvp.models.order import ORDER_PAID, Order
+
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    keys = _period_starts(now, period, periods)
+    horizon = now - datetime.timedelta(days=(periods + 1) * (31 if period == "month" else 7))
+
+    buckets = {k: {"period": k, "bookings": 0, "revenue_cents": 0} for k in keys}
+    slot_rows = db.execute(
+        select(BookingSlot.slot_start, func.count())
+        .join(Reservation, Reservation.slot_id == BookingSlot.id)
+        .where(
+            Reservation.tenant_id == tenant_id,
+            Reservation.status == RESERVATION_CONFIRMED,
+            BookingSlot.slot_start >= horizon,
+        )
+        .group_by(BookingSlot.slot_start)
+    ).all()
+    for slot_start, cnt in slot_rows:
+        k = _period_key(slot_start, period)
+        if k in buckets:
+            buckets[k]["bookings"] += int(cnt)
+
+    order_rows = db.execute(
+        select(Order.paid_at, Order.total_cents).where(
+            Order.tenant_id == tenant_id,
+            Order.status == ORDER_PAID,
+            Order.paid_at >= horizon,
+        )
+    ).all()
+    for paid_at, cents in order_rows:
+        if paid_at is None:
+            continue
+        k = _period_key(paid_at, period)
+        if k in buckets:
+            buckets[k]["revenue_cents"] += int(cents or 0)
+
+    return [buckets[k] for k in keys]

@@ -1,0 +1,22 @@
+# E2E 冒煙(F5):nightly + 手動觸發;通知性質,不擋部署(部署門檻是 ci.yml)。
+name: e2e
+on:
+  schedule:
+    - cron: "30 19 * * *"   # 03:30 Asia/Taipei
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -e ".[test,e2e]"
+          playwright install chromium --with-deps
+      - name: Run e2e smoke
+        run: python -m pytest -q -m e2e tests/e2e

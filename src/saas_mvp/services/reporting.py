@@ -139,17 +139,29 @@ def staff_performance(
         if r.staff_id is None:
             continue
         b = agg.setdefault(
-            r.staff_id, {"reservation_count": 0, "revenue_cents": 0}
+            r.staff_id,
+            {"reservation_count": 0, "revenue_cents": 0, "attended": 0, "no_show": 0},
         )
         b["reservation_count"] += 1
         if r.service_id is not None:
             b["revenue_cents"] += prices.get(r.service_id, 0)
+        if r.attended is True:
+            b["attended"] += 1
+        elif r.attended is False:
+            b["no_show"] += 1
     out = [
         {
             "staff_id": sid,
             "staff_name": names.get(sid, f"員工#{sid}"),
             "reservation_count": v["reservation_count"],
             "revenue_cents": v["revenue_cents"],
+            "attended": v["attended"],
+            "no_show": v["no_show"],
+            # 出席率:僅在有標記到場/未到時才有值(誠實呈現)
+            "attendance_rate": (
+                round(v["attended"] / (v["attended"] + v["no_show"]), 4)
+                if (v["attended"] + v["no_show"]) else None
+            ),
         }
         for sid, v in agg.items()
     ]

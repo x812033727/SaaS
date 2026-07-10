@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     # 定金（C4）:未付定金保留分鐘數預設(店家可 per-tenant 覆寫)。
     deposit_hold_minutes_default: int = 30
 
+    # 簡訊 fallback(E3):LINE 推播失敗且顧客有手機時補發簡訊;預設關。
+    sms_fallback_enabled: bool = False
+
     # 電子發票（C2）:SAAS_INVOICE_PROVIDER=ecpay 走綠界 B2C 發票 API,
     # 否則 Stub(決定性假號)。發票商店憑證與金流**不共用**(獨立一組)。
     invoice_provider: str = "stub"          # "stub" | "ecpay"

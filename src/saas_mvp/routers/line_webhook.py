@@ -1928,9 +1928,13 @@ def _ai_reply(db: Session, tenant_id: int, text: str) -> str:
     context = faq_svc.build_context(
         db, tenant_id, text, max_entries=assistant.context_max_entries
     )
+    # D4:無 FAQ 命中 → 記為「AI 答不好的問題」(upsert 去重,永不拋)
+    if not context:
+        faq_svc.record_unanswered(db, tenant_id=tenant_id, question=text)
     try:
         return assistant.answer(text, context).answer
     except AIError:
+        faq_svc.record_unanswered(db, tenant_id=tenant_id, question=text)
         return _BOOKING_HELP
 
 

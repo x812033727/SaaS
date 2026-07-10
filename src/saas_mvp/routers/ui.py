@@ -53,6 +53,7 @@ from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import analytics as analytics_svc
+from saas_mvp.services import reporting as reporting_svc
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import coupons as coupons_svc
@@ -2502,6 +2503,11 @@ def reports_page(
             summary=analytics_svc.booking_summary(db, tenant_id=tid),
             utilization=analytics_svc.slot_utilization(db, tenant_id=tid),
             top=analytics_svc.top_customers(db, tenant_id=tid, limit=10),
+            revenue=analytics_svc.revenue_summary(db, tenant_id=tid),
+            trend=analytics_svc.trend_series(db, tenant_id=tid, period="week", periods=12),
+            staff_prod=reporting_svc.staff_performance(db, tenant_id=tid),
+            service_prod=reporting_svc.popular_services(db, tenant_id=tid),
+            retention=reporting_svc.return_rate(db, tenant_id=tid),
         ),
     )
 
@@ -4855,8 +4861,47 @@ def _faq_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     return _ctx(
         request, actor,
         faqs=faq_svc.list_faqs(db, tenant_id=tid),
+        unanswered=faq_svc.list_unanswered(db, tenant_id=tid),
         **extra,
     )
+
+
+@router.post("/faq/unanswered/{unanswered_id}/convert", response_class=HTMLResponse)
+def faq_unanswered_convert(
+    unanswered_id: int,
+    request: Request,
+    answer: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    error = None
+    try:
+        faq_svc.convert_unanswered(
+            db, tenant_id=actor.user.tenant_id,
+            unanswered_id=unanswered_id, answer=answer,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+    return templates.TemplateResponse(
+        "faq.html", _faq_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/faq/unanswered/{unanswered_id}/dismiss", response_class=HTMLResponse)
+def faq_unanswered_dismiss(
+    unanswered_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    faq_svc.dismiss_unanswered(
+        db, tenant_id=actor.user.tenant_id, unanswered_id=unanswered_id
+    )
+    return templates.TemplateResponse("faq.html", _faq_ctx(request, actor, db))
 
 
 @router.get("/faq", response_class=HTMLResponse)

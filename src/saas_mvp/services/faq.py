@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from saas_mvp.models.faq_entry import FAQEntry
@@ -159,3 +160,101 @@ def build_context(
     """組 AI 助手 context：取最相關的前 N 筆 FAQ，串成 Q/A 文字餵給助手。"""
     matched = match(db, tenant_id, question, top_k=max_entries)
     return "\n".join(f"Q: {f.question}\nA: {f.answer}" for f in matched)
+
+
+# ── D4 FAQ 自學:AI 答不好的問題 ──────────────────────────────────────────────
+
+def record_unanswered(db: Session, *, tenant_id: int, question: str) -> None:
+    """AI 無 FAQ 命中/回答失敗時 upsert(hash 去重 + hit 累加)。永不拋錯。"""
+    import datetime as _dt
+    import hashlib
+
+    try:
+        from saas_mvp.models.ai_unanswered_question import (
+            UNANSWERED_OPEN,
+            AiUnansweredQuestion,
+        )
+
+        q = (question or "").strip()
+        if not q:
+            return
+        digest = hashlib.sha256(_normalize(q).encode()).hexdigest()
+        row = db.execute(
+            select(AiUnansweredQuestion).where(
+                AiUnansweredQuestion.tenant_id == tenant_id,
+                AiUnansweredQuestion.question_hash == digest,
+            )
+        ).scalar_one_or_none()
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if row is None:
+            db.add(AiUnansweredQuestion(
+                tenant_id=tenant_id, question=q[:2000], question_hash=digest,
+            ))
+        else:
+            row.hit_count = (row.hit_count or 0) + 1
+            row.updated_at = now
+            if row.status != UNANSWERED_OPEN:
+                # 轉正/忽略後又被問到:重開,提醒店家答案沒接住
+                row.status = UNANSWERED_OPEN
+        db.commit()
+    except Exception:  # noqa: BLE001 — 記錄失敗絕不影響回覆主流程
+        db.rollback()
+
+
+def list_unanswered(db: Session, *, tenant_id: int, limit: int = 50) -> list:
+    from saas_mvp.models.ai_unanswered_question import (
+        UNANSWERED_OPEN,
+        AiUnansweredQuestion,
+    )
+
+    return list(db.execute(
+        select(AiUnansweredQuestion)
+        .where(
+            AiUnansweredQuestion.tenant_id == tenant_id,
+            AiUnansweredQuestion.status == UNANSWERED_OPEN,
+        )
+        .order_by(AiUnansweredQuestion.hit_count.desc(), AiUnansweredQuestion.id)
+        .limit(limit)
+    ).scalars())
+
+
+def convert_unanswered(
+    db: Session, *, tenant_id: int, unanswered_id: int, answer: str
+) -> FAQEntry:
+    """一鍵轉正式 FAQ(補答案);找不到/非本租戶拋 404。"""
+    from saas_mvp.models.ai_unanswered_question import (
+        UNANSWERED_CONVERTED,
+        AiUnansweredQuestion,
+    )
+
+    row = db.execute(
+        select(AiUnansweredQuestion).where(
+            AiUnansweredQuestion.id == unanswered_id,
+            AiUnansweredQuestion.tenant_id == tenant_id,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="unanswered question not found")
+    faq = create_faq(
+        db, tenant_id=tenant_id, question=row.question, answer=answer
+    )
+    row.status = UNANSWERED_CONVERTED
+    db.commit()
+    return faq
+
+
+def dismiss_unanswered(db: Session, *, tenant_id: int, unanswered_id: int) -> None:
+    from saas_mvp.models.ai_unanswered_question import (
+        UNANSWERED_DISMISSED,
+        AiUnansweredQuestion,
+    )
+
+    row = db.execute(
+        select(AiUnansweredQuestion).where(
+            AiUnansweredQuestion.id == unanswered_id,
+            AiUnansweredQuestion.tenant_id == tenant_id,
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        row.status = UNANSWERED_DISMISSED
+        db.commit()
