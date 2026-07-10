@@ -80,6 +80,13 @@ class Reservation(Base):
     # 顧客自助確認出席時間（提醒訊息「確認出席」按鈕）；NULL=未確認。
     # 既有 DB 由 _migrate_add_reservation_customer_confirmed() 補欄。
     customer_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    # 定金（C4）:建單快照。status NULL=不需定金|pending|paid|expired。
+    # trade_no unique(綠界回調對單);逾時由 ops/cancel_unpaid_deposits 取消回補。rev 0015。
+    deposit_cents = Column(Integer, nullable=True)
+    deposit_status = Column(String(16), nullable=True)
+    deposit_merchant_trade_no = Column(String(20), nullable=True, unique=True)
+    deposit_paid_at = Column(DateTime(timezone=True), nullable=True)
+    deposit_expires_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

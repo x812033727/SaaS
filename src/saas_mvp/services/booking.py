@@ -201,6 +201,15 @@ def book_slot(
     # 自動提醒為進階功能：需 tenant 開通 AUTO_REMINDER 且全域 reminder_enabled。
     # 提醒提前小時數：per-tenant 設定優先，未設定沿用全域預設。
     tenant_row = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+
+    # 定金（C4）：線上來源（LINE/網頁表單 = 有 line_user_id）且租戶啟用時,
+    # 同交易快照定金欄位;店家手動建單不觸發。
+    if line_user_id and tenant_row is not None:
+        from saas_mvp.services import deposit as deposit_svc
+
+        if deposit_svc.tenant_deposit_required(db, tenant_row):
+            deposit_svc.apply_deposit_snapshot(db, tenant_row, reservation)
+            deposit_svc.ensure_trade_no(db, reservation)
     hours_before = (
         tenant_row.reminder_hours_before
         if tenant_row is not None and tenant_row.reminder_hours_before

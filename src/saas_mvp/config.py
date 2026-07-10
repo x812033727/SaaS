@@ -132,6 +132,17 @@ class Settings(BaseSettings):
     ai_allowance_base: int = 300
     ai_allowance_boost: int = 1000
 
+    # 定金（C4）:未付定金保留分鐘數預設(店家可 per-tenant 覆寫)。
+    deposit_hold_minutes_default: int = 30
+
+    # 電子發票（C2）:SAAS_INVOICE_PROVIDER=ecpay 走綠界 B2C 發票 API,
+    # 否則 Stub(決定性假號)。發票商店憑證與金流**不共用**(獨立一組)。
+    invoice_provider: str = "stub"          # "stub" | "ecpay"
+    ecpay_invoice_merchant_id: str = ""
+    ecpay_invoice_hash_key: str = ""
+    ecpay_invoice_hash_iv: str = ""
+    ecpay_invoice_env: str = "stage"        # "stage" | "prod"
+
     # Sentry（B4）：DSN 非空且 sentry-sdk 已安裝才啟用（未裝僅記 warning）。
     # 金流回調驗簽失敗等關鍵事件另以 capture_message 主動上報。
     sentry_dsn: str = ""

@@ -37,6 +37,12 @@
 # 每 10 分鐘:webhook 健康檢查(pending 超時/失敗率;異常 capture_alert + exit 1)
 */10 * * * * python -m saas_mvp.ops.check_webhook_health
 
+# 每小時 20 分:重試開立失敗的電子發票
+20 * * * * python -m saas_mvp.ops.retry_failed_invoices --apply
+
+# 每 5 分鐘:逾時未付定金自動取消(回補名額+通知顧客)
+*/5 * * * * python -m saas_mvp.ops.cancel_unpaid_deposits --apply
+
 # 每 6 小時（:15）：帳務健康檢查（唯讀報表；異常 exit 1 會出現在容器日誌）
 15 */6 * * * python -m saas_mvp.ops.check_billing_health
 

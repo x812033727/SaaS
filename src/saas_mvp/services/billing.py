@@ -273,6 +273,20 @@ def subscribe_bundle(
             detail=f"Already on plan {target_plan!r}",
         )
 
+    # C3 降級期末生效:pro→standard 時舊方案以 trial 機制保留至最後扣款+31 天
+    # (與退訂寬限同機制同 anchor)。取捨:降級當下即開始扣新月費、舊方案功能
+    # 保留至期末 —「多給不多收」,換零排程零新表;_apply_plan_change 的清 trial
+    # 規則(新方案等級 ≥ trial 等級才清)保證首期回調不誤清。
+    current_paid = plans_svc.normalize_plan(tenant.plan)
+    if (
+        current_paid != plans_svc.PLAN_FREE
+        and plans_svc.PLAN_RANK[target_plan] < plans_svc.PLAN_RANK[current_paid]
+    ):
+        anchor = _bundle_grace_anchor(db, tenant.id)
+        tenant.trial_plan = current_paid
+        tenant.trial_ends_at = anchor + datetime.timedelta(days=31)
+        db.commit()
+
     if settings.payment_provider == "ecpay":
         from saas_mvp.services import subscriptions as subs_svc
 
@@ -309,22 +323,34 @@ def unsubscribe_bundle(db: Session, tenant: Tenant, actor_user_id: int) -> None:
 
     old_plan = plans_svc.normalize_plan(tenant.plan)
 
-    grace_anchor = None
-    for bundle_key in features_svc.VALID_BUNDLES:
-        sub = subs_svc.latest_active_for(db, tenant.id, bundle_key)
-        if sub is not None and sub.last_charged_at is not None:
-            grace_anchor = sub.last_charged_at
-
     if settings.payment_provider == "ecpay":
         _ecpay_cancel_active_bundle_subs(db, tenant.id)
 
     if old_plan != "free":
-        anchor = grace_anchor or datetime.datetime.now(datetime.timezone.utc)
-        if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=datetime.timezone.utc)
+        anchor = _bundle_grace_anchor(db, tenant.id)
         tenant.trial_plan = old_plan
         tenant.trial_ends_at = anchor + datetime.timedelta(days=31)
     _apply_plan_change(db, tenant, "free", actor_user_id, reason="bundle_unsubscribe")
+
+
+def _bundle_grace_anchor(db: Session, tenant_id: int) -> datetime.datetime:
+    """寬限起算點:最後一次 bundle 扣款日;無扣款紀錄(stub)以現在起算。
+
+    降級(C3)與退訂共用 — 同機制、同 anchor、同 31 天。
+    """
+    from saas_mvp.services import features as features_svc
+    from saas_mvp.services import subscriptions as subs_svc
+
+    anchor = None
+    for bundle_key in features_svc.VALID_BUNDLES:
+        sub = subs_svc.latest_active_for(db, tenant_id, bundle_key)
+        if sub is not None and sub.last_charged_at is not None:
+            anchor = sub.last_charged_at
+    if anchor is None:
+        anchor = datetime.datetime.now(datetime.timezone.utc)
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=datetime.timezone.utc)
+    return anchor
 
 
 def _apply_plan_change(
@@ -336,11 +362,17 @@ def _apply_plan_change(
 ) -> None:
     """改 plan + 寫 PlanChangeHistory + commit（bundle 路徑共用）。
 
-    升級到付費方案時清除試用欄位（轉正）；降級不動 trial（退訂寬限靠它）。
+    trial 清除規則(C3):只在「新方案等級 ≥ trial_plan 等級」時清(轉正/
+    同級重訂);降級與退訂的寬限(trial_plan=舊方案)因此不會被誤清 —
+    新訂的 standard 首期回調 activate 時,寬限中的 pro 试用欄位保留。
     """
+    from saas_mvp.services.plans import PLAN_RANK, normalize_plan
+
     from_plan = tenant.plan
     tenant.plan = new_plan
-    if new_plan != "free":
+    if tenant.trial_plan and PLAN_RANK[normalize_plan(new_plan)] >= PLAN_RANK[
+        normalize_plan(tenant.trial_plan)
+    ]:
         tenant.trial_plan = None
         tenant.trial_ends_at = None
     _insert_history(db, tenant, from_plan, new_plan, actor_user_id, reason=reason)

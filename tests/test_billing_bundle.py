@@ -108,6 +108,55 @@ class TestStubBundle:
         assert t.trial_plan == "standard"
         assert t.trial_ends_at is not None
 
+    def test_downgrade_keeps_old_plan_grace(self, db, monkeypatch):
+        """C3:pro→standard 降級,pro 以寬限保留至最後扣款+31 天。"""
+        monkeypatch.setattr(settings, "payment_provider", "stub")
+        t = _tenant(db, plan="pro")
+        r = billing_svc.subscribe_bundle(db, t, features_svc.BUNDLE_STANDARD, 1)
+        assert r.enabled
+        db.refresh(t)
+        assert t.plan == "standard"          # 新方案立即開始
+        assert t.trial_plan == "pro"         # 舊方案寬限保留
+        assert t.trial_ends_at is not None
+        from saas_mvp.services import plans as plans_svc
+
+        assert plans_svc.effective_plan(t) == "pro"   # 寬限期內功能仍 pro
+
+    def test_downgrade_ecpay_activation_does_not_clear_grace(self, db, monkeypatch):
+        """C3:降級後新 standard 訂閱首期回調 activate,不得誤清 pro 寬限。"""
+        import saas_mvp.services.payment_ecpay as pe
+
+        monkeypatch.setattr(settings, "payment_provider", "ecpay")
+        monkeypatch.setattr(settings, "public_base_url", "https://shop.example")
+        monkeypatch.setattr(pe, "_urllib_post", lambda url, data: "RtnCode=1&RtnMsg=OK")
+        t = _tenant(db, plan="pro")
+        old = subs_svc.create_subscription(
+            db, tenant_id=t.id, feature=features_svc.BUNDLE_PRO, amount_cents=89900
+        )
+        subs_svc.activate(db, old)
+
+        billing_svc.subscribe_bundle(db, t, features_svc.BUNDLE_STANDARD, 1)
+        db.refresh(t)
+        assert t.trial_plan == "pro"
+        new_sub = subs_svc.latest_active_for(db, t.id, features_svc.BUNDLE_STANDARD)
+        # 首期授權成功 → plan=standard,寬限欄位保留(rank standard < pro 不清)
+        billing_svc.apply_bundle_activation(db, new_sub)
+        db.refresh(t)
+        assert t.plan == "standard"
+        assert t.trial_plan == "pro" and t.trial_ends_at is not None
+
+    def test_upgrade_clears_grace(self, db, monkeypatch):
+        """升級(standard→pro)清 trial(轉正,既有行為不回歸)。"""
+        monkeypatch.setattr(settings, "payment_provider", "stub")
+        t = _tenant(
+            db, plan="standard", trial_plan="pro",
+            trial_ends_at=_NOW + datetime.timedelta(days=10),
+        )
+        billing_svc.subscribe_bundle(db, t, features_svc.BUNDLE_PRO, 1)
+        db.refresh(t)
+        assert t.plan == "pro"
+        assert t.trial_plan is None and t.trial_ends_at is None
+
     def test_unsubscribe_free_noop_grace(self, db, monkeypatch):
         monkeypatch.setattr(settings, "payment_provider", "stub")
         t = _tenant(db)

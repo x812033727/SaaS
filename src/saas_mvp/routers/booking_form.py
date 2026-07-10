@@ -144,10 +144,22 @@ def booking_form_submit(
             service_id=service_id,
         )
 
+    deposit_url = None
+    deposit_note = None
+    if getattr(resv, "deposit_status", None) == "pending":
+        from saas_mvp.models.tenant import Tenant
+        from saas_mvp.services import deposit as deposit_svc
+
+        tenant = db.get(Tenant, resv.tenant_id)
+        if tenant is not None:
+            deposit_url = deposit_svc.payment_url(resv)
+            deposit_note = deposit_svc.deposit_prompt(resv, tenant)
     return templates.TemplateResponse(
         "booking_form/done.html",
         {
             "request": request,
             "reservation": resv,
+            "deposit_url": deposit_url,
+            "deposit_note": deposit_note,
         },
     )

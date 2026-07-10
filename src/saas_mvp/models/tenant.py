@@ -43,6 +43,9 @@ class Tenant(Base):
     # 自動提醒：預約前幾小時推播提醒（對標 vibeaico「自訂提醒時間（小時）」）。
     # NULL = 沿用全域預設（24 小時）。既有 DB 由 _migrate_add_tenant_reminder_hours() 補欄。
     reminder_hours_before = Column(Integer, nullable=True, default=None)
+    # 定金（C4 防 no-show）:NULL/0=停用;hold_minutes NULL=用 settings 預設。rev 0015。
+    deposit_cents = Column(Integer, nullable=True, default=None)
+    deposit_hold_minutes = Column(Integer, nullable=True, default=None)
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     notes = relationship("Note", back_populates="tenant", cascade="all, delete-orphan")

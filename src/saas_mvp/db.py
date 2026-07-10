@@ -103,6 +103,8 @@ def import_all_models() -> None:
     from saas_mvp.models import line_conversation, ai_usage  # noqa: F401
     # F1：統一稽核日誌。
     from saas_mvp.models import audit_log  # noqa: F401
+    # C2：電子發票。
+    from saas_mvp.models import invoice  # noqa: F401
     # PHASE 5：Flex 圖文選單卡片（menu 先於 card，FK 依賴）。
     from saas_mvp.models import flex_menu, flex_menu_card  # noqa: F401
     # LINE 自動回覆規則（依賴 flex_menu FK）。

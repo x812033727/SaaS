@@ -551,6 +551,17 @@ def billing_page(
         if sub.status == "active" and sub.last_charged_at is not None:
             import datetime as _dt
             next_charge_at = sub.last_charged_at + _dt.timedelta(days=30)
+    # C2:發票對照(charge_id → Invoice)
+    invoice_by_charge: dict = {}
+    if charges:
+        from saas_mvp.models.invoice import Invoice
+
+        rows = db.execute(
+            _select(Invoice).where(
+                Invoice.subscription_charge_id.in_([c.id for c in charges])
+            )
+        ).scalars().all()
+        invoice_by_charge = {r.subscription_charge_id: r for r in rows}
     return templates.TemplateResponse(
         "billing.html",
         _ctx(
@@ -562,6 +573,7 @@ def billing_page(
             ),
             charges=charges,
             next_charge_at=next_charge_at,
+            invoice_by_charge=invoice_by_charge,
         ),
     )
 
@@ -1293,6 +1305,7 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         request,
         actor,
         cfg=cfg,
+        tenant=tenant_row,
         bot_mode=(cfg or {}).get("bot_mode", "translation"),
         has_line_config=cfg is not None,
         slots=slots_svc.list_slots(db, tenant_id=tid),
@@ -1329,6 +1342,39 @@ def booking_set_bot_mode(
         line_config_svc.set_bot_mode(db, tid, bot_mode)
     except HTTPException as exc:
         error = str(exc.detail)
+    return templates.TemplateResponse(
+        "_booking_botmode.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/booking/deposit-settings", response_class=HTMLResponse)
+def booking_set_deposit(
+    request: Request,
+    deposit_twd: str = Form(""),
+    deposit_hold_minutes: str = Form(""),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """定金設定（C4,owner 限定）:金額(0=停用)與保留分鐘數。"""
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    error = None
+    try:
+        amount = int(deposit_twd) if deposit_twd.strip() else 0
+        hold = int(deposit_hold_minutes) if deposit_hold_minutes.strip() else None
+        if amount < 0 or (hold is not None and hold < 5):
+            raise ValueError
+        tenant.deposit_cents = amount * 100 if amount else None
+        tenant.deposit_hold_minutes = hold
+        audit_svc.record_from_actor(
+            db, actor, action="booking.deposit.settings",
+            target=f"tenant:{tenant.id}",
+            detail={"deposit_twd": amount, "hold_minutes": hold},
+            request=request,
+        )
+        db.commit()
+    except ValueError:
+        db.rollback()
+        error = "金額需為非負整數;保留分鐘數至少 5 分鐘"
     return templates.TemplateResponse(
         "_booking_botmode.html", _booking_ctx(request, actor, db, error=error)
     )
