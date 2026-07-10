@@ -45,6 +45,24 @@ class SentPush:
     quick_reply: list | None = None
 
 
+@dataclass
+class SentPushFlex:
+    """一筆捕捉到的 Flex 推播記錄（A3.1）。"""
+    to_user_id: str
+    alt_text: str
+    contents: dict
+    access_token: str
+
+
+@dataclass
+class SentPushImage:
+    """一筆捕捉到的圖片推播記錄（A3.1）。"""
+    to_user_id: str
+    original_url: str
+    preview_url: str
+    access_token: str
+
+
 class FakeLineReplyClient(LineReplyClient):
     """離線 fake client，將所有 reply() 呼叫累積在 ``sent`` list 供斷言。
 
@@ -144,6 +162,8 @@ class FakeLinePushClient(LinePushClient):
 
     def __init__(self, *, available: bool = True, fail: bool = False) -> None:
         self.sent: list[SentPush] = []
+        self.flex: list[SentPushFlex] = []
+        self.images: list[SentPushImage] = []
         self._available = available
         self._fail = fail
 
@@ -165,15 +185,54 @@ class FakeLinePushClient(LinePushClient):
             quick_reply=quick_reply,
         ))
 
+    def push_flex(
+        self,
+        to_user_id: str,
+        alt_text: str,
+        contents: dict,
+        *,
+        access_token: str,
+    ) -> None:
+        """捕捉 Flex 推播（A3.1）；記在 ``flex``。fail=True 拋 LinePushError。"""
+        if self._fail:
+            raise LinePushError("fake push_flex failure")
+        self.flex.append(SentPushFlex(
+            to_user_id=to_user_id,
+            alt_text=alt_text,
+            contents=contents,
+            access_token=access_token,
+        ))
+
+    def push_image(
+        self,
+        to_user_id: str,
+        original_url: str,
+        preview_url: str | None = None,
+        *,
+        access_token: str,
+    ) -> None:
+        """捕捉圖片推播（A3.1）；記在 ``images``。fail=True 拋 LinePushError。"""
+        if self._fail:
+            raise LinePushError("fake push_image failure")
+        self.images.append(SentPushImage(
+            to_user_id=to_user_id,
+            original_url=original_url,
+            preview_url=preview_url or original_url,
+            access_token=access_token,
+        ))
+
     def is_available(self) -> bool:
         return self._available
 
     def reset(self) -> None:
         self.sent.clear()
+        self.flex.clear()
+        self.images.clear()
 
     @property
     def call_count(self) -> int:
-        return len(self.sent)
+        """所有推播（text + flex + image）總數 — 對齊「每則扣額度 1」語意。"""
+        return len(self.sent) + len(self.flex) + len(self.images)
 
     @property
     def texts(self) -> list[str]:

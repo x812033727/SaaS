@@ -53,6 +53,8 @@ PUSH_BOOST = "PUSH_BOOST"
 UNLIMITED_STAFF = "UNLIMITED_STAFF"
 # 網頁預約表單（A1.1）：bot 的 quick-reply 附「用網頁預約」token 深連結。
 WEB_BOOKING = "WEB_BOOKING"
+# 預約後滿意度調查（A3.3）：服務結束後推 1–5 分 quick-reply、後台看均分。
+FEEDBACK_SURVEY = "FEEDBACK_SURVEY"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -72,6 +74,7 @@ _FEATURE_LABELS: dict[str, str] = {
     PUSH_BOOST: "加購推播額度",
     UNLIMITED_STAFF: "無限員工",
     WEB_BOOKING: "網頁預約表單",
+    FEEDBACK_SURVEY: "滿意度調查",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

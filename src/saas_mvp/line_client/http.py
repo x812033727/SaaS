@@ -220,12 +220,46 @@ class HttpLinePushClient(LinePushClient):
         message: dict = {"type": "text", "text": text}
         if quick_reply:
             message["quickReply"] = {"items": _quick_reply_items(quick_reply)}
-        payload = json.dumps(
-            {
-                "to": to_user_id,
-                "messages": [message],
-            }
-        ).encode()
+        self._push_messages(to_user_id, [message], access_token)
+
+    def push_flex(
+        self,
+        to_user_id: str,
+        alt_text: str,
+        contents: dict,
+        *,
+        access_token: str,
+    ) -> None:
+        """推播 Flex Message（A3.1）。"""
+        self._push_messages(
+            to_user_id,
+            [{"type": "flex", "altText": alt_text[:400] or "訊息", "contents": contents}],
+            access_token,
+        )
+
+    def push_image(
+        self,
+        to_user_id: str,
+        original_url: str,
+        preview_url: str | None = None,
+        *,
+        access_token: str,
+    ) -> None:
+        """推播圖片（A3.1）。LINE 要求 https URL；preview 未給沿用原圖。"""
+        self._push_messages(
+            to_user_id,
+            [{
+                "type": "image",
+                "originalContentUrl": original_url,
+                "previewImageUrl": preview_url or original_url,
+            }],
+            access_token,
+        )
+
+    def _push_messages(
+        self, to_user_id: str, messages: list[dict], access_token: str
+    ) -> None:
+        payload = json.dumps({"to": to_user_id, "messages": messages}).encode()
 
         req = urllib.request.Request(
             self._api_url,

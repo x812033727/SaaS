@@ -1686,6 +1686,34 @@ def _dispatch_booking(
             return "無法確認其他人的預約。", None
         return f"已為您確認預約 #{reservation_id}，期待您的光臨！", None
 
+    if action == "rate":
+        # 滿意度調查（A3.3）：問卷 quick-reply 的 1–5 分按鈕。
+        reservation_id = params.get("reservation_id")
+        score = params.get("score")
+        if reservation_id is None or score is None or not line_user_id:
+            return "請從調查訊息的評分按鈕操作。", None
+        from saas_mvp.services import feedback as feedback_svc
+
+        row = feedback_svc.record_score(
+            db,
+            tenant_id=tenant_id,
+            reservation_id=reservation_id,
+            line_user_id=line_user_id,
+            score=score,
+        )
+        if row is None:
+            return "找不到對應的調查，感謝您的回饋！", None
+        if score <= 3:
+            return (
+                "非常抱歉這次的體驗未達期待 😔 您的意見已轉達店家，"
+                "我們會持續改進，期待下次給您更好的服務。",
+                None,
+            )
+        thanks = f"感謝您的 {score} 分好評！🎉 期待再次為您服務。"
+        if features_svc.is_enabled(db, tenant_id, features_svc.COUPON_SYSTEM):
+            thanks += "\n輸入「優惠券」看看本店的回饋活動！"
+        return thanks, None
+
     if action == "cancel":
         reservation_id = params.get("reservation_id")
         if reservation_id is None:

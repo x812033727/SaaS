@@ -13,6 +13,15 @@
     </select>
   </label>
   <label>訊息範本<input name="message_template" required placeholder="您好 {name}"></label>
+  <label>訊息型別
+    <select name="message_type">
+      <option value="text">純文字</option>
+      <option value="flex">Flex 卡片（選圖文卡片選單）</option>
+      <option value="image">圖片（https 網址）</option>
+    </select>
+  </label>
+  <label>Flex 選單編號（型別=Flex 時填）<input name="flex_menu_id" type="number" min="1" placeholder="圖文卡片頁的選單 ID"></label>
+  <label>圖片網址（型別=圖片時填，https）<input name="image_url" type="url" placeholder="https://…"></label>
   <label>排程時間<input name="schedule_at" type="datetime-local"></label>
   <fieldset class="col">
     <legend>受眾條件（皆選填，未選 = 全部顧客）</legend>

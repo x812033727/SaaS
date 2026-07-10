@@ -83,6 +83,13 @@ class Campaign(Base):
     reward_type = Column(String(8), nullable=True)  # coupon | points
     reward_value = Column(Integer, nullable=True)  # coupon_id 或 points 數量
     message_template = Column(Text, nullable=False)
+    # 訊息型別（A3.2）：text（預設）| flex（引用 FlexMenu，text 模板渲染進
+    # altText）| image（https 圖 + 文字兩則）。Alembic rev 0009 補欄。
+    message_type = Column(
+        String(8), nullable=False, default="text", server_default="text"
+    )
+    flex_menu_id = Column(Integer, nullable=True)
+    image_url = Column(String(512), nullable=True)
     is_active = Column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
