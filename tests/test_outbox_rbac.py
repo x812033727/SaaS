@@ -252,6 +252,12 @@ class TestRBAC:
         assert c.get("/ui/members").status_code == 403
         assert c.get("/ui/booking").status_code == 200
         assert c.get("/ui/customers").status_code == 200
+        # 員工僱傭管理與單點訂閱(帳務)也限 owner;檢視/排班留給 staff
+        assert c.post("/ui/staff", data={"name": "小王"}).status_code == 403
+        assert c.post("/ui/features/COUPON_SYSTEM/subscribe").status_code == 403
+        assert c.post("/ui/features/COUPON_SYSTEM/unsubscribe").status_code == 403
+        assert c.get("/ui/staff").status_code == 200   # 檢視/排班開放
+        assert c.get("/ui/features").status_code == 200  # 檢視開放
 
         # 邀請連結一次性
         c.get("/ui/logout")

@@ -2419,7 +2419,7 @@ def features_page(
 def features_subscribe(
     request: Request,
     feature: str,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     tenant = db.get(Tenant, actor.user.tenant_id)
@@ -2445,7 +2445,7 @@ def features_subscribe(
 def features_unsubscribe(
     request: Request,
     feature: str,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     tenant = db.get(Tenant, actor.user.tenant_id)
@@ -2680,7 +2680,7 @@ def staff_create(
     role: str = Form(""),
     location_id: str = Form(""),
     booking_mode: str = Form("capacity"),
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
@@ -2707,7 +2707,7 @@ def staff_update(
     staff_id: int,
     name: str = Form(...),
     role: str = Form(""),
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
@@ -2729,7 +2729,7 @@ def staff_update(
 def staff_deactivate(
     request: Request,
     staff_id: int,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
@@ -2747,7 +2747,7 @@ def staff_deactivate(
 def staff_activate(
     request: Request,
     staff_id: int,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
@@ -2765,7 +2765,7 @@ def staff_activate(
 def staff_delete(
     request: Request,
     staff_id: int,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
@@ -2785,7 +2785,7 @@ def staff_delete(
 def staff_rotate_token(
     request: Request,
     staff_id: int,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     if not _require_ui_feature(db, actor, features_svc.STAFF_SCHEDULING):
