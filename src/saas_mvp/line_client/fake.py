@@ -24,7 +24,7 @@ class SentReply:
     reply_token: str
     text: str
     access_token: str
-    quick_reply: list[tuple[str, str]] | None = None
+    quick_reply: list | None = None
 
 
 @dataclass
@@ -42,7 +42,7 @@ class SentPush:
     to_user_id: str
     text: str
     access_token: str
-    quick_reply: list[tuple[str, str]] | None = None
+    quick_reply: list | None = None
 
 
 class FakeLineReplyClient(LineReplyClient):
@@ -75,7 +75,7 @@ class FakeLineReplyClient(LineReplyClient):
         text: str,
         *,
         access_token: str,
-        quick_reply: list[tuple[str, str]] | None = None,
+        quick_reply: list | None = None,
     ) -> None:
         """捕捉回覆（不發網路請求）。"""
         self.sent.append(SentReply(
@@ -153,7 +153,7 @@ class FakeLinePushClient(LinePushClient):
         text: str,
         *,
         access_token: str,
-        quick_reply: list[tuple[str, str]] | None = None,
+        quick_reply: list | None = None,
     ) -> None:
         """捕捉推播（不發網路請求）；fail=True 時拋 LinePushError。"""
         if self._fail:

@@ -51,6 +51,8 @@ PUSH_BOOST = "PUSH_BOOST"
 # 無限員工：未開通時員工數受 settings.free_staff_limit（預設 3）限制，
 # 開通（輕量版以上）解除上限。對標 vibeaico「無限員工」。
 UNLIMITED_STAFF = "UNLIMITED_STAFF"
+# 網頁預約表單（A1.1）：bot 的 quick-reply 附「用網頁預約」token 深連結。
+WEB_BOOKING = "WEB_BOOKING"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -69,6 +71,7 @@ _FEATURE_LABELS: dict[str, str] = {
     FLEX_MENU: "圖文選單卡片",
     PUSH_BOOST: "加購推播額度",
     UNLIMITED_STAFF: "無限員工",
+    WEB_BOOKING: "網頁預約表單",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

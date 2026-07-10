@@ -49,6 +49,7 @@ _STANDARD_FEATURES = frozenset({
     features_svc.PUBLIC_PROFILE,
     features_svc.FLEX_MENU,
     features_svc.UNLIMITED_STAFF,
+    features_svc.WEB_BOOKING,
 })
 
 PLAN_BUNDLES: dict[str, frozenset[str]] = {

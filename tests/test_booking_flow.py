@@ -245,7 +245,9 @@ class TestConversationalFlow:
         )
         last = lc.sent[-1]
         assert "日期" in last.text
-        datas = [d for _l, d in (last.quick_reply or [])]
+        # A1.3 起日期選單混合 tuple（日期按鈕）與 dict（datetimepicker）。
+        items = last.quick_reply or []
+        datas = [d for i in items if not isinstance(i, dict) for _l, d in [i]]
         # 只列有可預約時段的日期，data 帶 action=pick_date + service_id + date
         assert any(
             "action=pick_date" in d
@@ -254,6 +256,10 @@ class TestConversationalFlow:
             for d in datas
         )
         assert any(f"date={s['date2']}" in d for d in datas)
+        # 末位附 datetimepicker（挑清單外日期）
+        assert any(
+            isinstance(i, dict) and i.get("type") == "datetimepicker" for i in items
+        )
 
     def test_pick_date_shows_staff_buttons(self, app_client):
         client, lc = app_client

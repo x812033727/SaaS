@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     # 不在 LINE 聊天室中直接索取個資。SAAS_PII_TOKEN_TTL_MINUTES 為 token 有效分鐘數。
     pii_token_ttl_minutes: int = 1440
 
+    # 網頁預約表單（A1.1）：token 深連結有效分鐘數。
+    booking_form_ttl_minutes: int = 30
+
     # 月度推播額度（vibeaico「Additional Push Notification Allowance」）：
     # 每租戶每月可推播則數，跨所有 LINE push 路徑（提醒/異動通知/行銷）共用。
     # SAAS_PUSH_ALLOWANCE_BASE:     free 方案月度額度（預設 200）。

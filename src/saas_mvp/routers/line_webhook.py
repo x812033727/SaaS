@@ -126,6 +126,7 @@ from saas_mvp.translation import TranslationResult, Translator, get_translator
 from saas_mvp.translation.commands import parse_lang_command
 from saas_mvp.booking.commands import parse_booking_command, parse_postback_data
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import booking_form as booking_form_svc
 from saas_mvp.services import waitlist as waitlist_svc
 from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import catalog as catalog_svc
@@ -957,7 +958,13 @@ def _booking_intent(event: dict) -> tuple[str | None, dict]:
     if etype == "message" and event.get("message", {}).get("type") == "text":
         return parse_booking_command(event["message"].get("text", ""))
     if etype == "postback":
-        return parse_postback_data(event.get("postback", {}).get("data", ""))
+        action, params = parse_postback_data(event.get("postback", {}).get("data", ""))
+        # datetimepicker（A1.3）：LINE 把選定日期放 postback.params.date，
+        # 併入 params（data 內已帶 date 者優先，不覆蓋）。
+        picker = event.get("postback", {}).get("params") or {}
+        if action is not None and picker.get("date"):
+            params.setdefault("date", picker["date"])
+        return action, params
     return None, {}
 
 
@@ -999,11 +1006,16 @@ def _available_dates(db: Session, tenant_id: int, limit: int = 10) -> list[str]:
 _DATE_CHOICES_MAX = 13
 
 
-def _date_choice_buttons(service_id: int, dates: list[str]) -> list[tuple[str, str]]:
-    """日期 → quick-reply 按鈕（postback action=pick_date，攜帶 service_id + date）。"""
+def _date_choice_buttons(service_id: int, dates: list[str]) -> list:
+    """日期 → quick-reply 按鈕（postback action=pick_date，攜帶 service_id + date）。
+
+    末位附 datetimepicker（A1.3）：日期多於按鈕上限或想選較遠日期時，
+    可用原生日曆挑日；選定值由 LINE 放在 postback.params.date
+    （_booking_intent 併入 params）。
+    """
     _weekday_zh = ("一", "二", "三", "四", "五", "六", "日")
-    buttons: list[tuple[str, str]] = []
-    for d in dates[:_DATE_CHOICES_MAX]:
+    buttons: list = []
+    for d in dates[: _DATE_CHOICES_MAX - 1]:
         try:
             dt = datetime.date.fromisoformat(d)
             label = f"{dt.strftime('%m/%d')} (週{_weekday_zh[dt.weekday()]})"
@@ -1012,6 +1024,16 @@ def _date_choice_buttons(service_id: int, dates: list[str]) -> list[tuple[str, s
         buttons.append(
             (label, f"action=pick_date&service_id={service_id}&date={d}")
         )
+    if dates:
+        buttons.append({
+            "type": "datetimepicker",
+            "label": "📅 挑其他日期",
+            "data": f"action=pick_date&service_id={service_id}",
+            "mode": "date",
+            "initial": dates[0],
+            "min": dates[0],
+            "max": dates[-1],
+        })
     return buttons
 
 
@@ -2006,6 +2028,31 @@ def _handle_booking_event(
             db, tenant_id, action, params, line_user_id, raw_text, display_name
         )
         flex = None
+
+    # 網頁預約入口（A1.1）：WEB_BOOKING 開通時，booking 模式所有文字回覆
+    # （含無 quick-reply 者）一律附「用網頁預約」URI 按鈕 — 通用入口，
+    # token 深連結 TTL 30 分（token 便宜，每次回覆發一枚可接受）。
+    # public_base_url 未設（dev）不附，避免無效 URI 讓 LINE 整則回覆被拒。
+    if (
+        flex is None
+        and line_user_id
+        and settings.public_base_url
+        and features_svc.is_enabled(db, tenant_id, features_svc.WEB_BOOKING)
+    ):
+        try:
+            form_row = booking_form_svc.issue_token(
+                db,
+                tenant_id=tenant_id,
+                line_user_id=line_user_id,
+                display_name=display_name,
+            )
+            quick_reply = list(quick_reply or [])[:12] + [{
+                "type": "uri",
+                "label": "🌐 用網頁預約",
+                "uri": booking_form_svc.form_url(form_row),
+            }]
+        except Exception:  # noqa: BLE001 — 表單入口失敗不得阻擋主回覆
+            db.rollback()
 
     # 副作用（若有）已於 dispatcher 內 commit；標記不可重試後再 reply。
     stage = LineWebhookEventStage.REPLY_SENT.value

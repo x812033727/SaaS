@@ -45,10 +45,20 @@ _QR_MAX_ITEMS = 13
 _QR_LABEL_MAX = 20
 
 
-def _quick_reply_items(items: list[tuple[str, str]]) -> list[dict]:
-    """把 `(label, postback_data)` 清單轉為 LINE quickReply items（postback action）。"""
+def _quick_reply_items(items: list) -> list[dict]:
+    """把 quick-reply 項目清單轉為 LINE quickReply items。
+
+    兩種項目形式（A1.3 起）：
+      * ``(label, postback_data)`` tuple — 既有形式，轉 postback action。
+      * ``dict`` — 直接作為 LINE action 物件透傳（uri / datetimepicker /
+        camera…），呼叫端自組完整 action（含 type/label 與該型別必要欄位）。
+    """
     out: list[dict] = []
-    for label, data in items[:_QR_MAX_ITEMS]:
+    for item in items[:_QR_MAX_ITEMS]:
+        if isinstance(item, dict):
+            out.append({"type": "action", "action": item})
+            continue
+        label, data = item
         out.append(
             {
                 "type": "action",
