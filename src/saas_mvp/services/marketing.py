@@ -380,6 +380,16 @@ def run_campaign(
                         continue
                     row = existing
 
+            # 1.5 已封鎖/解除好友者（webhook unfollow 回寫）：推必失敗，跳過
+            #     不派獎勵、不扣推播額度；歷史顧客 line_followed 預設 True 不受影響。
+            if customer.line_followed is False:
+                row.status = CAMPAIGN_SEND_SKIPPED
+                row.attempt_count = (row.attempt_count or 0) + 1
+                row.last_error = "line_unfollowed"
+                db.commit()
+                skipped += 1
+                continue
+
             # 2. 月度推播額度閘門：超出本月額度則跳過（不派獎勵、不推播、標
             #    skipped），並中止本活動其餘顧客（額度已罄，後續必同樣超額）。
             #    在派發獎勵前檢查，避免「發了券卻沒送出推播」的白扣。

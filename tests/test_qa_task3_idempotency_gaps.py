@@ -438,10 +438,11 @@ class TestAllContinuePathsMarkProcessed:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
 
-        # 驗證 DB：5 筆 row 全部 processed、不留 pending
+        # 驗證 DB：5 筆 row 全部 processed、不留 pending。
+        # follow 已升級為「回歡迎訊息」的已處理事件 → 末段 stage = reply_sent。
         rows = _webhook_event_rows(tid)
         assert rows == [
-            ("evt-cp-follow",    "processed", "claimed"),
+            ("evt-cp-follow",    "processed", "reply_sent"),
             ("evt-cp-image",     "processed", "claimed"),
             ("evt-cp-lang",      "processed", "claimed"),
             ("evt-cp-quota",     "processed", "quota_checked"),
@@ -451,12 +452,13 @@ class TestAllContinuePathsMarkProcessed:
         )
 
         # 副作用 sanity：
-        # - 非 message / 非文字：完全無副作用
+        # - follow：回歡迎訊息（已處理事件），不翻譯不計量
+        # - 非文字 message：無副作用
         # - quota 超額：reply 配額訊息、不計量
         # - /lang 純切換：reply 切換訊息、不計量
         # quota 檢查在 translate 前，seed 已超額的文字 event 都會先回配額訊息。
-        assert fake_line_client.call_count == 3, (
-            f"預期 2 次 quota reply + 1 次 /lang reply，got {fake_line_client.call_count}"
+        assert fake_line_client.call_count == 4, (
+            f"預期 1 次歡迎 + 2 次 quota reply + 1 次 /lang reply，got {fake_line_client.call_count}"
         )
         assert fake_line_client.sent[-1].text == "語言已切換為：ja", (
             f"/lang 切換訊息應為『語言已切換為：ja』，got {fake_line_client.sent[-1].text!r}"

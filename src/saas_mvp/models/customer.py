@@ -73,6 +73,13 @@ class Customer(Base):
         Boolean, nullable=False, default=False, server_default=text("false")
     )
     blacklist_reason = Column(String(255), nullable=True)
+    # LINE 好友狀態：webhook follow/unfollow 事件回寫。False = 已封鎖/解除好友，
+    # 行銷推播跳過（省推播額度、免 LINE push 必然失敗）。預設 True：歷史顧客
+    # 無從得知封鎖狀態，沿用「全部視為好友」的原行為。Alembic rev 0005 補欄。
+    line_followed = Column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    line_followed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

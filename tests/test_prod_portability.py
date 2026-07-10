@@ -75,7 +75,12 @@ def test_ops_script_runs_standalone(tmp_path, module):
     env["PYTHONPATH"] = _SRC + os.pathsep + env.get("PYTHONPATH", "")
     env["SAAS_DATABASE_URL"] = f"sqlite:///{db}"
     env["SAAS_RATE_LIMIT_ENABLED"] = "false"
-    env.pop("SAAS_ENV", None)
+    # 明確以 test 身分跑（原本 pop 掉 SAAS_ENV）：subprocess 的 cwd 是 repo 根，
+    # 主機正式部署的 .env（SAAS_ENV=prod）會被 pydantic-settings 讀進去；同時
+    # 其他測試模組在 import 期 setdefault 的 dev 加密金鑰殘留在 os.environ、
+    # 優先權又高於 .env → 組成「prod 身分 + dev 金鑰」在全量跑必炸的組合。
+    # 測試意圖是「乾淨可攜」，不是模擬 prod。
+    env["SAAS_ENV"] = "test"
     # 先建表（init_db），再跑 ops（dry-run，不送任何推播）
     init = subprocess.run(
         [sys.executable, "-c", "from saas_mvp.db import init_db; init_db()"],

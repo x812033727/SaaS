@@ -118,6 +118,7 @@ from saas_mvp.models.line_webhook_event import (
     LineWebhookEventStage,
     LineWebhookEventStatus,
 )
+from saas_mvp.models.customer import Customer, upsert_customer_from_line
 from saas_mvp.models.line_user_lang import get_user_lang, upsert_user_lang
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.quota import has_char_quota, has_quota, increment_usage
@@ -590,6 +591,22 @@ def _handle_line_event(
             event_idx,
         )
 
+    # ── 好友事件：三種 bot_mode 一體處理（unfollow 的顧客檔回寫不分模式） ────
+    early_etype = event.get("type")
+    if early_etype == "follow":
+        return _handle_follow_event(
+            db,
+            tenant_id,
+            access_token,
+            event,
+            line_client,
+            stage_holder,
+            profile_client,
+            bot_mode,
+        )
+    if early_etype == "unfollow":
+        return _handle_unfollow_event(db, tenant_id, event, stage_holder)
+
     # ── bot_mode 分流：booking/auto_reply 各自處理；translation（預設）維持現狀 ─
     if bot_mode == "booking":
         return _handle_booking_event(
@@ -693,6 +710,102 @@ def _handle_line_event(
     stage = LineWebhookEventStage.USAGE_INCREMENTED.value
     if stage_holder is not None:
         stage_holder[0] = stage
+    return stage
+
+
+def _handle_follow_event(
+    db: Session,
+    tenant_id: int,
+    access_token: str,
+    event: dict,
+    line_client: LineReplyClient,
+    stage_holder: list[str] | None = None,
+    profile_client: LineProfileClient | None = None,
+    bot_mode: str = "translation",
+) -> str:
+    """follow（加好友/解除封鎖）：建/更新顧客檔 + 回歡迎訊息。
+
+    顧客檔 upsert 為冪等（LINE redelivery / 重複 follow 安全）；歡迎訊息
+    文案取租戶自訂 welcome_message，NULL/空白時依 bot_mode 用內建預設。
+    booking 模式附「開始預約/查看時段/我的預約」quick-reply 降低第一步門檻。
+    """
+    stage = LineWebhookEventStage.CLAIMED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+
+    line_user_id = event.get("source", {}).get("userId", "")
+    reply_token = event.get("replyToken", "")
+
+    if line_user_id:
+        # follow 可取 profile（好友狀態必然成立）；失敗降級 None 不阻擋建檔。
+        display_name = _resolve_display_name(profile_client, line_user_id, access_token)
+        customer = upsert_customer_from_line(
+            db,
+            tenant_id=tenant_id,
+            line_user_id=line_user_id,
+            display_name=display_name,
+            bump_booking=False,
+        )
+        now = datetime.datetime.now(datetime.timezone.utc)
+        customer.line_followed = True
+        customer.line_followed_at = now
+        db.commit()
+
+    if not reply_token:
+        return stage
+
+    cfg = db.execute(
+        select(LineChannelConfig).where(LineChannelConfig.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+    custom = (cfg.welcome_message or "").strip() if cfg is not None else ""
+
+    quick_reply = None
+    if bot_mode == "booking":
+        text = custom or _DEFAULT_WELCOME_BOOKING
+        quick_reply = _WELCOME_QUICK_REPLY
+    elif bot_mode == "auto_reply":
+        text = custom or _DEFAULT_WELCOME_GENERIC
+    else:
+        text = custom or _DEFAULT_WELCOME_TRANSLATION
+
+    # 顧客檔已 commit；先標 REPLY_SENT 再 reply（reply 失敗不重試，避免
+    # redelivery 重複轟炸歡迎訊息——與 booking 路徑同語意）。
+    stage = LineWebhookEventStage.REPLY_SENT.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+    line_client.reply(reply_token, text, access_token=access_token, quick_reply=quick_reply)
+    return stage
+
+
+def _handle_unfollow_event(
+    db: Session,
+    tenant_id: int,
+    event: dict,
+    stage_holder: list[str] | None = None,
+) -> str:
+    """unfollow（封鎖/解除好友）：標記顧客不可推播。
+
+    商業關鍵：行銷推播（marketing.run_campaign）藉 line_followed=False 跳過
+    此顧客，不對推不到的人白扣推播額度。unfollow 事件無 replyToken，不回覆。
+    """
+    stage = LineWebhookEventStage.CLAIMED.value
+    if stage_holder is not None:
+        stage_holder[0] = stage
+
+    line_user_id = event.get("source", {}).get("userId", "")
+    if not line_user_id:
+        return stage
+
+    customer = db.execute(
+        select(Customer).where(
+            Customer.tenant_id == tenant_id,
+            Customer.line_user_id == line_user_id,
+        )
+    ).scalar_one_or_none()
+    if customer is not None:
+        customer.line_followed = False
+        customer.line_followed_at = datetime.datetime.now(datetime.timezone.utc)
+        db.commit()
     return stage
 
 
@@ -814,6 +927,21 @@ _BOOKING_HELP = (
     "・取消 <預約編號> — 例：取消 7\n"
     "・候補 — 查看/取消我的額滿候補"
 )
+# follow（加好友）預設歡迎文案：租戶未自訂（welcome_message NULL/空白）時依 bot_mode 選用。
+_DEFAULT_WELCOME_BOOKING = (
+    "感謝加入好友！🎉\n"
+    "點下方按鈕即可開始預約，或輸入「時段」查看可預約時段、「我的預約」管理既有預約。"
+)
+_DEFAULT_WELCOME_TRANSLATION = (
+    "感謝加入好友！直接傳訊息即可自動翻譯；輸入 /lang <語言代碼> 可切換目標語言（例：/lang ja）。"
+)
+_DEFAULT_WELCOME_GENERIC = "感謝加入好友！有任何問題歡迎直接留言。"
+# 歡迎訊息／非文字訊息引導的 quick-reply（booking 模式）。
+_WELCOME_QUICK_REPLY = [
+    ("開始預約", "action=book"),
+    ("查看時段", "action=slots"),
+    ("我的預約", "action=my"),
+]
 # 引導式人數上限（quick-reply 按鈕數）
 _PARTY_CHOICES_MAX = 6
 # 列給使用者選的時段上限（LINE quick-reply 最多 13 筆）
@@ -1826,6 +1954,21 @@ def _handle_booking_event(
     raw_text = ""
     if etype == "message" and event.get("message", {}).get("type") == "text":
         raw_text = event["message"].get("text", "")
+
+    # 非文字訊息（貼圖/圖片/位置/語音等）：友善引導 + 預約 quick-reply。
+    # 原本落到通用說明文字牆，對點錯/傳貼圖的顧客不友善。
+    if etype == "message" and event.get("message", {}).get("type") != "text":
+        stage = LineWebhookEventStage.REPLY_SENT.value
+        if stage_holder is not None:
+            stage_holder[0] = stage
+        if reply_token:
+            line_client.reply(
+                reply_token,
+                "收到您的訊息！需要預約服務嗎？點下方按鈕即可開始：",
+                access_token=access_token,
+                quick_reply=_WELCOME_QUICK_REPLY,
+            )
+        return stage
 
     # 後台客服：存檔顧客傳入的文字訊息 + SSE 推播到後台（best-effort，不影響預約）。
     if raw_text and line_user_id:

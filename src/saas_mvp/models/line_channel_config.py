@@ -14,7 +14,7 @@ import re
 from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import relationship, validates
 
 from saas_mvp.db import Base
@@ -146,6 +146,10 @@ class LineChannelConfig(Base):
     rich_menu_id = Column(String(64), nullable=True)
     rich_menu_template = Column(String(32), nullable=True)
     rich_menu_theme = Column(String(32), nullable=True)
+
+    # follow 事件（加好友）的自訂歡迎訊息；NULL = 依 bot_mode 用內建預設文案。
+    # 既有 DB 由 Alembic rev 0005 補欄。
+    welcome_message = Column(Text, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),
