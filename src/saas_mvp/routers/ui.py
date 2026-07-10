@@ -687,6 +687,116 @@ def join_submit(
     return resp
 
 
+# ── Google Calendar 連結（E1 Step B,owner 限定）──────────────────────────────
+
+@router.get("/gcal/connect")
+def gcal_connect(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+):
+    """導向 Google OAuth(calendar.events scope,offline 拿 refresh token)。
+
+    平台未設定 Google OAuth 憑證時顯示說明頁(stub-ready)。
+    """
+    import secrets as _secrets
+    import urllib.parse as _up
+
+    if not settings.google_oauth_client_id:
+        return HTMLResponse(
+            "<h1>Google 整合尚未設定</h1>"
+            "<p>平台尚未設定 Google OAuth 憑證(SAAS_GOOGLE_OAUTH_CLIENT_ID),"
+            "設定後即可一鍵連結 Google 日曆。可先用行事曆頁的 ICS 訂閱方案。</p>"
+        )
+    state = _secrets.token_urlsafe(24)
+    base = settings.public_base_url.rstrip("/") or ""
+    params = _up.urlencode({
+        "client_id": settings.google_oauth_client_id,
+        "redirect_uri": f"{base}/ui/gcal/callback",
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/calendar.events",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    resp = RedirectResponse(
+        f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    resp.set_cookie("gcal_state", state, httponly=True, max_age=600, path="/")
+    return resp
+
+
+@router.get("/gcal/callback")
+def gcal_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential
+    from saas_mvp.services.oauth import _post_form
+
+    if not state or state != request.cookies.get("gcal_state"):
+        return HTMLResponse("<h1>狀態驗證失敗,請重試</h1>", status_code=400)
+    if not code:
+        return HTMLResponse("<h1>未取得授權碼</h1>", status_code=400)
+    base = settings.public_base_url.rstrip("/") or ""
+    try:
+        token_resp = _post_form("https://oauth2.googleapis.com/token", {
+            "client_id": settings.google_oauth_client_id,
+            "client_secret": settings.google_oauth_client_secret,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": f"{base}/ui/gcal/callback",
+        })
+    except Exception:  # noqa: BLE001
+        return HTMLResponse("<h1>Google 授權交換失敗,請重試</h1>", status_code=502)
+    refresh_token = token_resp.get("refresh_token")
+    if not refresh_token:
+        return HTMLResponse(
+            "<h1>未取得 refresh token</h1><p>請至 Google 帳戶移除本應用授權後重試。</p>",
+            status_code=400,
+        )
+    tid = actor.user.tenant_id
+    cred = db.execute(
+        select(TenantGcalCredential).where(TenantGcalCredential.tenant_id == tid)
+    ).scalar_one_or_none()
+    if cred is None:
+        cred = TenantGcalCredential(tenant_id=tid, calendar_id="primary")
+        db.add(cred)
+    cred.refresh_token = refresh_token
+    cred.status = "connected"
+    cred.last_error = None
+    audit_svc.record_from_actor(
+        db, actor, action="gcal.connect", target=f"tenant:{tid}", request=request,
+    )
+    db.commit()
+    return RedirectResponse("/ui/calendar", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/gcal/disconnect")
+def gcal_disconnect(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential
+
+    tid = actor.user.tenant_id
+    cred = db.execute(
+        select(TenantGcalCredential).where(TenantGcalCredential.tenant_id == tid)
+    ).scalar_one_or_none()
+    if cred is not None:
+        db.delete(cred)
+        audit_svc.record_from_actor(
+            db, actor, action="gcal.disconnect", target=f"tenant:{tid}",
+            request=request,
+        )
+        db.commit()
+    return RedirectResponse("/ui/calendar", status_code=status.HTTP_303_SEE_OTHER)
+
+
 # ── 店家自助 ────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
@@ -5083,6 +5193,13 @@ def calendar_page(
     except ValueError:
         anchor = today
 
+    # E1:GCal 連結狀態(指引卡用)。
+    from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential
+
+    gcal_cred = db.execute(
+        select(TenantGcalCredential).where(TenantGcalCredential.tenant_id == tid)
+    ).scalar_one_or_none()
+
     month_data = week_data = staff_grid = None
     if mode == "staff":
         staff_grid = calendar_view_svc.build_staff_grid(db, tenant_id=tid)
@@ -5098,6 +5215,7 @@ def calendar_page(
         "calendar.html",
         _ctx(
             request, actor,
+            gcal_cred=gcal_cred,
             view=view, mode=mode, today=today,
             month_data=month_data, week_data=week_data, staff_grid=staff_grid,
         ),

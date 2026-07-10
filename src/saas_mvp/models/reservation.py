@@ -87,6 +87,9 @@ class Reservation(Base):
     deposit_merchant_trade_no = Column(String(20), nullable=True, unique=True)
     deposit_paid_at = Column(DateTime(timezone=True), nullable=True)
     deposit_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # E1:Google Calendar 事件 id(未連結/同步失敗為 NULL)。
+    gcal_event_id = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),

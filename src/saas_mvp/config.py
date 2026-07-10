@@ -90,7 +90,7 @@ class Settings(BaseSettings):
 
     # 商品銷售（P4）
     currency: str = "TWD"
-    payment_provider: str = "stub"  # "stub" | "ecpay" | "newebpay"
+    payment_provider: str = "stub"  # "stub" | "ecpay" | "newebpay" | "linepay"
 
     # 對外可達的網址（組綠界 ReturnURL / checkout 絕對網址用）；ecpay 模式必填。
     public_base_url: str = ""
@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     # SAAS_AI_ALLOWANCE_BASE: 基本月度額度；SAAS_AI_ALLOWANCE_BOOST: AI_BOOST 加購增量。
     ai_allowance_base: int = 300
     ai_allowance_boost: int = 1000
+
+    # LINE Pay（E2,一次性訂單）:sandbox 預設;真商家憑證到位改 env=prod。
+    line_pay_channel_id: str = ""
+    line_pay_channel_secret: str = ""
+    line_pay_env: str = "sandbox"   # "sandbox" | "prod"
 
     # 定金（C4）:未付定金保留分鐘數預設(店家可 per-tenant 覆寫)。
     deposit_hold_minutes_default: int = 30
