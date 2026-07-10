@@ -17,6 +17,9 @@ class User(Base):
     # Email 驗證（B3）：NULL = 未驗證。未驗證僅 banner 提醒不硬擋；
     # trial 轉付費（訂閱方案）前必須驗證。Alembic rev 0008 補欄。
     email_verified_at = Column(DateTime(timezone=True), nullable=True)
+    # 店內角色（B5）：owner（帳務/LINE 設定/成員管理）| staff（日常營運）。
+    # 與 is_admin（平台管理員，跨租戶）是兩個維度。Alembic rev 0011 補欄。
+    role = Column(String(16), nullable=False, default="owner", server_default="owner")
 
     # OAuth 登入（LINE Login / Google）外部身分。皆 nullable：密碼註冊用戶為 NULL。
     # 既有 DB 由 db._migrate_add_user_oauth() 補欄。oauth_subject 為 provider 端的

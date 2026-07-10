@@ -31,6 +31,9 @@
 # 每小時 45 分：滿意度調查派發（服務結束後推 1–5 分）
 45 * * * * python -m saas_mvp.ops.send_feedback_requests --apply
 
+# 每 5 分鐘：重放卡住的 webhook 事件（A0.2 outbox；worker 死掉的 in-flight 補救）
+*/5 * * * * python -m saas_mvp.ops.retry_stuck_webhook_events --apply
+
 # 每 6 小時（:15）：帳務健康檢查（唯讀報表；異常 exit 1 會出現在容器日誌）
 15 */6 * * * python -m saas_mvp.ops.check_billing_health
 

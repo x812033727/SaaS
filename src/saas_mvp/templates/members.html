@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}成員管理 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>成員管理</h1>
+
+<div class="card">
+  <h2>店內成員</h2>
+  <table>
+    <thead><tr><th>Email</th><th>角色</th></tr></thead>
+    <tbody>
+      {% for m in members %}
+      <tr>
+        <td>{{ m.email }}</td>
+        <td>{{ '負責人' if (m.role or 'owner') == 'owner' else '員工' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>邀請成員</h2>
+  <p class="muted">產生一次性邀請連結（7 天內有效），傳給員工自行設定帳號；
+     員工帳號可管理預約/顧客/POS，但無法動帳務、方案與 LINE 設定。</p>
+  <form method="post" action="/ui/members/invite">
+    <button type="submit">產生邀請連結</button>
+  </form>
+  {% if invite_url %}
+  <p><strong>邀請連結（只顯示這一次，請立即複製）：</strong></p>
+  <p><code>{{ invite_url }}</code></p>
+  {% endif %}
+</div>
+{% endblock %}

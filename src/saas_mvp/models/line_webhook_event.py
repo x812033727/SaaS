@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -60,6 +61,9 @@ class LineWebhookEvent(Base):
         server_default=text("0"),
     )
     last_error = Column(String(255), nullable=True)
+    # 原始 event JSON（A0.2 outbox）：claim 時落盤，worker 中途死掉可由
+    # ops/retry_stuck_webhook_events 重放。Alembic rev 0011 補欄。
+    payload_json = Column(Text, nullable=True)
     last_stage = Column(String(32), nullable=True)
     created_at = Column(
         DateTime(timezone=True),

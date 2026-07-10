@@ -14,6 +14,7 @@ from saas_mvp.auth.dependencies import (  # noqa: F401
     UITenantDisabled as UITenantDisabled,
     get_ui_actor_optional as get_ui_actor_optional,
     require_ui_admin as require_ui_admin,
+    require_ui_owner as require_ui_owner,
     require_ui_user as require_ui_user,
 )
 from saas_mvp.db import get_db as get_db  # noqa: F401
