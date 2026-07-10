@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}加入店家 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>加入店家團隊</h1>
+<div class="card">
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <p class="muted">您受邀加入店家後台（員工權限）。請設定您的登入帳號：</p>
+  <form method="post" action="/ui/join/{{ token }}">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" required autocomplete="email">
+    <label for="password">密碼（至少 8 字元）</label>
+    <input id="password" name="password" type="password" required minlength="8"
+           autocomplete="new-password">
+    <button type="submit">建立帳號並登入</button>
+  </form>
+</div>
+{% endblock %}

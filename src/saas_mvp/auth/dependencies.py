@@ -205,3 +205,17 @@ def require_ui_admin(
     if not actor.user.is_admin:
         raise UIForbidden()
     return actor
+
+
+def require_ui_owner(
+    actor: Actor = Depends(require_ui_user),
+) -> Actor:
+    """店內 owner 限定頁（B5）：帳務/LINE 設定/成員管理。
+
+    平台 admin 豁免（跨租戶維運需要）；staff → 403。
+    舊資料 role 由 0011 server_default 回填 owner，NULL 防禦性視為 owner。
+    """
+    role = getattr(actor.user, "role", None) or "owner"
+    if role != "owner" and not actor.user.is_admin:
+        raise UIForbidden()
+    return actor

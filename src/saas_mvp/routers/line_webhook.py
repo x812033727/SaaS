@@ -437,6 +437,10 @@ def _claim_webhook_event(
         webhook_event_id=webhook_event_id,
         status=LineWebhookEventStatus.PENDING.value,
         last_stage=LineWebhookEventStage.CLAIMED.value,
+        # A0.2 outbox：原始 event 隨 claim 落盤 — worker 在處理中死掉時，
+        # ops/retry_stuck_webhook_events 有完整素材可重放（LINE 已收到 200
+        # 不會重送，此前這類 in-flight 任務直接蒸發）。
+        payload_json=json.dumps(event, ensure_ascii=False),
     )
     db.add(row)
     try:
@@ -811,6 +815,70 @@ def _handle_unfollow_event(
         customer.line_followed_at = datetime.datetime.now(datetime.timezone.utc)
         db.commit()
     return stage
+
+
+def replay_stored_event(
+    db: Session,
+    row: LineWebhookEvent,
+    *,
+    line_client: LineReplyClient | None = None,
+    profile_client: LineProfileClient | None = None,
+    translator: Translator | None = None,
+) -> str:
+    """重放一筆卡住的 pending event（A0.2；供 ops/retry_stuck_webhook_events）。
+
+    以 row.payload_json 重建 event，重新載入租戶 LINE 設定與各 client 後走
+    ``_handle_line_event``。回傳 processed / failed / skipped。
+
+    注意：replyToken 只有 5 分鐘壽命，重放時多半已過期 — reply 失敗會把
+    event 標 failed（比照既有語意），但**副作用（建單等）已在服務層 commit**，
+    這正是重放的價值：預約不再蒸發，只是顧客少收到一句回覆。
+    """
+    from saas_mvp.line_client import (
+        HttpLineProfileClient,
+        HttpLineReplyClient,
+    )
+    from saas_mvp.services.plans import effective_plan
+    from saas_mvp.translation import get_translator
+
+    if not row.payload_json:
+        return "skipped"
+    try:
+        event = json.loads(row.payload_json)
+    except ValueError:
+        return "skipped"
+
+    cfg = db.execute(
+        select(LineChannelConfig).where(
+            LineChannelConfig.tenant_id == row.tenant_id
+        )
+    ).scalar_one_or_none()
+    tenant = db.get(Tenant, row.tenant_id)
+    if cfg is None or tenant is None:
+        return "skipped"
+
+    stage_holder = [LineWebhookEventStage.CLAIMED.value]
+    try:
+        stage = _handle_line_event(
+            db,
+            row.tenant_id,
+            effective_plan(tenant),
+            cfg.default_target_lang,
+            cfg.access_token,
+            event,
+            0,
+            translator or get_translator(),
+            line_client or HttpLineReplyClient(),
+            stage_holder,
+            cfg.bot_mode or "translation",
+            profile_client or HttpLineProfileClient(),
+        )
+        _mark_webhook_event_processed(db, row.id, stage)
+        return "processed"
+    except Exception as exc:  # noqa: BLE001 — 單筆失敗不中斷批次
+        db.rollback()
+        _mark_webhook_event_failed(db, row.id, stage_holder[0], exc)
+        return "failed"
 
 
 def _record_line_message_best_effort(

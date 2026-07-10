@@ -35,7 +35,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
-from saas_mvp.deps import Actor, get_db, require_ui_admin, require_ui_user
+from saas_mvp.deps import Actor, get_db, require_ui_admin, require_ui_owner, require_ui_user
 from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
 from saas_mvp.auth.security import create_access_token, hash_password, verify_password
 from saas_mvp.line_client import (
@@ -437,7 +437,7 @@ def pricing_page(request: Request):
 @router.get("/plan", response_class=HTMLResponse)
 def plan_page(
     request: Request,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     """登入後選方案頁：目前方案 + 各方案內容；訂閱按鈕（B2 接金流）。"""
@@ -457,7 +457,7 @@ def plan_page(
 def plan_subscribe(
     plan: str,
     request: Request,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     """訂閱方案。stub 立即生效導回；ecpay 顯示前往綠界付款卡片。"""
@@ -493,7 +493,7 @@ def plan_subscribe(
 
 @router.post("/plan/unsubscribe", response_class=HTMLResponse)
 def plan_unsubscribe(
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     """退訂方案 → 降 free（已付費者保留原方案至最後扣款日 + 31 天）。"""
@@ -505,7 +505,7 @@ def plan_unsubscribe(
 @router.get("/billing", response_class=HTMLResponse)
 def billing_page(
     request: Request,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     """帳單頁：目前方案、bundle 訂閱狀態、逐期扣款明細（即收據）。"""
@@ -550,6 +550,105 @@ def billing_page(
     )
 
 
+# ── 成員管理（B5 RBAC）───────────────────────────────────────────────────────
+
+@router.get("/members", response_class=HTMLResponse)
+def members_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """成員清單 + 邀請連結產生（owner 限定）。"""
+    users = db.query(User).filter(User.tenant_id == actor.user.tenant_id).all()
+    return templates.TemplateResponse(
+        "members.html", _ctx(request, actor, members=users, invite_url=None)
+    )
+
+
+@router.post("/members/invite", response_class=HTMLResponse)
+def members_invite(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """產生邀請連結（email_tokens purpose=invite，掛在 owner 身上；
+    受邀者開連結自行設定 email/密碼，建為 staff）。"""
+    import datetime as _dt
+
+    from saas_mvp.models.email_token import (
+        PURPOSE_INVITE,
+        EmailToken,
+        generate_token,
+        hash_token,
+    )
+
+    token = generate_token()
+    db.add(EmailToken(
+        user_id=actor.user.id,
+        purpose=PURPOSE_INVITE,
+        token_hash=hash_token(token),
+        expires_at=_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=7),
+    ))
+    db.commit()
+    base = settings.public_base_url.rstrip("/") or ""
+    invite_url = f"{base}/ui/join/{token}"
+    users = db.query(User).filter(User.tenant_id == actor.user.tenant_id).all()
+    return templates.TemplateResponse(
+        "members.html", _ctx(request, actor, members=users, invite_url=invite_url)
+    )
+
+
+@router.get("/join/{token}", response_class=HTMLResponse)
+def join_form(token: str, request: Request):
+    return templates.TemplateResponse("join.html", _ctx(request, token=token))
+
+
+@router.post("/join/{token}", response_class=HTMLResponse)
+def join_submit(
+    token: str,
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """受邀者建立 staff 帳號並登入（token 一次性、7 天效期）。"""
+    from saas_mvp.services import account_email as ae_svc
+
+    def _err(msg: str, code: int = status.HTTP_400_BAD_REQUEST):
+        return templates.TemplateResponse(
+            "join.html", _ctx(request, token=token, error=msg), status_code=code
+        )
+
+    if len(password) < 8:
+        return _err("密碼至少需 8 個字元")
+    if db.query(User).filter(User.email == email).first():
+        return _err("此電子郵件已註冊")
+    try:
+        row = ae_svc._consume(db, token, "invite")  # noqa: SLF001 — 同套 token 機制
+    except ae_svc.TokenInvalid:
+        db.rollback()
+        return _err("邀請連結無效或已過期，請向店家索取新連結")
+
+    inviter = db.get(User, row.user_id)
+    if inviter is None:
+        db.rollback()
+        return _err("邀請連結無效")
+    user = User(
+        email=email,
+        hashed_password=hash_password(password),
+        tenant_id=inviter.tenant_id,
+        role="staff",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    jwt_token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+    _set_auth_cookie(resp, jwt_token)
+    return resp
+
+
 # ── 店家自助 ────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
@@ -578,7 +677,7 @@ def dashboard(
 @router.get("/line-config", response_class=HTMLResponse)
 def line_config_page(
     request: Request,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     tid = actor.user.tenant_id
@@ -595,7 +694,7 @@ def line_config_save(
     channel_secret: str = Form(..., max_length=64),
     access_token: str = Form(..., max_length=1024),
     default_target_lang: str = Form("zh-TW"),
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
     bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
 ):
@@ -623,7 +722,7 @@ def line_config_save(
 @router.post("/line-config/welcome", response_class=HTMLResponse)
 def line_config_welcome_save(
     welcome_message: str = Form("", max_length=1000),
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     """更新 follow 歡迎訊息（HTMX 局部回應）；空白＝清空、回內建預設。"""
@@ -640,7 +739,7 @@ def line_config_welcome_save(
 @router.post("/line-config/verify", response_class=HTMLResponse)
 def line_config_verify(
     request: Request,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
     bot_info_client: LineBotInfoClient = Depends(get_bot_info_client),
 ):
@@ -662,7 +761,7 @@ def line_config_verify(
 @router.post("/line-config/delete", response_class=HTMLResponse)
 def line_config_delete(
     request: Request,
-    actor: Actor = Depends(require_ui_user),
+    actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
     tid = actor.user.tenant_id
