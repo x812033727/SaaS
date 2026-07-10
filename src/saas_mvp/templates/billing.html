@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}帳單 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>帳單</h1>
+
+<div class="card">
+  <h2>目前方案</h2>
+  <p><strong>{{ plan_info.effective_label }}</strong>
+     {% if plan_info.trial_active %}（試用中，剩 {{ plan_info.trial_days_left }} 天）{% endif %}
+  </p>
+  {% if subscription %}
+  <div class="grid">
+    <div class="stat"><div class="label">訂閱方案</div><div class="value">{{ bundle_label }}</div></div>
+    <div class="stat"><div class="label">狀態</div><div class="value">{{ subscription.status }}</div></div>
+    <div class="stat"><div class="label">月費</div><div class="value">NT$ {{ subscription.period_amount_cents // 100 }}</div></div>
+    {% if next_charge_at %}
+    <div class="stat"><div class="label">下次扣款（約）</div><div class="value">{{ next_charge_at.strftime('%Y-%m-%d') }}</div></div>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="muted">尚無方案訂閱紀錄。<a href="/ui/plan">前往選擇方案</a></p>
+  {% endif %}
+</div>
+
+{% if charges %}
+<div class="card">
+  <h2>扣款明細（近 24 期）</h2>
+  <table>
+    <thead><tr><th>期數</th><th>結果</th><th>金額</th><th>時間</th><th>備註</th></tr></thead>
+    <tbody>
+      {% for ch in charges %}
+      <tr>
+        <td>#{{ ch.period_no }}</td>
+        <td>{{ '✅ 成功' if ch.success else '❌ 失敗' }}</td>
+        <td>NT$ {{ ch.amount_cents // 100 }}</td>
+        <td>{{ ch.charged_at.strftime('%Y-%m-%d %H:%M') if ch.charged_at else '—' }}</td>
+        <td>{{ ch.rtn_msg or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">本明細可作為收據；正式發票將於平台達開立門檻後提供。</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <p><a class="btn" href="/ui/plan">變更方案</a></p>
+</div>
+{% endblock %}

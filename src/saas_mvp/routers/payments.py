@@ -24,6 +24,7 @@ from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.feature_subscription import SUB_PENDING
 from saas_mvp.models.order import ORDER_PENDING, Order
+from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import subscriptions as subs_svc
@@ -176,8 +177,12 @@ def ecpay_subscribe(
     form = client.build_period_form(
         merchant_trade_no=sub.merchant_trade_no,
         period_amount_twd=sub.period_amount_cents // 100,
-        item_name=f"進階功能訂閱-{sub.feature}",
-        trade_desc="LINE SaaS 進階功能月費",
+        item_name=(
+            f"方案訂閱-{features_svc.BUNDLE_LABELS[sub.feature]}"
+            if sub.feature in features_svc.VALID_BUNDLES
+            else f"進階功能訂閱-{sub.feature}"
+        ),
+        trade_desc="LINE SaaS 月費",
         return_url=f"{base}/payments/ecpay/subscribe-callback",
         period_return_url=f"{base}/payments/ecpay/period-callback",
         exec_times=sub.exec_times,
@@ -215,10 +220,14 @@ def _handle_ecpay_subscribe_callback(db: Session, params: dict) -> PlainTextResp
         subs_svc.activate(
             db, sub, gwsr=params.get("Gwsr"), auth_code=params.get("AuthCode")
         )
-        features_svc.set_enabled(
-            db, sub.tenant_id, sub.feature, True,
-            actor_user_id=None, source="subscribe", reason=trade_no,
-        )
+        if sub.feature in features_svc.VALID_BUNDLES:
+            # 方案 bundle：改 tenant.plan（含 PlanChangeHistory、清試用）
+            billing_svc.apply_bundle_activation(db, sub)
+        else:
+            features_svc.set_enabled(
+                db, sub.tenant_id, sub.feature, True,
+                actor_user_id=None, source="subscribe", reason=trade_no,
+            )
         return PlainTextResponse("1|OK")
 
     subs_svc.mark_failed(db, sub)
@@ -254,10 +263,14 @@ def _handle_ecpay_period_callback(db: Session, params: dict) -> PlainTextRespons
     except ValueError:
         total = None
     subs_svc.record_period(db, sub, success=success, total_success_times=total)
-    features_svc.set_enabled(
-        db, sub.tenant_id, sub.feature, success,
-        actor_user_id=None, source="period",
-    )
+    if sub.feature in features_svc.VALID_BUNDLES:
+        # 方案 bundle：成功維持方案；扣款失敗降 free（留 PlanChangeHistory）
+        billing_svc.apply_bundle_period(db, sub, success=success)
+    else:
+        features_svc.set_enabled(
+            db, sub.tenant_id, sub.feature, success,
+            actor_user_id=None, source="period",
+        )
     return PlainTextResponse("1|OK")
 
 

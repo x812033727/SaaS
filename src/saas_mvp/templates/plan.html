@@ -11,11 +11,32 @@
 </div>
 {% endif %}
 
+{% if error %}<div class="card error"><p>{{ error }}</p></div>{% endif %}
+
 {% set show_cta = false %}
 {% include "_plan_cards.html" %}
 
 <div class="card">
-  <h2>訂閱</h2>
-  <p class="muted">線上訂閱付款（信用卡定期定額）即將開放；開放前如需升級請聯絡平台管理員。</p>
+  <h2>訂閱／變更方案</h2>
+  <p class="muted">信用卡定期定額（綠界 ECPay）；換方案立即生效、按月計費不找零。</p>
+  <p>
+    {% if plan_info.paid != 'standard' %}
+    <form method="post" action="/ui/plan/standard/subscribe" style="display:inline">
+      <button type="submit" class="btn">訂閱標準版</button>
+    </form>
+    {% endif %}
+    {% if plan_info.paid != 'pro' %}
+    <form method="post" action="/ui/plan/pro/subscribe" style="display:inline">
+      <button type="submit" class="btn">訂閱專業版</button>
+    </form>
+    {% endif %}
+    {% if plan_info.paid != 'free' %}
+    <form method="post" action="/ui/plan/unsubscribe" style="display:inline"
+          onsubmit="return confirm('確定退訂？已付當期功能保留至期末，之後轉為免費版。')">
+      <button type="submit" class="btn">退訂（轉免費版）</button>
+    </form>
+    {% endif %}
+  </p>
+  <p class="muted"><a href="/ui/billing">帳單與扣款明細</a></p>
 </div>
 {% endblock %}

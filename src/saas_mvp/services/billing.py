@@ -213,3 +213,178 @@ def unsubscribe_feature(
         db, tenant.id, feature, False,
         actor_user_id=actor_user_id, source="unsubscribe",
     )
+
+
+# ── 方案 bundle 訂閱（B2）：複用 FeatureSubscription 機制，偽 feature key ──────
+
+def _ecpay_cancel_active_bundle_subs(db: Session, tenant_id: int) -> None:
+    """停掉該租戶所有生效中的 bundle 訂閱扣款（升降級換約/退訂共用）。
+
+    停扣失敗比照 unsubscribe_feature：標 cancel_failed 留給 ops 重試，不阻擋流程。
+    """
+    from saas_mvp.services import features as features_svc
+    from saas_mvp.services import subscriptions as subs_svc
+    from saas_mvp.services.payment_ecpay import EcpayClient
+
+    for bundle_key in features_svc.VALID_BUNDLES:
+        sub = subs_svc.latest_active_for(db, tenant_id, bundle_key)
+        if sub is None:
+            continue
+        ok = False
+        try:
+            resp = EcpayClient().cancel_period(sub.merchant_trade_no)
+            ok = str(resp.get("RtnCode")) == "1"
+        except Exception:  # noqa: BLE001 — 網路失敗不得阻擋換約/退訂
+            _log.exception(
+                "ecpay cancel_period raised for bundle trade_no=%s",
+                sub.merchant_trade_no,
+            )
+        subs_svc.mark_cancelled(db, sub, ok=ok)
+        if not ok:
+            _log.warning(
+                "bundle unsubscribe: ECPay stop-charge NOT confirmed (trade_no=%s); "
+                "flagged cancel_failed for ops retry",
+                sub.merchant_trade_no,
+            )
+
+
+def subscribe_bundle(
+    db: Session, tenant: Tenant, bundle_key: str, actor_user_id: int
+) -> SubscribeResult:
+    """訂閱方案 bundle（BUNDLE_STANDARD / BUNDLE_PRO）。
+
+    * stub（預設）：模擬付款 → 立即改 tenant.plan + PlanChangeHistory + 清試用。
+    * ecpay：先停掉既有 bundle 訂閱（換約＝立即生效、按月不找零，見 docs），
+      再建 pending 訂閱導向綠界；plan 待首期授權回調成功才生效
+      （apply_bundle_activation）。
+    """
+    from saas_mvp.services import features as features_svc
+    from saas_mvp.services import plans as plans_svc
+
+    if bundle_key not in features_svc.VALID_BUNDLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown bundle: {bundle_key!r}",
+        )
+    target_plan = features_svc.BUNDLE_TO_PLAN[bundle_key]
+    if plans_svc.normalize_plan(tenant.plan) == target_plan:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Already on plan {target_plan!r}",
+        )
+
+    if settings.payment_provider == "ecpay":
+        from saas_mvp.services import subscriptions as subs_svc
+
+        _ecpay_cancel_active_bundle_subs(db, tenant.id)
+        sub = subs_svc.create_subscription(
+            db,
+            tenant_id=tenant.id,
+            feature=bundle_key,
+            amount_cents=plans_svc.plan_price_cents(target_plan),
+            exec_times=settings.ecpay_period_exec_times,
+        )
+        base = settings.public_base_url.rstrip("/")
+        return SubscribeResult(
+            mode="ecpay",
+            enabled=False,
+            checkout_url=f"{base}/payments/ecpay/subscribe/{sub.id}",
+        )
+
+    # stub：立即生效（模擬付款）
+    payment_id = _generate_payment_id()
+    _apply_plan_change(db, tenant, target_plan, actor_user_id, reason=payment_id)
+    return SubscribeResult(mode="stub", enabled=True, payment_id=payment_id)
+
+
+def unsubscribe_bundle(db: Session, tenant: Tenant, actor_user_id: int) -> None:
+    """退訂方案 bundle → 降回 free。
+
+    寬限：已付費者保留原方案至「最後扣款日 + 31 天」（複用 trial 機制，
+    effective_plan 到期即刻降回），不立即沒收當期已付的功能。
+    """
+    from saas_mvp.services import features as features_svc
+    from saas_mvp.services import plans as plans_svc
+    from saas_mvp.services import subscriptions as subs_svc
+
+    old_plan = plans_svc.normalize_plan(tenant.plan)
+
+    grace_anchor = None
+    for bundle_key in features_svc.VALID_BUNDLES:
+        sub = subs_svc.latest_active_for(db, tenant.id, bundle_key)
+        if sub is not None and sub.last_charged_at is not None:
+            grace_anchor = sub.last_charged_at
+
+    if settings.payment_provider == "ecpay":
+        _ecpay_cancel_active_bundle_subs(db, tenant.id)
+
+    if old_plan != "free":
+        anchor = grace_anchor or datetime.datetime.now(datetime.timezone.utc)
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=datetime.timezone.utc)
+        tenant.trial_plan = old_plan
+        tenant.trial_ends_at = anchor + datetime.timedelta(days=31)
+    _apply_plan_change(db, tenant, "free", actor_user_id, reason="bundle_unsubscribe")
+
+
+def _apply_plan_change(
+    db: Session,
+    tenant: Tenant,
+    new_plan: str,
+    actor_user_id: int | None,
+    reason: str | None,
+) -> None:
+    """改 plan + 寫 PlanChangeHistory + commit（bundle 路徑共用）。
+
+    升級到付費方案時清除試用欄位（轉正）；降級不動 trial（退訂寬限靠它）。
+    """
+    from_plan = tenant.plan
+    tenant.plan = new_plan
+    if new_plan != "free":
+        tenant.trial_plan = None
+        tenant.trial_ends_at = None
+    _insert_history(db, tenant, from_plan, new_plan, actor_user_id, reason=reason)
+    db.commit()
+
+
+def apply_bundle_activation(db: Session, sub) -> None:
+    """ecpay 首期授權成功回調：套用 bundle → tenant.plan（含歷程、清試用）。"""
+    from saas_mvp.services import features as features_svc
+
+    target_plan = features_svc.BUNDLE_TO_PLAN.get(sub.feature)
+    if target_plan is None:  # pragma: no cover - 呼叫端已過濾
+        return
+    tenant = db.get(Tenant, sub.tenant_id)
+    if tenant is None:  # pragma: no cover - 防禦
+        _log.warning("bundle activation: tenant %d not found", sub.tenant_id)
+        return
+    _apply_plan_change(
+        db, tenant, target_plan, None, reason=f"bundle:{sub.merchant_trade_no}"
+    )
+
+
+def apply_bundle_period(db: Session, sub, *, success: bool) -> None:
+    """ecpay 每期授權回調：成功維持方案；失敗降 free（扣款失敗=最大流失點，必留紀錄）。"""
+    from saas_mvp.services import features as features_svc
+
+    target_plan = features_svc.BUNDLE_TO_PLAN.get(sub.feature)
+    if target_plan is None:  # pragma: no cover
+        return
+    tenant = db.get(Tenant, sub.tenant_id)
+    if tenant is None:  # pragma: no cover
+        return
+    if success:
+        if tenant.plan != target_plan:
+            _apply_plan_change(
+                db, tenant, target_plan, None,
+                reason=f"bundle_period:{sub.merchant_trade_no}",
+            )
+        return
+    _log.warning(
+        "bundle period charge FAILED for tenant %d (trade_no=%s); downgrading to free",
+        sub.tenant_id, sub.merchant_trade_no,
+    )
+    _apply_plan_change(
+        db, tenant, "free", None,
+        reason=f"bundle_charge_failed:{sub.merchant_trade_no}",
+    )
