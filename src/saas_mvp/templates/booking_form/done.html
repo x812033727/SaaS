@@ -15,6 +15,10 @@
   <div class="state">
     <h1>✅ 預約完成</h1>
     <p>預約編號 <strong>#{{ reservation.id }}</strong>，共 {{ reservation.party_size }} 位。</p>
+    {% if deposit_url %}
+    <p style="color:#b91c1c"><strong>{{ deposit_note }}</strong></p>
+    <p><a href="{{ deposit_url }}" style="display:inline-block;padding:.8rem 1.5rem;background:#06c755;color:#fff;border-radius:6px;text-decoration:none">前往付定金</a></p>
+    {% endif %}
     <p class="muted">可關閉此頁回到 LINE；輸入「我的預約」隨時查看或改期/取消。</p>
   </div>
 </body>

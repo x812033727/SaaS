@@ -304,6 +304,113 @@ def _issue_invoice_for_latest_charge(db, sub) -> None:
         _log.warning("invoice hook failed sub=%s", getattr(sub, "id", "?"), exc_info=True)
 
 
+@router.get("/ecpay/deposit/{reservation_id}", response_class=HTMLResponse)
+def ecpay_deposit_checkout(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+):
+    """定金付款頁（C4）。stub 模式渲染本地模擬頁(離線/demo 全流程可走);
+    ecpay 模式渲染綠界 AIO 自動送出表單。"""
+    from saas_mvp.models.reservation import Reservation
+    from saas_mvp.services import deposit as deposit_svc
+
+    resv = db.get(Reservation, reservation_id)
+    if resv is None or resv.deposit_status is None:
+        return HTMLResponse("<h1>找不到需付定金的預約</h1>", status_code=404)
+    if resv.deposit_status == deposit_svc.DEPOSIT_PAID:
+        return HTMLResponse("<h1>定金已付款</h1><p>您的預約已確認,可關閉本頁。</p>")
+    if resv.deposit_status == deposit_svc.DEPOSIT_EXPIRED:
+        return HTMLResponse("<h1>付款期限已過</h1><p>預約已取消,請重新預約。</p>")
+
+    amount_twd = (resv.deposit_cents or 0) // 100
+    if settings.payment_provider != "ecpay":
+        # stub:本地模擬付款頁(按鈕打模擬回調)
+        return HTMLResponse(
+            "<!doctype html><meta charset='utf-8'><h1>模擬定金付款</h1>"
+            f"<p>預約 #{resv.id},定金 NT${amount_twd}(stub 模式,不會真扣款)。</p>"
+            f"<form method='post' action='/payments/stub/deposit-paid/{resv.id}'>"
+            "<button type='submit'>模擬付款成功</button></form>"
+        )
+
+    base = settings.public_base_url.rstrip("/")
+    client = EcpayClient()
+    form = client.build_order_form(
+        merchant_trade_no=resv.deposit_merchant_trade_no,
+        amount_twd=amount_twd,
+        item_name="預約定金",
+        trade_desc="LINE 預約定金",
+        return_url=f"{base}/payments/ecpay/deposit-callback",
+    )
+    return _render_autosubmit(form, client.aio_url, "前往定金付款")
+
+
+@router.post("/stub/deposit-paid/{reservation_id}", response_class=HTMLResponse)
+def stub_deposit_paid(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+):
+    """stub 模擬付款成功（僅 payment_provider != ecpay 時可用）。"""
+    from saas_mvp.models.reservation import Reservation
+    from saas_mvp.services import deposit as deposit_svc
+
+    if settings.payment_provider == "ecpay":
+        return HTMLResponse("<h1>正式金流模式不提供模擬付款</h1>", status_code=403)
+    resv = db.get(Reservation, reservation_id)
+    if resv is None:
+        return HTMLResponse("<h1>找不到預約</h1>", status_code=404)
+    if deposit_svc.mark_paid(db, resv):
+        return HTMLResponse("<h1>✅ 定金已付款(模擬)</h1><p>您的預約已確認。</p>")
+    return HTMLResponse("<h1>付款期限已過</h1><p>預約已取消,請重新預約。</p>")
+
+
+@router.post("/ecpay/deposit-callback", response_class=PlainTextResponse)
+async def ecpay_deposit_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """定金付款回調:驗簽 → trade_no 查單 → 金額交叉驗 → 冪等標 paid。"""
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    return await run_in_threadpool(_handle_ecpay_deposit_callback, db, params)
+
+
+def _handle_ecpay_deposit_callback(db: Session, params: dict) -> PlainTextResponse:
+    from saas_mvp.obs.alerts import capture_alert
+    from saas_mvp.services import deposit as deposit_svc
+
+    client = EcpayClient()
+    if not client.verify(params):
+        _log.warning("ecpay deposit-callback rejected: bad CheckMacValue")
+        capture_alert("payment: ecpay deposit-callback bad CheckMacValue")
+        return PlainTextResponse("0|CheckMacValue Error")
+
+    trade_no = params.get("MerchantTradeNo", "")
+    resv = deposit_svc.find_by_trade_no(db, trade_no) if trade_no else None
+    if resv is None:
+        _log.warning("ecpay deposit-callback: reservation not found %s", trade_no)
+        return PlainTextResponse("0|reservation not found")
+
+    if params.get("RtnCode") != "1":
+        return PlainTextResponse("1|OK")  # 付款失敗:不動狀態,等逾時或重付
+
+    try:
+        paid_amount = int(params.get("TradeAmt") or 0)
+    except ValueError:
+        paid_amount = 0
+    if paid_amount != (resv.deposit_cents or 0) // 100:
+        _log.warning(
+            "ecpay deposit amount mismatch resv=%d expected=%d got=%d",
+            resv.id, (resv.deposit_cents or 0) // 100, paid_amount,
+        )
+        capture_alert("payment: deposit callback amount mismatch")
+        return PlainTextResponse("0|amount mismatch")
+
+    if not deposit_svc.mark_paid(db, resv):
+        # 過期單付款成功:名額可能已釋出 — 告警人工處理退款
+        capture_alert(f"payment: deposit paid AFTER expiry resv={resv.id}")
+    return PlainTextResponse("1|OK")
+
+
 @router.get("/ecpay/done", response_class=HTMLResponse)
 def ecpay_done():
     """顧客付款完成後的瀏覽器返回頁（ClientBackURL）。"""

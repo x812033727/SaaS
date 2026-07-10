@@ -10,5 +10,19 @@
     <button type="submit" class="btn">儲存</button>
   </form>
   {% if saved %}<p class="ok">已儲存：預約前 {{ reminder_hours }} 小時提醒。</p>{% endif %}
+  <hr>
+  <h3>定金設定（防 no-show,專業版）</h3>
+  <form method="post" action="/ui/booking/deposit-settings" class="row">
+    <label>定金金額 NT$（0 = 停用）
+      <input name="deposit_twd" type="number" min="0"
+             value="{{ (tenant.deposit_cents // 100) if tenant and tenant.deposit_cents else 0 }}">
+    </label>
+    <label>付款保留分鐘
+      <input name="deposit_hold_minutes" type="number" min="5" max="1440"
+             value="{{ tenant.deposit_hold_minutes if tenant and tenant.deposit_hold_minutes else 30 }}">
+    </label>
+    <button type="submit">儲存定金設定</button>
+  </form>
+  <p class="muted">啟用後,線上預約(LINE/網頁)建單需在時限內付定金,逾時自動取消回補名額;店家手動建單不受影響。</p>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 </div>

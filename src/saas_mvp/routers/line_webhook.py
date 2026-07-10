@@ -1442,6 +1442,18 @@ def _confirm_text(db: Session, tenant_id: int, resv, slot_id: int) -> str:
         f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
         f"如需取消請輸入：取消 {resv.id}"
     )
+    # 定金（C4）:需付定金時置頂提示 + 付款連結。
+    if getattr(resv, "deposit_status", None) == "pending" and settings.public_base_url:
+        from saas_mvp.models.tenant import Tenant as _Tenant
+        from saas_mvp.services import deposit as deposit_svc
+
+        _t = db.get(_Tenant, tenant_id)
+        if _t is not None:
+            base = (
+                "預約成功！⚠️ " + deposit_svc.deposit_prompt(resv, _t)
+                + f"\n付款連結：{deposit_svc.payment_url(resv)}"
+                + f"\n預約編號：{resv.id}(人數 {resv.party_size} 位)"
+            )
     # 取時段時間組「加入 Google 行事曆」連結。
     from saas_mvp.models.booking_slot import BookingSlot
 
@@ -1726,11 +1738,8 @@ def _dispatch_booking(
                 f"或改選其他時段。",
                 _waitlist_join_buttons(slot_id, party_size),
             )
-        return (
-            f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
-            f"如需取消請輸入：取消 {resv.id}",
-            None,
-        )
+        # 統一走 _confirm_text（含行事曆連結與定金提示）。
+        return _confirm_text(db, tenant_id, resv, slot_id), None
 
     if action == "my":
         rows = booking_svc.list_my_reservations(

@@ -59,6 +59,8 @@ FEEDBACK_SURVEY = "FEEDBACK_SURVEY"
 AI_BOOKING_AGENT = "AI_BOOKING_AGENT"
 # AI 對話額度加購（比照 PUSH_BOOST：必須明確訂閱）。
 AI_BOOST = "AI_BOOST"
+# 定金收款（C4 防 no-show）:建單後限時付定金,逾時自動取消。
+DEPOSIT_PAYMENT = "DEPOSIT_PAYMENT"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -81,6 +83,7 @@ _FEATURE_LABELS: dict[str, str] = {
     FEEDBACK_SURVEY: "滿意度調查",
     AI_BOOKING_AGENT: "AI 預約助理",
     AI_BOOST: "加購 AI 對話額度",
+    DEPOSIT_PAYMENT: "定金收款",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 
