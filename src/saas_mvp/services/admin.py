@@ -238,3 +238,61 @@ def _validate_plan(plan: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown plan: '{plan}'. Valid: {sorted(PLAN_DAILY_LIMITS)}",
         )
+
+
+def platform_overview(db: Session) -> dict:
+    """平台總覽（B4）：租戶數/生效方案分佈/試用中/MRR/本月扣款與失敗數。
+
+    MRR = active 訂閱（bundle + 單點 feature）的 period_amount 加總；
+    stub 一鍵開通不入 MRR（未真收款）。
+    """
+    import datetime as _dt
+
+    from sqlalchemy import func, select
+
+    from saas_mvp.models.feature_subscription import SUB_ACTIVE, FeatureSubscription
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.services import plans as plans_svc
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    tenants = db.execute(select(Tenant)).scalars().all()
+
+    plan_dist: dict[str, int] = {}
+    trials_active = 0
+    for t in tenants:
+        eff = plans_svc.effective_plan(t, now=now)
+        plan_dist[eff] = plan_dist.get(eff, 0) + 1
+        if plans_svc.trial_active(t, now=now):
+            trials_active += 1
+
+    mrr_cents = db.execute(
+        select(func.coalesce(func.sum(FeatureSubscription.period_amount_cents), 0))
+        .where(FeatureSubscription.status == SUB_ACTIVE)
+    ).scalar_one()
+
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_charges_cents = db.execute(
+        select(func.coalesce(func.sum(SubscriptionCharge.amount_cents), 0))
+        .where(
+            SubscriptionCharge.success.is_(True),
+            SubscriptionCharge.charged_at >= month_start,
+        )
+    ).scalar_one()
+    month_charge_failures = db.execute(
+        select(func.count(SubscriptionCharge.id))
+        .where(
+            SubscriptionCharge.success.is_(False),
+            SubscriptionCharge.charged_at >= month_start,
+        )
+    ).scalar_one()
+
+    return {
+        "tenant_total": len(tenants),
+        "tenant_active": sum(1 for t in tenants if t.is_active),
+        "plan_distribution": dict(sorted(plan_dist.items())),
+        "trials_active": trials_active,
+        "mrr_cents": int(mrr_cents),
+        "month_charges_cents": int(month_charges_cents),
+        "month_charge_failures": int(month_charge_failures),
+    }

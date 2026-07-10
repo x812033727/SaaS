@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}平台總覽 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>平台總覽</h1>
+
+<div class="card">
+  <h2>租戶</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">總數</div><div class="value">{{ overview.tenant_total }}</div></div>
+    <div class="stat"><div class="label">啟用中</div><div class="value">{{ overview.tenant_active }}</div></div>
+    <div class="stat"><div class="label">試用中</div><div class="value">{{ overview.trials_active }}</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>生效方案分佈</h2>
+  <div class="grid">
+    {% for plan, count in overview.plan_distribution.items() %}
+    <div class="stat"><div class="label">{{ plan }}</div><div class="value">{{ count }}</div></div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>營收</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">MRR（active 訂閱）</div><div class="value">NT$ {{ overview.mrr_cents // 100 }}</div></div>
+    <div class="stat"><div class="label">本月成功扣款</div><div class="value">NT$ {{ overview.month_charges_cents // 100 }}</div></div>
+    <div class="stat"><div class="label">本月扣款失敗</div><div class="value">{{ overview.month_charge_failures }}</div></div>
+  </div>
+  <p class="muted">stub 一鍵開通不入 MRR（未真收款）。</p>
+</div>
+
+<div class="card">
+  <p><a class="btn" href="/ui/admin/bots">跨店總覽</a></p>
+</div>
+{% endblock %}

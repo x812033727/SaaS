@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     # 驗證信 / 重設密碼連結有效分鐘數。
     email_token_ttl_minutes: int = 1440
 
+    # Sentry（B4）：DSN 非空且 sentry-sdk 已安裝才啟用（未裝僅記 warning）。
+    # 金流回調驗簽失敗等關鍵事件另以 capture_message 主動上報。
+    sentry_dsn: str = ""
+
     # 月度推播額度（vibeaico「Additional Push Notification Allowance」）：
     # 每租戶每月可推播則數，跨所有 LINE push 路徑（提醒/異動通知/行銷）共用。
     # SAAS_PUSH_ALLOWANCE_BASE:     free 方案月度額度（預設 200）。

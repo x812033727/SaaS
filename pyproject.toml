@@ -37,7 +37,7 @@ redis = ["redis==5.2.1"]
 # 容器 / 多 worker 正式部署：gunicorn（UvicornWorker 管理多 worker）+ psycopg
 # （PostgreSQL 驅動，多 worker 必用 PG 才有真正的 FOR UPDATE 行鎖）+ redis 後端。
 # 安裝：pip install ".[prod]"
-prod = ["gunicorn==23.0.0", "psycopg[binary]==3.2.3", "redis==5.2.1"]
+prod = ["gunicorn==23.0.0", "psycopg[binary]==3.2.3", "redis==5.2.1", "sentry-sdk>=2.0"]
 
 [project.scripts]
 saas-mvp = "saas_mvp.__main__:main"
