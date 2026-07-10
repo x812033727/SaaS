@@ -249,6 +249,47 @@ def _render(template: str, customer: Customer) -> str:
     return template.replace("{name}", name)
 
 
+def _push_campaign_message(
+    db: Session, campaign: Campaign, line_user_id: str, text: str, push_client
+) -> None:
+    """依 campaign.message_type 分流推播（A3.2）；每型別皆恰好 1 次 push 計量。
+
+    * text（預設）：純文字。
+    * flex：租戶 FlexMenu → Flex carousel，text 模板渲染進 altText；
+      menu 查無/空卡時降級純文字（活動不因選單被刪而整批 failed）。
+    * image：https 圖片訊息；URL 非 https 降級純文字。
+    """
+    message_type = getattr(campaign, "message_type", None) or "text"
+
+    if message_type == "flex" and campaign.flex_menu_id:
+        from saas_mvp.services import flex_menu as flex_menu_svc
+
+        try:
+            menu = flex_menu_svc.get_menu(
+                db, tenant_id=campaign.tenant_id, menu_id=campaign.flex_menu_id
+            )
+            cards = flex_menu_svc.list_cards(
+                db, tenant_id=campaign.tenant_id, menu_id=campaign.flex_menu_id
+            )
+        except Exception:  # noqa: BLE001 — menu 被刪：降級純文字，活動不整批失敗
+            menu, cards = None, []
+        if menu is not None and cards:
+            payload = flex_menu_svc.build_flex_payload(menu, cards)
+            push_client.push_flex(
+                line_user_id,
+                text[:400] or payload.get("altText", "活動訊息"),
+                payload["contents"],
+                access_token="",
+            )
+            return
+
+    if message_type == "image" and (campaign.image_url or "").startswith("https://"):
+        push_client.push_image(line_user_id, campaign.image_url, access_token="")
+        return
+
+    push_client.push(line_user_id, text, access_token="")
+
+
 def _distribute_reward(
     db: Session, campaign: Campaign, customer: Customer
 ) -> str | None:
@@ -420,7 +461,7 @@ def run_campaign(
                 skipped += 1
                 continue
 
-            push_client.push(customer.line_user_id, text, access_token="")
+            _push_campaign_message(db, campaign, customer.line_user_id, text, push_client)
             row.status = CAMPAIGN_SEND_SENT
             row.sent_at = now
             row.attempt_count = (row.attempt_count or 0) + 1

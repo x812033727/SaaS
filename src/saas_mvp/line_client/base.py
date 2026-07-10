@@ -132,6 +132,33 @@ class LinePushClient(ABC):
             LinePushError: 網路失敗、HTTP 4xx/5xx、或回應格式不符預期。
         """
 
+    def push_flex(
+        self,
+        to_user_id: str,
+        alt_text: str,
+        contents: dict,
+        *,
+        access_token: str,
+    ) -> None:
+        """推播 Flex Message（A3.1）。
+
+        基底預設 NotImplementedError：舊實作未支援時明確失敗（防衛，比照
+        reply_flex 慣例）；Http/Fake 均已覆寫。計量與純文字 push 同價
+        （每則扣推播額度 1）。
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support push_flex")
+
+    def push_image(
+        self,
+        to_user_id: str,
+        original_url: str,
+        preview_url: str | None = None,
+        *,
+        access_token: str,
+    ) -> None:
+        """推播圖片訊息（A3.1）。URL 需為 https；preview 未給時沿用原圖。"""
+        raise NotImplementedError(f"{type(self).__name__} does not support push_image")
+
     @abstractmethod
     def is_available(self) -> bool:
         """回傳此 client 是否具備發送能力。"""

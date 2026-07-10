@@ -231,6 +231,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         "waitlist", "waitlist_join", "waitlist_cancel",
         "confirm", "contact",
         "coupons", "redeem", "points",
+        "rate",
         "shop", "buy", "my_orders",
     }:
         return None, {}
@@ -318,6 +319,14 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         rid = _qint("reservation_id")
         if rid is not None:
             params["reservation_id"] = rid
+    elif action == "rate":
+        # 滿意度調查（A3.3）：1–5 分按鈕。
+        rid = _qint("reservation_id")
+        if rid is not None:
+            params["reservation_id"] = rid
+        score = _qint("score")
+        if score is not None and 1 <= score <= 5:
+            params["score"] = score
     elif action == "reschedule":
         # 改期第一步：使用者點選「改期」按鈕（帶預約編號）。
         rid = _qint("reservation_id")

@@ -46,6 +46,18 @@
   </div>
 </div>
 
+{% if line_insights %}
+<div class="card">
+  <h2>本月 LINE 經營</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">收到訊息/事件</div><div class="value">{{ line_insights.month_events }}</div></div>
+    <div class="stat"><div class="label">bot 建單數</div><div class="value">{{ line_insights.month_bot_bookings }}</div></div>
+    <div class="stat"><div class="label">滿意度均分</div><div class="value">{{ line_insights.feedback.avg_score if line_insights.feedback.avg_score is not none else '—' }}</div></div>
+    <div class="stat"><div class="label">調查回覆率</div><div class="value">{{ (line_insights.feedback.response_rate * 100) | round | int }}%</div></div>
+  </div>
+</div>
+{% endif %}
+
 {% if push_quota %}
 <div class="card">
   <h2>本月推播用量（{{ push_quota.period }}）</h2>

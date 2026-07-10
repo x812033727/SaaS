@@ -82,7 +82,7 @@ class TestSelfService:
             "MARKETING_AUTO", "AI_ASSISTANT",
             "PRIVACY_MODE", "ADVANCED_REPORTING",
             "FLEX_MENU", "PUSH_BOOST", "UNLIMITED_STAFF",
-            "WEB_BOOKING",
+            "WEB_BOOKING", "FEEDBACK_SURVEY",
         }
 
     def test_subscribe_returns_payment_id(self, client):

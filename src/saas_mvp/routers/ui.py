@@ -394,6 +394,38 @@ def _plan_info(tenant: Tenant) -> dict:
     }
 
 
+def _line_insights(db: Session, tenant_id: int) -> dict:
+    """dashboard「LINE 經營」卡（A3.4）：本月事件/bot 建單/調查均分。"""
+    import datetime as _dt
+
+    from sqlalchemy import func as _func, select as _select
+
+    from saas_mvp.models.line_webhook_event import LineWebhookEvent
+    from saas_mvp.models.reservation import Reservation
+    from saas_mvp.services import feedback as feedback_svc
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    events = db.execute(
+        _select(_func.count(LineWebhookEvent.id)).where(
+            LineWebhookEvent.tenant_id == tenant_id,
+            LineWebhookEvent.created_at >= month_start,
+        )
+    ).scalar_one()
+    bot_bookings = db.execute(
+        _select(_func.count(Reservation.id)).where(
+            Reservation.tenant_id == tenant_id,
+            Reservation.line_user_id.is_not(None),
+            Reservation.created_at >= month_start,
+        )
+    ).scalar_one()
+    return {
+        "month_events": int(events),
+        "month_bot_bookings": int(bot_bookings),
+        "feedback": feedback_svc.summary(db, tenant_id),
+    }
+
+
 @router.get("/pricing", response_class=HTMLResponse)
 def pricing_page(request: Request):
     """公開定價頁（免登入）。"""
@@ -538,7 +570,8 @@ def dashboard(
              push_quota=push, plan_info=_plan_info(tenant),
              onboarding=checklist,
              onboarding_done=onboarding_svc.all_done(checklist),
-             email_unverified=actor.user.email_verified_at is None),
+             email_unverified=actor.user.email_verified_at is None,
+             line_insights=_line_insights(db, tid)),
     )
 
 
@@ -3662,6 +3695,9 @@ async def campaigns_create(
     segment_json: str = Form(""),
     reward_type: str = Form(""),
     reward_value: str = Form(""),
+    message_type: str = Form("text"),
+    flex_menu_id: str = Form(""),
+    image_url: str = Form(""),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
@@ -3695,6 +3731,11 @@ async def campaigns_create(
             if loc is not None:
                 filters["location_id"] = loc
             seg = _json.dumps(filters, ensure_ascii=False) if filters else ""
+        # 訊息型別（A3.2）：白名單外一律 text;image 需 https URL。
+        mt = message_type if message_type in ("text", "flex", "image") else "text"
+        img = image_url.strip() or None
+        if mt == "image" and (img is None or not img.startswith("https://")):
+            mt = "text"
         campaign = Campaign(
             tenant_id=tid,
             name=name,
@@ -3704,6 +3745,9 @@ async def campaigns_create(
             segment_json=seg or None,
             reward_type=reward_type or None,
             reward_value=_opt_int(reward_value),
+            message_type=mt,
+            flex_menu_id=_opt_int(flex_menu_id),
+            image_url=img,
         )
         db.add(campaign)
         db.commit()
