@@ -101,14 +101,30 @@ def handle_free_text(
 
     effective_agent = agent or get_agent()
     conv = _load_conversation(db, tenant_id, line_user_id)
-    context = ai_context_svc.build_agent_context(db, tenant_id)
+    context = ai_context_svc.build_agent_context(
+        db, tenant_id, line_user_id=line_user_id
+    )
 
     try:
-        turn = effective_agent.converse(text, conv.slots, context)
+        turn = effective_agent.converse(
+            text, conv.slots, context,
+            tools=_build_toolbelt(db, tenant_id, line_user_id),
+            history=_recent_history(db, tenant_id, line_user_id),
+        )
     except AIError:
         _log.warning("AI agent failed for tenant %d", tenant_id, exc_info=True)
         db.rollback()
         return None  # LLM 掛掉：交回既有路徑，不中斷服務
+
+    # D1:改期/取消/查詢意圖 — AI 只理解,動作走既有 postback 確定性路徑。
+    intent = getattr(turn, "intent", "book")
+    if intent in ("cancel", "reschedule", "query"):
+        reply = _handle_manage_intent(db, tenant_id, line_user_id, intent, turn)
+        if reply is not None:
+            ai_quota_svc.consume_ai_in_txn(db, tenant_id)
+            conv.turn_count = (conv.turn_count or 0) + 1
+            db.commit()
+            return reply
 
     # 只在有「預約意圖」時接手：本輪抽到槽位、或對話已在補槽中。
     # 純 QA 問題（「退貨怎麼處理？」）不搶 — 交回 AI_ASSISTANT FAQ 客服，
@@ -220,3 +236,124 @@ def _date_button_data(service_id: int | None, date: str) -> str:
     if service_id:
         return f"action=pick_date&service_id={service_id}&date={date}"
     return f"action=pick_slot&date={date}"  # 無服務目錄店家：raw slot 流程
+
+
+# ── D1/D2/D3 helpers ─────────────────────────────────────────────────────────
+
+def _build_toolbelt(db: Session, tenant_id: int, line_user_id: str):
+    """唯讀查詢工具(D2):closure 綁定,agent loop 按需呼叫。"""
+    from saas_mvp.ai.agent import ToolBelt
+    from saas_mvp.services import booking as booking_svc
+    from saas_mvp.services import booking_form as bf_svc
+
+    def list_services() -> str:
+        rows = bf_svc.active_services(db, tenant_id)
+        return "\n".join(
+            f"id={s.id} {s.name}"
+            + (f" {s.duration_minutes}分" if s.duration_minutes else "")
+            for s in rows
+        ) or "(無上架服務)"
+
+    def available_dates() -> str:
+        return "、".join(bf_svc.available_dates(db, tenant_id, limit=14)) or "(近期無空檔)"
+
+    def available_slots(date: str, service_id=None) -> str:
+        rows = bf_svc.slots_for(db, tenant_id, date=date, service_id=service_id)
+        return "\n".join(
+            f"slot_id={s.id} {s.slot_start.strftime('%H:%M')} 餘 {s.online_available}"
+            for s in rows[:12]
+        ) or f"({date} 無可預約時段)"
+
+    def my_reservations() -> str:
+        rows = booking_svc.list_my_reservations(
+            db, tenant_id=tenant_id, line_user_id=line_user_id
+        )
+        return "\n".join(f"#{r.id} {r.party_size} 位" for r in rows) or "(無預約)"
+
+    return ToolBelt(
+        list_services=list_services,
+        available_dates=available_dates,
+        available_slots=available_slots,
+        my_reservations=my_reservations,
+    )
+
+
+def _recent_history(db: Session, tenant_id: int, line_user_id: str) -> list:
+    """D3:最近 8 則對話(排除本輪已入庫的最新一筆 inbound)。"""
+    try:
+        from sqlalchemy import select as _select
+
+        from saas_mvp.models.line_message import LineMessage
+
+        rows = db.execute(
+            _select(LineMessage)
+            .where(
+                LineMessage.tenant_id == tenant_id,
+                LineMessage.line_user_id == line_user_id,
+            )
+            .order_by(LineMessage.id.desc())
+            .limit(9)
+        ).scalars().all()
+        rows = list(reversed(rows))
+        if rows and rows[-1].direction == "in":
+            rows = rows[:-1]  # 本輪訊息已由 webhook record_inbound,排除避免重複
+        return [
+            ("user" if r.direction == "in" else "assistant", r.text or "")
+            for r in rows[-8:]
+        ]
+    except Exception:  # noqa: BLE001 — 歷史取得失敗不影響對話
+        return []
+
+
+def _handle_manage_intent(
+    db: Session, tenant_id: int, line_user_id: str, intent: str, turn
+):
+    """改期/取消/查詢(D1):驗擁有權 → 確認按鈕(走既有含驗證的 postback 分支)。
+
+    回 None = 不接手(交回一般流程)。**絕不直接 mutate**。
+    """
+    from saas_mvp.services import booking as booking_svc
+
+    mine = booking_svc.list_my_reservations(
+        db, tenant_id=tenant_id, line_user_id=line_user_id
+    )
+
+    if intent == "query":
+        if not mine:
+            return "你目前沒有預約。想現在預約嗎?", list(_FALLBACK_BUTTONS)
+        listing = "\n".join(f"#{r.id} {r.party_size} 位" for r in mine)
+        buttons = []
+        for r in mine[:6]:
+            buttons.append((f"改期 #{r.id}", f"action=reschedule&reservation_id={r.id}"))
+            buttons.append((f"取消 #{r.id}", f"action=cancel&reservation_id={r.id}"))
+        return f"你的預約:\n{listing}", buttons or None
+
+    if not mine:
+        return "你目前沒有可以" + ("取消" if intent == "cancel" else "改期") + "的預約。", None
+
+    action = "cancel" if intent == "cancel" else "reschedule"
+    verb = "取消" if intent == "cancel" else "改期"
+    mine_ids = {r.id for r in mine}
+    rid = getattr(turn, "reservation_id", None)
+
+    if rid is not None and rid in mine_ids:
+        return (
+            f"要{verb}預約 #{rid} 嗎?請點下方按鈕確認:",
+            [(f"確認{verb} #{rid}", f"action={action}&reservation_id={rid}")],
+        )
+    if rid is not None and rid not in mine_ids:
+        # 幻覺/他人編號:不出確認按鈕,列自己的預約供選。
+        pass
+    if len(mine) == 1:
+        only = mine[0].id
+        return (
+            f"你只有一筆預約 #{only},要{verb}它嗎?",
+            [(f"確認{verb} #{only}", f"action={action}&reservation_id={only}")],
+        )
+    return (
+        f"請選擇要{verb}的預約:",
+        [
+            (f"{verb} #{r.id}", f"action={action}&reservation_id={r.id}")
+            for r in mine[:12]
+        ],
+    )
