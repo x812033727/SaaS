@@ -135,6 +135,106 @@ class TestDrawLabels:
         assert image == raw
 
 
+class TestGeometryUnified:
+    """畫字幾何必須與 tap areas 同一套——跨欄 bug(grid3x4x4)的直接防護。"""
+
+    @pytest.mark.parametrize("name", list(rm.TEMPLATES.keys()))
+    def test_cell_boxes_match_areas(self, name):
+        """_cell_boxes 與 _areas 的 bounds 必須一一相等(含餘數補償)。"""
+        tmpl = rm.TEMPLATES[name]
+        boxes = rm._cell_boxes(tmpl)
+        areas = rm._areas(tmpl)
+        assert len(boxes) == len(areas)
+        for (x, y, w, h), area in zip(boxes, areas):
+            b = area["bounds"]
+            assert (x, y, w, h) == (b["x"], b["y"], b["width"], b["height"])
+
+    @_needs_font
+    def test_grid3x4x4_label_positions_match_tap_areas(self, monkeypatch):
+        """每個標籤的繪製座標必須落在自己按鈕的 tap bounds 內。
+
+        舊實作以均勻 4x3 格畫字,第一列第 3 顆標籤畫在 x=1562(隸屬第 2 顆
+        的 tap 區),此測試對舊碼必紅。
+        """
+        from PIL import ImageDraw
+
+        calls: list[tuple[float, float]] = []
+        orig = ImageDraw.ImageDraw.text
+
+        def spy(self, xy, *args, **kwargs):
+            calls.append(xy)
+            return orig(self, xy, *args, **kwargs)
+
+        monkeypatch.setattr(ImageDraw.ImageDraw, "text", spy)
+        rm.build_rich_menu_payload("grid3x4x4", "boutique")
+        areas = rm._areas(rm.TEMPLATES["grid3x4x4"])
+        assert len(calls) == len(areas)
+        for (cx, cy), area in zip(calls, areas):
+            b = area["bounds"]
+            assert b["x"] <= cx < b["x"] + b["width"]
+            assert b["y"] <= cy < b["y"] + b["height"]
+
+    @_needs_font
+    def test_fit_font_size_returns_zero_when_impossible(self):
+        """連最小字級都塞不下時必須回 0(跳過畫字),不可硬畫溢出。"""
+        from PIL import Image, ImageDraw
+
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        assert rm._fit_font_size(draw, "可預約時段", 5.0, 5.0) == 0
+
+    @_needs_font
+    def test_fit_font_size_accounts_for_stroke(self):
+        """回傳字級以繪製時的描邊寬度量測仍須塞進留邊框。"""
+        from PIL import Image, ImageDraw
+
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        max_w, max_h = 500.0, 260.0
+        size = rm._fit_font_size(draw, "可預約時段", max_w, max_h)
+        assert size > 0
+        font = rm._load_font(size)
+        sw = max(2, size // 18)
+        x0, y0, x1, y1 = draw.textbbox((0, 0), "可預約時段", font=font, stroke_width=sw)
+        assert (x1 - x0) <= max_w
+        assert (y1 - y0) <= max_h
+
+
+class TestCardRendering:
+    """卡片式精品風渲染:漸層底、卡縫、brand 主題。"""
+
+    def test_brand_theme_in_catalog(self):
+        assert "brand" in rm.THEMES
+
+    @_needs_font
+    @pytest.mark.parametrize("name", list(rm.TEMPLATES.keys()))
+    def test_card_render_smoke_all_templates(self, name):
+        tmpl = rm.TEMPLATES[name]
+        _, img = rm.build_rich_menu_payload(name, "brand")
+        assert _png_dims(img) == (tmpl["size"]["width"], tmpl["size"]["height"])
+
+    @_needs_font
+    def test_gradient_background_present(self):
+        """頂與底的背景像素應不同(上下漸層)。"""
+        from PIL import Image
+
+        _, png = rm.build_rich_menu_payload("booking4", "brand")
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        assert img.getpixel((3, 3)) != img.getpixel((3, img.height - 4))
+
+    @_needs_font
+    def test_card_gap_shows_background(self):
+        """格框交界(卡縫)應露出漸層底而非卡面色。"""
+        from PIL import Image
+
+        _, png = rm.build_rich_menu_payload("booking4", "brand")
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        boxes = rm._cell_boxes(rm.TEMPLATES["booking4"])
+        # 第 1、2 格交界的中線(x=1250 附近)是卡縫,不可是卡面暖白
+        x0, y0, w, h = boxes[0]
+        gap_px = img.getpixel((x0 + w, y0 + h // 2))
+        card_px = img.getpixel((x0 + w // 2, y0 + h // 2))
+        assert gap_px != card_px
+
+
 class TestGracefulFallback:
     def test_no_font_returns_base_unchanged(self, monkeypatch):
         """無字型時 _draw_labels 必須原封回傳底圖，不丟例外。"""

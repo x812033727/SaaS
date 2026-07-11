@@ -37,6 +37,8 @@ THEMES: dict[str, tuple[int, int, int]] = {
     "rose_pink": (233, 30, 99),
     # 精品主題（香檳金）；對標 vibeaico「BOUTIQUE 精品主題」。
     "boutique": (191, 167, 106),
+    # 品牌主題（深墨綠 #1A5C4A × 琥珀金點綴）；對齊管理後台設計 token。
+    "brand": (26, 92, 74),
 }
 
 # ── 建立模式（management UI 三選一） ──────────────────────────────────────────
@@ -154,21 +156,21 @@ def solid_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
 
 
 def _sectioned_png(
-    width: int, height: int, grid: tuple[int, int], base: tuple[int, int, int]
+    width: int,
+    height: int,
+    grid: tuple[int, int],
+    base: tuple[int, int, int],
+    rows_spec: list[int] | None = None,
 ) -> bytes:
     """產生「各格分區上色」的多色 PNG（vector 模式，純 stdlib zlib）。
 
     以 base 色為基準，依格索引在 RGB 三通道做不同位移，使每個按鈕區塊呈現
     可辨識的色塊邊界——刻意與 solid_png（單一純色）不同，輸出 bytes 必然相異。
+    rows_spec 提供時（不等寬版型，如 [3, 4, 4]）各列依自身欄數分區，
+    色塊邊界與 tap areas 一致。
     """
-    cols, rows = grid
-    cols = max(1, cols)
-    rows = max(1, rows)
-    cell_w = width // cols
-    cell_h = height // rows
 
-    def _cell_color(col: int, row: int) -> tuple[int, int, int]:
-        idx = row * cols + col
+    def _cell_color(idx: int) -> tuple[int, int, int]:
         # 依格索引對 base 做有界位移，產生明顯但不溢位的分區色差。
         shift = (idx + 1) * 37
         r = (base[0] + shift) % 256
@@ -176,16 +178,29 @@ def _sectioned_png(
         b = (base[2] + shift * 3) % 256
         return r, g, b
 
-    # 同一 row-band 的每一列像素相同：先組 rows 種「單列模板」，再依 y 重複，
+    # 同一 row-band 的每一列像素相同：先組每列「單列模板」，再依 y 重複，
     # 避免對每像素 Python 迴圈（2500×1686 會過慢）。
+    if rows_spec:
+        rows = max(1, len(rows_spec))
+        per_row_cols = [max(1, n) for n in rows_spec]
+    else:
+        cols, rows = grid
+        cols = max(1, cols)
+        rows = max(1, rows)
+        per_row_cols = [cols] * rows
+    cell_h = height // rows
+
     row_templates: list[bytes] = []
-    for row_idx in range(rows):
+    idx_offset = 0
+    for ncols in per_row_cols:
+        cell_w = width // ncols
         pixels = bytearray()
         for x in range(width):
-            col_idx = min(cols - 1, x // cell_w) if cell_w else 0
-            r, g, b = _cell_color(col_idx, row_idx)
+            col_idx = min(ncols - 1, x // cell_w) if cell_w else 0
+            r, g, b = _cell_color(idx_offset + col_idx)
             pixels += bytes((r, g, b))
         row_templates.append(b"\x00" + bytes(pixels))  # filter byte + 像素
+        idx_offset += ncols
 
     raw = bytearray()
     for y in range(height):
@@ -221,11 +236,12 @@ def list_modes() -> list[str]:
     return list(MODES.keys())
 
 
-def _areas(template: dict) -> list[dict]:
-    """依 grid 與 buttons 計算各區塊 bounds + postback action。
+def _cell_boxes(template: dict) -> list[tuple[int, int, int, int]]:
+    """各按鈕格框 (x, y, w, h)——tap areas 與畫字共用的唯一幾何來源。
 
     若模板帶 ``rows_spec``（每列欄數的清單，例如 [3, 4, 4] = 大尺寸 3+4+4），
     則以不等寬列鋪排（對標 vibeaico 大尺寸選單）；否則用均勻 grid。
+    最後一欄/列補足整除餘數像素，避免留白。
     """
     width = template["size"]["width"]
     height = template["size"]["height"]
@@ -233,7 +249,7 @@ def _areas(template: dict) -> list[dict]:
 
     rows_spec = template.get("rows_spec")
     if rows_spec:
-        areas = []
+        boxes = []
         n_rows = len(rows_spec)
         cell_h = height // n_rows
         idx = 0
@@ -244,35 +260,36 @@ def _areas(template: dict) -> list[dict]:
             for ci in range(ncols):
                 if idx >= len(buttons):
                     break
-                label, data = buttons[idx]
                 x = ci * cell_w
                 w = (width - x) if ci == ncols - 1 else cell_w
-                areas.append({
-                    "bounds": {"x": x, "y": y, "width": w, "height": h},
-                    "action": {"type": "postback", "data": data, "displayText": label},
-                })
+                boxes.append((x, y, w, h))
                 idx += 1
-        return areas
+        return boxes
 
     cols, rows = template["grid"]
     cell_w = width // cols
     cell_h = height // rows
-    areas = []
-    for idx, (label, data) in enumerate(buttons):
+    boxes = []
+    for idx in range(len(buttons)):
         col = idx % cols
         row = idx // cols
         x = col * cell_w
         y = row * cell_h
-        # 最後一欄/列補足像素，避免整除餘數留白
         w = (width - x) if col == cols - 1 else cell_w
         h = (height - y) if row == rows - 1 else cell_h
-        areas.append(
-            {
-                "bounds": {"x": x, "y": y, "width": w, "height": h},
-                "action": {"type": "postback", "data": data, "displayText": label},
-            }
-        )
-    return areas
+        boxes.append((x, y, w, h))
+    return boxes
+
+
+def _areas(template: dict) -> list[dict]:
+    """依 _cell_boxes 幾何組各區塊 bounds + postback action。"""
+    return [
+        {
+            "bounds": {"x": x, "y": y, "width": w, "height": h},
+            "action": {"type": "postback", "data": data, "displayText": label},
+        }
+        for (x, y, w, h), (label, data) in zip(_cell_boxes(template), template["buttons"])
+    ]
 
 
 # ── 自動文字標籤（best-effort，需 Pillow + 中文字型；缺則靜默跳過） ───────────
@@ -326,16 +343,28 @@ _LABEL_HEIGHT_RATIO = 0.46
 _LABEL_MAX_SIZE = 180  # 字級上限，避免短標籤（如「預約」）被放到佔滿整格
 
 
-def _fit_font_size(draw, label: str, max_w: float, max_h: float) -> int:
-    """求出能讓 label 完整塞進 (max_w, max_h) 的最大字級（量測實際寬高，非估算）。"""
+def _stroke_width(size: int) -> int:
+    """描邊寬度公式——量測與繪製必須用同一套，否則描邊會吃掉留邊。"""
+    return max(2, size // 18)
+
+
+def _fit_font_size(
+    draw, label: str, max_w: float, max_h: float, *, with_stroke: bool = True
+) -> int:
+    """求出能讓 label 完整塞進 (max_w, max_h) 的最大字級（量測實際寬高，非估算）。
+
+    with_stroke=True 時量測含描邊後的實際外框。連最小字級（12）都塞不下時
+    回 0，由呼叫端跳過畫字——絕不硬畫溢出。
+    """
     lo, hi = 12, _LABEL_MAX_SIZE
-    best = lo
+    best = 0
     while lo <= hi:
         mid = (lo + hi) // 2
         font = _load_font(mid)
         if font is None:
             return 0
-        x0, y0, x1, y1 = draw.textbbox((0, 0), label, font=font)
+        sw = _stroke_width(mid) if with_stroke else 0
+        x0, y0, x1, y1 = draw.textbbox((0, 0), label, font=font, stroke_width=sw)
         if (x1 - x0) <= max_w and (y1 - y0) <= max_h:
             best = mid
             lo = mid + 1
@@ -344,13 +373,107 @@ def _fit_font_size(draw, label: str, max_w: float, max_h: float) -> int:
     return best
 
 
-def _separator_color(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
-    """格線顏色：底色亮則調暗、底色暗則調亮，確保分隔線在任何主題都看得見。"""
-    luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-    factor = 0.62 if luminance > 90 else 1.0
-    if luminance <= 90:  # 深底 → 提亮
-        return tuple(min(255, int(c + (255 - c) * 0.35)) for c in rgb)
-    return tuple(int(c * factor) for c in rgb)
+def _lighten(rgb: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    return tuple(min(255, int(c + (255 - c) * t)) for c in rgb)
+
+
+def _darken(rgb: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    return tuple(max(0, int(c * (1 - t))) for c in rgb)
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+
+
+# 卡片式渲染的每主題樣式。brand 主題顯式指定（對齊 app.css token：
+# 墨綠 #1A5C4A / 深墨綠 #124436 / 暖白 #FAF9F6 / 琥珀金 #C4956A）；
+# 其餘主題由底色亮度推導，維持「一個主題色即可用」的既有使用方式。
+_BRAND_STYLE = {
+    "bg_top": (26, 92, 74),
+    "bg_bottom": (18, 68, 54),
+    "card": (250, 249, 246),
+    "card_shadow": (13, 48, 38),
+    "text": (26, 92, 74),
+    "icon": (196, 149, 106),
+}
+
+
+def _theme_style(theme_name: str | None, base_rgb: tuple[int, int, int]) -> dict:
+    """卡片式渲染樣式：漸層上下色、卡面色、陰影色、文字色、圖示色。"""
+    if theme_name == "brand":
+        return dict(_BRAND_STYLE)
+    if _luminance(base_rgb) > 90:  # 亮底主題 → 暖白卡 + 主題深色字
+        return {
+            "bg_top": _lighten(base_rgb, 0.12),
+            "bg_bottom": _darken(base_rgb, 0.20),
+            "card": (250, 249, 246),
+            "card_shadow": _darken(base_rgb, 0.40),
+            "text": _darken(base_rgb, 0.45),
+            "icon": _darken(base_rgb, 0.15),
+        }
+    return {  # 暗底主題（如 dark）→ 微亮卡 + 淺色字
+        "bg_top": _lighten(base_rgb, 0.10),
+        "bg_bottom": _darken(base_rgb, 0.40),
+        "card": _lighten(base_rgb, 0.16),
+        "card_shadow": _darken(base_rgb, 0.55),
+        "text": (245, 245, 243),
+        "icon": (228, 228, 224),
+    }
+
+
+# postback data → 圖示種類（_cycle_buttons 循環填格時 data 不變，對應恆正確）。
+_ICON_FOR_ACTION = {
+    "action=book": "calendar",
+    "action=my": "list",
+    "action=slots": "clock",
+    "action=help": "question",
+}
+
+
+def _draw_icon(draw, kind: str, cx: float, cy: float, size: float, color) -> None:
+    """以基本幾何繪製簡易向量圖示（日曆/清單/時鐘/問號），隨格子尺寸縮放。"""
+    s = size / 2.0
+    lw = max(4, int(size) // 12)
+    if kind == "calendar":
+        x0, y0, x1, y1 = cx - s, cy - s * 0.85, cx + s, cy + s * 0.85
+        r = max(4, int(size) // 10)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=r, outline=color, width=lw)
+        head_y = y0 + (y1 - y0) * 0.32
+        draw.line([x0, head_y, x1, head_y], fill=color, width=lw)
+        for fx in (0.30, 0.70):  # 頂部綁環
+            bx = x0 + (x1 - x0) * fx
+            draw.line([bx, y0 - s * 0.18, bx, y0 + s * 0.10], fill=color, width=lw)
+        dot = max(3, int(size) // 14)  # 2x3 日期點陣
+        for ry in (0.55, 0.78):
+            for rx in (0.28, 0.5, 0.72):
+                px = x0 + (x1 - x0) * rx
+                py = y0 + (y1 - y0) * ry
+                draw.ellipse([px - dot, py - dot, px + dot, py + dot], fill=color)
+    elif kind == "list":
+        x0, x1 = cx - s, cx + s
+        dot = max(4, int(size) // 12)
+        for fy in (-0.55, 0.0, 0.55):
+            y = cy + s * fy
+            draw.ellipse([x0 - dot, y - dot, x0 + dot, y + dot], fill=color)
+            draw.line([x0 + dot * 3, y, x1, y], fill=color, width=lw)
+    elif kind == "clock":
+        draw.ellipse([cx - s, cy - s, cx + s, cy + s], outline=color, width=lw)
+        draw.line([cx, cy, cx, cy - s * 0.55], fill=color, width=lw)  # 分針(12 點)
+        draw.line([cx, cy, cx + s * 0.42, cy + s * 0.25], fill=color, width=lw)  # 時針(~4 點)
+    else:  # question
+        draw.arc(
+            [cx - s * 0.6, cy - s, cx + s * 0.6, cy + s * 0.2],
+            start=-210, end=55, fill=color, width=lw,
+        )
+        draw.line([cx, cy + s * 0.05, cx, cy + s * 0.45], fill=color, width=lw)
+        dot = max(4, int(size) // 11)
+        draw.ellipse([cx - dot, cy + s * 0.75 - dot, cx + dot, cy + s * 0.75 + dot], fill=color)
+
+
+# 卡片式渲染參數。
+_CARD_GAP = 28  # 格框內縮量（卡縫 = 2×GAP，露出漸層底作為分隔）
+_CARD_TEXT_HEIGHT_RATIO = 0.24  # 文字量測高（相對卡高；圖示佔上半部）
+_ICON_SIZE_RATIO = 0.30  # 圖示尺寸（相對卡短邊）
 
 
 def _draw_labels(
@@ -358,14 +481,16 @@ def _draw_labels(
     template: dict,
     *,
     base_rgb: tuple[int, int, int] | None = None,
+    theme_name: str | None = None,
 ) -> bytes:
-    """把各按鈕文字置中畫到對應格子上，並畫出格線分隔。
+    """把按鈕內容畫到對應格子上。幾何一律取 _cell_boxes（與 tap areas 同源）。
 
-    * 字級以「實際量測 + 二分搜尋」自動縮到剛好塞進格子（含留邊），徹底避免長標籤
-      （如「可預約時段」）溢出到相鄰格。
-    * 以 anchor="mm" 讓文字在格子正中（水平垂直皆置中）。
-    * base_rgb 提供時於格線畫分隔線，讓多格選單看起來像獨立按鈕。
-    * 任何失敗都回傳原始 png_bytes（不破壞流程）。
+    * base_rgb 提供時（template 模式）→ 卡片式精品風：上下漸層底 + 每格圓角
+      卡片（卡縫露底作分隔）+ 向量圖示 + 文字。
+    * base_rgb=None（vector 模式）→ 僅置中畫字（描邊 + 依底色亮度切字色），
+      維持既有行為。
+    * 字級以「實際量測 + 二分搜尋」縮到塞進留邊，全格取 min 統一字級；
+      塞不下（回 0）則整體放棄。任何失敗都回傳原始 png_bytes（不破壞流程）。
     """
     if not _labels_enabled():
         return png_bytes
@@ -374,72 +499,91 @@ def _draw_labels(
     except ImportError:
         return png_bytes
     try:
-        cols, rows = template["grid"]
         buttons = template["buttons"]
-        img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-        width, height = img.size
-        cell_w = width // cols
-        cell_h = height // rows
-        draw = ImageDraw.Draw(img)
+        boxes = _cell_boxes(template)
+        base_img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+        width, height = base_img.size
+        card_mode = base_rgb is not None
 
-        # 1) 格線分隔（在文字之前畫，文字才會疊在最上層）。
-        if base_rgb is not None and (cols > 1 or rows > 1):
-            line_color = _separator_color(base_rgb)
-            line_w = max(3, min(cell_w, cell_h) // 130)
-            for c in range(1, cols):
-                gx = c * cell_w
-                draw.rectangle([gx - line_w // 2, 0, gx + line_w // 2, height], fill=line_color)
-            for r in range(1, rows):
-                gy = r * cell_h
-                draw.rectangle([0, gy - line_w // 2, width, gy + line_w // 2], fill=line_color)
-
-        # 2) 先算每格能容納的字級，取「全體最小」作為統一字級——讓長短標籤
-        #    視覺一致（不會「預約」特別大、「可預約時段」特別小）。
-        def _cell_box(idx: int):
-            col = idx % cols
-            row = idx // cols
-            x = col * cell_w
-            y = row * cell_h
-            w = (width - x) if col == cols - 1 else cell_w
-            h = (height - y) if row == rows - 1 else cell_h
-            return x, y, w, h
-
+        # 1) 先量字級（用暫存畫布，不動底圖）——無字型/塞不下即回退，
+        #    確保「回傳原始 bytes 不變」的契約在任何繪製發生前成立。
+        measure = ImageDraw.Draw(Image.new("RGB", (8, 8)))
         sizes = []
-        for idx, (label, _data) in enumerate(buttons):
-            _, _, w, h = _cell_box(idx)
+        for (x, y, w, h), (label, _data) in zip(boxes, buttons):
+            if card_mode:
+                card_w = w - 2 * _CARD_GAP
+                card_h = h - 2 * _CARD_GAP
+                max_w = card_w * _LABEL_WIDTH_RATIO
+                max_h = card_h * _CARD_TEXT_HEIGHT_RATIO
+            else:
+                max_w = w * _LABEL_WIDTH_RATIO
+                max_h = h * _LABEL_HEIGHT_RATIO
             sizes.append(
-                _fit_font_size(
-                    draw, label, w * _LABEL_WIDTH_RATIO, h * _LABEL_HEIGHT_RATIO
-                )
+                _fit_font_size(measure, label, max_w, max_h, with_stroke=not card_mode)
             )
         if not sizes or min(sizes) <= 0:
-            return png_bytes  # 無字型 → 整體放棄，回純色底圖
+            return png_bytes  # 無字型或塞不下 → 整體放棄，回原底圖
         uniform_size = min(sizes)
         font = _load_font(uniform_size)
-
-        # 3) 統一字級畫上各格文字（anchor=mm 水平垂直置中）。
-        drew_any = False
-        for idx, (label, _data) in enumerate(buttons):
-            x, y, w, h = _cell_box(idx)
-            size = uniform_size
-            cx, cy = x + w // 2, y + h // 2
-            # 依格子中心底色亮度決定字色（深底白字／淺底深字）。
-            br, bg_, bb = img.getpixel((cx, cy))
-            luminance = 0.299 * br + 0.587 * bg_ + 0.114 * bb
-            fill = (33, 33, 33) if luminance > 150 else (255, 255, 255)
-            stroke_fill = (255, 255, 255) if fill == (33, 33, 33) else (0, 0, 0)
-            draw.text(
-                (cx, cy),
-                label,
-                font=font,
-                fill=fill,
-                anchor="mm",
-                stroke_width=max(2, size // 18),
-                stroke_fill=stroke_fill,
-            )
-            drew_any = True
-        if not drew_any:
+        if font is None:
             return png_bytes
+
+        if card_mode:
+            style = _theme_style(theme_name, base_rgb)
+            # 2a) 上下漸層底（linear_gradient 為 C 實作，2500x1686 毫秒級）。
+            mask = Image.linear_gradient("L").resize((width, height))
+            img = Image.composite(
+                Image.new("RGB", (width, height), style["bg_bottom"]),
+                Image.new("RGB", (width, height), style["bg_top"]),
+                mask,
+            )
+            draw = ImageDraw.Draw(img)
+            # 2b) 每格：陰影 + 圓角卡 + 圖示 + 文字。
+            for (x, y, w, h), (label, data) in zip(boxes, buttons):
+                cx0, cy0 = x + _CARD_GAP, y + _CARD_GAP
+                cx1, cy1 = x + w - _CARD_GAP, y + h - _CARD_GAP
+                radius = max(24, min(cx1 - cx0, cy1 - cy0) // 14)
+                draw.rounded_rectangle(
+                    [cx0, cy0 + 8, cx1, cy1 + 8], radius=radius, fill=style["card_shadow"]
+                )
+                draw.rounded_rectangle(
+                    [cx0, cy0, cx1, cy1], radius=radius, fill=style["card"]
+                )
+                ccx = (cx0 + cx1) / 2
+                card_h = cy1 - cy0
+                icon_kind = _ICON_FOR_ACTION.get(data)
+                if icon_kind:
+                    icon_size = min(cx1 - cx0, card_h) * _ICON_SIZE_RATIO
+                    _draw_icon(
+                        draw, icon_kind, ccx, cy0 + card_h * 0.38, icon_size, style["icon"]
+                    )
+                draw.text(
+                    (ccx, cy0 + card_h * 0.74),
+                    label,
+                    font=font,
+                    fill=style["text"],
+                    anchor="mm",
+                )
+        else:
+            # vector 模式：分區色塊上置中畫字（描邊 + 依底色亮度切字色）。
+            img = base_img
+            draw = ImageDraw.Draw(img)
+            for (x, y, w, h), (label, _data) in zip(boxes, buttons):
+                cx, cy = x + w // 2, y + h // 2
+                if _luminance(img.getpixel((cx, cy))) > 150:
+                    fill, stroke_fill = (33, 33, 33), (255, 255, 255)
+                else:
+                    fill, stroke_fill = (255, 255, 255), (0, 0, 0)
+                draw.text(
+                    (cx, cy),
+                    label,
+                    font=font,
+                    fill=fill,
+                    anchor="mm",
+                    stroke_width=_stroke_width(uniform_size),
+                    stroke_fill=stroke_fill,
+                )
+
         out = io.BytesIO()
         img.save(out, format="PNG")
         return out.getvalue()
@@ -481,13 +625,18 @@ def build_rich_menu_payload(
             )
         image = image_bytes
     elif mode == MODE_VECTOR:
-        # vector 已是分區色塊，不再額外畫格線（base_rgb=None）。
+        # vector 已是分區色塊，只疊文字（base_rgb=None）。
         image = _draw_labels(
-            _sectioned_png(width, height, template["grid"], rgb), template
+            _sectioned_png(
+                width, height, template["grid"], rgb,
+                rows_spec=template.get("rows_spec"),
+            ),
+            template,
         )
     else:
         image = _draw_labels(
-            solid_png(width, height, rgb), template, base_rgb=rgb
+            solid_png(width, height, rgb), template,
+            base_rgb=rgb, theme_name=theme_name,
         )
     return payload, image
 
