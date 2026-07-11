@@ -1479,6 +1479,7 @@ def _try_conversational(
     params: dict,
     line_user_id: str,
     display_name: str | None = None,
+    source_webhook_event_id: str | None = None,
 ) -> tuple[str | None, list | None, dict | None] | None:
     """引導式對話步驟機（服務→日期→員工→時段→確認），以 postback 攜帶狀態。
 
@@ -1667,6 +1668,7 @@ def _try_conversational(
                 display_name=display_name,
                 staff_id=staff_id,
                 service_id=service_id,
+                source_webhook_event_id=source_webhook_event_id,
             )
         except booking_svc.CustomerBlacklistedError:
             return "很抱歉，您目前無法在線上預約，請直接與店家聯繫。", None, None
@@ -1694,6 +1696,7 @@ def _dispatch_booking(
     line_user_id: str,
     raw_text: str = "",
     display_name: str | None = None,
+    source_webhook_event_id: str | None = None,
 ) -> tuple[str, list | None]:
     """執行預約指令；回傳 (回覆文字, quick_reply 按鈕或 None)。預期錯誤轉友善訊息。"""
     # 引導式第一步：選時段（「時段」或「預約」無參數）
@@ -1727,6 +1730,7 @@ def _dispatch_booking(
                 party_size=party_size,
                 line_user_id=line_user_id,
                 display_name=display_name,
+                source_webhook_event_id=source_webhook_event_id,
             )
         except booking_svc.CustomerBlacklistedError:
             return "很抱歉，您目前無法在線上預約，請直接與店家聯繫。", None
@@ -2094,6 +2098,8 @@ def _handle_booking_event(
     """
     stage = LineWebhookEventStage.CLAIMED.value
     etype = event.get("type")
+    # A0.2 冪等鍵:建單時掛上此 webhook 事件 id,重放同一事件不重複建單。
+    webhook_event_id = event.get("webhookEventId")
     if etype not in ("message", "postback"):
         return stage  # 其他事件靜默略過（follow/unfollow 等）
 
@@ -2144,14 +2150,16 @@ def _handle_booking_event(
 
     # 引導式對話（服務→日期→員工→時段→確認）優先攔截；未接手者交回既有 dispatcher。
     conv = _try_conversational(
-        db, tenant_id, action, params, line_user_id, display_name
+        db, tenant_id, action, params, line_user_id, display_name,
+        source_webhook_event_id=webhook_event_id,
     )
     if conv is not None:
         reply_text, quick_reply, flex = conv
     else:
         # message 但非文字（圖片/貼圖）→ action 為 None；回說明
         reply_text, quick_reply = _dispatch_booking(
-            db, tenant_id, action, params, line_user_id, raw_text, display_name
+            db, tenant_id, action, params, line_user_id, raw_text, display_name,
+            source_webhook_event_id=webhook_event_id,
         )
         flex = None
 

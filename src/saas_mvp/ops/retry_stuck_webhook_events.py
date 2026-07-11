@@ -21,7 +21,7 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
 from saas_mvp.config import settings
@@ -65,32 +65,58 @@ def retry_stuck_events(
         rows = db.execute(
             select(LineWebhookEvent)
             .where(
-                LineWebhookEvent.status == LineWebhookEventStatus.PENDING.value,
+                # 卡住的 PENDING(worker 死於原始處理)或卡住的 PROCESSING
+                # (retry_stuck 認領後死於重放中途)皆為重放候選。
+                LineWebhookEvent.status.in_(
+                    [
+                        LineWebhookEventStatus.PENDING.value,
+                        LineWebhookEventStatus.PROCESSING.value,
+                    ]
+                ),
                 LineWebhookEvent.payload_json.is_not(None),
                 LineWebhookEvent.attempt_count < settings.webhook_max_attempts,
             )
             .order_by(LineWebhookEvent.id)
             .limit(limit)
         ).scalars().all()
-        stuck_ids = []
+        stuck = []
         for r in rows:
             upd = r.updated_at
             cmp = naive_cutoff if (upd is not None and upd.tzinfo is None) else cutoff
             if upd is not None and upd < cmp:
-                stuck_ids.append((r.id, r.tenant_id))
+                stuck.append((r.id, r.tenant_id, r.status, r.attempt_count))
 
-    for row_id, tenant_id in stuck_ids:
+    for row_id, tenant_id, obs_status, obs_attempt in stuck:
         if not apply:
             results.append(ReplayResult(row_id, tenant_id, "would_replay"))
             continue
         with session_factory() as db:
-            # 重新鎖定並重驗 pending（多實例/重跑安全）。
-            row = db.execute(
-                select(LineWebhookEvent)
-                .where(LineWebhookEvent.id == row_id)
-                .with_for_update()
-            ).scalar_one_or_none()
-            if row is None or row.status != LineWebhookEventStatus.PENDING.value:
+            # 原子認領:以 (status, attempt_count) 為 CAS 守衛把列改 PROCESSING、
+            # attempt_count+1。取代原本的 SELECT..FOR UPDATE —— 後者在 replay 內部
+            # 多次 commit 時提早釋放列鎖,讓重疊的 cron 實例搶到同一列重放(雙重
+            # 副作用)。CAS 下並發實例因 status/attempt 已變而 rowcount=0,只有一個
+            # 得以重放;認領後崩潰的列以 PROCESSING+舊 updated_at 於下輪被重新認領,
+            # 重放的建單側效由 reservations.source_webhook_event_id 冪等鍵保證不重複。
+            claim_now = datetime.datetime.now(datetime.timezone.utc)
+            claimed = db.execute(
+                update(LineWebhookEvent)
+                .where(
+                    LineWebhookEvent.id == row_id,
+                    LineWebhookEvent.status == obs_status,
+                    LineWebhookEvent.attempt_count == obs_attempt,
+                )
+                .values(
+                    status=LineWebhookEventStatus.PROCESSING.value,
+                    attempt_count=obs_attempt + 1,
+                    updated_at=claim_now,
+                )
+            ).rowcount
+            db.commit()
+            if claimed != 1:
+                results.append(ReplayResult(row_id, tenant_id, "skipped"))
+                continue
+            row = db.get(LineWebhookEvent, row_id)
+            if row is None:  # pragma: no cover - 認領後被刪除,防禦
                 results.append(ReplayResult(row_id, tenant_id, "skipped"))
                 continue
             from saas_mvp.routers.line_webhook import replay_stored_event
