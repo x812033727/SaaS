@@ -35,11 +35,15 @@ def _base36(n: int) -> str:
 
 
 def gen_trade_no(reservation_id: int) -> str:
-    """≤20 英數唯一(綠界要求):DP + id36 + 時間36 + 2hex。"""
-    return (
-        f"DP{_base36(reservation_id)}T{_base36(int(_utcnow().timestamp()))}"
-        f"{secrets.token_hex(1).upper()}"
-    )[:20]
+    """≤20 英數、唯一且**不可猜**(綠界 MerchantTradeNo 上限 20)。
+
+    格式:DP + id36 + 隨機 hex 填滿至 20。隨機段(≥32-bit、一般 48-bit)是定金
+    付款頁的 capability key —— URL 以 trade_no 為鍵而非可枚舉的 reservation_id,
+    未授權者無法枚舉/竊改他人定金(PEA-1/PEA-2)。id36 前綴確保跨預約唯一。
+    """
+    prefix = f"DP{_base36(reservation_id)}"
+    rand_len = max(6, 20 - len(prefix))
+    return (prefix + secrets.token_hex(rand_len).upper())[:20]
 
 
 def tenant_deposit_required(db: Session, tenant) -> bool:
@@ -69,8 +73,10 @@ def ensure_trade_no(db: Session, resv: Reservation) -> str:
 
 
 def payment_url(resv: Reservation) -> str:
+    # URL 以不可猜的 deposit_merchant_trade_no 為鍵(非可枚舉的 resv.id),
+    # 防未授權者枚舉/竊改他人定金(PEA-1/PEA-2)。
     base = settings.public_base_url.rstrip("/") or ""
-    return f"{base}/payments/ecpay/deposit/{resv.id}"
+    return f"{base}/payments/ecpay/deposit/{resv.deposit_merchant_trade_no}"
 
 
 def deposit_prompt(resv: Reservation, tenant) -> str:

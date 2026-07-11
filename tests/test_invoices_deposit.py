@@ -327,11 +327,12 @@ class TestDepositEndpoints:
             line_user_id="Uweb1",
         )
         rid = resv.id
+        tno = resv.deposit_merchant_trade_no
         db.close()
 
-        r = client.get(f"/payments/ecpay/deposit/{rid}")
+        r = client.get(f"/payments/ecpay/deposit/{tno}")
         assert r.status_code == 200 and "模擬定金付款" in r.text
-        r = client.post(f"/payments/stub/deposit-paid/{rid}")
+        r = client.post(f"/payments/stub/deposit-paid/{tno}")
         assert "已付款" in r.text
         db = _Session()
         try:
@@ -347,9 +348,9 @@ class TestDepositEndpoints:
             line_user_id="Uweb2",
         )
         deposit_svc.mark_paid(db, resv)
-        rid = resv.id
+        tno = resv.deposit_merchant_trade_no
         db.close()
-        r = client.get(f"/payments/ecpay/deposit/{rid}")
+        r = client.get(f"/payments/ecpay/deposit/{tno}")
         assert "已付款" in r.text
 
     def test_nonecpay_real_provider_no_free_deposit(self, client, monkeypatch):
@@ -362,15 +363,37 @@ class TestDepositEndpoints:
             db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Uweb3",
         )
         rid = resv.id
+        tno = resv.deposit_merchant_trade_no
         db.close()
 
-        r = client.get(f"/payments/ecpay/deposit/{rid}")
+        r = client.get(f"/payments/ecpay/deposit/{tno}")
         assert r.status_code == 503
         assert "模擬付款成功" not in r.text
-        r2 = client.post(f"/payments/stub/deposit-paid/{rid}")
+        r2 = client.post(f"/payments/stub/deposit-paid/{tno}")
         assert r2.status_code == 403
         db = _Session()
         try:
             assert db.get(Reservation, rid).deposit_status == "pending"  # 仍未付款
         finally:
             db.close()
+
+    def test_deposit_url_keyed_by_unguessable_trade_no(self, client):
+        """PEA-1/PEA-2:定金端點以 trade_no 為鍵,枚舉 reservation_id 無法命中
+        (未知 trade_no 一律 404),且 trade_no 具足夠隨機熵。"""
+        db = _Session()
+        t, slot_id = _deposit_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Uweb4",
+        )
+        rid = resv.id
+        tno = resv.deposit_merchant_trade_no
+        db.close()
+        # 用 reservation_id 當 URL 猜不到(被當成 trade_no 字串,查無)→ 404
+        assert client.get(f"/payments/ecpay/deposit/{rid}").status_code == 404
+        assert client.post(f"/payments/stub/deposit-paid/{rid}").status_code == 404
+        # 未知 trade_no 也一律 404(無枚舉/竊改)
+        assert client.post("/payments/stub/deposit-paid/DPZZZZZZZZ99").status_code == 404
+        assert client.get("/payments/ecpay/deposit/DPZZZZZZZZ99").status_code == 404
+        # 正確 trade_no 才可用;且 trade_no 有足夠隨機段(非僅 id + 8-bit)
+        assert client.get(f"/payments/ecpay/deposit/{tno}").status_code == 200
+        assert tno.startswith("DP") and len(tno) >= 14

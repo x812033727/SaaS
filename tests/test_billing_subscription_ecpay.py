@@ -155,3 +155,24 @@ class TestEcpayUnsubscribe:
         t = _tenant(db)
         sub = self._active_sub(db, t)
         assert sub.status == SUB_ACTIVE and sub.total_success_times == 1
+
+    def test_activate_idempotent_on_redelivery(self, db):
+        """SCR-1:綠界首期授權回調「至少一次」投遞。activate 重放不得累計
+        total_success_times 或 append 幻影扣款列(→幻影發票/灌水期數)。"""
+        from saas_mvp.models.subscription_charge import SubscriptionCharge
+
+        t = _tenant(db)
+        sub = subs_svc.create_subscription(
+            db, tenant_id=t.id, feature=FEAT, amount_cents=20000
+        )
+        subs_svc.activate(db, sub, gwsr="GW1", auth_code="AB12")
+        subs_svc.activate(db, sub, gwsr="GW1", auth_code="AB12")  # 重送
+        subs_svc.activate(db, sub, gwsr="GW1", auth_code="AB12")  # 再重送
+        db.refresh(sub)
+        assert sub.status == SUB_ACTIVE
+        assert sub.total_success_times == 1  # 未灌水
+        charges = db.query(SubscriptionCharge).filter(
+            SubscriptionCharge.subscription_id == sub.id,
+            SubscriptionCharge.success.is_(True),
+        ).all()
+        assert len(charges) == 1  # 無幻影扣款列

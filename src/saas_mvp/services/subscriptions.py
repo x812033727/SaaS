@@ -156,6 +156,11 @@ def activate(
     auth_code: str | None = None,
 ) -> FeatureSubscription:
     """首期授權成功：標 active、記授權資訊、累計成功次數。"""
+    if sub.status == SUB_ACTIVE:
+        # 綠界首期授權回調「至少一次」投遞:已啟用即冪等返回。否則每次重送都會
+        # 再累計 total_success_times 並 _append_charge 一筆新 period_no 的幻影扣款
+        # 列(查重鍵含 period_no 故擋不住)→ 幻影電子發票 + 灌水成功期數。
+        return sub
     sub.status = SUB_ACTIVE
     sub.activated_at = _utcnow()
     sub.last_charged_at = _utcnow()
