@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 
@@ -90,6 +91,10 @@ class Reservation(Base):
 
     # E1:Google Calendar 事件 id(未連結/同步失敗為 NULL)。
     gcal_event_id = Column(String(128), nullable=True)
+    # A0.2 冪等:此預約由哪筆 LINE webhook 事件建立(非 LINE 來源=NULL)。webhook
+    # 重放時 book_slot 以 (tenant_id, source_webhook_event_id) 查得既有預約即回傳,
+    # 不重複建單。NULL 不受唯一約束限制(多筆 NULL 合法)。
+    source_webhook_event_id = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),
@@ -101,4 +106,10 @@ class Reservation(Base):
 
     __table_args__ = (
         Index("ix_reservation_tenant_status", "tenant_id", "status"),
+        # webhook 重放冪等:同一租戶同一 webhook 事件至多一筆預約(NULL 不受限)。
+        UniqueConstraint(
+            "tenant_id",
+            "source_webhook_event_id",
+            name="uq_reservation_source_webhook_event",
+        ),
     )

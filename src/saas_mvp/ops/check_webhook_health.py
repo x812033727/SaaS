@@ -44,9 +44,16 @@ def check_webhook_health(
     day_ago = effective_now - datetime.timedelta(hours=24)
 
     with session_factory() as db:
+        # 卡住的 PENDING(worker 死於原始處理)與 PROCESSING(retry_stuck 認領後
+        # 死於重放中途)都是需要關注的滯留事件;retry_stuck 會重新認領兩者。
         pending = db.execute(
             select(LineWebhookEvent).where(
-                LineWebhookEvent.status == LineWebhookEventStatus.PENDING.value
+                LineWebhookEvent.status.in_(
+                    [
+                        LineWebhookEventStatus.PENDING.value,
+                        LineWebhookEventStatus.PROCESSING.value,
+                    ]
+                )
             )
         ).scalars().all()
         naive_cutoff = cutoff.replace(tzinfo=None)

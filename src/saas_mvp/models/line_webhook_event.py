@@ -21,6 +21,10 @@ from saas_mvp.db import Base
 
 class LineWebhookEventStatus(str, enum.Enum):
     PENDING = "pending"
+    # 重放認領後、跑完 handler 前的中間態(A0.2 idempotency)：retry_stuck 以原子
+    # UPDATE 把 PENDING→PROCESSING 認領,並發實例看到 PROCESSING 即略過;認領後
+    # 崩潰的列以 updated_at 逾時被下輪重新認領(側效冪等由 source_webhook_event_id 保證)。
+    PROCESSING = "processing"
     PROCESSED = "processed"
     FAILED = "failed"
 
