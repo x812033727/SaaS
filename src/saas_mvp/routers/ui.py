@@ -723,7 +723,10 @@ def gcal_connect(
         f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
-    resp.set_cookie("gcal_state", state, httponly=True, max_age=600, path="/")
+    resp.set_cookie(
+        "gcal_state", state, httponly=True, max_age=600, path="/",
+        samesite="lax", secure=settings.env not in ("dev", "test"),
+    )
     return resp
 
 
@@ -773,7 +776,9 @@ def gcal_callback(
         db, actor, action="gcal.connect", target=f"tenant:{tid}", request=request,
     )
     db.commit()
-    return RedirectResponse("/ui/calendar", status_code=status.HTTP_303_SEE_OTHER)
+    resp = RedirectResponse("/ui/calendar", status_code=status.HTTP_303_SEE_OTHER)
+    resp.delete_cookie("gcal_state", path="/")  # 用完即清,避免殘留可重放的 state
+    return resp
 
 
 @router.post("/gcal/disconnect")

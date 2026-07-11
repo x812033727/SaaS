@@ -235,6 +235,9 @@ def convert_unanswered(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="unanswered question not found")
+    if not (answer or "").strip():
+        # 空答案會建出空白的「已啟用」FAQ 並讓該問題永遠標為已解決(丟失待答提示)。
+        raise HTTPException(status_code=400, detail="answer must not be empty")
     faq = create_faq(
         db, tenant_id=tenant_id, question=row.question, answer=answer
     )

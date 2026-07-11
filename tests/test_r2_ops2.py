@@ -214,6 +214,22 @@ class TestUnanswered:
         assert row.status == UNANSWERED_CONVERTED
         assert faq_svc.list_unanswered(db, tenant_id=t.id) == []
 
+    def test_convert_rejects_empty_answer(self, db):
+        from fastapi import HTTPException
+
+        t = _tenant(db)
+        faq_svc.record_unanswered(db, tenant_id=t.id, question="有停車位嗎")
+        row = db.execute(select(AiUnansweredQuestion)).scalar_one()
+        with pytest.raises(HTTPException) as ei:
+            faq_svc.convert_unanswered(
+                db, tenant_id=t.id, unanswered_id=row.id, answer="   "
+            )
+        assert ei.value.status_code == 400
+        # 未建空白 FAQ、未標 converted、問題仍在待答清單
+        db.refresh(row)
+        assert row.status != UNANSWERED_CONVERTED
+        assert len(faq_svc.list_unanswered(db, tenant_id=t.id)) == 1
+
     def test_reasked_after_convert_reopens(self, db):
         t = _tenant(db)
         faq_svc.record_unanswered(db, tenant_id=t.id, question="有素食嗎")
