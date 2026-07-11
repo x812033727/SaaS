@@ -304,17 +304,17 @@ def _issue_invoice_for_latest_charge(db, sub) -> None:
         _log.warning("invoice hook failed sub=%s", getattr(sub, "id", "?"), exc_info=True)
 
 
-@router.get("/ecpay/deposit/{reservation_id}", response_class=HTMLResponse)
+@router.get("/ecpay/deposit/{trade_no}", response_class=HTMLResponse)
 def ecpay_deposit_checkout(
-    reservation_id: int,
+    trade_no: str,
     db: Session = Depends(get_db),
 ):
-    """定金付款頁（C4）。stub 模式渲染本地模擬頁(離線/demo 全流程可走);
-    ecpay 模式渲染綠界 AIO 自動送出表單。"""
-    from saas_mvp.models.reservation import Reservation
+    """定金付款頁（C4）。URL 以不可猜的 deposit_merchant_trade_no 為鍵(非可枚舉的
+    reservation_id),未知一律 404,防跨租戶枚舉洩定金金額/狀態。stub 模式渲染本地
+    模擬頁(離線/demo 全流程可走);ecpay 模式渲染綠界 AIO 自動送出表單。"""
     from saas_mvp.services import deposit as deposit_svc
 
-    resv = db.get(Reservation, reservation_id)
+    resv = deposit_svc.find_by_trade_no(db, trade_no)
     if resv is None or resv.deposit_status is None:
         return HTMLResponse("<h1>找不到需付定金的預約</h1>", status_code=404)
     if resv.deposit_status == deposit_svc.DEPOSIT_PAID:
@@ -328,7 +328,7 @@ def ecpay_deposit_checkout(
         return HTMLResponse(
             "<!doctype html><meta charset='utf-8'><h1>模擬定金付款</h1>"
             f"<p>預約 #{resv.id},定金 NT${amount_twd}(stub 模式,不會真扣款)。</p>"
-            f"<form method='post' action='/payments/stub/deposit-paid/{resv.id}'>"
+            f"<form method='post' action='/payments/stub/deposit-paid/{resv.deposit_merchant_trade_no}'>"
             "<button type='submit'>模擬付款成功</button></form>"
         )
     if settings.payment_provider != "ecpay":
@@ -353,20 +353,20 @@ def ecpay_deposit_checkout(
     return _render_autosubmit(form, client.aio_url, "前往定金付款")
 
 
-@router.post("/stub/deposit-paid/{reservation_id}", response_class=HTMLResponse)
+@router.post("/stub/deposit-paid/{trade_no}", response_class=HTMLResponse)
 def stub_deposit_paid(
-    reservation_id: int,
+    trade_no: str,
     db: Session = Depends(get_db),
 ):
-    """stub 模擬付款成功（僅 payment_provider == stub 時可用）。"""
-    from saas_mvp.models.reservation import Reservation
+    """stub 模擬付款成功（僅 payment_provider == stub 時可用）。URL 以不可猜的
+    trade_no 為鍵,未授權者無法枚舉 reservation_id 竊改他人定金(PEA-1)。"""
     from saas_mvp.services import deposit as deposit_svc
 
     if settings.payment_provider != "stub":
         # 只有 stub 模式允許『模擬付款成功』;任何真實 provider(ecpay/newebpay/
         # linepay)都必須走真實回調驗簽,不得由此公開端點免費標 paid。
         return HTMLResponse("<h1>正式金流模式不提供模擬付款</h1>", status_code=403)
-    resv = db.get(Reservation, reservation_id)
+    resv = deposit_svc.find_by_trade_no(db, trade_no)
     if resv is None:
         return HTMLResponse("<h1>找不到預約</h1>", status_code=404)
     if deposit_svc.mark_paid(db, resv):
