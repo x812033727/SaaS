@@ -5,10 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>預約完成</title>
   <style>
-    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
-           max-width: 420px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-    .state { padding: 1.5rem; background: #eafaf0; border-radius: 8px; text-align: center; }
-    .muted { color: #888; font-size: 0.9rem; }
+    :root { --bg: #FAF9F6; --card: #fff; --ink: #2B2B28; --muted: #8A867C;
+            --line: #E9E5DD; --brand: #1A5C4A; --ok-soft: #E9F2ED; --danger: #B3564D; }
+    body { font-family: "Noto Sans TC", -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 460px; margin: 2rem auto; padding: 0 1.1rem;
+           background: var(--bg); color: var(--ink); line-height: 1.6; }
+    .state { padding: 2rem 1.5rem; background: var(--card); border: 1px solid var(--line);
+             border-radius: 12px; box-shadow: 0 4px 16px rgba(43,43,40,.08); text-align: center; }
+    h1 { font-size: 1.25rem; letter-spacing: .02em; }
+    .muted { color: var(--muted); font-size: 0.9rem; }
+    .pay-note { color: var(--danger); }
+    .pay-btn { display: inline-block; padding: .8rem 1.5rem; background: var(--brand);
+               color: #fff; border-radius: 8px; text-decoration: none; }
   </style>
 </head>
 <body>
@@ -16,8 +24,8 @@
     <h1>✅ 預約完成</h1>
     <p>預約編號 <strong>#{{ reservation.id }}</strong>，共 {{ reservation.party_size }} 位。</p>
     {% if deposit_url %}
-    <p style="color:#b91c1c"><strong>{{ deposit_note }}</strong></p>
-    <p><a href="{{ deposit_url }}" style="display:inline-block;padding:.8rem 1.5rem;background:#06c755;color:#fff;border-radius:6px;text-decoration:none">前往付定金</a></p>
+    <p class="pay-note"><strong>{{ deposit_note }}</strong></p>
+    <p><a href="{{ deposit_url }}" class="pay-btn">前往付定金</a></p>
     {% endif %}
     <p class="muted">可關閉此頁回到 LINE；輸入「我的預約」隨時查看或改期/取消。</p>
   </div>
