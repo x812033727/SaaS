@@ -164,6 +164,27 @@ h2 { font-size: 16px; letter-spacing: .02em; margin: 0 0 12px; }
   margin-bottom: 20px;
 }
 
+/* 提醒卡(試用中/待驗證)與目前方案卡 */
+.card.notice-warn { border-color: var(--gold); background: var(--gold-soft); }
+.card.plan-current { border-color: var(--brand); box-shadow: var(--shadow-2); }
+
+/* 快速連結卡片網格(儀表板) */
+.quick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.quick-link {
+  display: block;
+  text-align: center;
+  padding: 14px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--brand);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: box-shadow .15s, border-color .15s;
+}
+.quick-link:hover { border-color: var(--brand); box-shadow: var(--shadow-1); }
+
 /* ---- 統計 --------------------------------------------------- */
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }

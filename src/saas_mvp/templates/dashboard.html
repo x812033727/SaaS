@@ -4,7 +4,7 @@
 <h1>{{ tenant.name }} 的儀表板</h1>
 
 {% if email_unverified %}
-<div class="card" style="border-color:#f59e0b">
+<div class="card notice-warn">
   <p>✉️ 尚未驗證 Email。請至信箱點擊驗證連結；沒收到？
     <form method="post" action="/ui/resend-verification" style="display:inline">
       <button type="submit" class="btn">重寄驗證信</button>
@@ -29,7 +29,7 @@
 {% endif %}
 
 {% if plan_info and plan_info.trial_active %}
-<div class="card" style="border-color:#f59e0b">
+<div class="card notice-warn">
   <p>🎁 <strong>{{ plan_info.effective_label }}試用中</strong>，
      剩餘 <strong>{{ plan_info.trial_days_left }}</strong> 天。
      <a href="/ui/plan">查看方案</a></p>
@@ -71,17 +71,17 @@
 
 <div class="card">
   <h2>快速連結</h2>
-  <p>
-    <a class="btn" href="/ui/locations">分店</a>
-    <a class="btn" href="/ui/staff">員工</a>
-    <a class="btn" href="/ui/services">服務項目</a>
-    <a class="btn" href="/ui/pos">POS 結帳</a>
-    <a class="btn" href="/ui/campaigns">行銷活動</a>
-    <a class="btn" href="/ui/flex-menu">圖文卡片</a>
-    <a class="btn" href="/ui/portfolio">作品集</a>
-    <a class="btn" href="/ui/profile">店家頁</a>
-    <a class="btn" href="/ui/faq">AI 客服</a>
-  </p>
+  <div class="quick-grid">
+    <a class="quick-link" href="/ui/locations">分店</a>
+    <a class="quick-link" href="/ui/staff">員工</a>
+    <a class="quick-link" href="/ui/services">服務項目</a>
+    <a class="quick-link" href="/ui/pos">POS 結帳</a>
+    <a class="quick-link" href="/ui/campaigns">行銷活動</a>
+    <a class="quick-link" href="/ui/flex-menu">圖文卡片</a>
+    <a class="quick-link" href="/ui/portfolio">作品集</a>
+    <a class="quick-link" href="/ui/profile">店家頁</a>
+    <a class="quick-link" href="/ui/faq">AI 客服</a>
+  </div>
 </div>
 
 <div class="card">
