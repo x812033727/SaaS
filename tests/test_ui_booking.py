@@ -317,6 +317,18 @@ class TestRichMenuUI:
         assert r.status_code == 200
         assert "error" in r.text or "Unknown theme" in r.text
 
+    def test_preview_png(self, client):
+        _login(client)
+        r = client.get("/ui/rich-menu/preview.png", params={"template": "grid3x4x4", "theme": "brand"})
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/png"
+        assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_preview_invalid_template_400(self, client):
+        _login(client)
+        r = client.get("/ui/rich-menu/preview.png", params={"template": "nope", "theme": "brand"})
+        assert r.status_code == 400
+
 
 class TestCouponsUI:
     def test_page_renders(self, client):

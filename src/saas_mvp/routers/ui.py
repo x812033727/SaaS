@@ -2569,6 +2569,22 @@ def rich_menu_apply(
     )
 
 
+@router.get("/rich-menu/preview.png")
+def rich_menu_preview(
+    template: str = Query(...),
+    theme: str = Query(...),
+    actor: Actor = Depends(require_ui_user),
+):
+    """套用前預覽：即席產生選單圖(不動 DB、不打 LINE)。"""
+    rich_menu_svc._validate(template, theme)
+    _, image = rich_menu_svc.build_rich_menu_payload(template, theme)
+    return Response(
+        content=image,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 # ── 店家自助：優惠券 ──────────────────────────────────────────────────────────
 
 def _coupons_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:

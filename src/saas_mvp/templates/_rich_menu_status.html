@@ -9,7 +9,7 @@
     <p class="muted">尚未套用圖文選單。</p>
   {% endif %}
 
-  <form hx-post="/ui/rich-menu/apply" hx-target="#richmenu-card" hx-swap="innerHTML" class="row">
+  <form id="richmenu-apply-form" hx-post="/ui/rich-menu/apply" hx-target="#richmenu-card" hx-swap="innerHTML" class="row">
     <label>模板
       <select name="template">
         {% for name, t in templates_opts.items() %}
@@ -26,6 +26,28 @@
     </label>
     <button type="submit">套用選單</button>
   </form>
+
+  <div style="margin-top:14px">
+    <p class="muted">預覽（顧客在 LINE 聊天室底部看到的樣子）：</p>
+    <img id="richmenu-preview" alt="圖文選單預覽"
+         style="max-width:100%;border:1px solid var(--line);border-radius:var(--radius-sm)">
+  </div>
+  <script>
+    (function () {
+      var form = document.getElementById("richmenu-apply-form");
+      var img = document.getElementById("richmenu-preview");
+      if (!form || !img) return;
+      var tpl = form.querySelector('select[name="template"]');
+      var th = form.querySelector('select[name="theme"]');
+      function refresh() {
+        img.src = "/ui/rich-menu/preview.png?template=" +
+          encodeURIComponent(tpl.value) + "&theme=" + encodeURIComponent(th.value);
+      }
+      tpl.addEventListener("change", refresh);
+      th.addEventListener("change", refresh);
+      refresh();
+    })();
+  </script>
 
   {% if status and status.applied %}
   <form hx-post="/ui/rich-menu/clear" hx-target="#richmenu-card" hx-swap="innerHTML">
