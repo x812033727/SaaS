@@ -4,7 +4,7 @@
 <h1>我的方案</h1>
 
 {% if plan_info.trial_active %}
-<div class="card" style="border-color:#f59e0b">
+<div class="card notice-warn">
   <p>🎁 <strong>{{ plan_info.effective_label }}試用中</strong>，
      剩餘 <strong>{{ plan_info.trial_days_left }}</strong> 天；
      到期後將轉為{{ plan_info.paid_label }}。訂閱即可無縫接續全部功能。</p>
