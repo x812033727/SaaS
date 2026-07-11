@@ -34,6 +34,22 @@ os.environ["SAAS_UI_CSRF_ENABLED"] = "false"
 # tests/test_plans.py 以 monkeypatch 專測。
 os.environ["SAAS_FEATURES_DEFAULT_ENABLED"] = "true"
 
+# 隔離主機 .env 的「真金流 / 真外部服務」憑證:pydantic-settings 從 cwd 讀
+# .env,若 prod .env 填了正式綠界/LINE Pay/Google 憑證,在 /opt/saas 跑測試
+# 會用測試資料**真打正式外部 API**(開真發票、真請款、真授權),且錯誤常被
+# 服務層 try/except 吞掉 → 測試照樣全綠、生產副作用無症狀。這裡強制 stub 預設,
+# 要測真實 provider 的個別測試自行 monkeypatch。
+os.environ["SAAS_PAYMENT_PROVIDER"] = "stub"
+os.environ["SAAS_INVOICE_PROVIDER"] = "stub"
+os.environ["SAAS_ECPAY_INVOICE_MERCHANT_ID"] = ""
+os.environ["SAAS_ECPAY_INVOICE_HASH_KEY"] = ""
+os.environ["SAAS_ECPAY_INVOICE_HASH_IV"] = ""
+os.environ["SAAS_LINE_PAY_CHANNEL_ID"] = ""
+os.environ["SAAS_LINE_PAY_CHANNEL_SECRET"] = ""
+os.environ["SAAS_GOOGLE_OAUTH_CLIENT_ID"] = ""
+os.environ["SAAS_GOOGLE_OAUTH_CLIENT_SECRET"] = ""
+os.environ["SAAS_SMS_FALLBACK_ENABLED"] = "false"
+
 # DB URL 設 in-memory：必須在任何 saas_mvp 模組 import 之前設定，
 # 因為 db.py 在模組層級就建立 engine（settings.database_url）。
 # setdefault：若 CI/環境已有真實 DB URL 則不覆蓋。

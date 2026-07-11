@@ -78,6 +78,22 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
                       "ecpay 模式需 https 的 SAAS_PUBLIC_BASE_URL(回調用)"))
         else:
             add(Check("public_base_url", "PASS", settings.public_base_url))
+    elif settings.payment_provider == "linepay":
+        if not (settings.line_pay_channel_id and settings.line_pay_channel_secret):
+            add(Check("payment", "FAIL",
+                      "provider=linepay 但缺 SAAS_LINE_PAY_CHANNEL_ID/SECRET"
+                      "(每筆結帳會 LinePayError)"))
+        elif settings.line_pay_env != "prod":
+            add(Check("payment", "WARN",
+                      "linepay sandbox 演練模式(SAAS_LINE_PAY_ENV != prod)"))
+        else:
+            add(Check("payment", "PASS", f"linepay prod(channel={settings.line_pay_channel_id})"))
+        # linepay confirm/cancel 回調 URL 同樣依賴 public_base_url。
+        if not settings.public_base_url.startswith("https://"):
+            add(Check("public_base_url", "FAIL",
+                      "linepay 模式需 https 的 SAAS_PUBLIC_BASE_URL(回調用)"))
+        else:
+            add(Check("public_base_url", "PASS", settings.public_base_url))
     else:
         add(Check("payment", "WARN", f"provider={settings.payment_provider}"))
 
@@ -109,6 +125,25 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
         add(Check("ai", "WARN", "未設 SAAS_ANTHROPIC_API_KEY(AI 走離線 Stub 規則,非真 Claude)"))
     else:
         add(Check("ai", "PASS", f"model={settings.ai_model}"))
+
+    # Google Calendar OAuth:半設定(只填一半)會讓 /ui/gcal/connect 導去 Google
+    # 但 callback 換 token 必失敗;兩者皆空 = 走 Stub(功能未啟用)。
+    gcal_id = settings.google_oauth_client_id
+    gcal_secret = settings.google_oauth_client_secret
+    if not gcal_id and not gcal_secret:
+        add(Check("gcal_oauth", "WARN", "未設 SAAS_GOOGLE_OAUTH_*(GCal 走 Stub;店家無法連結真日曆)"))
+    elif not (gcal_id and gcal_secret):
+        add(Check("gcal_oauth", "FAIL",
+                  "Google OAuth 只設定一半(client_id/secret 需成對);callback 換 token 會 502"))
+    else:
+        add(Check("gcal_oauth", "PASS", "Google OAuth 憑證已成對填入"))
+
+    # 簡訊 fallback:旗標開了但目前恆為 Stub(只進 log 不真發),避免營運者誤以為有補送。
+    if settings.sms_fallback_enabled:
+        add(Check("sms", "WARN",
+                  "SAAS_SMS_FALLBACK_ENABLED=true 但簡訊供應商僅 Stub(推播失敗只記 log,不真送簡訊)"))
+    else:
+        add(Check("sms", "PASS", "簡訊 fallback 關閉(預設)"))
 
     # ── 5. DB migration 到 head ─────────────────────────────────
     try:

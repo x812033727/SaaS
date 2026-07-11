@@ -80,6 +80,7 @@ def book_slot(
     note: str | None = None,
     staff_id: int | None = None,
     service_id: int | None = None,
+    source_webhook_event_id: str | None = None,
 ) -> Reservation:
     """原子建單：鎖時段 → 重驗容量 → 建顧客檔 → INSERT 預約 → 遞增 booked_count
     → 入列提醒 → 單一 commit。
@@ -91,6 +92,21 @@ def book_slot(
     """
     if party_size < 1:
         raise ValueError(f"party_size must be >= 1, got {party_size}")
+
+    # A0.2 冪等:此建單源自某筆 LINE webhook 事件時,若該事件先前已建過預約
+    # (原始處理 commit 後才崩潰、由 ops/retry_stuck_webhook_events 重放),
+    # 直接回傳既有預約,不重複建單/佔名額。(tenant_id, source_webhook_event_id)
+    # 有唯一索引,真正並發競態時第二筆 flush 會 IntegrityError,由呼叫端視為重放。
+    if source_webhook_event_id:
+        existing = (
+            tenant_query(db, Reservation, tenant_id)
+            .filter(
+                Reservation.source_webhook_event_id == source_webhook_event_id
+            )
+            .first()
+        )
+        if existing is not None:
+            return existing
 
     # 黑名單早退：被列入黑名單的 LINE 顧客禁止線上預約（在鎖時段前快速失敗，
     # 不佔用名額、不建顧客檔）。店家手動建單（無 line_user_id）不受影響。
@@ -193,6 +209,7 @@ def book_slot(
         note=note,
         staff_id=staff_id,
         service_id=service_id,
+        source_webhook_event_id=source_webhook_event_id,
     )
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size

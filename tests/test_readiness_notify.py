@@ -145,3 +145,52 @@ class TestReadiness:
         by = self._by_name(run_checks(session_factory=_Session))
         assert by["payment"].status == "WARN"
         assert by["public_base_url"].status == "FAIL"
+
+    def test_linepay_missing_creds_fails(self, monkeypatch):
+        monkeypatch.setattr(settings, "payment_provider", "linepay")
+        monkeypatch.setattr(settings, "line_pay_channel_id", "")
+        monkeypatch.setattr(settings, "line_pay_channel_secret", "")
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["payment"].status == "FAIL"
+
+    def test_linepay_prod_needs_https_base(self, monkeypatch):
+        monkeypatch.setattr(settings, "payment_provider", "linepay")
+        monkeypatch.setattr(settings, "line_pay_channel_id", "chan")
+        monkeypatch.setattr(settings, "line_pay_channel_secret", "sec")
+        monkeypatch.setattr(settings, "line_pay_env", "prod")
+        monkeypatch.setattr(settings, "public_base_url", "http://insecure.example")
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["payment"].status == "PASS"
+        assert by["public_base_url"].status == "FAIL"
+
+    def test_google_oauth_half_configured_fails(self, monkeypatch):
+        monkeypatch.setattr(settings, "google_oauth_client_id", "id-only")
+        monkeypatch.setattr(settings, "google_oauth_client_secret", "")
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["gcal_oauth"].status == "FAIL"
+
+    def test_google_oauth_unset_warns(self, monkeypatch):
+        monkeypatch.setattr(settings, "google_oauth_client_id", "")
+        monkeypatch.setattr(settings, "google_oauth_client_secret", "")
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["gcal_oauth"].status == "WARN"
+
+    def test_sms_fallback_on_warns_stub_only(self, monkeypatch):
+        monkeypatch.setattr(settings, "sms_fallback_enabled", True)
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["sms"].status == "WARN"
+
+
+class TestEnvHardening:
+    """conftest 必須把真金流/外部服務憑證壓成 stub,防主機 prod .env 滲漏
+    導致本機/CI 測試真打綠界/LINE Pay/Google 正式 API(I2)。"""
+
+    def test_conftest_forces_stub_providers(self):
+        # 這些值由 conftest 在 import 前硬覆寫;若被 prod .env 滲漏會非 stub。
+        assert settings.payment_provider == "stub"
+        assert settings.invoice_provider == "stub"
+        assert settings.line_pay_channel_id == ""
+        assert settings.line_pay_channel_secret == ""
+        assert settings.google_oauth_client_id == ""
+        assert settings.google_oauth_client_secret == ""
+        assert settings.sms_fallback_enabled is False

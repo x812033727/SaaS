@@ -35,6 +35,7 @@ from saas_mvp.models.reservation import Reservation  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
 from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.ops.retry_stuck_webhook_events import retry_stuck_events  # noqa: E402
+from saas_mvp.services import booking as booking_svc  # noqa: E402
 from saas_mvp.translation import get_translator  # noqa: E402
 from saas_mvp.translation.stub import StubTranslator  # noqa: E402
 
@@ -188,6 +189,136 @@ class TestOutbox:
                 last_stage="claimed",
                 payload_json="{}",
                 updated_at=_NOW,  # 剛入列,不算卡住
+            ))
+            db.commit()
+        finally:
+            db.close()
+        factory = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+        assert retry_stuck_events(
+            session_factory=factory, apply=True, now=_NOW,
+            line_client=FakeLineReplyClient(), translator=StubTranslator(),
+        ) == []
+
+
+# ── A0.2 重放冪等 + 原子認領 ───────────────────────────────────────────────────
+
+class TestReplayIdempotency:
+    def test_book_slot_idempotent_by_webhook_event(self, client):
+        """同一 source_webhook_event_id 重複 book_slot → 回同一筆、只佔一個名額。"""
+        _c, _ = client
+        s = _seed_booking_tenant()
+        db = _Session()
+        try:
+            r1 = booking_svc.book_slot(
+                db, tenant_id=s["tenant_id"], slot_id=s["slot_id"], party_size=1,
+                line_user_id="Uidem2", source_webhook_event_id="whe-1",
+            )
+            r2 = booking_svc.book_slot(
+                db, tenant_id=s["tenant_id"], slot_id=s["slot_id"], party_size=1,
+                line_user_id="Uidem2", source_webhook_event_id="whe-1",
+            )
+            assert r1.id == r2.id
+            resvs = db.execute(
+                select(Reservation).where(Reservation.tenant_id == s["tenant_id"])
+            ).scalars().all()
+            assert len(resvs) == 1
+            assert db.get(BookingSlot, s["slot_id"]).booked_count == 1
+        finally:
+            db.close()
+
+    def test_replay_does_not_double_book(self, client):
+        """#1 修復:原始處理已建單(掛 source_webhook_event_id)後崩潰,event 停 pending;
+        重放走同一 webhook 事件 → book_slot 冪等回既有預約,不建第二筆。"""
+        _c, _ = client
+        s = _seed_booking_tenant()
+        event = {
+            "type": "message", "replyToken": "rt", "webhookEventId": "ob-idem",
+            "source": {"type": "user", "userId": "Uidem"},
+            "message": {"type": "text", "text": f"預約 {s['slot_id']} 2"},
+        }
+        db = _Session()
+        try:
+            db.add(Reservation(
+                tenant_id=s["tenant_id"], slot_id=s["slot_id"], party_size=2,
+                status="confirmed", line_user_id="Uidem",
+                source_webhook_event_id="ob-idem",
+            ))
+            db.add(LineWebhookEvent(
+                tenant_id=s["tenant_id"], webhook_event_id="ob-idem",
+                status=LineWebhookEventStatus.PENDING.value, last_stage="claimed",
+                payload_json=json.dumps(event, ensure_ascii=False),
+                updated_at=_NOW - datetime.timedelta(minutes=30),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        factory = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+        retry_stuck_events(
+            session_factory=factory, apply=True, now=_NOW,
+            line_client=FakeLineReplyClient(),
+            profile_client=StubLineProfileClient(display_name="x"),
+            translator=StubTranslator(),
+        )
+        db = _Session()
+        try:
+            resvs = db.execute(
+                select(Reservation).where(Reservation.tenant_id == s["tenant_id"])
+            ).scalars().all()
+            assert len(resvs) == 1  # 冪等:沒有重複建單
+            assert resvs[0].source_webhook_event_id == "ob-idem"
+        finally:
+            db.close()
+
+    def test_stuck_processing_reclaimed(self, client):
+        """#2 修復:認領後崩潰(卡住的 PROCESSING)於下輪被重新認領並重放。"""
+        _c, _ = client
+        s = _seed_booking_tenant()
+        event = {
+            "type": "message", "replyToken": "rt", "webhookEventId": "ob-proc",
+            "source": {"type": "user", "userId": "Uproc"},
+            "message": {"type": "text", "text": f"預約 {s['slot_id']} 1"},
+        }
+        db = _Session()
+        try:
+            db.add(LineWebhookEvent(
+                tenant_id=s["tenant_id"], webhook_event_id="ob-proc",
+                status=LineWebhookEventStatus.PROCESSING.value,
+                last_stage="claimed", attempt_count=1,
+                payload_json=json.dumps(event, ensure_ascii=False),
+                updated_at=_NOW - datetime.timedelta(minutes=30),
+            ))
+            db.commit()
+        finally:
+            db.close()
+        factory = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+        results = retry_stuck_events(
+            session_factory=factory, apply=True, now=_NOW,
+            line_client=FakeLineReplyClient(),
+            profile_client=StubLineProfileClient(display_name="x"),
+            translator=StubTranslator(),
+        )
+        assert [r.status for r in results] == ["processed"]
+        db = _Session()
+        try:
+            row = db.execute(select(LineWebhookEvent).where(
+                LineWebhookEvent.webhook_event_id == "ob-proc")).scalar_one()
+            assert row.status == LineWebhookEventStatus.PROCESSED.value
+            assert row.attempt_count == 2  # 認領 +1
+        finally:
+            db.close()
+
+    def test_fresh_processing_not_reclaimed(self, client):
+        """剛認領(updated_at 新)的 PROCESSING 代表別的實例正在處理,不得搶。"""
+        _c, _ = client
+        s = _seed_booking_tenant()
+        db = _Session()
+        try:
+            db.add(LineWebhookEvent(
+                tenant_id=s["tenant_id"], webhook_event_id="ob-proc-fresh",
+                status=LineWebhookEventStatus.PROCESSING.value,
+                last_stage="claimed", payload_json="{}",
+                updated_at=_NOW,
             ))
             db.commit()
         finally:
