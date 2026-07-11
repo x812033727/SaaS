@@ -5,20 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>員工排班 — {{ staff.name }}</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 1.5rem; color: #222; }
-    h1 { font-size: 1.3rem; }
-    h2 { font-size: 1.05rem; margin-top: 1.5rem; }
-    table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
-    th, td { border: 1px solid #ddd; padding: .4rem .6rem; text-align: left; font-size: .9rem; }
-    .empty { color: #888; font-size: .9rem; }
+    :root { --bg: #FAF9F6; --card: #fff; --ink: #2B2B28; --muted: #8A867C;
+            --line: #E9E5DD; --brand: #1A5C4A; --gold: #C4956A; }
+    body { font-family: "Noto Sans TC", system-ui, sans-serif; margin: 0;
+           padding: 1.5rem; background: var(--bg); color: var(--ink); line-height: 1.6; }
+    h1 { font-size: 1.3rem; letter-spacing: .02em; margin-top: 0; }
+    h1::after { content: ""; display: block; width: 36px; height: 3px;
+                background: var(--gold); border-radius: 2px; margin-top: .5rem; }
+    h2 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--brand); letter-spacing: .02em; }
+    table { border-collapse: collapse; width: 100%; margin-top: .5rem;
+            background: var(--card); border-radius: 12px; overflow: hidden;
+            box-shadow: 0 1px 2px rgba(43,43,40,.05); }
+    th, td { border: 1px solid var(--line); padding: .5rem .7rem; text-align: left; font-size: .9rem; }
+    th { color: var(--muted); font-weight: 700; font-size: .8rem; letter-spacing: .05em; }
+    .empty { color: var(--muted); font-size: .9rem; }
     @media (max-width: 640px) {
-      body { margin: 1rem; }
+      body { padding: 1rem; }
       table, tbody, tr, td { display: block; }
-      table tr { border: 1px solid #ddd; border-radius: 8px; margin-bottom: .6rem; overflow: hidden; }
+      table { background: none; box-shadow: none; }
+      table tr { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+                 margin-bottom: .6rem; overflow: hidden;
+                 box-shadow: 0 1px 2px rgba(43,43,40,.05); }
       table tr:first-child { display: none; } /* header row */
-      td { border: none; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; gap: 1rem; }
+      td { border: none; border-bottom: 1px solid var(--line); display: flex;
+           justify-content: space-between; gap: 1rem; }
       td:last-child { border-bottom: none; }
-      td::before { content: attr(data-label); font-weight: 600; color: #666; }
+      td::before { content: attr(data-label); font-weight: 600; color: var(--muted); }
     }
   </style>
 </head>
