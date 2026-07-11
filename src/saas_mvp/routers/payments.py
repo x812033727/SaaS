@@ -323,13 +323,22 @@ def ecpay_deposit_checkout(
         return HTMLResponse("<h1>付款期限已過</h1><p>預約已取消,請重新預約。</p>")
 
     amount_twd = (resv.deposit_cents or 0) // 100
-    if settings.payment_provider != "ecpay":
+    if settings.payment_provider == "stub":
         # stub:本地模擬付款頁(按鈕打模擬回調)
         return HTMLResponse(
             "<!doctype html><meta charset='utf-8'><h1>模擬定金付款</h1>"
             f"<p>預約 #{resv.id},定金 NT${amount_twd}(stub 模式,不會真扣款)。</p>"
             f"<form method='post' action='/payments/stub/deposit-paid/{resv.id}'>"
             "<button type='submit'>模擬付款成功</button></form>"
+        )
+    if settings.payment_provider != "ecpay":
+        # 定金收款後端目前僅實作 ecpay AIO(與 stub 模擬頁);newebpay/linepay 沒有
+        # 定金實作。**絕不可**退化成免費模擬頁 —— 那個 POST 端點會未收款就標 paid,
+        # 等於在正式金流設定下開放公開的免費定金繞過。
+        return HTMLResponse(
+            "<h1>定金付款暫不支援目前的金流設定</h1>"
+            "<p>定金目前僅支援綠界,請聯繫店家。</p>",
+            status_code=503,
         )
 
     base = settings.public_base_url.rstrip("/")
@@ -349,11 +358,13 @@ def stub_deposit_paid(
     reservation_id: int,
     db: Session = Depends(get_db),
 ):
-    """stub 模擬付款成功（僅 payment_provider != ecpay 時可用）。"""
+    """stub 模擬付款成功（僅 payment_provider == stub 時可用）。"""
     from saas_mvp.models.reservation import Reservation
     from saas_mvp.services import deposit as deposit_svc
 
-    if settings.payment_provider == "ecpay":
+    if settings.payment_provider != "stub":
+        # 只有 stub 模式允許『模擬付款成功』;任何真實 provider(ecpay/newebpay/
+        # linepay)都必須走真實回調驗簽,不得由此公開端點免費標 paid。
         return HTMLResponse("<h1>正式金流模式不提供模擬付款</h1>", status_code=403)
     resv = db.get(Reservation, reservation_id)
     if resv is None:

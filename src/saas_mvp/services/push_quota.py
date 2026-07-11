@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
@@ -128,11 +129,16 @@ def _get_or_create_push_usage_locked(
 
     if row is None:
         try:
-            row = PushUsage(tenant_id=tenant_id, period=period, count=0)
-            db.add(row)
-            db.flush()
-        except Exception:
-            db.rollback()
+            # SAVEPOINT：僅回捲本次插入。**不可用 db.rollback()** — consume_push_in_txn
+            # 的呼叫端（提醒派送、行銷、回訪、候補）會把「標 sent」與計量同交易提交，
+            # 併發插入衝突時 db.rollback() 會連呼叫端的「標 sent」一起回捲 → 重複推播 + 重扣。
+            with db.begin_nested():
+                row = PushUsage(tenant_id=tenant_id, period=period, count=0)
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            # 併發下另一寫入者已插入同 (tenant, period) 列；savepoint 已回捲、
+            # 外層交易完好，改讀既有列（重新加鎖）。
             row = db.execute(
                 select(PushUsage)
                 .where(

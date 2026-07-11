@@ -182,6 +182,7 @@ def sync_reservation(db: Session, resv, kind: str, *, client: GcalClient | None 
             return
 
         try:
+            did_call = False
             if kind == "create":
                 event_id = effective.insert_event(
                     calendar_id=cred.calendar_id,
@@ -189,6 +190,7 @@ def sync_reservation(db: Session, resv, kind: str, *, client: GcalClient | None 
                     event=_event_payload(resv, slot),
                 )
                 resv.gcal_event_id = event_id or None
+                did_call = True
             elif kind == "reschedule" and resv.gcal_event_id:
                 effective.patch_event(
                     calendar_id=cred.calendar_id,
@@ -196,14 +198,19 @@ def sync_reservation(db: Session, resv, kind: str, *, client: GcalClient | None 
                     event_id=resv.gcal_event_id,
                     event=_event_payload(resv, slot),
                 )
+                did_call = True
             elif kind == "cancel" and resv.gcal_event_id:
                 effective.delete_event(
                     calendar_id=cred.calendar_id,
                     refresh_token=cred.refresh_token,
                     event_id=resv.gcal_event_id,
                 )
-            cred.status = GCAL_CONNECTED
-            cred.last_error = None
+                did_call = True
+            # 僅在確實打了 API 才把狀態標回 connected/清 last_error;
+            # reschedule/cancel 遇 gcal_event_id 為空是 no-op,不得抹除先前的錯誤狀態。
+            if did_call:
+                cred.status = GCAL_CONNECTED
+                cred.last_error = None
         except GcalError as exc:
             cred.status = GCAL_ERROR
             cred.last_error = str(exc)[:255]

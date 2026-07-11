@@ -259,6 +259,29 @@ class TestGcalSync:
         )).scalar_one()
         assert cred.status == "error" and "api down" in cred.last_error
 
+    def test_noop_sync_keeps_prior_error_status(self, db):
+        """reschedule/cancel 遇 gcal_event_id 為空是 no-op,不得抹除先前的錯誤狀態。"""
+        t, slot_id = _gcal_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Unoop"
+        )
+        # 模擬先前一次同步失敗留下的錯誤狀態,且該預約沒有 event_id
+        cred = db.execute(select(TenantGcalCredential).where(
+            TenantGcalCredential.tenant_id == t.id)).scalar_one()
+        cred.status = "error"
+        cred.last_error = "prev fail"
+        resv.gcal_event_id = None
+        db.flush()
+
+        stub = StubGcalClient()
+        gcal_svc.sync_reservation(db, resv, "reschedule", client=stub)
+        gcal_svc.sync_reservation(db, resv, "cancel", client=stub)
+
+        db.refresh(cred)
+        assert cred.status == "error"          # no-op 不得標回 connected
+        assert cred.last_error == "prev fail"  # 也不得清掉 last_error
+        assert stub.events == {}               # 確實沒有打任何 API
+
     def test_refresh_token_encrypted_at_rest(self, db):
         t, _ = _gcal_tenant(db)
         cred = db.execute(select(TenantGcalCredential).where(

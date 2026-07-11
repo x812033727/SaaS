@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
 from saas_mvp.db import SessionLocal, import_all_models
@@ -34,7 +34,7 @@ _log = logging.getLogger(__name__)
 class CancelResult:
     reservation_id: int
     tenant_id: int
-    status: str  # cancelled | would_cancel | failed
+    status: str  # cancelled | would_cancel | skipped | failed
 
     def to_line(self) -> str:
         return (
@@ -50,6 +50,7 @@ def cancel_unpaid_deposits(
     apply: bool = False,
     now: datetime.datetime | None = None,
 ) -> list[CancelResult]:
+    from saas_mvp.models.reservation import Reservation
     from saas_mvp.services import booking as booking_svc
 
     effective_now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -66,13 +67,22 @@ def cancel_unpaid_deposits(
             continue
         with session_factory() as db:
             try:
-                resv = db.get(
-                    __import__("saas_mvp.models.reservation",
-                               fromlist=["Reservation"]).Reservation, resv_id
-                )
-                if resv is None or resv.deposit_status != deposit_svc.DEPOSIT_PENDING:
+                # 狀態守衛的原子過期:僅當定金仍為 pending 時才改 EXPIRED。
+                # 與付款回調競態時,若對方已搶先標 PAID 則 rowcount=0 → 放棄本筆,
+                # 不覆寫已付款狀態、也不取消已付款的預約(原本無守衛的
+                # read-then-write 會在 READ COMMITTED / SQLite 下 clobber PAID→EXPIRED)。
+                claimed = db.execute(
+                    update(Reservation)
+                    .where(
+                        Reservation.id == resv_id,
+                        Reservation.deposit_status == deposit_svc.DEPOSIT_PENDING,
+                    )
+                    .values(deposit_status=deposit_svc.DEPOSIT_EXPIRED)
+                ).rowcount
+                if claimed != 1:
+                    db.commit()
+                    results.append(CancelResult(resv_id, tenant_id, "skipped"))
                     continue
-                resv.deposit_status = deposit_svc.DEPOSIT_EXPIRED
                 db.commit()
                 # 系統路徑取消(line_user_id=None 跳過擁有者驗證),回補名額。
                 booking_svc.cancel_reservation(
