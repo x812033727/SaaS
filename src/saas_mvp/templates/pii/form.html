@@ -5,16 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>填寫聯絡資訊</title>
   <style>
-    body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
-           max-width: 420px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-    h1 { font-size: 1.3rem; }
-    label { display: block; margin: 1rem 0 0.3rem; font-weight: 600; }
-    input { width: 100%; padding: 0.6rem; box-sizing: border-box;
-            border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
-    button { margin-top: 1.5rem; width: 100%; padding: 0.8rem; font-size: 1rem;
-             background: #06c755; color: #fff; border: none; border-radius: 6px; }
-    .note { color: #888; font-size: 0.85rem; margin-top: 1rem; }
-    .state { padding: 1.5rem; background: #f6f6f6; border-radius: 8px; text-align: center; }
+    :root { --bg: #FAF9F6; --card: #fff; --ink: #2B2B28; --muted: #8A867C;
+            --line: #E9E5DD; --brand: #1A5C4A; --brand-deep: #124436;
+            --brand-soft: #EDF3F0; --gold: #C4956A; }
+    body { font-family: "Noto Sans TC", -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 460px; margin: 2rem auto; padding: 0 1.1rem;
+           background: var(--bg); color: var(--ink); line-height: 1.6; }
+    h1 { font-size: 1.25rem; letter-spacing: .02em; margin-bottom: .4rem; }
+    h1::after { content: ""; display: block; width: 36px; height: 3px;
+                background: var(--gold); border-radius: 2px; margin-top: .6rem; }
+    label { display: block; margin: 1rem 0 0.3rem; font-weight: 600; font-size: .9rem; color: var(--muted); }
+    input { width: 100%; padding: 0.7rem 0.8rem; box-sizing: border-box;
+            border: 1px solid var(--line); border-radius: 8px; font-size: 1rem;
+            background: var(--card); color: var(--ink); font-family: inherit; }
+    input:focus { outline: none; border-color: var(--brand);
+                  box-shadow: 0 0 0 3px var(--brand-soft); }
+    button { margin-top: 1.5rem; width: 100%; padding: 0.85rem; font-size: 1rem;
+             background: var(--brand); color: #fff; border: none; border-radius: 8px;
+             font-family: inherit; cursor: pointer; }
+    button:active { background: var(--brand-deep); }
+    .note { color: var(--muted); font-size: 0.85rem; margin-top: 1rem; }
+    .state { padding: 1.5rem; background: var(--card); border: 1px solid var(--line);
+             border-radius: 12px; text-align: center; }
   </style>
 </head>
 <body>
