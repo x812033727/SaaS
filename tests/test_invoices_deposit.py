@@ -265,6 +265,39 @@ class TestDeposit:
             apply=True, now=_NOW,
         ) == []
 
+    def test_concurrent_paid_not_clobbered(self, db, monkeypatch):
+        """列出待過期後、逐筆處理前若付款回調搶先標 PAID,狀態守衛 UPDATE 必須
+        略過該筆(rowcount=0)而非把 PAID 覆寫成 EXPIRED / 取消已付款預約。"""
+        t, slot_id = _deposit_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Urace",
+        )
+        resv.deposit_expires_at = _NOW - datetime.timedelta(minutes=1)
+        db.commit()
+        rid = resv.id
+
+        factory = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+        real_list = deposit_svc.list_expired_pending
+
+        def racing_list(dbx, **kw):
+            rows = real_list(dbx, **kw)  # 仍是 pending → 進入 targets
+            # 模擬併發:列出後、處理前,付款回調搶先標 PAID 並提交
+            r = dbx.get(Reservation, rid)
+            deposit_svc.mark_paid(dbx, r)
+            dbx.commit()
+            return rows
+
+        monkeypatch.setattr(deposit_svc, "list_expired_pending", racing_list)
+        results = cancel_unpaid_deposits(
+            session_factory=factory, push_client=FakeLinePushClient(),
+            apply=True, now=_NOW,
+        )
+        assert [r.status for r in results] == ["skipped"]  # 未取消
+        db.expire_all()
+        r2 = db.get(Reservation, rid)
+        assert r2.deposit_status == "paid"              # PAID 未被 clobber
+        assert r2.status != RESERVATION_CANCELLED       # 已付款預約未被取消
+
 
 # ── 付款頁/回調端到端(stub 模擬頁)────────────────────────────────────────────
 
@@ -318,3 +351,26 @@ class TestDepositEndpoints:
         db.close()
         r = client.get(f"/payments/ecpay/deposit/{rid}")
         assert "已付款" in r.text
+
+    def test_nonecpay_real_provider_no_free_deposit(self, client, monkeypatch):
+        """非 ecpay 的真 provider(newebpay/linepay)沒有定金後端:定金頁不得退化成
+        免費模擬頁,模擬付款端點必須 403 —— 否則等於公開的免費定金繞過。"""
+        monkeypatch.setattr(settings, "payment_provider", "newebpay")
+        db = _Session()
+        t, slot_id = _deposit_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Uweb3",
+        )
+        rid = resv.id
+        db.close()
+
+        r = client.get(f"/payments/ecpay/deposit/{rid}")
+        assert r.status_code == 503
+        assert "模擬付款成功" not in r.text
+        r2 = client.post(f"/payments/stub/deposit-paid/{rid}")
+        assert r2.status_code == 403
+        db = _Session()
+        try:
+            assert db.get(Reservation, rid).deposit_status == "pending"  # 仍未付款
+        finally:
+            db.close()
