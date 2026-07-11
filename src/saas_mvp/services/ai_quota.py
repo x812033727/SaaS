@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
@@ -68,11 +69,16 @@ def _get_or_create_locked(db: Session, tenant_id: int, period: str) -> AiUsage:
     ).scalar_one_or_none()
     if row is None:
         try:
-            row = AiUsage(tenant_id=tenant_id, period=period, count=0)
-            db.add(row)
-            db.flush()
-        except Exception:
-            db.rollback()
+            # SAVEPOINT：僅回捲本次插入。**不可用 db.rollback()** — 那會清掉呼叫端
+            # 未提交的外層交易（consume_ai_in_txn 與對話狀態同交易提交），
+            # 併發插入衝突時把整段對話狀態一起回捲掉。
+            with db.begin_nested():
+                row = AiUsage(tenant_id=tenant_id, period=period, count=0)
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            # 併發下另一寫入者已插入同 (tenant, period) 列；savepoint 已回捲、
+            # 外層交易完好，改讀既有列（重新加鎖）。
             row = db.execute(
                 select(AiUsage)
                 .where(AiUsage.tenant_id == tenant_id, AiUsage.period == period)
