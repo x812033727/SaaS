@@ -94,6 +94,8 @@ def save_email_config(
         raise PlatformEmailConfigError("SMTP 連接埠必須介於 1–65535。")
     if not from_address or "@" not in from_address or len(from_address) > 255:
         raise PlatformEmailConfigError("寄件人 Email 格式不正確。")
+    if host.lower() == "smtp.hostinger.com" and (not user or "@" not in user):
+        raise PlatformEmailConfigError("Hostinger SMTP 帳號必須填寫完整 Email，例如 name@example.com。")
     if not password and row is None:
         raise PlatformEmailConfigError("首次設定必須輸入 SMTP 密碼或應用程式密碼。")
     if len(user) > 255 or len(password) > 255:

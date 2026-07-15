@@ -38,7 +38,11 @@
     <label>寄件人 Email
       <input name="smtp_from" type="email" value="{{ email_status.from_address }}" required maxlength="255">
     </label>
-    <p class="muted">密碼會以 Fernet 加密保存，之後不會在頁面顯示明文。SMTP 連線使用 STARTTLS。</p>
+    <p class="muted">密碼會以 Fernet 加密保存，之後不會在頁面顯示明文。系統會依連接埠自動使用加密：465 為 SSL/TLS，587 為 STARTTLS。</p>
+    <details>
+      <summary>Hostinger 設定範例</summary>
+      <p class="muted">主機填 smtp.hostinger.com；連接埠填 465；SMTP 帳號與寄件人都填完整信箱（例如 name@example.com）；密碼填該信箱的密碼。</p>
+    </details>
     <button type="submit">儲存並啟用</button>
   </form>
 

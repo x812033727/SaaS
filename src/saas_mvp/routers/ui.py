@@ -1358,11 +1358,11 @@ def admin_email_settings_test(
             subject="寄信設定測試 — LINE 預約平台",
             body="這是一封平台 SMTP 設定測試信。若你收到此信，代表寄信服務設定成功。",
         )
-    except MailerError:
+    except MailerError as exc:
         return templates.TemplateResponse(
             "admin/email_settings.html",
             _platform_email_ctx(
-                request, actor, db, test_error="測試信寄送失敗，請檢查 SMTP 設定。"
+                request, actor, db, test_error=f"測試信寄送失敗：{exc}"
             ),
             status_code=status.HTTP_502_BAD_GATEWAY,
         )

@@ -133,3 +133,19 @@ def test_invalid_smtp_port_is_rejected(client):
     )
     assert response.status_code == 400
     assert "1–65535" in response.text
+
+
+def test_hostinger_requires_full_email_username(client):
+    _login(client, admin=True)
+    response = client.post(
+        "/ui/admin/email-settings",
+        data={
+            "smtp_host": "smtp.hostinger.com",
+            "smtp_port": "465",
+            "smtp_user": "",
+            "smtp_password": "secret-password",
+            "smtp_from": "mailer@example.com",
+        },
+    )
+    assert response.status_code == 400
+    assert "Hostinger SMTP 帳號必須填寫完整 Email" in response.text

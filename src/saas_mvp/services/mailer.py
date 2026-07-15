@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import socket
 import smtplib
+import ssl
 from abc import ABC, abstractmethod
 from email.message import EmailMessage
 
@@ -43,7 +45,7 @@ class Mailer(ABC):
 
 
 class SmtpMailer(Mailer):
-    """stdlib smtplib；STARTTLS（port 587 慣例）。"""
+    """stdlib smtplib；465 使用隱式 TLS，其餘連接埠使用 STARTTLS。"""
 
     def __init__(
         self,
@@ -67,13 +69,35 @@ class SmtpMailer(Mailer):
         msg["Subject"] = subject
         msg.set_content(body)
         try:
-            with smtplib.SMTP(self._host, self._port, timeout=15) as s:
-                s.starttls()
+            smtp_cls = smtplib.SMTP_SSL if self._port == 465 else smtplib.SMTP
+            with smtp_cls(
+                self._host,
+                self._port,
+                timeout=15,
+                context=ssl.create_default_context(),
+            ) if self._port == 465 else smtp_cls(
+                self._host, self._port, timeout=15
+            ) as s:
+                if self._port != 465:
+                    s.starttls(context=ssl.create_default_context())
                 if self._user:
                     s.login(self._user, self._password)
                 s.send_message(msg)
+        except smtplib.SMTPAuthenticationError as exc:
+            raise MailerError("SMTP 驗證失敗，請確認帳號與密碼是否正確。") from exc
+        except (socket.timeout, TimeoutError) as exc:
+            raise MailerError("SMTP 連線逾時，請確認主機、連接埠與加密方式。") from exc
+        except (ssl.SSLError, smtplib.SMTPNotSupportedError) as exc:
+            raise MailerError("SMTP 加密連線失敗，465 請使用 SSL/TLS，587 請使用 STARTTLS。") from exc
+        except smtplib.SMTPRecipientsRefused as exc:
+            raise MailerError("SMTP 伺服器拒絕收件人，請確認測試信箱是否有效。") from exc
+        except smtplib.SMTPSenderRefused as exc:
+            raise MailerError("SMTP 伺服器拒絕寄件人，寄件人通常須與 SMTP 帳號相同。") from exc
+        except (socket.gaierror, ConnectionError, OSError) as exc:
+            raise MailerError("無法連線 SMTP 伺服器，請確認主機名稱與連接埠。") from exc
         except Exception as exc:  # noqa: BLE001 — 統一包裝
-            raise MailerError(f"SMTP send failed: {type(exc).__name__}: {exc}") from exc
+            _log.warning("SMTP send failed: %s", type(exc).__name__)
+            raise MailerError("SMTP 伺服器拒絕寄送，請核對服務商設定。") from exc
 
 
 class StubMailer(Mailer):
