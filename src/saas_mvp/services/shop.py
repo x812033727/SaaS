@@ -301,7 +301,11 @@ def mark_order_paid(db: Session, *, tenant_id: int, order_id: int) -> Order:
 
 def cancel_order(db: Session, *, tenant_id: int, order_id: int) -> Order:
     """取消訂單並回補庫存（已取消為 no-op，不重複回補）。"""
-    order = get_order(db, tenant_id=tenant_id, order_id=order_id)
+    order = db.execute(
+        select(Order).where(Order.id == order_id, Order.tenant_id == tenant_id).with_for_update()
+    ).scalar_one_or_none()
+    if order is None:
+        raise OrderNotFound(f"order {order_id} not found")
     if order.status == ORDER_CANCELLED:
         return order
     # 回補庫存（鎖商品列）
@@ -317,6 +321,9 @@ def cancel_order(db: Session, *, tenant_id: int, order_id: int) -> Order:
         if product is not None and product.stock is not None:
             product.stock += it.qty
     order.status = ORDER_CANCELLED
+    # 若 POS 曾以禮物卡折抵，取消時自動退回原卡；唯一約束確保重試不重複退。
+    from saas_mvp.services import gift_cards as gift_cards_svc
+    gift_cards_svc.refund_order(db, tenant_id=tenant_id, order_id=order_id)
     db.commit()
     db.refresh(order)
     return order

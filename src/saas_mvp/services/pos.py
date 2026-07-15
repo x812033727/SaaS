@@ -75,12 +75,17 @@ def lookup_by_phone(db: Session, *, tenant_id: int, phone: str) -> dict | None:
     )
     if customer is None:
         return None
+    from saas_mvp.services import gift_cards as gift_cards_svc
+    gift_wallet = gift_cards_svc.customer_wallet(
+        db, tenant_id=tenant_id, customer_id=customer.id
+    )
     return {
         "customer": customer,
         "points_balance": customer.points_balance or 0,
         "tier": customer.tier or "regular",
         "tier_discount_percent": membership_svc.tier_discount_percent(customer.tier),
         "active_coupons": _active_coupons(db, tenant_id),
+        "gift_card_balance_cents": sum(x.balance_cents for x in gift_wallet),
     }
 
 
@@ -93,6 +98,7 @@ def checkout(
     coupon_code: str | None = None,
     points_to_redeem: int = 0,
     reservation_id: int | None = None,
+    gift_card_code: str | None = None,
 ) -> Order:
     """原子結帳：建單 + 折券 + 折點 + 回贈點 + 標到場。任一失敗整筆 rollback。
 
@@ -193,6 +199,18 @@ def checkout(
         )
         total -= points_to_redeem  # 1 點折 1 cent
     total = max(0, total)
+
+    # 禮物卡可分次使用；不足額時 total 保留為現金／刷卡應收。與訂單、庫存、
+    # 點數同一交易，任何錯誤整筆 rollback。
+    if gift_card_code:
+        from saas_mvp.services import gift_cards as gift_cards_svc
+        used = gift_cards_svc.redeem_for_order(
+            db, tenant_id=tenant_id, code=gift_card_code, order_id=order.id,
+            amount_due_cents=total,
+            customer_id=customer.id if customer is not None else None,
+        )
+        order.gift_card_cents = used
+        total -= used
 
     # 對淨付金額回贈點數（散客不贈）。
     if customer is not None and total > 0:

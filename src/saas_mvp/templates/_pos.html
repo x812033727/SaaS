@@ -1,6 +1,6 @@
 <h2>會員查詢</h2>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
-{% if order %}<div class="card success">結帳完成：訂單 #{{ order.id }}，金額 {{ order.total_cents }} 分。</div>{% endif %}
+{% if order %}<div class="card success">結帳完成：訂單 #{{ order.id }}{% if order.gift_card_cents %}，禮物卡折抵 NT$ {{ order.gift_card_cents // 100 }}{% endif %}，尚需支付 NT$ {{ order.total_cents // 100 }}。</div>{% endif %}
 <form hx-post="/ui/pos/lookup" hx-target="#pos-card" hx-swap="innerHTML" class="row">
   <label>電話<input name="phone" value="{{ phone or '' }}" maxlength="32" required></label>
   <button type="submit">查詢</button>
@@ -10,7 +10,7 @@
   {% if customer %}
   <div class="card">
     <h3>{{ customer.display_name or '會員' }}</h3>
-    <p class="muted">電話：{{ customer.phone }} · 點數：{{ points_balance }} · 等級：{{ customer.tier }}{% if tier_discount_percent %} · 會員折扣 {{ tier_discount_percent }}%{% endif %}</p>
+    <p class="muted">電話：{{ customer.phone }} · 點數：{{ points_balance }} · 禮物卡餘額 NT$ {{ (gift_card_balance_cents or 0) // 100 }} · 等級：{{ customer.tier }}{% if tier_discount_percent %} · 會員折扣 {{ tier_discount_percent }}%{% endif %}</p>
     {% if active_coupons %}
     <p>可用優惠券：
       {% for c in active_coupons %}<code>{{ c.code }}</code> ({{ c.name }}){% if not loop.last %}、{% endif %}{% endfor %}
@@ -29,12 +29,13 @@
   <h3>商品</h3>
   {% if products %}
   {% for p in products %}
-  <label>{{ p.name }}（{{ p.price_cents }} 分）
+  <label>{{ p.name }}（NT$ {{ p.price_cents // 100 }}）
     <input name="qty_{{ p.id }}" type="number" min="0" value="0">
   </label>
   {% endfor %}
   {% else %}<p class="muted">尚無商品，請先到商品頁建立。</p>{% endif %}
   <label>優惠券碼<input name="coupon_code" maxlength="64" placeholder="（選填）"></label>
   <label>折抵點數<input name="points_to_redeem" type="number" min="0" value="0"></label>
+  {% if gift_cards_enabled %}<label>禮物卡卡號<input name="gift_card_code" maxlength="32" autocomplete="off" placeholder="選填，可分次／不足額混合付款"></label>{% endif %}
   <button type="submit">結帳</button>
 </form>

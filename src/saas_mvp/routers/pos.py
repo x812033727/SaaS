@@ -15,6 +15,7 @@ from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import shop as shop_svc
+from saas_mvp.services import gift_cards as gift_cards_svc
 from saas_mvp.services.features import PRODUCT_SALES, require_feature
 
 router = APIRouter(
@@ -42,6 +43,7 @@ class LookupResponse(BaseModel):
     tier: str
     tier_discount_percent: int = 0
     active_coupons: list[CouponBrief]
+    gift_card_balance_cents: int = 0
 
 
 class CheckoutItem(BaseModel):
@@ -55,6 +57,7 @@ class CheckoutRequest(BaseModel):
     coupon_code: str | None = None
     points_to_redeem: int = Field(default=0, ge=0)
     reservation_id: int | None = None
+    gift_card_code: str | None = Field(default=None, max_length=32)
 
 
 class CheckoutResponse(BaseModel):
@@ -64,6 +67,7 @@ class CheckoutResponse(BaseModel):
     status: str
     total_cents: int
     discount_cents: int = 0
+    gift_card_cents: int = 0
     currency: str
 
     model_config = {"from_attributes": True}
@@ -91,6 +95,7 @@ def lookup(
         active_coupons=[
             CouponBrief.model_validate(c) for c in result["active_coupons"]
         ],
+        gift_card_balance_cents=result["gift_card_balance_cents"],
     )
 
 
@@ -109,6 +114,7 @@ def checkout(
             coupon_code=body.coupon_code,
             points_to_redeem=body.points_to_redeem,
             reservation_id=body.reservation_id,
+            gift_card_code=body.gift_card_code,
         )
     except pos_svc.CustomerNotFound:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -122,4 +128,6 @@ def checkout(
         raise HTTPException(status_code=409, detail="Insufficient points")
     except coupons_svc.CouponError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except gift_cards_svc.GiftCardError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return CheckoutResponse.model_validate(order)

@@ -54,6 +54,10 @@ class Order(Base):
     discount_cents = Column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    # POS 以禮物卡實際折抵金額；total_cents 為仍需以現金／刷卡支付的餘額。
+    gift_card_cents = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     # 套用的優惠券代碼（紀錄用，NULL = 未套券）。
     coupon_code = Column(String(64), nullable=True)
     currency = Column(String(8), nullable=False, default="TWD", server_default="TWD")

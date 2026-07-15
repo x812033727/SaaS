@@ -53,6 +53,11 @@ _TEXT_ALIASES: dict[str, str] = {
     "/packages": "packages",
     "套票": "packages",
     "我的套票": "packages",
+    "/giftcards": "gift_cards",
+    "禮物卡": "gift_cards",
+    "我的禮物卡": "gift_cards",
+    "/claimgift": "claim_gift_card",
+    "領取禮物卡": "claim_gift_card",
     # P4 商品銷售
     "/shop": "shop",
     "商品": "shop",
@@ -191,6 +196,8 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
         if args:
             params["code"] = args[0]  # 券碼為字串
         return action, params
+    if action == "claim_gift_card":
+        return action, {"code": args[0]} if args else {}
     if action == "buy":
         params = {}
         if args:
@@ -202,7 +209,7 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
         if len(args) > 2 and args[2]:
             params["coupon"] = args[2]
         return action, params
-    # slots / my / help / coupons / points / packages / shop / my_orders 無參數
+    # slots / my / help / coupons / points / packages / gift_cards / shop / my_orders 無參數
     return action, {}
 
 
@@ -233,7 +240,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         "reschedule", "resched_date", "resched_slot",
         "waitlist", "waitlist_join", "waitlist_cancel",
         "confirm", "contact",
-        "coupons", "redeem", "points", "packages",
+        "coupons", "redeem", "points", "packages", "gift_cards", "claim_gift_card",
         "rate",
         "shop", "buy", "my_orders",
     }:

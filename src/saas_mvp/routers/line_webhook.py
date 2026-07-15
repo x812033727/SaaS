@@ -1004,6 +1004,7 @@ _BOOKING_HELP = (
     "・取消 <預約編號> — 例：取消 7\n"
     "・候補 — 查看/取消我的額滿候補"
     "\n・套票 — 查看可用服務次數與到期日"
+    "\n・禮物卡 — 查看餘額；領取禮物卡 <卡號> — 加入錢包"
 )
 # follow（加好友）預設歡迎文案：租戶未自訂（welcome_message NULL/空白）時依 bot_mode 選用。
 _DEFAULT_WELCOME_BOOKING = (
@@ -1841,6 +1842,12 @@ def _dispatch_booking(
     if action == "packages":
         return _packages_reply(db, tenant_id, line_user_id), None
 
+    if action in ("gift_cards", "claim_gift_card"):
+        return _gift_cards_reply(
+            db, tenant_id, line_user_id,
+            claim_code=params.get("code") if action == "claim_gift_card" else None,
+        ), None
+
     # 顧客自助留聯絡資料：PRIVACY_MODE 開通時回 tokenized PII 表單連結
     # （不在聊天室索取個資）；未開通回引導文案。
     if action == "contact":
@@ -2030,6 +2037,40 @@ def _packages_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
             f"剩 {credit.remaining} 次（{expires} 到期）"
         )
     lines.append("網頁預約時可勾選「使用服務套票」自動扣次。")
+    return "\n".join(lines)
+
+
+def _gift_cards_reply(
+    db: Session, tenant_id: int, line_user_id: str, claim_code: str | None = None
+) -> str:
+    if not features_svc.is_enabled(db, tenant_id, features_svc.GIFT_CARDS):
+        return "本店尚未開放電子禮物卡功能。"
+    from saas_mvp.models.customer import Customer
+    from saas_mvp.services import gift_cards as gift_cards_svc
+
+    customer = db.query(Customer).filter(
+        Customer.tenant_id == tenant_id, Customer.line_user_id == line_user_id
+    ).first()
+    if customer is None:
+        return "你目前沒有會員資料，完成一次預約後即可領取禮物卡。"
+    if claim_code:
+        try:
+            gift_cards_svc.claim_card(
+                db, tenant_id=tenant_id, code=claim_code, customer_id=customer.id
+            )
+            db.commit()
+        except gift_cards_svc.GiftCardError as exc:
+            db.rollback()
+            return str(exc)
+    wallet = gift_cards_svc.customer_wallet(
+        db, tenant_id=tenant_id, customer_id=customer.id
+    )
+    if not wallet:
+        return "你目前沒有可用的禮物卡。收到卡號後輸入：領取禮物卡 <卡號>"
+    lines = ["你的禮物卡（永久有效）："]
+    for item in wallet[:20]:
+        lines.append(f"・末四碼 {item.card.code_last4}：NT$ {item.balance_cents // 100}")
+    lines.append("可在店內結帳時出示卡號，餘額可分次使用。")
     return "\n".join(lines)
 
 

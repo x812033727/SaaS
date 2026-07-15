@@ -95,6 +95,7 @@ from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import service_packages as packages_svc
+from saas_mvp.services import gift_cards as gift_cards_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import notifications_history as notif_history_svc
 from saas_mvp.services import faq as faq_svc
@@ -5092,6 +5093,11 @@ def _customer_detail_ctx(
     package_services = {
         service.id: service for service in tenant_query(db, Service, tid).all()
     }
+    gift_cards_enabled = features_svc.is_enabled(db, tid, features_svc.GIFT_CARDS)
+    gift_card_wallet = (
+        gift_cards_svc.customer_wallet(db, tenant_id=tid, customer_id=customer_id)
+        if gift_cards_enabled else []
+    )
     return _ctx(
         request, actor,
         customer=customer,
@@ -5114,7 +5120,40 @@ def _customer_detail_ctx(
             or actor.user.is_admin
         ),
         package_issue_key=secrets.token_urlsafe(24),
+        gift_cards_enabled=gift_cards_enabled,
+        gift_card_wallet=gift_card_wallet,
         **extra,
+    )
+
+
+@router.post("/customers/{customer_id}/gift-cards/claim", response_class=HTMLResponse)
+def customer_claim_gift_card(
+    request: Request,
+    customer_id: int,
+    code: str = Form(..., max_length=32),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    error = None
+    saved = None
+    if not _require_ui_feature(db, actor, features_svc.GIFT_CARDS):
+        return _feature_locked(request, actor, features_svc.GIFT_CARDS, "電子禮物卡")
+    try:
+        card = gift_cards_svc.claim_card(
+            db, tenant_id=actor.user.tenant_id, code=code, customer_id=customer_id
+        )
+        audit_svc.record_from_actor(
+            db, actor, action="gift_cards.claim", target=f"gift_card:{card.id}",
+            detail={"customer_id": customer_id}, request=request,
+        )
+        db.commit()
+        saved = "禮物卡已加入顧客錢包。"
+    except gift_cards_svc.GiftCardError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(request, actor, db, customer_id, error=error, saved=saved),
     )
 
 
@@ -6424,6 +6463,110 @@ def profile_save(
     )
 
 
+# ── 店家自助：電子禮物卡（GIFT_CARDS） ────────────────────────────────────────
+
+def _gift_cards_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    return _ctx(
+        request, actor,
+        cards=gift_cards_svc.recent_cards(db, tenant_id=tid),
+        customers=customers_svc.list_customers(db, tenant_id=tid, limit=300),
+        issuance_key=secrets.token_urlsafe(24),
+        **extra,
+    )
+
+
+@router.get("/gift-cards", response_class=HTMLResponse)
+def gift_cards_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.GIFT_CARDS):
+        return _feature_locked(request, actor, features_svc.GIFT_CARDS, "電子禮物卡")
+    return templates.TemplateResponse("gift_cards.html", _gift_cards_ctx(request, actor, db))
+
+
+@router.post("/gift-cards", response_class=HTMLResponse)
+def gift_cards_issue(
+    request: Request,
+    amount_twd: int = Form(...),
+    fulfillment_guarantee: str = Form(..., max_length=2000),
+    issuance_key: str = Form(..., max_length=64),
+    recipient_customer_id: str = Form(""),
+    purchaser_name: str = Form("", max_length=128),
+    recipient_name: str = Form("", max_length=128),
+    message: str = Form("", max_length=500),
+    compliance_ack: str = Form(""),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.GIFT_CARDS):
+        return _feature_locked(request, actor, features_svc.GIFT_CARDS, "電子禮物卡")
+    error = None
+    issued_code = None
+    issued_card = None
+    saved = None
+    try:
+        if compliance_ack != "true":
+            raise gift_cards_svc.GiftCardError("請確認已核對履約保障與禮券法規資訊。")
+        result = gift_cards_svc.issue_card(
+            db, tenant_id=actor.user.tenant_id, amount_cents=amount_twd * 100,
+            fulfillment_guarantee=fulfillment_guarantee, issuance_key=issuance_key,
+            issued_by_user_id=actor.user.id,
+            recipient_customer_id=_opt_int(recipient_customer_id),
+            purchaser_name=purchaser_name, recipient_name=recipient_name, message=message,
+        )
+        audit_svc.record_from_actor(
+            db, actor, action="gift_cards.issue", target=f"gift_card:{result.card.id}",
+            detail={"amount_cents": result.card.initial_value_cents,
+                    "recipient_customer_id": result.card.recipient_customer_id},
+            request=request,
+        )
+        db.commit()
+        issued_code = result.code
+        issued_card = result.card if result.created else None
+        saved = "禮物卡已發行。" if result.created else "此筆發行已處理，未重複建立禮物卡。"
+    except gift_cards_svc.GiftCardError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_gift_cards.html", _gift_cards_ctx(
+            request, actor, db, error=error, saved=saved,
+            issued_code=issued_code, issued_card=issued_card,
+        )
+    )
+
+
+@router.post("/gift-cards/{gift_card_id}/void", response_class=HTMLResponse)
+def gift_cards_void(
+    request: Request,
+    gift_card_id: int,
+    note: str = Form(..., min_length=2, max_length=255),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.GIFT_CARDS):
+        return _feature_locked(request, actor, features_svc.GIFT_CARDS, "電子禮物卡")
+    error = None
+    try:
+        card = gift_cards_svc.void_card(
+            db, tenant_id=actor.user.tenant_id, gift_card_id=gift_card_id,
+            note=note, actor_user_id=actor.user.id,
+        )
+        audit_svc.record_from_actor(
+            db, actor, action="gift_cards.void", target=f"gift_card:{card.id}",
+            detail={"reason": note}, request=request,
+        )
+        db.commit()
+    except gift_cards_svc.GiftCardError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_gift_cards.html", _gift_cards_ctx(request, actor, db, error=error)
+    )
+
+
 # ── 店家自助：POS 結帳（PRODUCT_SALES） ─────────────────────────────────────────
 
 def _pos_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
@@ -6431,6 +6574,7 @@ def _pos_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     return _ctx(
         request, actor,
         products=shop_svc.list_products(db, tenant_id=tid),
+        gift_cards_enabled=features_svc.is_enabled(db, tid, features_svc.GIFT_CARDS),
         **extra,
     )
 
@@ -6464,6 +6608,7 @@ def pos_lookup(
             points_balance=result["points_balance"],
             tier_discount_percent=result["tier_discount_percent"],
             active_coupons=result["active_coupons"],
+            gift_card_balance_cents=result["gift_card_balance_cents"],
         )
     return templates.TemplateResponse("_pos.html", _pos_ctx(request, actor, db, **extra))
 
@@ -6481,6 +6626,7 @@ async def pos_checkout(
     phone = (form.get("phone") or "").strip()
     customer_id = _opt_int(form.get("customer_id") or "")
     coupon_code = (form.get("coupon_code") or "").strip() or None
+    gift_card_code = (form.get("gift_card_code") or "").strip() or None
     try:
         points_to_redeem = int(form.get("points_to_redeem") or 0)
     except ValueError:
@@ -6507,6 +6653,7 @@ async def pos_checkout(
             order = pos_svc.checkout(
                 db, tenant_id=tid, customer_id=customer_id, items=items,
                 coupon_code=coupon_code, points_to_redeem=points_to_redeem,
+                gift_card_code=gift_card_code,
             )
         except pos_svc.CustomerNotFound:
             error = "找不到該會員。"
@@ -6520,6 +6667,8 @@ async def pos_checkout(
             error = "點數不足。"
         except coupons_svc.CouponError as exc:
             error = str(exc)
+        except gift_cards_svc.GiftCardError as exc:
+            error = str(exc)
         except HTTPException as exc:
             error = str(exc.detail)
 
@@ -6532,6 +6681,7 @@ async def pos_checkout(
                 customer=result["customer"],
                 points_balance=result["points_balance"],
                 active_coupons=result["active_coupons"],
+                gift_card_balance_cents=result["gift_card_balance_cents"],
             )
     return templates.TemplateResponse(
         "_pos.html", _pos_ctx(request, actor, db, order=order, error=error, **extra)

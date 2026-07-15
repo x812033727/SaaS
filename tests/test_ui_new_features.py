@@ -771,6 +771,52 @@ class TestPosUI:
             db.close()
 
 
+class TestGiftCardsUI:
+    def test_owner_can_issue_and_full_code_is_one_time(self, client):
+        email = _login(client)
+        tid = _tenant_id_for(email)
+        page = client.get("/ui/gift-cards")
+        assert page.status_code == 200
+        assert "電子禮物卡" in page.text
+        response = client.post("/ui/gift-cards", data={
+            "amount_twd": "500",
+            "fulfillment_guarantee": "由測試銀行提供自出售日起至少一年履約保障，逾期仍履約。",
+            "issuance_key": "ui-gift-issuance-key-12345",
+            "recipient_customer_id": "",
+            "purchaser_name": "王先生",
+            "recipient_name": "陳小姐",
+            "message": "生日快樂",
+            "compliance_ack": "true",
+        })
+        assert response.status_code == 200
+        assert "卡號只顯示這一次" in response.text
+        assert "永久有效" in response.text
+        assert "履約保障資訊" in response.text
+        assert "列印／另存 PDF 交付" in response.text
+        from saas_mvp.models.gift_card import GiftCard
+        db = _Session()
+        try:
+            card = db.query(GiftCard).filter(GiftCard.tenant_id == tid).one()
+            assert card.initial_value_cents == 50000
+            assert len(card.code_hash) == 64
+            assert card.fulfillment_guarantee.startswith("由測試銀行")
+        finally:
+            db.close()
+        refreshed = client.get("/ui/gift-cards")
+        assert "卡號只顯示這一次" not in refreshed.text
+        assert f"••••-{card.code_last4}" in refreshed.text
+
+    def test_issue_requires_compliance_ack(self, client):
+        _login(client)
+        response = client.post("/ui/gift-cards", data={
+            "amount_twd": "500",
+            "fulfillment_guarantee": "由測試銀行提供自出售日起至少一年履約保障，逾期仍履約。",
+            "issuance_key": "ui-gift-no-ack-12345678",
+        })
+        assert response.status_code == 200
+        assert "請確認已核對" in response.text
+
+
 class TestFaqUI:
     def test_page_renders(self, client):
         _login(client)
