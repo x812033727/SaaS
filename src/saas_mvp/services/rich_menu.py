@@ -612,7 +612,9 @@ def build_rich_menu_payload(
     height = template["size"]["height"]
     payload = {
         "size": template["size"],
-        "selected": False,
+        # LINE 的 selected=false 會讓選單預設收合，只顯示 chatBarText；
+        # 商家容易誤以為圖片沒有上傳。預設展開，讓顧客進入聊天室就看到完整圖片。
+        "selected": True,
         "name": f"{template_name}-{theme_name}-{mode}"[:300],
         "chatBarText": _CHAT_BAR_TEXT,
         "areas": _areas(template),

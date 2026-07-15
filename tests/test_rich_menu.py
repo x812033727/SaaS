@@ -66,6 +66,8 @@ class TestPayload:
     def test_build_payload_areas_count_matches_buttons(self):
         payload, image = rm.build_rich_menu_payload("booking4", "ocean_blue")
         assert payload["size"] == {"width": 2500, "height": 1686}
+        # selected=true 才會在 LINE 聊天室預設展開圖片；false 只顯示底部文字列。
+        assert payload["selected"] is True
         assert len(payload["areas"]) == 4
         datas = [a["action"]["data"] for a in payload["areas"]]
         assert "action=book" in datas and "action=slots" in datas
