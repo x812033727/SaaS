@@ -50,7 +50,7 @@ def test_scheduler_writes_heartbeat_continuously():
     ]
     assert heartbeat_lines, "crontab 必須有心跳排程項"
     # 心跳必須是每分鐘（healthcheck 判 <180s 新鮮度）
-    assert any(l.split()[:5] == ["*", "*", "*", "*", "*"] for l in heartbeat_lines), (
+    assert any(line.split()[:5] == ["*", "*", "*", "*", "*"] for line in heartbeat_lines), (
         "心跳排程必須每分鐘執行（compose healthcheck 判 180 秒新鮮度）"
     )
 
@@ -70,6 +70,7 @@ def test_scheduler_staggers_heavy_jobs_away_from_top_of_hour():
         "purge_webhook_events",
         "send_trial_notices",
         "retry_stuck_webhook_events",
+        "retry_gcal_syncs",
         "check_webhook_health",
         "cancel_unpaid_deposits",
     )
@@ -78,3 +79,8 @@ def test_scheduler_staggers_heavy_jobs_away_from_top_of_hour():
         if any(module in line for module in heavy_modules):
             minute = line.split(maxsplit=1)[0]
             assert minute not in {"0", "*/5", "*/10"}, line
+
+    assert any(
+        line.startswith("3-59/5 ") and "retry_gcal_syncs --apply" in line
+        for line in commands
+    ), "Google Calendar outbox 必須每 5 分鐘自動補送"

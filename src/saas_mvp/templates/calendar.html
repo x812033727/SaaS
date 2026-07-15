@@ -4,8 +4,22 @@
 <div class="card">
   <h2>同步到 Google 日曆</h2>
   {% if gcal_cred %}
-    <p>✅ 已連結 Google 日曆({{ gcal_cred.status }});新預約/改期/取消會自動同步。
-       {% if gcal_cred.last_error %}<span class="error">最近錯誤:{{ gcal_cred.last_error }}</span>{% endif %}</p>
+    <p>✅ 已連結 Google 日曆；新預約、改期與取消會先即時同步，暫時失敗時由系統自動補送。</p>
+    <p class="muted">
+      已同步 {{ gcal_sync_summary.synced }} 筆 ·
+      等待補送 {{ gcal_sync_summary.pending }} 筆 ·
+      需要處理 {{ gcal_sync_summary.failed }} 筆
+    </p>
+    {% if gcal_retry_queued %}<p class="success">已重新排入 {{ gcal_retry_queued }} 筆同步工作。</p>{% endif %}
+    {% if gcal_cred.last_error %}
+      <p class="error">最近同步錯誤：{{ gcal_cred.last_error }}</p>
+      <p class="muted">系統會依序自動重試；若 Google 授權已失效，請先解除連結後重新授權。</p>
+    {% endif %}
+    {% if gcal_sync_summary.failed %}
+      <form method="post" action="/ui/gcal/retry" style="display:inline">
+        <button type="submit" class="btn">重新補送失敗項目</button>
+      </form>
+    {% endif %}
     <form method="post" action="/ui/gcal/disconnect" style="display:inline">
       <button type="submit" class="btn">解除連結</button>
     </form>

@@ -20,7 +20,6 @@ from saas_mvp.config import settings  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
 from saas_mvp.models.booking_slot import BookingSlot  # noqa: E402
 from saas_mvp.models.order import ORDER_PAID, ORDER_PENDING, Order  # noqa: E402
-from saas_mvp.models.reservation import Reservation  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
 from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential  # noqa: E402
 from saas_mvp.services import booking as booking_svc  # noqa: E402
@@ -209,15 +208,13 @@ def _gcal_tenant(db) -> tuple[Tenant, int]:
 
 
 class TestGcalSync:
-    def test_lifecycle_create_reschedule_cancel(self, db):
+    def test_lifecycle_create_reschedule_cancel(self, db, monkeypatch):
         t, slot_id = _gcal_tenant(db)
         stub = StubGcalClient()
+        monkeypatch.setattr(gcal_svc, "get_gcal_client", lambda: stub)
         resv = booking_svc.book_slot(
             db, tenant_id=t.id, slot_id=slot_id, party_size=2, line_user_id="Ugc"
         )
-        # book_slot 內建 hook 用 factory(stub 單例);直接再同步一次以注入本地 stub
-        gcal_svc.sync_reservation(db, resv, "create", client=stub)
-        db.commit()
         assert resv.gcal_event_id in stub.events
         eid = resv.gcal_event_id
 
@@ -242,30 +239,29 @@ class TestGcalSync:
         )
         assert resv.gcal_event_id is None  # 未連結:不產生 event
 
-    def test_client_error_never_breaks_booking(self, db):
+    def test_client_error_never_breaks_booking(self, db, monkeypatch):
         class Boom(StubGcalClient):
             def insert_event(self, **kw):
                 raise gcal_svc.GcalError("api down")
 
+        monkeypatch.setattr(gcal_svc, "get_gcal_client", lambda: Boom())
         t, slot_id = _gcal_tenant(db)
-        resv = booking_svc.book_slot(
+        booking_svc.book_slot(
             db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Ub"
         )
-        gcal_svc.sync_reservation(db, resv, "create", client=Boom())
-        db.commit()
         # 預約成功、憑證標 error、last_error 記錄
         cred = db.execute(select(TenantGcalCredential).where(
             TenantGcalCredential.tenant_id == t.id
         )).scalar_one()
         assert cred.status == "error" and "api down" in cred.last_error
 
-    def test_noop_sync_keeps_prior_error_status(self, db):
-        """reschedule/cancel 遇 gcal_event_id 為空是 no-op,不得抹除先前的錯誤狀態。"""
+    def test_missing_event_is_rebuilt_on_reschedule(self, db):
+        """先前 create 失敗時，改期仍須補建目前最新版事件。"""
         t, slot_id = _gcal_tenant(db)
         resv = booking_svc.book_slot(
             db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Unoop"
         )
-        # 模擬先前一次同步失敗留下的錯誤狀態,且該預約沒有 event_id
+        # 模擬先前同步失敗留下的錯誤狀態，且沒有 event_id。
         cred = db.execute(select(TenantGcalCredential).where(
             TenantGcalCredential.tenant_id == t.id)).scalar_one()
         cred.status = "error"
@@ -275,12 +271,11 @@ class TestGcalSync:
 
         stub = StubGcalClient()
         gcal_svc.sync_reservation(db, resv, "reschedule", client=stub)
-        gcal_svc.sync_reservation(db, resv, "cancel", client=stub)
 
         db.refresh(cred)
-        assert cred.status == "error"          # no-op 不得標回 connected
-        assert cred.last_error == "prev fail"  # 也不得清掉 last_error
-        assert stub.events == {}               # 確實沒有打任何 API
+        assert cred.status == "connected"
+        assert cred.last_error is None
+        assert resv.gcal_event_id in stub.events
 
     def test_refresh_token_encrypted_at_rest(self, db):
         t, _ = _gcal_tenant(db)

@@ -830,6 +830,23 @@ def gcal_callback(
     cred.refresh_token = refresh_token
     cred.status = "connected"
     cred.last_error = None
+    db.flush()
+    # 首次連結／重新授權時，把尚未結束的預約排入同步，不要求店家逐筆異動。
+    from saas_mvp.models.booking_slot import BookingSlot
+    from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
+    from saas_mvp.services import gcal as gcal_svc
+
+    upcoming = list(db.execute(
+        select(Reservation)
+        .join(BookingSlot, BookingSlot.id == Reservation.slot_id)
+        .where(
+            Reservation.tenant_id == tid,
+            Reservation.status == RESERVATION_CONFIRMED,
+            BookingSlot.slot_start >= datetime.datetime.now(datetime.timezone.utc),
+        )
+    ).scalars())
+    for reservation in upcoming:
+        gcal_svc.enqueue_reservation_sync(db, reservation, "upsert")
     audit_svc.record_from_actor(
         db, actor, action="gcal.connect", target=f"tenant:{tid}", request=request,
     )
@@ -859,6 +876,30 @@ def gcal_disconnect(
         )
         db.commit()
     return RedirectResponse("/ui/calendar", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/gcal/retry")
+def gcal_retry_failed(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import gcal as gcal_svc
+
+    count = gcal_svc.retry_failed(db, actor.user.tenant_id)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="gcal.retry",
+        target=f"tenant:{actor.user.tenant_id}",
+        detail={"count": count},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        f"/ui/calendar?gcal_retry_queued={count}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 # ── 店家自助 ────────────────────────────────────────────────────────────────
@@ -5632,6 +5673,7 @@ def calendar_page(
     view: str = Query(default="month"),
     mode: str = Query(default="reservations"),
     date: str | None = Query(default=None),
+    gcal_retry_queued: int = Query(default=0, ge=0),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
@@ -5649,6 +5691,9 @@ def calendar_page(
     gcal_cred = db.execute(
         select(TenantGcalCredential).where(TenantGcalCredential.tenant_id == tid)
     ).scalar_one_or_none()
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_sync_summary = gcal_svc.summary(db, tid)
 
     month_data = week_data = staff_grid = None
     if mode == "staff":
@@ -5666,6 +5711,8 @@ def calendar_page(
         _ctx(
             request, actor,
             gcal_cred=gcal_cred,
+            gcal_sync_summary=gcal_sync_summary,
+            gcal_retry_queued=gcal_retry_queued,
             view=view, mode=mode, today=today,
             month_data=month_data, week_data=week_data, staff_grid=staff_grid,
         ),

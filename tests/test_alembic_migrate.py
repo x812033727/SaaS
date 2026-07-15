@@ -14,7 +14,6 @@ from __future__ import annotations
 import io
 import sqlite3
 
-import pytest
 from sqlalchemy import create_engine, inspect
 
 import saas_mvp.db as dbmod
@@ -48,7 +47,7 @@ def test_fresh_db_upgrades_to_head(tmp_path):
     # 抽查核心業務表
     for t in ("tenants", "users", "booking_reservations", "booking_slots",
               "line_webhook_events", "booking_waitlist_entries",
-              "feature_subscriptions", "marketing_campaigns"):
+              "feature_subscriptions", "marketing_campaigns", "gcal_sync_jobs"):
         assert t in tables, f"missing {t}"
     assert _version(eng) is not None
 

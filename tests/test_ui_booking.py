@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -24,6 +25,15 @@ import saas_mvp.models.line_channel_config as _lcm  # noqa: F401,E402
 
 from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
+from saas_mvp.models.booking_slot import BookingSlot  # noqa: E402
+from saas_mvp.models.gcal_sync_job import (  # noqa: E402
+    GCAL_SYNC_FAILED,
+    GCAL_SYNC_PENDING,
+    GcalSyncJob,
+)
+from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation  # noqa: E402
+from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential  # noqa: E402
+from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.line_client import (  # noqa: E402
     FakeLineRichMenuClient,
     StubLineBotInfoClient,
@@ -482,3 +492,53 @@ class TestCalendarUI:
         _login(client)
         r = client.get("/ui/calendar?date=not-a-date")
         assert r.status_code == 200
+
+    def test_failed_google_sync_can_be_requeued(self, client):
+        _login(client)
+        with _Session() as db:
+            user = db.execute(select(User).order_by(User.id.desc())).scalars().first()
+            cred = TenantGcalCredential(tenant_id=user.tenant_id, calendar_id="primary")
+            cred.refresh_token = "test-refresh"
+            db.add(cred)
+            slot = BookingSlot(
+                tenant_id=user.tenant_id,
+                slot_start=datetime.datetime(
+                    2030, 6, 1, 18, 0, tzinfo=datetime.timezone.utc
+                ),
+                max_capacity=2,
+            )
+            db.add(slot)
+            db.flush()
+            reservation = Reservation(
+                tenant_id=user.tenant_id,
+                slot_id=slot.id,
+                party_size=1,
+                status=RESERVATION_CONFIRMED,
+            )
+            db.add(reservation)
+            db.flush()
+            reservation_id = reservation.id
+            db.add(GcalSyncJob(
+                tenant_id=user.tenant_id,
+                reservation_id=reservation.id,
+                action="upsert",
+                status=GCAL_SYNC_FAILED,
+                attempt_count=8,
+                next_attempt_at=None,
+                last_error="Google API unavailable",
+            ))
+            db.commit()
+
+        page = client.get("/ui/calendar")
+        assert "需要處理 1 筆" in page.text
+        assert "重新補送失敗項目" in page.text
+
+        response = client.post("/ui/gcal/retry")
+        assert response.status_code == 200
+        assert "已重新排入 1 筆同步工作" in response.text
+        with _Session() as db:
+            row = db.execute(
+                select(GcalSyncJob).where(GcalSyncJob.reservation_id == reservation_id)
+            ).scalar_one()
+            assert row.status == GCAL_SYNC_PENDING
+            assert row.attempt_count == 0

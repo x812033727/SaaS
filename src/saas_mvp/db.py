@@ -70,6 +70,7 @@ def import_all_models() -> None:
     # 預約（booking）相關模型：customer 先於 reservation（FK 依賴）。
     from saas_mvp.models import customer, booking_slot  # noqa: F401
     from saas_mvp.models import reservation, reservation_reminder  # noqa: F401
+    from saas_mvp.models import gcal_sync_job  # noqa: F401
     # 額滿候補（依賴 booking_slot FK）。
     from saas_mvp.models import booking_waitlist  # noqa: F401
     # P3 優惠券/會員

@@ -40,6 +40,9 @@
 # 每 5 分鐘（從 :02 起）：重放卡住的 webhook 事件（A0.2 outbox；worker 死掉的 in-flight 補救）
 2-59/5 * * * * python -m saas_mvp.ops.retry_stuck_webhook_events --apply
 
+# 每 5 分鐘（從 :03 起）：補送失敗的 Google Calendar 同步
+3-59/5 * * * * python -m saas_mvp.ops.retry_gcal_syncs --apply
+
 # 每 10 分鐘（從 :06 起）:webhook 健康檢查(pending 超時/失敗率;異常 capture_alert + exit 1)
 6-59/10 * * * * python -m saas_mvp.ops.check_webhook_health
 

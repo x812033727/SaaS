@@ -255,14 +255,17 @@ def book_slot(
             reservation_id=reservation.id,
         )
 
+    # 與預約同交易保存 Google 同步意圖；即使程序在 commit 後、API 呼叫前中止，
+    # scheduler 仍能補送。未連結 Google 的租戶為 no-op。
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_svc.enqueue_reservation_sync(db, reservation, "create")
     db.commit()
     db.refresh(reservation)
     # 後台即時通知：新預約推播到後台（best-effort）。
     _publish_reservation_event(tenant_id, "booking_new", reservation)
     # Google Calendar 同步（E1,best-effort 永不拋)。
-    from saas_mvp.services import gcal as gcal_svc
-
-    gcal_svc.sync_reservation(db, reservation, "create")
+    gcal_svc.attempt_reservation_sync(db, reservation.id)
     db.commit()
     return reservation
 
@@ -327,14 +330,15 @@ def cancel_reservation(
             db, tenant_id=tenant_id, slot=slot
         )
 
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_svc.enqueue_reservation_sync(db, reservation, "cancel")
     db.commit()
     db.refresh(reservation)
     # 後台即時通知：取消（狀態變更）推播到後台（best-effort）。
     _publish_reservation_event(tenant_id, "booking_cancel", reservation)
     # Google Calendar 同步（E1,best-effort)。
-    from saas_mvp.services import gcal as gcal_svc
-
-    gcal_svc.sync_reservation(db, reservation, "cancel")
+    gcal_svc.attempt_reservation_sync(db, reservation.id)
     db.commit()
     # 候補通知（best-effort，絕不影響取消主流程）。
     if waitlist_entry_id is not None:
@@ -453,12 +457,13 @@ def reschedule_reservation(
             db, tenant_id=tenant_id, slot=old_slot
         )
 
+    from saas_mvp.services import gcal as gcal_svc
+
+    gcal_svc.enqueue_reservation_sync(db, reservation, "reschedule")
     db.commit()
     db.refresh(reservation)
     # Google Calendar 同步（E1,best-effort)。
-    from saas_mvp.services import gcal as gcal_svc
-
-    gcal_svc.sync_reservation(db, reservation, "reschedule")
+    gcal_svc.attempt_reservation_sync(db, reservation.id)
     db.commit()
     # 候補通知（best-effort，絕不影響改期主流程）。
     if waitlist_entry_id is not None:
