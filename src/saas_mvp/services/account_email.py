@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import datetime
-import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,11 +21,10 @@ from saas_mvp.models.email_token import (
     generate_token,
     hash_token,
 )
+from saas_mvp.models.email_delivery import EMAIL_CANCELED, EMAIL_PENDING, EmailDelivery
 from saas_mvp.models.user import User
-from saas_mvp.services.mailer import Mailer, MailerError
-
-_log = logging.getLogger(__name__)
-
+from saas_mvp.services import email_delivery as delivery_svc
+from saas_mvp.services.mailer import Mailer
 
 class TokenInvalid(Exception):
     """token 不存在 / 已用 / 已過期 / 用途不符。"""
@@ -38,6 +36,26 @@ def _utcnow() -> datetime.datetime:
 
 def _issue(db: Session, user_id: int, purpose: str) -> str:
     """發 token（回明文；DB 存雜湊）並 commit。"""
+    # 重寄時讓同用途舊連結失效，避免多封有效密碼重設信並存。
+    db.query(EmailToken).filter(
+        EmailToken.user_id == user_id,
+        EmailToken.purpose == purpose,
+        EmailToken.used_at.is_(None),
+    ).update({EmailToken.used_at: _utcnow()}, synchronize_session=False)
+    # 舊信若仍在 outbox，不應稍後寄出已失效的連結。
+    db.query(EmailDelivery).filter(
+        EmailDelivery.user_id == user_id,
+        EmailDelivery.category == purpose,
+        EmailDelivery.status == EMAIL_PENDING,
+    ).update(
+        {
+            EmailDelivery.status: EMAIL_CANCELED,
+            EmailDelivery.next_attempt_at: None,
+            EmailDelivery.last_error: "已由較新的信件取代",
+            EmailDelivery.updated_at: _utcnow(),
+        },
+        synchronize_session=False,
+    )
     token = generate_token()
     db.add(EmailToken(
         user_id=user_id,
@@ -66,26 +84,25 @@ def _consume(db: Session, token: str, purpose: str) -> EmailToken:
     return row
 
 
-def send_verification_email(db: Session, user: User, mailer: Mailer) -> bool:
-    """寄驗證信；best-effort（失敗記 log 回 False，不拋）。"""
+def send_verification_email(db: Session, user: User, mailer: Mailer) -> str:
+    """寄驗證信；回 sent 或 pending，失敗時已可靠入列重試。"""
     token = _issue(db, user.id, PURPOSE_VERIFY)
     base = settings.public_base_url.rstrip("/") or "http://127.0.0.1:8000"
     url = f"{base}/ui/verify-email/{token}"
-    try:
-        mailer.send(
-            to=user.email,
-            subject="請驗證您的 Email — LINE 預約平台",
-            body=(
-                "您好！\n\n請點擊以下連結完成 Email 驗證：\n"
-                f"{url}\n\n"
-                f"連結 {settings.email_token_ttl_minutes // 60} 小時內有效。"
-                "若這不是您的操作，請忽略本信。"
-            ),
-        )
-        return True
-    except MailerError:
-        _log.warning("verification email send failed for user %d", user.id, exc_info=True)
-        return False
+    return delivery_svc.deliver_or_queue(
+        db,
+        mailer,
+        user_id=user.id,
+        category=PURPOSE_VERIFY,
+        recipient=user.email,
+        subject="請驗證您的 Email — LINE 預約平台",
+        body=(
+            "您好！\n\n請點擊以下連結完成 Email 驗證：\n"
+            f"{url}\n\n"
+            f"連結 {settings.email_token_ttl_minutes // 60} 小時內有效。"
+            "若這不是您的操作，請忽略本信。"
+        ),
+    )
 
 
 def verify_email(db: Session, token: str) -> User:
@@ -101,7 +118,7 @@ def verify_email(db: Session, token: str) -> User:
 
 
 def request_password_reset(db: Session, email: str, mailer: Mailer) -> None:
-    """寄重設密碼信；查無 email 靜默成功（防帳號列舉）。寄送失敗拋 MailerError。"""
+    """寄重設密碼信；查無 email 靜默成功，失敗則入列重試。"""
     user = db.execute(
         select(User).where(User.email == email)
     ).scalar_one_or_none()
@@ -110,8 +127,12 @@ def request_password_reset(db: Session, email: str, mailer: Mailer) -> None:
     token = _issue(db, user.id, PURPOSE_RESET)
     base = settings.public_base_url.rstrip("/") or "http://127.0.0.1:8000"
     url = f"{base}/ui/reset-password/{token}"
-    mailer.send(
-        to=user.email,
+    delivery_svc.deliver_or_queue(
+        db,
+        mailer,
+        user_id=user.id,
+        category=PURPOSE_RESET,
+        recipient=user.email,
         subject="重設密碼 — LINE 預約平台",
         body=(
             "您好！\n\n請點擊以下連結重設密碼：\n"

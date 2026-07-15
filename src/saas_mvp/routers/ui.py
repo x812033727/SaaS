@@ -329,8 +329,12 @@ def resend_verification(
     mailer: Mailer = Depends(get_mailer),
 ):
     if actor.user.email_verified_at is None:
-        sent = account_email_svc.send_verification_email(db, actor.user, mailer)
-        target = "/ui/?verification_resent=1" if sent else "/ui/?verification_error=1"
+        outcome = account_email_svc.send_verification_email(db, actor.user, mailer)
+        target = (
+            "/ui/?verification_resent=1"
+            if outcome == "sent"
+            else "/ui/?verification_queued=1"
+        )
         return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -347,14 +351,7 @@ def forgot_password_submit(
     db: Session = Depends(get_db),
     mailer: Mailer = Depends(get_mailer),
 ):
-    try:
-        account_email_svc.request_password_reset(db, email, mailer)
-    except MailerError:
-        return templates.TemplateResponse(
-            "forgot_password.html",
-            _ctx(request, error="寄送失敗，請稍後再試或聯絡平台管理員。"),
-            status_code=status.HTTP_502_BAD_GATEWAY,
-        )
+    account_email_svc.request_password_reset(db, email, mailer)
     # 查無 email 也回相同訊息（防帳號列舉）。
     return templates.TemplateResponse(
         "forgot_password.html", _ctx(request, sent=True)
@@ -843,6 +840,7 @@ def dashboard(
     request: Request,
     verification_resent: int = Query(0),
     verification_error: int = Query(0),
+    verification_queued: int = Query(0),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
@@ -861,6 +859,7 @@ def dashboard(
              email_unverified=actor.user.email_verified_at is None,
              verification_resent=bool(verification_resent),
              verification_error=bool(verification_error),
+             verification_queued=bool(verification_queued),
              line_insights=_line_insights(db, tid)),
     )
 
@@ -1281,10 +1280,14 @@ def _platform_email_ctx(
     db: Session,
     **extra,
 ) -> dict:
+    from saas_mvp.services import email_delivery as delivery_svc
+
     return _ctx(
         request,
         actor,
         email_status=platform_email_svc.email_status(db, settings),
+        email_delivery_summary=delivery_svc.summary(db),
+        email_deliveries=delivery_svc.recent(db),
         **extra,
     )
 
@@ -1293,12 +1296,15 @@ def _platform_email_ctx(
 def admin_email_settings(
     request: Request,
     saved: int = Query(0),
+    retry_queued: int = Query(0),
     actor: Actor = Depends(require_ui_admin),
     db: Session = Depends(get_db),
 ):
     return templates.TemplateResponse(
         "admin/email_settings.html",
-        _platform_email_ctx(request, actor, db, saved=bool(saved)),
+        _platform_email_ctx(
+            request, actor, db, saved=bool(saved), retry_queued=bool(retry_queued)
+        ),
     )
 
 
@@ -1390,6 +1396,30 @@ def admin_email_settings_reset(
     db.commit()
     return RedirectResponse(
         "/ui/admin/email-settings", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post("/admin/email-settings/retry", response_class=HTMLResponse)
+def admin_email_settings_retry(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import email_delivery as delivery_svc
+
+    count = delivery_svc.retry_unsent(db)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.email.retry",
+        target="email:outbox",
+        detail={"count": count},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/email-settings?retry_queued=1",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

@@ -21,6 +21,7 @@ from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.config import settings  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
 from saas_mvp.models.email_token import EmailToken  # noqa: E402
+from saas_mvp.models.email_delivery import EmailDelivery  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
 from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.ops.send_trial_notices import send_trial_notices  # noqa: E402
@@ -119,7 +120,7 @@ class TestEmailVerification:
         assert 'action="/ui/resend-verification"' in r.text
         assert 'name="csrf_token"' in r.text
 
-    def test_resend_failure_returns_honest_dashboard_error(
+    def test_resend_failure_is_queued_for_retry(
         self, client, stub_mailer
     ):
         _ui_register(client)
@@ -132,9 +133,28 @@ class TestEmailVerification:
         try:
             r = client.post("/ui/resend-verification", follow_redirects=False)
             assert r.status_code == 303
-            assert r.headers["location"] == "/ui/?verification_error=1"
+            assert r.headers["location"] == "/ui/?verification_queued=1"
             shown = client.get(r.headers["location"])
-            assert "目前無法寄出驗證信" in shown.text
+            assert "已排入自動重試" in shown.text
+        finally:
+            client.app.dependency_overrides[get_mailer] = lambda: stub_mailer
+
+    def test_new_resend_cancels_older_queued_link(self, client, stub_mailer):
+        _ui_register(client)
+
+        class _FailingMailer:
+            def send(self, **kwargs):
+                raise MailerError("smtp unavailable")
+
+        client.app.dependency_overrides[get_mailer] = lambda: _FailingMailer()
+        try:
+            client.post("/ui/resend-verification", follow_redirects=False)
+            client.post("/ui/resend-verification", follow_redirects=False)
+            with _Session() as db:
+                rows = db.execute(
+                    select(EmailDelivery).order_by(EmailDelivery.id)
+                ).scalars().all()
+                assert [row.status for row in rows] == ["sent", "canceled", "pending"]
         finally:
             client.app.dependency_overrides[get_mailer] = lambda: stub_mailer
 

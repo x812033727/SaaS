@@ -10,6 +10,7 @@
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   {% if test_sent %}<div class="success">測試信已寄到 {{ current_user.email }}。</div>{% endif %}
   {% if test_error %}<div class="error">{{ test_error }}</div>{% endif %}
+  {% if retry_queued %}<div class="success">未寄出信件已排入重試，排程會在一分鐘內處理。</div>{% endif %}
 
   {% if email_status.configured %}
     <p><span class="badge valid">已設定</span>
@@ -59,5 +60,38 @@
     <button type="submit" class="danger" onclick="return confirm('確定移除後台寄信設定？')">移除後台設定</button>
   </form>
   {% endif %}
+</div>
+
+<div class="card">
+  <h2>寄送狀態</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">等待重試</div><div class="value">{{ email_delivery_summary.pending }}</div></div>
+    <div class="stat"><div class="label">已寄出</div><div class="value">{{ email_delivery_summary.sent }}</div></div>
+    <div class="stat"><div class="label">重試失敗</div><div class="value">{{ email_delivery_summary.failed }}</div></div>
+  </div>
+  {% if email_delivery_summary.pending or email_delivery_summary.failed %}
+  <form method="post" action="/ui/admin/email-settings/retry">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">立即排入重試</button>
+  </form>
+  {% endif %}
+  <h3>最近 30 封</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>時間</th><th>類型</th><th>收件人</th><th>狀態</th><th>嘗試</th><th>原因</th></tr></thead>
+    <tbody>
+    {% for row in email_deliveries %}
+      <tr>
+        <td>{{ row.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ '驗證信' if row.category == 'verify' else ('重設密碼' if row.category == 'reset' else row.category) }}</td>
+        <td>{{ row.recipient }}</td>
+        <td><span class="badge {{ 'valid' if row.status == 'sent' else ('unchecked' if row.status in ('pending', 'canceled') else 'invalid') }}">{{ {'sent':'已寄出','pending':'等待重試','failed':'失敗','canceled':'已被新信取代'}.get(row.status, row.status) }}</span></td>
+        <td>{{ row.attempt_count }}</td>
+        <td>{{ row.last_error or '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">目前尚無寄送紀錄。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
 </div>
 {% endblock %}
