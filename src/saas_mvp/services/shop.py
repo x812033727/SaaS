@@ -290,10 +290,21 @@ def list_order_items(db: Session, *, tenant_id: int, order_id: int) -> list[Orde
 
 
 def mark_order_paid(db: Session, *, tenant_id: int, order_id: int) -> Order:
-    order = get_order(db, tenant_id=tenant_id, order_id=order_id)
+    # 金流 callback 可能重送／並行；鎖訂單使 paid_at、點數與抽成快照只執行一次。
+    order = db.execute(
+        select(Order)
+        .where(Order.id == order_id, Order.tenant_id == tenant_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if order is None:
+        raise OrderNotFound(f"order {order_id} not found")
     if order.status == ORDER_PENDING:
         order.status = ORDER_PAID
         order.paid_at = _utcnow()
+        db.flush()
+        from saas_mvp.services import commissions as commissions_svc
+
+        commissions_svc.record_paid_order(db, order=order)
         db.commit()
         db.refresh(order)
     return order
@@ -308,6 +319,7 @@ def cancel_order(db: Session, *, tenant_id: int, order_id: int) -> Order:
         raise OrderNotFound(f"order {order_id} not found")
     if order.status == ORDER_CANCELLED:
         return order
+    was_paid = order.status == ORDER_PAID
     # 回補庫存（鎖商品列）
     items = list_order_items(db, tenant_id=tenant_id, order_id=order_id)
     for it in items:
@@ -321,6 +333,10 @@ def cancel_order(db: Session, *, tenant_id: int, order_id: int) -> Order:
         if product is not None and product.stock is not None:
             product.stock += it.qty
     order.status = ORDER_CANCELLED
+    if was_paid:
+        from saas_mvp.services import commissions as commissions_svc
+
+        commissions_svc.reverse_order(db, order=order)
     # 若 POS 曾以禮物卡折抵，取消時自動退回原卡；唯一約束確保重試不重複退。
     from saas_mvp.services import gift_cards as gift_cards_svc
     gift_cards_svc.refund_order(db, tenant_id=tenant_id, order_id=order_id)

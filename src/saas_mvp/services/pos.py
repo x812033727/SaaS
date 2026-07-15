@@ -23,10 +23,13 @@ from sqlalchemy.orm import Session
 from saas_mvp.config import settings
 from saas_mvp.models.coupon import Coupon
 from saas_mvp.models.customer import Customer
-from saas_mvp.models.order import ORDER_PENDING, Order
+from saas_mvp.models.commission import CommissionRule, ITEM_PRODUCT, ITEM_SERVICE
+from saas_mvp.models.order import ORDER_PAID, ORDER_PENDING, Order
 from saas_mvp.models.order_item import OrderItem
 from saas_mvp.models.product import Product
-from saas_mvp.models.reservation import Reservation
+from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
+from saas_mvp.models.service import Service
+from saas_mvp.models.staff import Staff
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.tenants import tenant_query
 
@@ -37,6 +40,25 @@ class POSError(Exception):
 
 class CustomerNotFound(POSError):
     pass
+
+
+class ReservationNotFound(POSError):
+    pass
+
+
+class ReservationAlreadyCheckedOut(POSError):
+    pass
+
+
+class StaffNotFound(POSError):
+    pass
+
+
+class StaffRequired(POSError):
+    pass
+
+
+VALID_PAYMENT_METHODS = frozenset({"cash", "card", "transfer", "other"})
 
 
 def _utcnow() -> datetime.datetime:
@@ -99,16 +121,78 @@ def checkout(
     points_to_redeem: int = 0,
     reservation_id: int | None = None,
     gift_card_code: str | None = None,
+    staff_id: int | None = None,
+    payment_method: str | None = None,
+    tip_cents: int = 0,
+    mark_paid: bool = False,
 ) -> Order:
     """原子結帳：建單 + 折券 + 折點 + 回贈點 + 標到場。任一失敗整筆 rollback。
 
     items：[{"product_id": int, "qty": int}, ...]。customer_id=None 為散客（walk-in），
     不可折/贈點。
     """
-    if not items:
-        from fastapi import HTTPException
+    from fastapi import HTTPException
 
+    if tip_cents < 0:
+        raise HTTPException(status_code=422, detail="tip_cents must be >= 0")
+    if mark_paid and payment_method not in VALID_PAYMENT_METHODS:
+        raise HTTPException(status_code=422, detail="請選擇付款方式")
+
+    reservation: Reservation | None = None
+    service: Service | None = None
+    if reservation_id is not None:
+        reservation = db.execute(
+            select(Reservation)
+            .where(
+                Reservation.id == reservation_id,
+                Reservation.tenant_id == tenant_id,
+                Reservation.status == RESERVATION_CONFIRMED,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if reservation is None:
+            raise ReservationNotFound("reservation not found")
+        duplicate = db.execute(
+            select(Order.id).where(
+                Order.tenant_id == tenant_id,
+                Order.reservation_id == reservation.id,
+            )
+        ).first()
+        if duplicate is not None:
+            raise ReservationAlreadyCheckedOut("reservation already checked out")
+        if reservation.service_id is not None:
+            service = (
+                tenant_query(db, Service, tenant_id)
+                .filter(Service.id == reservation.service_id)
+                .first()
+            )
+        if customer_id is None:
+            customer_id = reservation.customer_id
+        if staff_id is None:
+            staff_id = reservation.staff_id
+
+    if not items and service is None:
         raise HTTPException(status_code=422, detail="items must not be empty")
+    if staff_id is not None:
+        seller = (
+            tenant_query(db, Staff, tenant_id).filter(Staff.id == staff_id).first()
+        )
+        if seller is None or not seller.is_active:
+            raise StaffNotFound(f"staff {staff_id} not found")
+    elif mark_paid:
+        has_active_rules = db.execute(
+            select(CommissionRule.id)
+            .join(Staff, Staff.id == CommissionRule.staff_id)
+            .where(
+                CommissionRule.tenant_id == tenant_id,
+                CommissionRule.is_active.is_(True),
+                Staff.tenant_id == tenant_id,
+                Staff.is_active.is_(True),
+            )
+            .limit(1)
+        ).first() is not None
+        if tip_cents > 0 or has_active_rules:
+            raise StaffRequired("paid sale requires staff attribution")
 
     # 合併數量、固定鎖定順序避免死鎖（比照 shop.create_order）。
     merged: dict[int, int] = {}
@@ -139,6 +223,10 @@ def checkout(
         status=ORDER_PENDING,
         total_cents=0,
         currency=settings.currency,
+        reservation_id=reservation.id if reservation is not None else None,
+        staff_id=staff_id,
+        payment_method=payment_method if mark_paid else None,
+        tip_cents=tip_cents,
     )
     db.add(order)
     db.flush()  # 取得 order.id
@@ -171,6 +259,24 @@ def checkout(
             unit_price_cents=product.price_cents,
             qty=qty,
             line_total_cents=line_total,
+            item_type=ITEM_PRODUCT,
+            staff_id=staff_id,
+        ))
+
+    # 預約服務以成交當下名稱／售價快照加入同一張單；服務改價不影響歷史。
+    if service is not None:
+        subtotal += service.price_cents
+        db.add(OrderItem(
+            order_id=order.id,
+            product_id=None,
+            service_id=service.id,
+            tenant_id=tenant_id,
+            name_snapshot=service.name,
+            unit_price_cents=service.price_cents,
+            qty=1,
+            line_total_cents=service.price_cents,
+            item_type=ITEM_SERVICE,
+            staff_id=reservation.staff_id or staff_id,
         ))
 
     # 會員等級折扣 + 優惠券：三條結帳路徑共用 pricing.apply_order_discounts。
@@ -190,14 +296,16 @@ def checkout(
             raise HTTPException(
                 status_code=422, detail="walk-in cannot redeem points"
             )
+        actual_points = min(points_to_redeem, total)
         membership_svc.redeem_points(
             db,
             tenant_id=tenant_id,
             customer=customer,
-            amount=points_to_redeem,
+            amount=actual_points,
             reason=f"pos_order:{order.id}",
         )
-        total -= points_to_redeem  # 1 點折 1 cent
+        order.points_cents = actual_points
+        total -= actual_points  # 1 點折 1 cent
     total = max(0, total)
 
     # 禮物卡可分次使用；不足額時 total 保留為現金／刷卡應收。與訂單、庫存、
@@ -226,16 +334,17 @@ def checkout(
             )
 
     # 連動預約：標到場（mark_attendance 行內邏輯，同一交易）。
-    if reservation_id is not None:
-        reservation = (
-            tenant_query(db, Reservation, tenant_id)
-            .filter(Reservation.id == reservation_id)
-            .first()
-        )
-        if reservation is not None:
-            reservation.attended = True
+    if reservation is not None:
+        reservation.attended = True
 
-    order.total_cents = total
+    order.total_cents = total + tip_cents
+    if mark_paid:
+        order.status = ORDER_PAID
+        order.paid_at = _utcnow()
+        db.flush()
+        from saas_mvp.services import commissions as commissions_svc
+
+        commissions_svc.record_paid_order(db, order=order)
     db.commit()
     db.refresh(order)
     return order

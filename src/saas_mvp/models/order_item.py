@@ -26,6 +26,18 @@ class OrderItem(Base):
         ForeignKey("products.id", ondelete="SET NULL"),
         nullable=True,
     )
+    service_id = Column(
+        Integer,
+        ForeignKey("booking_services.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    staff_id = Column(
+        Integer,
+        ForeignKey("booking_staff.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    item_type = Column(String(16), nullable=False, default="product", server_default="product")
     tenant_id = Column(
         Integer,
         ForeignKey("tenants.id", ondelete="CASCADE"),

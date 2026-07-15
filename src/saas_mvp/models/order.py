@@ -58,6 +58,20 @@ class Order(Base):
     gift_card_cents = Column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    # POS 點數折抵（與折扣分開保存，供成交淨額與抽成稽核）。
+    points_cents = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # POS 成交歸屬；reservation_id 至多結帳一次，避免重複收款。
+    reservation_id = Column(
+        Integer,
+        ForeignKey("booking_reservations.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    staff_id = Column(
+        Integer, ForeignKey("booking_staff.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    payment_method = Column(String(16), nullable=True)
+    tip_cents = Column(Integer, nullable=False, default=0, server_default=text("0"))
     # 套用的優惠券代碼（紀錄用，NULL = 未套券）。
     coupon_code = Column(String(64), nullable=True)
     currency = Column(String(8), nullable=False, default="TWD", server_default="TWD")
@@ -78,4 +92,5 @@ class Order(Base):
 
     __table_args__ = (
         Index("ix_order_tenant_status", "tenant_id", "status"),
+        Index("ix_order_tenant_staff_paid", "tenant_id", "staff_id", "paid_at"),
     )

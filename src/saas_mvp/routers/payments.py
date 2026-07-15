@@ -503,9 +503,9 @@ def linepay_confirm(
             status_code=502,
         )
 
-    order.status = "paid"
     order.merchant_trade_no = f"LP{transactionId}"[:20]
-    db.commit()
+    # 統一走訂單付款服務，補 paid_at 並在有 POS 員工歸屬時冪等建立抽成快照。
+    shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
     return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
 
 

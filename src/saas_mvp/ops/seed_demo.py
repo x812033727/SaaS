@@ -33,7 +33,7 @@ from saas_mvp.db import SessionLocal, import_all_models, init_db
 from saas_mvp.models.campaign import CAMPAIGN_BIRTHDAY, Campaign
 from saas_mvp.models.appointment_series import AppointmentSeries
 from saas_mvp.models.coupon import DISCOUNT_AMOUNT, DISCOUNT_PERCENT
-from saas_mvp.models.customer import upsert_customer_from_line
+from saas_mvp.models.customer import Customer, upsert_customer_from_line
 from saas_mvp.models.reservation import Reservation
 from saas_mvp.models.staff import Staff
 from saas_mvp.models.tenant import Tenant
@@ -43,6 +43,7 @@ from saas_mvp.services import appointment_series as appointment_series_svc
 from saas_mvp.services import bookable_resources as resources_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import client_forms as client_forms_svc
+from saas_mvp.services import commissions as commissions_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import features as features_svc
@@ -50,10 +51,12 @@ from saas_mvp.services import flex_menu as flex_menu_svc
 from saas_mvp.services import locations as locations_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import portfolio as portfolio_svc
+from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import slots as slots_svc
 from saas_mvp.services import staff as staff_svc
+from saas_mvp.services.tenants import tenant_query
 
 DEMO_SLUG = "demo"
 DEMO_LINE_USER_ID = "Udemo0000000000000000000000000001"
@@ -533,6 +536,76 @@ def _ensure_customer(db: Session, tenant_id: int) -> int:
     return 1
 
 
+def _ensure_commissions(
+    db: Session,
+    tenant_id: int,
+    actor_user_id: int,
+    staff: list[Staff],
+) -> int:
+    """建立抽成規則、已付 POS 範例與一張草稿結算單（冪等）。"""
+    from saas_mvp.models.commission import BASIS_NET, ITEM_PRODUCT, ITEM_SERVICE, METHOD_PERCENT
+
+    created = 0
+    current = commissions_svc.latest_rules(db, tenant_id=tenant_id)
+    today = _utcnow().date()
+    for person in staff:
+        for item_type, percent in ((ITEM_SERVICE, 35), (ITEM_PRODUCT, 10)):
+            if (person.id, item_type) in current:
+                continue
+            commissions_svc.save_rule(
+                db,
+                tenant_id=tenant_id,
+                staff_id=person.id,
+                item_type=item_type,
+                method=METHOD_PERCENT,
+                value=percent * 100,
+                calculation_basis=BASIS_NET,
+                effective_from=today,
+                actor_user_id=actor_user_id,
+            )
+            created += 1
+    db.commit()
+
+    if not commissions_svc.recent_earnings(db, tenant_id=tenant_id, limit=1):
+        products = [
+            row
+            for row in shop_svc.list_products(db, tenant_id=tenant_id)
+            if row.is_active
+        ]
+        customer = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(Customer.line_user_id == DEMO_LINE_USER_ID)
+            .first()
+        )
+        if products and staff:
+            pos_svc.checkout(
+                db,
+                tenant_id=tenant_id,
+                customer_id=customer.id if customer is not None else None,
+                items=[{"product_id": products[0].id, "qty": 1}],
+                staff_id=staff[0].id,
+                payment_method="card",
+                tip_cents=10_000,
+                mark_paid=True,
+            )
+            created += 1
+
+    if (
+        commissions_svc.recent_earnings(db, tenant_id=tenant_id, limit=1)
+        and not commissions_svc.list_pay_runs(db, tenant_id=tenant_id, limit=1)
+    ):
+        commissions_svc.create_pay_run(
+            db,
+            tenant_id=tenant_id,
+            period_start=today.replace(day=1),
+            period_end=today,
+            actor_user_id=actor_user_id,
+        )
+        db.commit()
+        created += 1
+    return created
+
+
 def _ensure_client_form(db: Session, tenant_id: int) -> int:
     """建立可直接展示的全服務諮詢表，並補到示範預約（冪等）。"""
     name = "服務前健康諮詢與同意書"
@@ -633,13 +706,16 @@ def run(
         )
 
         counts["products"] = _ensure_products(db, tenant_id)
+        counts["customers"] = _ensure_customer(db, tenant_id)
+        counts["commissions"] = _ensure_commissions(
+            db, tenant_id, user_id, staff
+        )
         counts["coupons"] = _ensure_coupons(db, tenant_id)
         counts["flex_cards"] = _ensure_flex_menu(db, tenant_id)
         counts["portfolio"] = _ensure_portfolio(db, tenant_id)
         slug = _ensure_profile(db, tenant_id, tenant_name)
         counts["faq"] = _ensure_faq(db, tenant_id)
         counts["campaigns"] = _ensure_campaign(db, tenant_id)
-        counts["customers"] = _ensure_customer(db, tenant_id)
         counts["client_forms"] = _ensure_client_form(db, tenant_id)
 
         # 取一個員工 access_token 給員工入口連結。

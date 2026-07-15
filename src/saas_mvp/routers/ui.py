@@ -23,6 +23,7 @@ import hmac
 import html
 import secrets
 import json
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
@@ -106,6 +107,7 @@ from saas_mvp.services import service_packages as packages_svc
 from saas_mvp.services import gift_cards as gift_cards_svc
 from saas_mvp.services import client_forms as client_forms_svc
 from saas_mvp.services import bookable_resources as resources_svc
+from saas_mvp.services import commissions as commissions_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import notifications_history as notif_history_svc
 from saas_mvp.services import faq as faq_svc
@@ -125,6 +127,7 @@ from fastapi import HTTPException
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
+templates.env.filters["money"] = lambda cents: f"{int(cents or 0) / 100:,.2f}"
 
 # ── CSRF（double-submit cookie token）───────────────────────────────────────
 
@@ -7967,11 +7970,34 @@ def gift_cards_void(
 
 def _pos_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
+    from saas_mvp.models.booking_slot import BookingSlot
+    from saas_mvp.models.order import Order
+    from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
+
+    active_staff = [row for row in staff_svc.list_staff(db, tenant_id=tid) if row.is_active]
+    now = datetime.datetime.now(datetime.timezone.utc)
+    reservation_rows = db.execute(
+        select(Reservation, BookingSlot, Service)
+        .join(BookingSlot, BookingSlot.id == Reservation.slot_id)
+        .outerjoin(Service, Service.id == Reservation.service_id)
+        .outerjoin(Order, Order.reservation_id == Reservation.id)
+        .where(
+            Reservation.tenant_id == tid,
+            Reservation.status == RESERVATION_CONFIRMED,
+            BookingSlot.slot_start >= now - datetime.timedelta(days=30),
+            Order.id.is_(None),
+        )
+        .order_by(BookingSlot.slot_start.desc())
+        .limit(100)
+    ).all()
     return _ctx(
         request,
         actor,
         products=shop_svc.list_products(db, tenant_id=tid),
         gift_cards_enabled=features_svc.is_enabled(db, tid, features_svc.GIFT_CARDS),
+        staff=active_staff,
+        staff_by_id={row.id: row for row in active_staff},
+        pos_reservations=reservation_rows,
         **extra,
     )
 
@@ -8026,6 +8052,18 @@ async def pos_checkout(
     customer_id = _opt_int(form.get("customer_id") or "")
     coupon_code = (form.get("coupon_code") or "").strip() or None
     gift_card_code = (form.get("gift_card_code") or "").strip() or None
+    reservation_id = _opt_int(form.get("reservation_id") or "")
+    staff_id = _opt_int(form.get("staff_id") or "")
+    payment_method = (form.get("payment_method") or "").strip() or None
+    mark_paid = form.get("mark_paid") == "true"
+    try:
+        tip_cents = int(
+            (Decimal(str(form.get("tip_twd") or "0")) * 100).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+    except (InvalidOperation, ValueError):
+        tip_cents = -1
     try:
         points_to_redeem = int(form.get("points_to_redeem") or 0)
     except ValueError:
@@ -8033,20 +8071,23 @@ async def pos_checkout(
 
     # 從 qty_<product_id> 欄位組裝結帳明細（數量 > 0 才納入）。
     items: list[dict] = []
+    submitted_qty: dict[int, int] = {}
     for key, value in form.items():
         if not key.startswith("qty_"):
             continue
         try:
+            product_id = int(key[4:])
             qty = int(value)
         except (TypeError, ValueError):
             continue
+        submitted_qty[product_id] = max(0, qty)
         if qty > 0:
-            items.append({"product_id": int(key[4:]), "qty": qty})
+            items.append({"product_id": product_id, "qty": qty})
 
     error = None
     order = None
-    if not items:
-        error = "請至少選擇一項商品數量。"
+    if not items and reservation_id is None:
+        error = "請選擇一筆預約服務或至少一項商品。"
     else:
         try:
             order = pos_svc.checkout(
@@ -8057,6 +8098,11 @@ async def pos_checkout(
                 coupon_code=coupon_code,
                 points_to_redeem=points_to_redeem,
                 gift_card_code=gift_card_code,
+                reservation_id=reservation_id,
+                staff_id=staff_id,
+                payment_method=payment_method,
+                tip_cents=tip_cents,
+                mark_paid=mark_paid,
             )
         except pos_svc.CustomerNotFound:
             error = "找不到該會員。"
@@ -8072,10 +8118,33 @@ async def pos_checkout(
             error = str(exc)
         except gift_cards_svc.GiftCardError as exc:
             error = str(exc)
+        except pos_svc.ReservationNotFound:
+            error = "找不到該預約，或預約已取消。"
+        except pos_svc.ReservationAlreadyCheckedOut:
+            error = "這筆預約已經結帳，請勿重複收款。"
+        except pos_svc.StaffNotFound:
+            error = "找不到指定員工，或員工已停用。"
+        except pos_svc.StaffRequired:
+            error = "此店已啟用員工抽成，完成收款前請選擇銷售／服務員工。"
         except HTTPException as exc:
             error = str(exc.detail)
 
+    if error is not None:
+        # checkout 會先鎖庫存／點數再驗後續條件；任何錯誤都必須整筆回滾。
+        db.rollback()
+
     extra = {"phone": phone}
+    if error is not None:
+        extra.update(
+            selected_reservation_id=reservation_id,
+            selected_staff_id=staff_id,
+            submitted_qty=submitted_qty,
+            submitted_coupon_code=coupon_code or "",
+            submitted_points=points_to_redeem,
+            submitted_tip_twd=(form.get("tip_twd") or "0"),
+            submitted_payment_method=payment_method or "cash",
+            submitted_mark_paid=mark_paid,
+        )
     if customer_id is not None:
         result = (
             pos_svc.lookup_by_phone(db, tenant_id=tid, phone=phone) if phone else None
@@ -8091,6 +8160,299 @@ async def pos_checkout(
     return templates.TemplateResponse(
         "_pos.html", _pos_ctx(request, actor, db, order=order, error=error, **extra)
     )
+
+
+# ── 店家 owner：員工抽成與薪資結算 ───────────────────────────────────────────
+
+
+def _commissions_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    *,
+    pay_run_id: int | None = None,
+    **extra,
+) -> dict:
+    tid = actor.user.tenant_id
+    staff = staff_svc.list_staff(db, tenant_id=tid)
+    runs = commissions_svc.list_pay_runs(db, tenant_id=tid)
+    selected = None
+    selected_items = []
+    if pay_run_id is not None:
+        try:
+            selected = commissions_svc.get_pay_run(
+                db, tenant_id=tid, pay_run_id=pay_run_id
+            )
+            selected_items = commissions_svc.pay_run_items(
+                db, tenant_id=tid, pay_run_id=selected.id
+            )
+        except commissions_svc.CommissionError:
+            pass
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    return _ctx(
+        request,
+        actor,
+        staff=staff,
+        staff_by_id={row.id: row for row in staff},
+        commission_rules=commissions_svc.latest_rules(db, tenant_id=tid),
+        pay_runs=runs,
+        selected_pay_run=selected,
+        selected_pay_run_items=selected_items,
+        recent_earnings=commissions_svc.recent_earnings(db, tenant_id=tid),
+        today=today,
+        month_start=today.replace(day=1),
+        **extra,
+    )
+
+
+def _commission_feature_or_locked(request: Request, actor: Actor, db: Session):
+    if not _require_ui_feature(db, actor, features_svc.STAFF_COMMISSIONS):
+        return _feature_locked(
+            request, actor, features_svc.STAFF_COMMISSIONS, "員工抽成／薪資結算"
+        )
+    return None
+
+
+def _money_to_cents(raw: str, *, allow_negative: bool = False) -> int:
+    try:
+        value = Decimal(raw.strip())
+    except (InvalidOperation, AttributeError):
+        raise commissions_svc.CommissionError("金額格式不正確。") from None
+    if not value.is_finite():
+        raise commissions_svc.CommissionError("金額格式不正確。")
+    if not allow_negative and value < 0:
+        raise commissions_svc.CommissionError("金額不可為負數。")
+    return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+@router.get("/commissions", response_class=HTMLResponse)
+def commissions_page(
+    request: Request,
+    pay_run_id: int | None = Query(None),
+    saved: int = Query(0),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    locked = _commission_feature_or_locked(request, actor, db)
+    if locked:
+        return locked
+    return templates.TemplateResponse(
+        "commissions.html",
+        _commissions_ctx(
+            request, actor, db, pay_run_id=pay_run_id, saved=bool(saved)
+        ),
+    )
+
+
+@router.post("/commissions/rules", response_class=HTMLResponse)
+def commissions_rule_save(
+    request: Request,
+    staff_id: int = Form(...),
+    item_type: str = Form(...),
+    method: str = Form(...),
+    value: str = Form(..., max_length=32),
+    calculation_basis: str = Form("net"),
+    effective_from: datetime.date = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    locked = _commission_feature_or_locked(request, actor, db)
+    if locked:
+        return locked
+    try:
+        if method == "percent":
+            decimal_value = Decimal(value.strip())
+            if not decimal_value.is_finite():
+                raise commissions_svc.CommissionError("抽成數值格式不正確。")
+            stored_value = int(
+                (decimal_value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+        else:
+            stored_value = _money_to_cents(value)
+        row = commissions_svc.save_rule(
+            db,
+            tenant_id=actor.user.tenant_id,
+            staff_id=staff_id,
+            item_type=item_type,
+            method=method,
+            value=stored_value,
+            calculation_basis=calculation_basis,
+            effective_from=effective_from,
+            actor_user_id=actor.user.id,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="commissions.rule.create",
+            target=f"commission_rule:{row.id}",
+            detail={"staff_id": staff_id, "item_type": item_type, "effective_from": effective_from.isoformat()},
+            request=request,
+        )
+        db.commit()
+    except (InvalidOperation, commissions_svc.CommissionError) as exc:
+        db.rollback()
+        message = "抽成數值格式不正確。" if isinstance(exc, InvalidOperation) else str(exc)
+        return templates.TemplateResponse(
+            "commissions.html",
+            _commissions_ctx(request, actor, db, error=message),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse("/ui/commissions?saved=1", status_code=303)
+
+
+@router.post("/commissions/pay-runs", response_class=HTMLResponse)
+def commissions_pay_run_create(
+    request: Request,
+    period_start: datetime.date = Form(...),
+    period_end: datetime.date = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    locked = _commission_feature_or_locked(request, actor, db)
+    if locked:
+        return locked
+    try:
+        run = commissions_svc.create_pay_run(
+            db,
+            tenant_id=actor.user.tenant_id,
+            period_start=period_start,
+            period_end=period_end,
+            actor_user_id=actor.user.id,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="commissions.pay_run.create",
+            target=f"pay_run:{run.id}",
+            detail={"period_start": period_start.isoformat(), "period_end": period_end.isoformat()},
+            request=request,
+        )
+        db.commit()
+    except commissions_svc.CommissionError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "commissions.html",
+            _commissions_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse(f"/ui/commissions?pay_run_id={run.id}", status_code=303)
+
+
+@router.post("/commissions/pay-runs/{pay_run_id}/adjust", response_class=HTMLResponse)
+def commissions_pay_run_adjust(
+    pay_run_id: int,
+    request: Request,
+    staff_id: int = Form(...),
+    adjustment_twd: str = Form("0", max_length=32),
+    note: str = Form("", max_length=500),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    locked = _commission_feature_or_locked(request, actor, db)
+    if locked:
+        return locked
+    try:
+        row = commissions_svc.update_adjustment(
+            db,
+            tenant_id=actor.user.tenant_id,
+            pay_run_id=pay_run_id,
+            staff_id=staff_id,
+            adjustment_cents=_money_to_cents(adjustment_twd, allow_negative=True),
+            note=note,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="commissions.pay_run.adjust",
+            target=f"pay_run:{pay_run_id}",
+            detail={"staff_id": staff_id, "adjustment_cents": row.adjustment_cents},
+            request=request,
+        )
+        db.commit()
+    except commissions_svc.CommissionError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "commissions.html",
+            _commissions_ctx(request, actor, db, pay_run_id=pay_run_id, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse(f"/ui/commissions?pay_run_id={pay_run_id}", status_code=303)
+
+
+def _pay_run_transition(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    pay_run_id: int,
+    action: str,
+):
+    locked = _commission_feature_or_locked(request, actor, db)
+    if locked:
+        return locked
+    try:
+        if action == "finalize":
+            commissions_svc.finalize_pay_run(
+                db, tenant_id=actor.user.tenant_id, pay_run_id=pay_run_id, actor_user_id=actor.user.id
+            )
+        elif action == "paid":
+            commissions_svc.mark_pay_run_paid(
+                db, tenant_id=actor.user.tenant_id, pay_run_id=pay_run_id, actor_user_id=actor.user.id
+            )
+        else:
+            commissions_svc.delete_draft(
+                db, tenant_id=actor.user.tenant_id, pay_run_id=pay_run_id
+            )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action=f"commissions.pay_run.{action}",
+            target=f"pay_run:{pay_run_id}",
+            request=request,
+        )
+        db.commit()
+    except commissions_svc.CommissionError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "commissions.html",
+            _commissions_ctx(request, actor, db, pay_run_id=pay_run_id, error=str(exc)),
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    target = (
+        "/ui/commissions"
+        if action == "delete"
+        else f"/ui/commissions?pay_run_id={pay_run_id}"
+    )
+    return RedirectResponse(target, status_code=303)
+
+
+@router.post("/commissions/pay-runs/{pay_run_id}/finalize", response_class=HTMLResponse)
+def commissions_pay_run_finalize(
+    pay_run_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    return _pay_run_transition(request, actor, db, pay_run_id, "finalize")
+
+
+@router.post("/commissions/pay-runs/{pay_run_id}/paid", response_class=HTMLResponse)
+def commissions_pay_run_paid(
+    pay_run_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    return _pay_run_transition(request, actor, db, pay_run_id, "paid")
+
+
+@router.post("/commissions/pay-runs/{pay_run_id}/delete", response_class=HTMLResponse)
+def commissions_pay_run_delete(
+    pay_run_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    return _pay_run_transition(request, actor, db, pay_run_id, "delete")
 
 
 # ── 店家自助：AI 客服 / FAQ（AI_ASSISTANT） ─────────────────────────────────────

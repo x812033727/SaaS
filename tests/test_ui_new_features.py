@@ -771,6 +771,93 @@ class TestPosUI:
             db.close()
 
 
+class TestCommissionsUI:
+    def _seed(self, email):
+        tid = _tenant_id_for(email)
+        db = _Session()
+        try:
+            from saas_mvp.models.staff import Staff
+
+            person = Staff(tenant_id=tid, name="Amy", role="設計師")
+            product = Product(tenant_id=tid, name="護髮品", price_cents=10000, stock=5)
+            db.add_all([person, product])
+            db.commit()
+            return person.id, product.id
+        finally:
+            db.close()
+
+    def test_owner_configures_rule_paid_pos_and_builds_pay_run(self, client):
+        email = _login(client)
+        staff_id, product_id = self._seed(email)
+        page = client.get("/ui/commissions")
+        assert page.status_code == 200
+        assert "員工抽成與薪資結算" in page.text
+        assert "Amy" in page.text
+
+        today = __import__("datetime").date.today().isoformat()
+        saved = client.post(
+            "/ui/commissions/rules",
+            data={
+                "staff_id": str(staff_id),
+                "item_type": "product",
+                "method": "percent",
+                "value": "15",
+                "calculation_basis": "net",
+                "effective_from": today,
+            },
+            follow_redirects=False,
+        )
+        assert saved.status_code == 303
+
+        sale = client.post(
+            "/ui/pos/checkout",
+            data={
+                "customer_id": "",
+                "phone": "",
+                f"qty_{product_id}": "1",
+                "staff_id": str(staff_id),
+                "payment_method": "cash",
+                "mark_paid": "true",
+                "tip_twd": "50",
+                "points_to_redeem": "0",
+            },
+        )
+        assert sale.status_code == 200
+        assert "已收款" in sale.text
+
+        overview = client.get("/ui/commissions")
+        assert "護髮品" in overview.text
+        assert "15.00" in overview.text
+
+        created = client.post(
+            "/ui/commissions/pay-runs",
+            data={"period_start": today, "period_end": today},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        detail = client.get(created.headers["location"])
+        assert "結算單 #" in detail.text
+        assert "65.00" in detail.text  # 商品抽成 NT$15 + 小費 NT$50
+
+    def test_feature_gate_blocks_page_and_mutation(self, client):
+        email = _login(client)
+        staff_id, _product_id = self._seed(email)
+        _disable(client, "STAFF_COMMISSIONS")
+        assert "尚未開通" in client.get("/ui/commissions").text
+        response = client.post(
+            "/ui/commissions/rules",
+            data={
+                "staff_id": str(staff_id),
+                "item_type": "product",
+                "method": "percent",
+                "value": "10",
+                "calculation_basis": "net",
+                "effective_from": "2026-01-01",
+            },
+        )
+        assert "尚未開通" in response.text
+
+
 class TestGiftCardsUI:
     def test_owner_can_issue_and_full_code_is_one_time(self, client):
         email = _login(client)
