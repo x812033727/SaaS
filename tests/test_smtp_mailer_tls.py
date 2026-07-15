@@ -1,6 +1,10 @@
-"""SMTP 連接埠應使用服務商預期的 TLS 模式。"""
+"""SMTP TLS 模式與不洩漏服務商回應的可操作錯誤訊息。"""
 
-from saas_mvp.services.mailer import SmtpMailer
+import smtplib
+
+import pytest
+
+from saas_mvp.services.mailer import MailerError, SmtpMailer
 
 
 class _FakeSmtp:
@@ -64,3 +68,29 @@ def test_port_587_uses_starttls(monkeypatch):
     assert len(explicit.instances) == 1
     assert explicit.instances[0].started_tls
     assert not implicit.instances
+
+
+@pytest.mark.parametrize(
+    ("smtp_error", "expected"),
+    [
+        (smtplib.SMTPDataError(451, b"provider internal detail"), "稍後再試"),
+        (smtplib.SMTPDataError(550, b"provider internal detail"), "寄送額度"),
+        (smtplib.SMTPServerDisconnected("provider internal detail"), "寄送途中中斷"),
+    ],
+)
+def test_send_failure_is_actionable_without_exposing_provider_detail(
+    monkeypatch, smtp_error, expected
+):
+    class FailingSmtp(_FakeSmtp):
+        instances = []
+
+        def send_message(self, message):
+            raise smtp_error
+
+    monkeypatch.setattr("saas_mvp.services.mailer.smtplib.SMTP_SSL", FailingSmtp)
+
+    with pytest.raises(MailerError) as caught:
+        _mailer(465).send(to="to@example.com", subject="test", body="body")
+
+    assert expected in str(caught.value)
+    assert "provider internal detail" not in str(caught.value)

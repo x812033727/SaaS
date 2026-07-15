@@ -93,6 +93,22 @@ class SmtpMailer(Mailer):
             raise MailerError("SMTP 伺服器拒絕收件人，請確認測試信箱是否有效。") from exc
         except smtplib.SMTPSenderRefused as exc:
             raise MailerError("SMTP 伺服器拒絕寄件人，寄件人通常須與 SMTP 帳號相同。") from exc
+        except smtplib.SMTPDataError as exc:
+            if 400 <= exc.smtp_code < 500:
+                raise MailerError(
+                    "SMTP 服務暫時拒絕收信，可能正在限流或維護，請稍後再試。"
+                ) from exc
+            raise MailerError(
+                "SMTP 伺服器拒絕信件內容，請檢查寄件權限、寄送額度與網域狀態。"
+            ) from exc
+        except smtplib.SMTPServerDisconnected as exc:
+            raise MailerError("SMTP 連線在寄送途中中斷，請稍後再試。") from exc
+        except smtplib.SMTPConnectError as exc:
+            raise MailerError("SMTP 伺服器拒絕建立連線，請確認服務狀態與連接埠。") from exc
+        except smtplib.SMTPResponseException as exc:
+            if 400 <= exc.smtp_code < 500:
+                raise MailerError("SMTP 服務暫時無法寄送，請稍後再試。") from exc
+            raise MailerError("SMTP 伺服器拒絕寄送，請核對服務商設定與額度。") from exc
         except (socket.gaierror, ConnectionError, OSError) as exc:
             raise MailerError("無法連線 SMTP 伺服器，請確認主機名稱與連接埠。") from exc
         except Exception as exc:  # noqa: BLE001 — 統一包裝

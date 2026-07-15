@@ -1,6 +1,5 @@
 """FastAPI application factory."""
 
-import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -142,6 +141,18 @@ def create_app() -> FastAPI:
             "<!doctype html><meta charset='utf-8'>"
             "<h1>403 — 沒有權限</h1><p>此頁需要管理員權限。</p>"
             "<p><a href='/ui/'>返回儀表板</a></p>",
+            status_code=403,
+        )
+
+    @app.exception_handler(ui.UICSRFInvalid)
+    async def _ui_csrf_invalid(request: Request, exc: ui.UICSRFInvalid):
+        return HTMLResponse(
+            "<!doctype html><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>頁面已過期</title>"
+            "<h1>頁面安全憑證已過期</h1>"
+            "<p>請重新整理原頁面後再操作；若仍無法使用，請重新登入。</p>"
+            "<p><a href='/ui/'>返回後台</a>　<a href='/ui/login'>重新登入</a></p>",
             status_code=403,
         )
 

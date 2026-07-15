@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
+from saas_mvp.models.audit_log import AuditLog
 from saas_mvp.models.platform_email_config import PlatformEmailConfig
 from saas_mvp.models.user import User
 from saas_mvp.services import mailer as mailer_svc
@@ -117,6 +118,29 @@ def test_admin_can_send_test_mail_without_exposing_password(client):
     assert len(stub.sent) == 1
     assert stub.sent[0].to == email
     assert "測試信已寄到" in response.text
+    with _Session() as db:
+        event = db.query(AuditLog).filter_by(action="platform.email.test").one()
+        assert '"result": "sent"' in event.detail_json
+
+
+def test_failed_test_mail_is_actionable_and_audited(client):
+    _login(client, admin=True)
+
+    class FailingMailer(mailer_svc.Mailer):
+        def send(self, *, to: str, subject: str, body: str) -> None:
+            raise mailer_svc.MailerError(
+                "SMTP 服務暫時拒絕收信，可能正在限流或維護，請稍後再試。"
+            )
+
+    client.app.dependency_overrides[get_mailer] = lambda: FailingMailer()
+    response = client.post("/ui/admin/email-settings/test")
+
+    assert response.status_code == 502
+    assert "可能正在限流或維護" in response.text
+    with _Session() as db:
+        event = db.query(AuditLog).filter_by(action="platform.email.test").one()
+        assert '"result": "failed"' in event.detail_json
+        assert "password" not in event.detail_json.lower()
 
 
 def test_invalid_smtp_port_is_rejected(client):

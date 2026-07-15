@@ -113,6 +113,12 @@ class TestCookieIssuance:
 
 
 class TestEnforcement:
+    def test_post_after_session_cookie_expired_redirects_to_login(self, client, csrf_on):
+        client.cookies.clear()
+        r = client.post("/ui/admin/email-settings/test", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/ui/login"
+
     def test_post_without_token_403(self, client, csrf_on):
         _register_and_login(client)
         r = client.post("/ui/account/password", data={
@@ -175,6 +181,8 @@ class TestEnforcement:
             },
         )
         assert r.status_code == 403
+        assert "頁面安全憑證已過期" in r.text
+        assert "重新登入" in r.text
 
     def test_login_and_register_exempt(self, client, csrf_on):
         # 未帶任何 token 的 login/register POST 不被 CSRF 擋（可能 401/303/400）

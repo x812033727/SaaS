@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
 from saas_mvp.deps import Actor, get_db, require_ui_admin, require_ui_owner, require_ui_user
-from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
+from saas_mvp.auth.dependencies import UILoginRequired, _UI_COOKIE_NAME
 from saas_mvp.auth.security import create_access_token, hash_password, verify_password
 from saas_mvp.line_client import (
     LineBotInfoClient,
@@ -120,6 +120,10 @@ _CSRF_FORM_FIELD = "csrf_token"
 _CSRF_EXEMPT_PATHS = {"/ui/login", "/ui/register"}
 
 
+class UICSRFInvalid(Exception):
+    """登入仍存在但頁面安全憑證無效；由 app 層顯示可操作的 HTML 說明。"""
+
+
 def _line_webhook_url_for(tenant_id: int) -> str:
     """Return the copy-ready public webhook URL shown in the management UI."""
     path = webhook_url_for(tenant_id)
@@ -157,10 +161,11 @@ async def _enforce_csrf(request: Request) -> None:
         or not supplied
         or not hmac.compare_digest(cookie_token, supplied)
     ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="CSRF token missing or invalid",
-        )
+        # 工作階段已結束時，表單頁仍可能停在瀏覽器分頁中。這不是權限不足，
+        # 直接導回登入頁，避免使用者把裸 403 誤認成 SMTP 等業務功能失敗。
+        if not request.cookies.get(_UI_COOKIE_NAME):
+            raise UILoginRequired()
+        raise UICSRFInvalid()
 
 
 router = APIRouter(
@@ -1635,6 +1640,15 @@ def admin_email_settings_test(
             body="這是一封平台 SMTP 設定測試信。若你收到此信，代表寄信服務設定成功。",
         )
     except MailerError as exc:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.email.test",
+            target="email:smtp",
+            detail={"result": "failed", "reason": str(exc)},
+            request=request,
+        )
+        db.commit()
         return templates.TemplateResponse(
             "admin/email_settings.html",
             _platform_email_ctx(
@@ -1642,6 +1656,15 @@ def admin_email_settings_test(
             ),
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.email.test",
+        target="email:smtp",
+        detail={"result": "sent"},
+        request=request,
+    )
+    db.commit()
     return templates.TemplateResponse(
         "admin/email_settings.html",
         _platform_email_ctx(request, actor, db, test_sent=True),
