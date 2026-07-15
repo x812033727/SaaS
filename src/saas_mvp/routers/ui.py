@@ -59,6 +59,7 @@ from saas_mvp.services import analytics as analytics_svc
 from saas_mvp.services import reporting as reporting_svc
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import deposit as deposit_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import api_keys as api_keys_svc
@@ -1859,6 +1860,7 @@ def _platform_payment_ctx(
             "deposit": f"{base}/payments/ecpay/deposit-callback",
         },
         unsettled_subscriptions=unsettled,
+        refundable_deposits=platform_payment_svc.refundable_deposit_count(db),
         **extra,
     )
 
@@ -2614,6 +2616,10 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         reservations=booking_svc.list_reservations(db, tenant_id=tid),
         customers=customers,
         reminder_hours=reminder_hours,
+        can_manage_deposits=(
+            (getattr(actor.user, "role", None) or "owner") == "owner"
+            or actor.user.is_admin
+        ),
         # 預約列以 customer_id 對應顧客檔，顯示可核對的 LINE 名稱/電話（免額外查詢）。
         customer_by_id={c.id: c for c in customers},
         **extra,
@@ -2899,6 +2905,107 @@ def booking_cancel_reservation(
         error = "預約不存在或已取消"
     return templates.TemplateResponse(
         "_booking_reservations.html", _booking_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post(
+    "/booking/reservations/{reservation_id}/deposit-refund",
+    response_class=HTMLResponse,
+)
+def booking_refund_deposit(
+    request: Request,
+    reservation_id: int,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """取消後全額退還已付定金；owner 限定、服務層鎖列防重。"""
+    error = None
+    refund_success = None
+    try:
+        row = deposit_svc.request_full_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            reservation_id=reservation_id,
+            actor_user_id=actor.user.id,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.deposit.refund",
+            target=f"reservation:{reservation_id}",
+            detail={
+                "result": "refunded",
+                "amount_twd": (row.deposit_cents or 0) // 100,
+                "provider": row.deposit_provider,
+            },
+            request=request,
+        )
+        db.commit()
+        refund_success = f"預約 #{reservation_id} 定金已完成全額退款。"
+    except deposit_svc.DepositRefundError as exc:
+        db.rollback()
+        error = str(exc)
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.deposit.refund",
+            target=f"reservation:{reservation_id}",
+            detail={"result": "failed", "reason": error},
+            request=request,
+        )
+        db.commit()
+    return templates.TemplateResponse(
+        "_booking_reservations.html",
+        _booking_ctx(
+            request, actor, db, error=error, refund_success=refund_success
+        ),
+    )
+
+
+@router.post(
+    "/booking/reservations/{reservation_id}/deposit-refund/manual",
+    response_class=HTMLResponse,
+)
+def booking_confirm_manual_deposit_refund(
+    request: Request,
+    reservation_id: int,
+    note: str = Form(..., min_length=2, max_length=200),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """外部金流後台已退款後人工對帳；不呼叫金流、不會重複退刷。"""
+    error = None
+    refund_success = None
+    try:
+        row = deposit_svc.confirm_manual_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            reservation_id=reservation_id,
+            actor_user_id=actor.user.id,
+            note=note,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.deposit.refund_manual",
+            target=f"reservation:{reservation_id}",
+            detail={
+                "result": "confirmed",
+                "amount_twd": (row.deposit_cents or 0) // 100,
+                "note": note,
+            },
+            request=request,
+        )
+        db.commit()
+        refund_success = f"預約 #{reservation_id} 已標記為人工退款完成。"
+    except deposit_svc.DepositRefundError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_booking_reservations.html",
+        _booking_ctx(
+            request, actor, db, error=error, refund_success=refund_success
+        ),
     )
 
 

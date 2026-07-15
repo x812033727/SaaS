@@ -1,9 +1,21 @@
 <h2>預約</h2>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if refund_success %}<div class="success">{{ refund_success }}</div>{% endif %}
+{% if can_manage_deposits %}
+<details>
+  <summary><strong>已付定金如何退款？</strong></summary>
+  <ol>
+    <li>先按「取消」取消預約；系統不會在取消時自動退款，避免誤退。</li>
+    <li>取消後按「全額退款」。新的正式綠界信用卡交易會直接送出原交易全額退刷，並顯示成功或失敗原因。</li>
+    <li>若顯示「需人工核對」，請先到原金流後台查詢；確定已退款後，再輸入退款單號或核對備註並按「確認人工退款」。</li>
+  </ol>
+  <p class="muted">網路中斷時系統不會盲目重送，以免重複退款。舊交易、非信用卡或原商店已更換時需人工處理。只有店家擁有者或管理員可退款，所有操作都會留存稽核紀錄。</p>
+</details>
+{% endif %}
 {% if reservations %}
 <table>
   <thead>
-    <tr><th>#</th><th>時段</th><th>人數</th><th>顧客</th><th>電話</th><th>來源</th><th>狀態</th><th>到場</th><th></th></tr>
+    <tr><th>#</th><th>時段</th><th>人數</th><th>顧客</th><th>電話</th><th>來源</th><th>狀態</th><th>定金</th><th>到場</th><th></th></tr>
   </thead>
   <tbody>
     {% for r in reservations %}
@@ -19,6 +31,19 @@
         {% else %}<span class="muted">店家</span>{% endif %}
       </td>
       <td data-label="狀態"><span class="badge {{ 'on' if r.status == 'confirmed' else 'off' }}">{{ '已確認' if r.status == 'confirmed' else '已取消' }}</span></td>
+      <td data-label="定金">
+        {% if not r.deposit_status %}<span class="muted">免定金</span>
+        {% elif r.deposit_status == 'pending' %}<span class="badge unchecked">待付款</span>
+        {% elif r.deposit_status == 'paid' %}
+          <span class="badge valid">已付 NT${{ (r.deposit_cents or 0) // 100 }}</span>
+          {% if r.deposit_refund_status == 'processing' %}<br><span class="muted">退款處理中</span>
+          {% elif r.deposit_refund_status == 'failed' %}<br><span class="badge invalid">自動退款失敗</span>
+          {% elif r.deposit_refund_status == 'manual_required' %}<br><span class="badge unchecked">需人工核對</span>{% endif %}
+          {% if r.deposit_refund_error %}<br><span class="muted">{{ r.deposit_refund_error }}</span>{% endif %}
+        {% elif r.deposit_status == 'refunded' %}<span class="badge valid">已退款</span>
+        {% elif r.deposit_status == 'expired' %}<span class="badge off">付款逾時</span>
+        {% else %}<span class="muted">{{ r.deposit_status }}</span>{% endif %}
+      </td>
       <td data-label="到場">
         {% if r.attended is none %}<span class="muted">未標記</span>
         {% elif r.attended %}<span class="badge on">到場</span>
@@ -35,6 +60,21 @@
         <button hx-post="/ui/booking/reservations/{{ r.id }}/attendance"
                 hx-vals='{"attended": "false"}'
                 hx-target="#reservations-card" hx-swap="innerHTML">未到</button>
+        {% elif can_manage_deposits and r.deposit_status == 'paid' %}
+          {% if r.deposit_refund_status not in ('processing', 'manual_required') %}
+          <button class="danger"
+                  hx-post="/ui/booking/reservations/{{ r.id }}/deposit-refund"
+                  hx-target="#reservations-card" hx-swap="innerHTML"
+                  hx-confirm="確定將預約 #{{ r.id }} 的定金 NT${{ (r.deposit_cents or 0) // 100 }} 全額退款？退款送出後不可復原。">全額退款</button>
+          {% endif %}
+          {% if r.deposit_refund_status in ('failed', 'manual_required') %}
+          <form hx-post="/ui/booking/reservations/{{ r.id }}/deposit-refund/manual"
+                hx-target="#reservations-card" hx-swap="innerHTML"
+                hx-confirm="請先確認已在原金流後台完成退款。確定要標記人工退款完成？">
+            <input name="note" required minlength="2" maxlength="200" placeholder="金流後台退款單號／核對備註">
+            <button type="submit">確認人工退款</button>
+          </form>
+          {% endif %}
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
     </tr>

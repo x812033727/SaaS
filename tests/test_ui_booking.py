@@ -31,7 +31,12 @@ from saas_mvp.models.gcal_sync_job import (  # noqa: E402
     GCAL_SYNC_PENDING,
     GcalSyncJob,
 )
-from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation  # noqa: E402
+from saas_mvp.models.reservation import (  # noqa: E402
+    RESERVATION_CANCELLED,
+    RESERVATION_CONFIRMED,
+    Reservation,
+)
+from saas_mvp.models.audit_log import AuditLog  # noqa: E402
 from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential  # noqa: E402
 from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.line_client import (  # noqa: E402
@@ -72,7 +77,7 @@ def client():
         yield c
 
 
-def _login(client) -> None:
+def _login(client) -> str:
     email = f"u_{uuid.uuid4().hex[:8]}@example.com"
     r = client.post("/auth/register", json={
         "email": email, "password": "Test1234!", "tenant_name": f"t_{uuid.uuid4().hex[:8]}",
@@ -80,6 +85,7 @@ def _login(client) -> None:
     assert r.status_code == 201, r.text
     r = client.post("/ui/login", data={"email": email, "password": "Test1234!"})
     assert r.status_code == 200
+    return email
 
 
 def _setup_line_config(client) -> None:
@@ -176,6 +182,57 @@ class TestBookingUI:
         r = client.get("/ui/booking", follow_redirects=False)
         assert r.status_code == 303
         assert r.headers["location"] == "/ui/login"
+
+    def test_owner_can_refund_cancelled_stub_deposit(self, client):
+        email = _login(client)
+        with _Session() as db:
+            user = db.query(User).filter_by(email=email).one()
+            slot = BookingSlot(
+                tenant_id=user.tenant_id,
+                slot_start=datetime.datetime(2032, 1, 1, 10, 0),
+                max_capacity=1,
+            )
+            db.add(slot)
+            db.flush()
+            row = Reservation(
+                tenant_id=user.tenant_id,
+                slot_id=slot.id,
+                party_size=1,
+                status=RESERVATION_CANCELLED,
+                deposit_cents=20000,
+                deposit_status="paid",
+                deposit_provider="stub",
+                deposit_payment_type="stub",
+                deposit_merchant_trade_no=f"DPUI{uuid.uuid4().hex[:12]}"[:20],
+            )
+            db.add(row)
+            db.commit()
+            reservation_id = row.id
+
+        response = client.post(
+            f"/ui/booking/reservations/{reservation_id}/deposit-refund"
+        )
+        assert response.status_code == 200
+        assert "已完成全額退款" in response.text
+        with _Session() as db:
+            row = db.get(Reservation, reservation_id)
+            assert row.deposit_status == "refunded"
+            assert db.query(AuditLog).filter_by(
+                action="booking.deposit.refund",
+                target=f"reservation:{reservation_id}",
+            ).count() == 1
+
+    def test_staff_cannot_refund_deposit(self, client):
+        email = _login(client)
+        with _Session() as db:
+            user = db.query(User).filter_by(email=email).one()
+            user.role = "staff"
+            db.commit()
+        response = client.post(
+            "/ui/booking/reservations/999999/deposit-refund",
+            follow_redirects=False,
+        )
+        assert response.status_code == 403
 
 
 def _slot_id_by_start(start: str) -> int:

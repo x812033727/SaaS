@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from saas_mvp.config import settings
 from saas_mvp.models.platform_payment_config import PlatformPaymentConfig
 
 _ECPAY_TEST_MERCHANT = "2000132"
@@ -88,6 +89,20 @@ def _unsettled_subscription_count(db: Session) -> int:
     ).count()
 
 
+def refundable_deposit_count(db: Session) -> int:
+    """仍可能退款的已付定金；完成到場或退款後才可安全輪替原商店憑證。"""
+    from saas_mvp.models.reservation import Reservation
+
+    return (
+        db.query(Reservation)
+        .filter(
+            Reservation.deposit_status == "paid",
+            Reservation.attended.is_not(True),
+        )
+        .count()
+    )
+
+
 def save_ecpay_config(
     db: Session,
     *,
@@ -126,8 +141,6 @@ def save_ecpay_config(
     # 未結清訂閱的回調與停扣都依賴原商店憑證；禁止直接輪替或切環境，避免
     # 已收款訂閱無法驗簽、或停扣 API 打到錯誤商店。
     if _unsettled_subscription_count(db):
-        from saas_mvp.config import settings
-
         current = effective_payment_config(db, settings)
         next_hash_key = hash_key or current.hash_key
         next_hash_iv = hash_iv or current.hash_iv
@@ -139,6 +152,19 @@ def save_ecpay_config(
         ):
             raise PlatformPaymentConfigError(
                 "仍有待付款、扣款中或停扣失敗的訂閱，請先處理完成再更換綠界憑證。"
+            )
+    if refundable_deposit_count(db):
+        current = effective_payment_config(db, settings)
+        next_hash_key = hash_key or current.hash_key
+        next_hash_iv = hash_iv or current.hash_iv
+        if (
+            merchant_id != current.merchant_id
+            or environment != current.environment
+            or next_hash_key != current.hash_key
+            or next_hash_iv != current.hash_iv
+        ):
+            raise PlatformPaymentConfigError(
+                "仍有尚未完成到場或退款的已付定金，請先處理後再更換綠界憑證。"
             )
 
     if row is None:
@@ -164,6 +190,10 @@ def disable_payment(db: Session, *, actor_user_id: int) -> PlatformPaymentConfig
         raise PlatformPaymentConfigError(
             "仍有待付款、扣款中或停扣失敗的訂閱，請先完成退訂與停扣後再停用金流。"
         )
+    if refundable_deposit_count(db):
+        raise PlatformPaymentConfigError(
+            "仍有尚未完成到場或退款的已付定金，不能停用目前金流。"
+        )
     row = _row(db)
     if row is None:
         row = PlatformPaymentConfig(
@@ -183,6 +213,10 @@ def clear_payment_override(db: Session) -> bool:
     if _unsettled_subscription_count(db):
         raise PlatformPaymentConfigError(
             "仍有待付款、扣款中或停扣失敗的訂閱，不能移除目前金流設定。"
+        )
+    if refundable_deposit_count(db):
+        raise PlatformPaymentConfigError(
+            "仍有尚未完成到場或退款的已付定金，不能移除目前金流設定。"
         )
     row = _row(db)
     if row is None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import os
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,6 +30,7 @@ from saas_mvp.services import booking as booking_svc  # noqa: E402
 from saas_mvp.services import deposit as deposit_svc  # noqa: E402
 from saas_mvp.services import features as features_svc  # noqa: E402
 from saas_mvp.services import invoices as invoices_svc  # noqa: E402
+from saas_mvp.services import platform_payment_config as payment_config_svc  # noqa: E402
 from saas_mvp.services import subscriptions as subs_svc  # noqa: E402
 from saas_mvp.services.invoice_ecpay import (  # noqa: E402
     EcpayInvoiceIssuer,
@@ -320,6 +322,146 @@ class TestDeposit:
         db.commit()
         assert deposit_svc.mark_paid(db, resv) is False
 
+    def _paid_cancelled(self, db, *, provider="stub", payment_type="stub"):
+        tenant, slot_id = _deposit_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=tenant.id, slot_id=slot_id, party_size=1,
+            line_user_id=f"U{uuid.uuid4().hex[:8]}",
+        )
+        deposit_svc.mark_paid(
+            db,
+            resv,
+            provider=provider,
+            provider_merchant_id="3000007" if provider == "ecpay" else None,
+            provider_trade_no="2401010000000001" if provider == "ecpay" else None,
+            payment_type=payment_type,
+        )
+        booking_svc.cancel_reservation(
+            db, tenant_id=tenant.id, reservation_id=resv.id
+        )
+        return tenant, resv
+
+    def test_stub_full_refund_is_idempotent(self, db):
+        tenant, resv = self._paid_cancelled(db)
+        refunded = deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id, actor_user_id=1
+        )
+        assert refunded.deposit_status == "refunded"
+        assert refunded.deposit_refund_status == "refunded"
+        assert refunded.deposit_refund_attempts == 1
+        again = deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id, actor_user_id=1
+        )
+        assert again.deposit_refund_attempts == 1
+
+    def test_ecpay_refund_success_and_explicit_failure_retry(self, db, monkeypatch):
+        monkeypatch.setattr(
+            payment_config_svc,
+            "effective_payment_config",
+            lambda *_: SimpleNamespace(
+                provider="ecpay", environment="prod", merchant_id="3000007"
+            ),
+        )
+        tenant, resv = self._paid_cancelled(
+            db, provider="ecpay", payment_type="Credit_CreditCard"
+        )
+
+        class FakeClient:
+            responses = [
+                {"RtnCode": "0", "RtnMsg": "尚未關帳"},
+                {"RtnCode": "1", "RtnMsg": "Success"},
+            ]
+
+            def refund_credit(self, **kwargs):
+                assert kwargs["amount_twd"] == 200
+                assert kwargs["trade_no"] == "2401010000000001"
+                return self.responses.pop(0)
+
+        fake = FakeClient()
+        with pytest.raises(deposit_svc.DepositRefundError, match="尚未關帳"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1, ecpay_client=fake,
+            )
+        db.refresh(resv)
+        assert resv.deposit_refund_status == "failed"
+
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, ecpay_client=fake,
+        )
+        db.refresh(resv)
+        assert resv.deposit_status == "refunded"
+        assert resv.deposit_refund_attempts == 2
+
+    def test_ambiguous_network_failure_requires_manual_confirmation(self, db, monkeypatch):
+        monkeypatch.setattr(
+            payment_config_svc,
+            "effective_payment_config",
+            lambda *_: SimpleNamespace(
+                provider="ecpay", environment="prod", merchant_id="3000007"
+            ),
+        )
+        tenant, resv = self._paid_cancelled(
+            db, provider="ecpay", payment_type="Credit_CreditCard"
+        )
+
+        class TimeoutClient:
+            calls = 0
+
+            def refund_credit(self, **_kwargs):
+                self.calls += 1
+                raise TimeoutError("unknown provider result")
+
+        fake = TimeoutClient()
+        with pytest.raises(deposit_svc.DepositRefundError, match="結果不確定"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1, ecpay_client=fake,
+            )
+        with pytest.raises(deposit_svc.DepositRefundError, match="不能自動重送"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1, ecpay_client=fake,
+            )
+        assert fake.calls == 1
+
+        deposit_svc.confirm_manual_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, note="綠界後台退款單 RF12345",
+        )
+        db.refresh(resv)
+        assert resv.deposit_status == "refunded"
+        assert resv.deposit_refund_provider_code == "MANUAL"
+
+    def test_non_credit_payment_never_calls_credit_refund_api(self, db):
+        tenant, resv = self._paid_cancelled(
+            db, provider="ecpay", payment_type="ATM_TAISHIN"
+        )
+        with pytest.raises(deposit_svc.DepositRefundError, match="不是信用卡"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1,
+            )
+        assert resv.deposit_refund_status == "manual_required"
+
+    def test_refund_requires_cancelled_booking_and_tenant_scope(self, db):
+        tenant, slot_id = _deposit_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=tenant.id, slot_id=slot_id, party_size=1,
+            line_user_id="Uscope",
+        )
+        deposit_svc.mark_paid(db, resv, provider="stub", payment_type="stub")
+        with pytest.raises(deposit_svc.DepositRefundError, match="請先取消"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id, actor_user_id=1
+            )
+        with pytest.raises(deposit_svc.DepositRefundError, match="不存在"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id + 999, reservation_id=resv.id,
+                actor_user_id=1,
+            )
+
     def test_expired_pending_cancelled_with_refill_and_notify(self, db):
         t, slot_id = _deposit_tenant(db)
         resv = booking_svc.book_slot(
@@ -438,9 +580,40 @@ class TestDepositEndpoints:
         assert "已付款" in r.text
         db = _Session()
         try:
-            assert db.get(Reservation, rid).deposit_status == "paid"
+            paid = db.get(Reservation, rid)
+            assert paid.deposit_status == "paid"
+            assert paid.deposit_provider == "stub"
+            assert paid.deposit_payment_type == "stub"
         finally:
             db.close()
+
+    def test_ecpay_callback_saves_refund_transaction_snapshot(self, client):
+        db = _Session()
+        tenant, slot_id = _deposit_tenant(db)
+        resv = booking_svc.book_slot(
+            db, tenant_id=tenant.id, slot_id=slot_id, party_size=1,
+            line_user_id="Uecpayrefund",
+        )
+        rid = resv.id
+        params = {
+            "MerchantTradeNo": resv.deposit_merchant_trade_no,
+            "TradeNo": "2401010000009999",
+            "TradeAmt": "200",
+            "PaymentType": "Credit_CreditCard",
+            "RtnCode": "1",
+        }
+        from saas_mvp.services.payment_ecpay import get_ecpay_client
+
+        params["CheckMacValue"] = get_ecpay_client(db).check_mac_value(params)
+        db.close()
+
+        response = client.post("/payments/ecpay/deposit-callback", data=params)
+        assert response.text == "1|OK"
+        with _Session() as verify_db:
+            paid = verify_db.get(Reservation, rid)
+            assert paid.deposit_provider == "ecpay"
+            assert paid.deposit_provider_trade_no == "2401010000009999"
+            assert paid.deposit_payment_type == "Credit_CreditCard"
 
     def test_paid_page_shows_confirmed(self, client):
         db = _Session()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from saas_mvp.services.payment_ecpay import EcpayClient
 
 _HK = "5294y06JbISpM5x9"
@@ -71,3 +73,59 @@ class TestCancelPeriod:
         assert EcpayClient(env="prod").period_action_url == (
             "https://payment.ecpay.com.tw/Cashier/CreditCardPeriodAction"
         )
+
+
+class TestCreditRefund:
+    def test_prod_posts_signed_refund_and_parses_json(self):
+        captured = {}
+
+        def fake_post(url, data):
+            captured["url"] = url
+            captured["data"] = data
+            return '{"RtnCode":1,"RtnMsg":"Success"}'
+
+        client = EcpayClient(
+            merchant_id="3000007",
+            hash_key=_HK,
+            hash_iv=_HIV,
+            env="prod",
+            http_post=fake_post,
+        )
+        response = client.refund_credit(
+            merchant_trade_no="DPORDER001",
+            trade_no="2401010000000001",
+            amount_twd=200,
+        )
+
+        assert captured["url"] == "https://payment.ecpay.com.tw/CreditDetail/DoAction"
+        assert captured["data"]["Action"] == "R"
+        assert captured["data"]["TotalAmount"] == "200"
+        assert client.verify(captured["data"])
+        assert response["RtnCode"] == "1"
+
+    def test_query_string_response_is_supported(self):
+        client = EcpayClient(
+            merchant_id="3000007", hash_key=_HK, hash_iv=_HIV, env="prod",
+            http_post=lambda *_: "RtnCode=0&RtnMsg=Not%20settled",
+        )
+        assert client.refund_credit(
+            merchant_trade_no="DPORDER002",
+            trade_no="2401010000000002",
+            amount_twd=200,
+        )["RtnMsg"] == "Not settled"
+
+    def test_stage_refund_fails_closed_without_network_call(self):
+        called = False
+
+        def fake_post(*_):
+            nonlocal called
+            called = True
+            return ""
+
+        with pytest.raises(RuntimeError, match="unavailable in stage"):
+            _client(http_post=fake_post).refund_credit(
+                merchant_trade_no="DPORDER003",
+                trade_no="2401010000000003",
+                amount_twd=200,
+            )
+        assert called is False

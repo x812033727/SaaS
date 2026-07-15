@@ -88,6 +88,23 @@ class Reservation(Base):
     deposit_merchant_trade_no = Column(String(20), nullable=True, unique=True)
     deposit_paid_at = Column(DateTime(timezone=True), nullable=True)
     deposit_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # 付款結果快照：退款必須使用原交易的 provider / MerchantID / TradeNo，
+    # 不可只依賴之後可能被管理員更換的平台金流設定。
+    deposit_provider = Column(String(16), nullable=True)
+    deposit_provider_merchant_id = Column(String(64), nullable=True)
+    deposit_provider_trade_no = Column(String(20), nullable=True)
+    deposit_payment_type = Column(String(32), nullable=True)
+    # 全額退款狀態：NULL(未申請) | processing | refunded | failed |
+    # manual_required。網路結果不確定時只允許人工核對，避免重複退刷。
+    deposit_refund_status = Column(String(24), nullable=True)
+    deposit_refund_attempts = Column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    deposit_refund_requested_at = Column(DateTime(timezone=True), nullable=True)
+    deposit_refunded_at = Column(DateTime(timezone=True), nullable=True)
+    deposit_refund_error = Column(String(255), nullable=True)
+    deposit_refund_provider_code = Column(String(32), nullable=True)
+    deposit_refund_requested_by_user_id = Column(Integer, nullable=True)
 
     # E1:Google Calendar 事件 id(未連結/同步失敗為 NULL)。
     gcal_event_id = Column(String(128), nullable=True)

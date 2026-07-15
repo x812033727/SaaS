@@ -25,6 +25,9 @@
   {% if unsettled_subscriptions %}
     <div class="warning">目前有 {{ unsettled_subscriptions }} 筆待付款、扣款中或停扣失敗的訂閱。為避免持續扣款或回呼驗簽失敗，處理完成前系統會禁止更換憑證、停用或移除設定。</div>
   {% endif %}
+  {% if refundable_deposits %}
+    <div class="warning">目前有 {{ refundable_deposits }} 筆已付、尚未到場或退款的預約定金。退款需使用原收款商店，處理完成前系統會禁止更換憑證、切換環境、停用或移除金流設定。</div>
+  {% endif %}
 
   <form method="post" action="/ui/admin/payment-settings/ecpay" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -62,7 +65,7 @@
   {% if payment_status.source == 'database' and payment_status.provider == 'ecpay' %}
   <form method="post" action="/ui/admin/payment-settings/disable" style="display:inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="danger" onclick="return confirm('確定切回模擬付款？正式站將不再真的收款，且只有沒有未結訂閱時才允許。')">停用正式金流</button>
+    <button type="submit" class="danger" onclick="return confirm('確定切回模擬付款？正式站將不再真的收款，且只有沒有未結訂閱或可退定金時才允許。')">停用正式金流</button>
   </form>
   {% endif %}
 

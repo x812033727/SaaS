@@ -392,7 +392,7 @@ def stub_deposit_paid(
     resv = deposit_svc.find_by_trade_no(db, trade_no)
     if resv is None:
         return HTMLResponse("<h1>找不到預約</h1>", status_code=404)
-    if deposit_svc.mark_paid(db, resv):
+    if deposit_svc.mark_paid(db, resv, provider="stub", payment_type="stub"):
         return HTMLResponse("<h1>✅ 定金已付款(模擬)</h1><p>您的預約已確認。</p>")
     return HTMLResponse("<h1>付款期限已過</h1><p>預約已取消,請重新預約。</p>")
 
@@ -439,7 +439,14 @@ def _handle_ecpay_deposit_callback(db: Session, params: dict) -> PlainTextRespon
         capture_alert("payment: deposit callback amount mismatch")
         return PlainTextResponse("0|amount mismatch")
 
-    if not deposit_svc.mark_paid(db, resv):
+    if not deposit_svc.mark_paid(
+        db,
+        resv,
+        provider="ecpay",
+        provider_merchant_id=client.merchant_id,
+        provider_trade_no=params.get("TradeNo") or None,
+        payment_type=params.get("PaymentType") or None,
+    ):
         # 過期單付款成功:名額可能已釋出 — 告警人工處理退款
         capture_alert(f"payment: deposit paid AFTER expiry resv={resv.id}")
     return PlainTextResponse("1|OK")

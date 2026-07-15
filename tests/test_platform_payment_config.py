@@ -16,6 +16,7 @@ from saas_mvp.db import Base, get_db
 from saas_mvp.models.audit_log import AuditLog
 from saas_mvp.models.feature_subscription import SUB_ACTIVE, FeatureSubscription
 from saas_mvp.models.platform_payment_config import PlatformPaymentConfig
+from saas_mvp.models.reservation import RESERVATION_CANCELLED, Reservation
 from saas_mvp.models.user import User
 from saas_mvp.ops.check_readiness import run_checks
 from saas_mvp.services import features as features_svc
@@ -261,6 +262,41 @@ def test_unsettled_subscription_blocks_rotation_disable_and_reset(client):
     assert client.post("/ui/admin/payment-settings/reset").status_code == 409
     with _Session() as db:
         assert service.payment_provider(db, settings) == "ecpay"
+
+
+def test_refundable_paid_deposit_blocks_credential_rotation(client):
+    email = _login(client, admin=True)
+    with _Session() as db:
+        user = db.query(User).filter_by(email=email).one()
+        _save(db, actor_id=user.id)
+        db.add(Reservation(
+            tenant_id=user.tenant_id,
+            slot_id=999999,
+            party_size=1,
+            status=RESERVATION_CANCELLED,
+            deposit_cents=20000,
+            deposit_status="paid",
+            deposit_merchant_trade_no="DPLOCKCREDENTIAL001",
+            deposit_provider="ecpay",
+            deposit_provider_merchant_id="2000132",
+            deposit_provider_trade_no="2401010000008888",
+            deposit_payment_type="Credit_CreditCard",
+        ))
+        db.commit()
+
+    rotate = client.post(
+        "/ui/admin/payment-settings/ecpay",
+        data={
+            "merchant_id": "3000007",
+            "hash_key": "anotherHashKey123",
+            "hash_iv": "anotherHashIV1234",
+            "environment": "stage",
+        },
+    )
+    assert rotate.status_code == 400
+    assert "尚未完成到場或退款的已付定金" in rotate.text
+    assert client.post("/ui/admin/payment-settings/disable").status_code == 409
+    assert client.post("/ui/admin/payment-settings/reset").status_code == 409
 
 
 def test_disable_overrides_environment_ecpay_without_deleting_secrets(client, monkeypatch):

@@ -14,6 +14,7 @@ import copy
 import datetime
 import hashlib
 import hmac
+import json
 import logging
 import urllib.parse
 import urllib.request
@@ -28,6 +29,7 @@ _AIO_STAGE = "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
 _AIO_PROD = "https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5"
 _PERIOD_ACTION_STAGE = "https://payment-stage.ecpay.com.tw/Cashier/CreditCardPeriodAction"
 _PERIOD_ACTION_PROD = "https://payment.ecpay.com.tw/Cashier/CreditCardPeriodAction"
+_CREDIT_ACTION_PROD = "https://payment.ecpay.com.tw/CreditDetail/DoAction"
 
 # 綠界官方 quote_plus 的 safe 字元集（與官方 SDK 相同）
 _SAFE = "-_.!*()"
@@ -71,6 +73,11 @@ class EcpayClient:
     @property
     def period_action_url(self) -> str:
         return _PERIOD_ACTION_PROD if self.env == "prod" else _PERIOD_ACTION_STAGE
+
+    @property
+    def credit_action_url(self) -> str | None:
+        # 綠界官方明確表示測試環境沒有實際授權，無法使用信用卡請退款 API。
+        return _CREDIT_ACTION_PROD if self.env == "prod" else None
 
     # ── CheckMacValue（對齊官方 SDK generate_check_value） ────────────────────
     def check_mac_value(self, params: dict) -> str:
@@ -193,6 +200,52 @@ class EcpayClient:
         _log.info(
             "ecpay cancel_period trade_no=%s RtnCode=%s",
             merchant_trade_no, parsed.get("RtnCode"),
+        )
+        return parsed
+
+    def refund_credit(
+        self,
+        *,
+        merchant_trade_no: str,
+        trade_no: str,
+        amount_twd: int,
+    ) -> dict:
+        """對已關帳信用卡交易執行全額／部分退刷（DoAction Action=R）。
+
+        官方端點僅提供正式環境。回應文件為 JSON，但兼容既有可能回傳的
+        query-string 格式；無法解析時拋例外，呼叫端必須視為結果不確定，
+        不可自動重試以免重複退刷。
+        """
+        if self.credit_action_url is None:
+            raise RuntimeError("ECPay credit refund API is unavailable in stage")
+        if not merchant_trade_no or len(merchant_trade_no) > 20:
+            raise ValueError("invalid MerchantTradeNo")
+        if not trade_no or len(trade_no) > 20:
+            raise ValueError("invalid TradeNo")
+        if amount_twd <= 0:
+            raise ValueError("refund amount must be positive")
+        params: dict[str, str] = {
+            "MerchantID": self.merchant_id,
+            "MerchantTradeNo": merchant_trade_no,
+            "TradeNo": trade_no,
+            "Action": "R",
+            "TotalAmount": str(int(amount_twd)),
+        }
+        params["CheckMacValue"] = self.check_mac_value(params)
+        raw = self._http_post(self.credit_action_url, params)
+        try:
+            decoded = json.loads(raw)
+            if not isinstance(decoded, dict):
+                raise ValueError("unexpected ECPay refund response")
+            parsed = {str(k): str(v) for k, v in decoded.items()}
+        except json.JSONDecodeError:
+            parsed = dict(urllib.parse.parse_qsl(raw))
+            if not parsed:
+                raise ValueError("unparseable ECPay refund response")
+        _log.info(
+            "ecpay refund_credit trade_no=%s RtnCode=%s",
+            merchant_trade_no,
+            parsed.get("RtnCode"),
         )
         return parsed
 
