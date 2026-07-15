@@ -19,10 +19,12 @@
         <td data-label="被問次數">{{ u.hit_count }}</td>
         <td data-label="處理">
           <form method="post" action="/ui/faq/unanswered/{{ u.id }}/convert" style="display:flex;gap:6px">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="text" name="answer" placeholder="輸入答案後轉為 FAQ" required>
             <button type="submit" class="btn">轉為 FAQ</button>
           </form>
           <form method="post" action="/ui/faq/unanswered/{{ u.id }}/dismiss" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn-sub">忽略</button>
           </form>
         </td>

@@ -70,6 +70,7 @@ from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import onboarding as onboarding_svc
 from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import platform_oauth_config as platform_oauth_svc
+from saas_mvp.services import platform_email_config as platform_email_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -328,7 +329,9 @@ def resend_verification(
     mailer: Mailer = Depends(get_mailer),
 ):
     if actor.user.email_verified_at is None:
-        account_email_svc.send_verification_email(db, actor.user, mailer)
+        sent = account_email_svc.send_verification_email(db, actor.user, mailer)
+        target = "/ui/?verification_resent=1" if sent else "/ui/?verification_error=1"
+        return RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
     return RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -838,6 +841,8 @@ def gcal_disconnect(
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
+    verification_resent: int = Query(0),
+    verification_error: int = Query(0),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
@@ -854,6 +859,8 @@ def dashboard(
              onboarding=checklist,
              onboarding_done=onboarding_svc.all_done(checklist),
              email_unverified=actor.user.email_verified_at is None,
+             verification_resent=bool(verification_resent),
+             verification_error=bool(verification_error),
              line_insights=_line_insights(db, tid)),
     )
 
@@ -1265,6 +1272,124 @@ def admin_oauth_settings_reset(
     return RedirectResponse(
         "/ui/admin/oauth-settings",
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _platform_email_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    **extra,
+) -> dict:
+    return _ctx(
+        request,
+        actor,
+        email_status=platform_email_svc.email_status(db, settings),
+        **extra,
+    )
+
+
+@router.get("/admin/email-settings", response_class=HTMLResponse)
+def admin_email_settings(
+    request: Request,
+    saved: int = Query(0),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "admin/email_settings.html",
+        _platform_email_ctx(request, actor, db, saved=bool(saved)),
+    )
+
+
+@router.post("/admin/email-settings", response_class=HTMLResponse)
+def admin_email_settings_save(
+    request: Request,
+    smtp_host: str = Form(..., max_length=255),
+    smtp_port: int = Form(587),
+    smtp_user: str = Form("", max_length=255),
+    smtp_password: str = Form("", max_length=255),
+    smtp_from: str = Form(..., max_length=255),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_email_svc.save_email_config(
+            db,
+            host=smtp_host,
+            port=smtp_port,
+            user=smtp_user,
+            password=smtp_password,
+            from_address=smtp_from,
+            actor_user_id=actor.user.id,
+        )
+    except platform_email_svc.PlatformEmailConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/email_settings.html",
+            _platform_email_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.email.update",
+        target="email:smtp",
+        detail={"host": smtp_host.strip(), "port": smtp_port},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/email-settings?saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/email-settings/test", response_class=HTMLResponse)
+def admin_email_settings_test(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
+):
+    try:
+        mailer.send(
+            to=actor.user.email,
+            subject="寄信設定測試 — LINE 預約平台",
+            body="這是一封平台 SMTP 設定測試信。若你收到此信，代表寄信服務設定成功。",
+        )
+    except MailerError:
+        return templates.TemplateResponse(
+            "admin/email_settings.html",
+            _platform_email_ctx(
+                request, actor, db, test_error="測試信寄送失敗，請檢查 SMTP 設定。"
+            ),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    return templates.TemplateResponse(
+        "admin/email_settings.html",
+        _platform_email_ctx(request, actor, db, test_sent=True),
+    )
+
+
+@router.post("/admin/email-settings/reset", response_class=HTMLResponse)
+def admin_email_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    removed = platform_email_svc.clear_email_override(db)
+    if removed:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.email.reset",
+            target="email:smtp",
+            request=request,
+        )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/email-settings", status_code=status.HTTP_303_SEE_OTHER
     )
 
 

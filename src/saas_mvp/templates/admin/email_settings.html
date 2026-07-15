@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}寄信設定 · 平台管理{% endblock %}
+{% block content %}
+<h1>平台寄信設定</h1>
+
+<div class="card">
+  <h2>SMTP 寄信服務</h2>
+  <p class="muted">用於 Email 驗證、重設密碼與平台通知。只有平台管理員能修改；一般使用者只需點擊重寄。</p>
+  {% if saved %}<div class="success">寄信設定已加密儲存並立即生效，不需重啟服務。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if test_sent %}<div class="success">測試信已寄到 {{ current_user.email }}。</div>{% endif %}
+  {% if test_error %}<div class="error">{{ test_error }}</div>{% endif %}
+
+  {% if email_status.configured %}
+    <p><span class="badge valid">已設定</span>
+      {% if email_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">尚未設定</span></p>
+  {% endif %}
+
+  <form method="post" action="/ui/admin/email-settings" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>SMTP 主機
+      <input name="smtp_host" value="{{ email_status.host }}" placeholder="smtp.gmail.com" required maxlength="255">
+    </label>
+    <label>連接埠
+      <input name="smtp_port" type="number" value="{{ email_status.port }}" min="1" max="65535" required>
+    </label>
+    <label>SMTP 帳號
+      <input name="smtp_user" value="{{ email_status.user }}" maxlength="255" autocomplete="username">
+    </label>
+    <label>SMTP 密碼／應用程式密碼
+      <input name="smtp_password" type="password" maxlength="255"
+             placeholder="{% if email_status.source == 'database' %}已設定；留空可保留原密碼{% else %}建立後台設定時必填{% endif %}"
+             {% if email_status.source != 'database' %}required{% endif %} autocomplete="new-password">
+    </label>
+    <label>寄件人 Email
+      <input name="smtp_from" type="email" value="{{ email_status.from_address }}" required maxlength="255">
+    </label>
+    <p class="muted">密碼會以 Fernet 加密保存，之後不會在頁面顯示明文。SMTP 連線使用 STARTTLS。</p>
+    <button type="submit">儲存並啟用</button>
+  </form>
+
+  {% if email_status.configured %}
+  <form method="post" action="/ui/admin/email-settings/test" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">寄送測試信給我</button>
+  </form>
+  {% endif %}
+
+  {% if email_status.source == 'database' %}
+  <form method="post" action="/ui/admin/email-settings/reset" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定移除後台寄信設定？')">移除後台設定</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

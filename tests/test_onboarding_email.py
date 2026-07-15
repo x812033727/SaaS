@@ -26,7 +26,8 @@ from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.ops.send_trial_notices import send_trial_notices  # noqa: E402
 from saas_mvp.services import account_email as ae_svc  # noqa: E402
 from saas_mvp.services import onboarding as onboarding_svc  # noqa: E402
-from saas_mvp.services.mailer import StubMailer, get_mailer  # noqa: E402
+from saas_mvp.services import mailer as mailer_svc  # noqa: E402
+from saas_mvp.services.mailer import MailerError, StubMailer, get_mailer  # noqa: E402
 
 _engine = create_engine(
     "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -109,12 +110,43 @@ class TestEmailVerification:
         _ui_register(client)  # 已登入（register 設 cookie）
         r = client.post("/ui/resend-verification", follow_redirects=False)
         assert r.status_code == 303
+        assert r.headers["location"] == "/ui/?verification_resent=1"
         assert len(stub_mailer.sent) == 2  # 註冊 1 + 重寄 1
+
+    def test_resend_form_includes_csrf_token(self, client):
+        _ui_register(client)
+        r = client.get("/ui/")
+        assert 'action="/ui/resend-verification"' in r.text
+        assert 'name="csrf_token"' in r.text
+
+    def test_resend_failure_returns_honest_dashboard_error(
+        self, client, stub_mailer
+    ):
+        _ui_register(client)
+
+        class _FailingMailer:
+            def send(self, **kwargs):
+                raise MailerError("smtp unavailable")
+
+        client.app.dependency_overrides[get_mailer] = lambda: _FailingMailer()
+        try:
+            r = client.post("/ui/resend-verification", follow_redirects=False)
+            assert r.status_code == 303
+            assert r.headers["location"] == "/ui/?verification_error=1"
+            shown = client.get(r.headers["location"])
+            assert "目前無法寄出驗證信" in shown.text
+        finally:
+            client.app.dependency_overrides[get_mailer] = lambda: stub_mailer
 
     def test_dashboard_shows_unverified_banner(self, client):
         _ui_register(client)
         r = client.get("/ui/")
         assert "尚未驗證 Email" in r.text
+
+    def test_production_without_smtp_never_uses_fake_success(self, monkeypatch):
+        monkeypatch.setattr(settings, "env", "prod")
+        monkeypatch.setattr(settings, "smtp_host", "")
+        assert isinstance(mailer_svc.get_mailer(), mailer_svc.UnconfiguredMailer)
 
 
 # ── 忘記密碼 ─────────────────────────────────────────────────────────────────
