@@ -4,6 +4,23 @@
 <h1>平台總覽</h1>
 
 <div class="card">
+  <h2>商用上線狀態</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">完成度</div><div class="value">{{ readiness.progress }}%</div></div>
+    <div class="stat"><div class="label">需要處理</div><div class="value">{{ readiness.fails }}</div></div>
+    <div class="stat"><div class="label">建議補強</div><div class="value">{{ readiness.warns }}</div></div>
+  </div>
+  {% if readiness.commercially_ready %}
+    <div class="success">所有商用上線檢查均已通過。</div>
+  {% elif readiness.launch_safe %}
+    <div class="warning">平台可安全運行，但仍有 {{ readiness.warns }} 項商用能力建議完成。</div>
+  {% else %}
+    <div class="error">尚有 {{ readiness.fails }} 項必要設定未通過，請先處理再正式營運。</div>
+  {% endif %}
+  <p><a class="btn" href="/ui/admin/readiness">查看上線檢查與處理方式</a></p>
+</div>
+
+<div class="card">
   <h2>租戶</h2>
   <div class="grid">
     <div class="stat"><div class="label">總數</div><div class="value">{{ overview.tenant_total }}</div></div>

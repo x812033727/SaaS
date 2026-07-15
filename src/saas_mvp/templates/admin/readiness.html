@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}上線檢查 · 平台管理{% endblock %}
+{% block content %}
+<h1>商用上線檢查</h1>
+
+<div class="card">
+  <h2>目前完成度</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">完成度</div><div class="value">{{ readiness.progress }}%</div></div>
+    <div class="stat"><div class="label">已完成</div><div class="value">{{ readiness.passes }}</div></div>
+    <div class="stat"><div class="label">建議補強</div><div class="value">{{ readiness.warns }}</div></div>
+    <div class="stat"><div class="label">需要處理</div><div class="value">{{ readiness.fails }}</div></div>
+  </div>
+  {% if readiness.commercially_ready %}
+    <div class="success">全部 {{ readiness.total }} 項檢查均已完成，可以進行正式營運驗收。</div>
+  {% elif readiness.launch_safe %}
+    <div class="warning">沒有阻擋上線的錯誤，但仍有 {{ readiness.warns }} 項服務尚未完整啟用。</div>
+  {% else %}
+    <div class="error">有 {{ readiness.fails }} 項必要設定未通過，完成前不建議正式對外營運。</div>
+  {% endif %}
+  <p><a class="btn" href="/ui/admin/readiness">重新檢查</a></p>
+  <p class="muted">每次開啟或重新整理都會讀取最新後台設定。頁面不會顯示密碼、金鑰或完整憑證。</p>
+</div>
+
+<div class="card">
+  <h2>檢查結果</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>分類</th><th>項目</th><th>狀態</th><th>目前情況</th><th>用途與下一步</th></tr></thead>
+    <tbody>
+    {% for item in readiness.items %}
+      <tr>
+        <td>{{ item.category }}</td>
+        <td><strong>{{ item.label }}</strong></td>
+        <td>
+          <span class="badge {{ 'valid' if item.status == 'PASS' else ('invalid' if item.status == 'FAIL' else 'unchecked') }}">
+            {{ '已完成' if item.status == 'PASS' else ('需要處理' if item.status == 'FAIL' else '建議補強') }}
+          </span>
+        </td>
+        <td>{{ item.detail }}</td>
+        <td>
+          <div>{{ item.guidance }}</div>
+          {% if item.action_url %}<a href="{{ item.action_url }}">{{ item.action_label }}</a>{% endif %}
+          {% if not item.action_url and item.status != 'PASS' %}<span class="muted">此項由平台維運設定，不需一般使用者操作。</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="card">
+  <h2>正式營運驗收順序</h2>
+  <ol>
+    <li>先完成 Email 與 LINE 綁定，確認帳號驗證、重設密碼及顧客訊息都能送達。</li>
+    <li>在測試環境完成金流付款、退款、電子發票開立與作廢。</li>
+    <li>啟用正式金流與正式電子發票後，以低額交易核對平台、綠界與實際入帳。</li>
+    <li>完成 Google、AI 與錯誤監控，再進行店家教育訓練與正式公開。</li>
+  </ol>
+  <p class="muted">資料庫備份、排程與服務存活由主機健康機制持續監控，避免在網頁環境產生錯誤判斷。</p>
+</div>
+{% endblock %}

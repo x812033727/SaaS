@@ -39,7 +39,12 @@ class Check:
         return f"{icon} [{self.status}] {self.name} — {self.detail}"
 
 
-def run_checks(*, session_factory=SessionLocal) -> list[Check]:
+def run_checks(
+    *,
+    session_factory=SessionLocal,
+    db_engine=None,
+    include_host_checks: bool = True,
+) -> list[Check]:
     checks: list[Check] = []
     add = checks.append
 
@@ -234,7 +239,8 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
 
         script = ScriptDirectory.from_config(_alembic_config())
         head = script.get_current_head()
-        with engine.connect() as conn:
+        effective_engine = db_engine if db_engine is not None else engine
+        with effective_engine.connect() as conn:
             current = MigrationContext.configure(conn).get_current_revision()
         if current == head:
             add(Check("db_migration", "PASS", f"alembic head={head}"))
@@ -243,27 +249,34 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
     except Exception as exc:  # noqa: BLE001 — 檢查器本身不崩
         add(Check("db_migration", "WARN", f"無法確認 migration 狀態:{type(exc).__name__}"))
 
-    # ── 6. 備份新鮮度 ────────────────────────────────────────────
-    backups = sorted(pathlib.Path("backups").glob("*.dump")) if pathlib.Path("backups").is_dir() else []
-    if not backups:
-        add(Check("backup", "WARN", "backups/ 無 dump(容器外執行時屬正常;請於主機驗證)"))
-    else:
-        age_h = (datetime.datetime.now().timestamp() - backups[-1].stat().st_mtime) / 3600
-        if age_h > 48:
-            add(Check("backup", "FAIL", f"最新備份已 {age_h:.0f} 小時(>48h);檢查 db-backup 服務"))
+    if include_host_checks:
+        # ── 6. 備份新鮮度 ────────────────────────────────────────
+        backups = (
+            sorted(pathlib.Path("backups").glob("*.dump"))
+            if pathlib.Path("backups").is_dir()
+            else []
+        )
+        if not backups:
+            add(Check("backup", "WARN", "backups/ 無 dump(容器外執行時屬正常;請於主機驗證)"))
         else:
-            add(Check("backup", "PASS", f"最新備份 {age_h:.0f} 小時前({backups[-1].name})"))
+            age_h = (
+                datetime.datetime.now().timestamp() - backups[-1].stat().st_mtime
+            ) / 3600
+            if age_h > 48:
+                add(Check("backup", "FAIL", f"最新備份已 {age_h:.0f} 小時(>48h);檢查 db-backup 服務"))
+            else:
+                add(Check("backup", "PASS", f"最新備份 {age_h:.0f} 小時前({backups[-1].name})"))
 
-    # ── 7. scheduler 心跳(容器內可見時)──────────────────────────
-    hb = pathlib.Path("/tmp/sched/heartbeat")
-    if hb.exists():
-        age_s = datetime.datetime.now().timestamp() - hb.stat().st_mtime
-        if age_s > 180:
-            add(Check("scheduler", "FAIL", f"心跳過舊({age_s:.0f}s);scheduler 可能卡死"))
+        # ── 7. scheduler 心跳(容器內可見時)──────────────────────
+        hb = pathlib.Path("/tmp/sched/heartbeat")
+        if hb.exists():
+            age_s = datetime.datetime.now().timestamp() - hb.stat().st_mtime
+            if age_s > 180:
+                add(Check("scheduler", "FAIL", f"心跳過舊({age_s:.0f}s);scheduler 可能卡死"))
+            else:
+                add(Check("scheduler", "PASS", f"心跳 {age_s:.0f}s 前"))
         else:
-            add(Check("scheduler", "PASS", f"心跳 {age_s:.0f}s 前"))
-    else:
-        add(Check("scheduler", "WARN", "看不到 /tmp/sched/heartbeat(非 scheduler 容器內屬正常)"))
+            add(Check("scheduler", "WARN", "看不到 /tmp/sched/heartbeat(非 scheduler 容器內屬正常)"))
 
     # ── 8. LINE 設定 ────────────────────────────────────────────
     try:

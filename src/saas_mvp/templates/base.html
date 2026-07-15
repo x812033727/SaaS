@@ -88,6 +88,7 @@
         <details class="side-group"{% if path.startswith('/ui/admin') %} open{% endif %}>
           <summary>平台管理</summary>
           <a{% if path in ('/ui/admin', '/ui/admin/') %} class="active"{% endif %} href="/ui/admin">平台總覽</a>
+          {{ item('/ui/admin/readiness', '上線檢查') }}
           {{ item('/ui/admin/oauth-settings', '登入設定') }}
           {{ item('/ui/admin/email-settings', '寄信設定') }}
           {{ item('/ui/admin/ai-settings', 'AI 設定') }}

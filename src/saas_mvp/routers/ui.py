@@ -74,6 +74,7 @@ from saas_mvp.services import platform_email_config as platform_email_svc
 from saas_mvp.services import platform_ai_config as platform_ai_svc
 from saas_mvp.services import platform_payment_config as platform_payment_svc
 from saas_mvp.services import platform_invoice_config as platform_invoice_svc
+from saas_mvp.services import readiness_dashboard as readiness_dashboard_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -1281,9 +1282,28 @@ def admin_overview(
     db: Session = Depends(get_db),
 ):
     """平台總覽（B4）：租戶/方案分佈/試用/MRR/本月扣款。"""
+    readiness = readiness_dashboard_svc.build_dashboard(db)
     return templates.TemplateResponse(
         "admin/overview.html",
-        _ctx(request, actor, overview=admin_svc.platform_overview(db)),
+        _ctx(
+            request,
+            actor,
+            overview=admin_svc.platform_overview(db),
+            readiness=readiness,
+        ),
+    )
+
+
+@router.get("/admin/readiness", response_class=HTMLResponse)
+def admin_readiness(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """平台上線檢查中心：將技術檢查轉成可理解、可操作的後台頁面。"""
+    return templates.TemplateResponse(
+        "admin/readiness.html",
+        _ctx(request, actor, readiness=readiness_dashboard_svc.build_dashboard(db)),
     )
 
 
