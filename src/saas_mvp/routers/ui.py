@@ -71,6 +71,7 @@ from saas_mvp.services import onboarding as onboarding_svc
 from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import platform_email_config as platform_email_svc
+from saas_mvp.services import platform_ai_config as platform_ai_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -1599,6 +1600,120 @@ def admin_email_settings_retry(
     db.commit()
     return RedirectResponse(
         "/ui/admin/email-settings?retry_queued=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _platform_ai_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    **extra,
+) -> dict:
+    return _ctx(
+        request,
+        actor,
+        ai_status=platform_ai_svc.ai_status(db, settings),
+        **extra,
+    )
+
+
+@router.get("/admin/ai-settings", response_class=HTMLResponse)
+def admin_ai_settings(
+    request: Request,
+    saved: int = Query(0),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "admin/ai_settings.html",
+        _platform_ai_ctx(request, actor, db, saved=bool(saved)),
+    )
+
+
+@router.post("/admin/ai-settings", response_class=HTMLResponse)
+def admin_ai_settings_save(
+    request: Request,
+    api_key: str = Form("", max_length=255),
+    model: str = Form(..., max_length=128),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_ai_svc.save_ai_config(
+            db,
+            api_key=api_key,
+            model=model,
+            actor_user_id=actor.user.id,
+        )
+    except platform_ai_svc.PlatformAIConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/ai_settings.html",
+            _platform_ai_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.ai.update",
+        target="ai:anthropic",
+        detail={"model": model.strip(), "key_changed": bool(api_key.strip())},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/ai-settings?saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/ai-settings/test", response_class=HTMLResponse)
+def admin_ai_settings_test(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_ai_svc.test_ai_config(db, settings)
+    except platform_ai_svc.PlatformAIConfigError as exc:
+        return templates.TemplateResponse(
+            "admin/ai_settings.html",
+            _platform_ai_ctx(request, actor, db, test_error=str(exc)),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.ai.test",
+        target="ai:anthropic",
+        request=request,
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        "admin/ai_settings.html",
+        _platform_ai_ctx(request, actor, db, test_ok=True),
+    )
+
+
+@router.post("/admin/ai-settings/reset", response_class=HTMLResponse)
+def admin_ai_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    removed = platform_ai_svc.clear_ai_override(db)
+    if removed:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.ai.reset",
+            target="ai:anthropic",
+            request=request,
+        )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/ai-settings",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -5598,7 +5713,7 @@ def ai_widget_ask(
     elif len(question) > _AI_QUESTION_MAX_LEN:
         error = f"問題過長（上限 {_AI_QUESTION_MAX_LEN} 字），請精簡後再試。"
     else:
-        assistant = get_assistant()
+        assistant = get_assistant(db)
         context = faq_svc.build_context(
             db, tid, question, max_entries=assistant.context_max_entries
         )
@@ -5633,7 +5748,7 @@ def faq_ask(
             "_ai_test.html",
             _ctx(request, actor, question=question, answer=answer, source=source, error=error),
         )
-    assistant = get_assistant()
+    assistant = get_assistant(db)
     context = faq_svc.build_context(
         db, tid, question, max_entries=assistant.context_max_entries
     )

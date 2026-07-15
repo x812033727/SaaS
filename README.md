@@ -452,8 +452,8 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 |------|------|------|
 | `SAAS_PUBLIC_BASE_URL` | 對外網址（組金流回呼、公開頁/員工入口/seed 連結絕對網址） | `""` |
 | `SAAS_MAX_LOCATIONS_PER_TENANT` | 每租戶可建分店上限 | `5` |
-| `SAAS_ANTHROPIC_API_KEY` | AI 客服 LLM 金鑰（空值時 AI 走 FAQ-only/stub） | `""` |
-| `SAAS_AI_MODEL` | AI 客服使用的 Claude 模型 | `claude-sonnet-4-6` |
+| `SAAS_ANTHROPIC_API_KEY` | AI 客服 LLM 金鑰備援值；後台「平台管理 → AI 設定」的加密資料庫設定優先 | `""` |
+| `SAAS_AI_MODEL` | 後台未設定時使用的 Claude 模型備援值 | `claude-sonnet-4-6` |
 | `SAAS_PAYMENT_PROVIDER` | 金流 provider：`stub` / `ecpay` / `newebpay` | `stub` |
 | `SAAS_NEWEBPAY_MERCHANT_ID` | 藍新 NewebPay 商店代號 | `""` |
 | `SAAS_NEWEBPAY_HASH_KEY` | 藍新 HashKey | `""` |
@@ -468,6 +468,14 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 | `SAAS_PUSH_ALLOWANCE_BOOST` | 開通 `PUSH_BOOST` 後的額外推播額度 | `500` |
 | `SAAS_REACTIVATION_DORMANT_DAYS` | 喚回活動判定沉睡的閒置天數 | `90` |
 | `SAAS_REACTIVATION_CAP_PER_SHOP` | 喚回活動每店單次派送上限 | `50` |
+
+### 平台 AI 設定（不需終端機或重啟）
+
+平台管理員可到 `/ui/admin/ai-settings` 設定 Anthropic API Key 與 Claude 模型。
+API Key 以 Fernet 加密保存，頁面與稽核紀錄不顯示明文；儲存後 AI 客服、LINE
+自由文字回覆與 AI 預約助理立即改用 Claude。頁面提供極小用量的連線測試，能分辨
+金鑰、模型、額度或連線問題。移除資料庫設定後會使用 `SAAS_ANTHROPIC_*` 備援；若
+備援也未設定，安全退回 FAQ 規則模式，既有 FAQ 不受影響。
 | `SAAS_WEBHOOK_MAX_ATTEMPTS` | LINE webhook failed 事件的重試上限（含首次），達上限後重送視為 duplicate | `5` |
 | `SAAS_WEBHOOK_EVENT_TTL_DAYS` | `ops/purge_webhook_events` 清理 processed 事件的預設保留天數 | `30` |
 | `SAAS_UI_CSRF_ENABLED` | `/ui` CSRF double-submit token 防護開關（僅測試環境可關） | `true` |

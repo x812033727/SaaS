@@ -132,10 +132,22 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
         add(Check("sentry", "WARN", "未設 SAAS_SENTRY_DSN(告警退化為 error log)"))
     else:
         add(Check("sentry", "PASS", "DSN 已設"))
-    if not settings.anthropic_api_key:
-        add(Check("ai", "WARN", "未設 SAAS_ANTHROPIC_API_KEY(AI 走離線 Stub 規則,非真 Claude)"))
-    else:
-        add(Check("ai", "PASS", f"model={settings.ai_model}"))
+    try:
+        from saas_mvp.services.platform_ai_config import effective_ai_config
+
+        with session_factory() as db:
+            ai_config = effective_ai_config(db, settings)
+        if ai_config is None:
+            add(Check("ai", "WARN", "AI 尚未設定；請到平台後台「AI 設定」完成"))
+        else:
+            add(Check(
+                "ai",
+                "PASS",
+                f"provider={ai_config.provider} model={ai_config.model} "
+                f"source={ai_config.source}",
+            ))
+    except Exception as exc:  # noqa: BLE001
+        add(Check("ai", "WARN", f"無法讀取 AI 設定:{type(exc).__name__}"))
 
     # Google OAuth：後台加密設定優先，環境變數僅作備援。
     try:

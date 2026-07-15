@@ -99,7 +99,7 @@ def handle_free_text(
 
     from saas_mvp.ai.agent import get_agent
 
-    effective_agent = agent or get_agent()
+    effective_agent = agent or get_agent(db)
     conv = _load_conversation(db, tenant_id, line_user_id)
     context = ai_context_svc.build_agent_context(
         db, tenant_id, line_user_id=line_user_id

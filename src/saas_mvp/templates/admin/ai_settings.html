@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}AI 設定 · 平台管理{% endblock %}
+{% block content %}
+<h1>平台 AI 設定</h1>
+
+<div class="card">
+  <h2>Anthropic Claude</h2>
+  <p class="muted">供全平台 AI 客服與 AI 預約助理使用。只有平台管理員能修改；儲存後所有 Web 與 LINE 對話立即生效，不需修改 .env、重建或重啟。</p>
+
+  {% if saved %}<div class="success">AI 設定已加密儲存並立即生效。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if test_ok %}<div class="success">Anthropic 連線、API Key 與模型測試成功。</div>{% endif %}
+  {% if test_error %}<div class="error">測試失敗：{{ test_error }}</div>{% endif %}
+
+  {% if ai_status.configured %}
+    <p><span class="badge valid">Claude 已啟用</span>
+      {% if ai_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+      · {{ ai_status.model }} · Key {{ ai_status.key_mask }}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">FAQ 規則模式</span> 尚未連接真正的 AI 模型。</p>
+  {% endif %}
+
+  <form method="post" action="/ui/admin/ai-settings" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Anthropic API Key
+      <input name="api_key" type="password" maxlength="255"
+             placeholder="{% if ai_status.source == 'database' %}已設定；留空可保留原 Key{% else %}sk-ant-...{% endif %}"
+             {% if ai_status.source != 'database' %}required{% endif %} autocomplete="new-password">
+    </label>
+    <label>Claude 模型 ID
+      <input name="model" value="{{ ai_status.model }}" maxlength="128"
+             placeholder="claude-sonnet-4-6" pattern="claude-[A-Za-z0-9._-]+" required>
+    </label>
+    <p class="muted">API Key 會以 Fernet 加密保存，不會顯示明文或寫入稽核紀錄。模型 ID 請使用 Anthropic Console 或官方文件目前提供的完整名稱。</p>
+    <button type="submit">儲存並啟用</button>
+  </form>
+
+  {% if ai_status.configured %}
+  <form method="post" action="/ui/admin/ai-settings/test" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">測試 Anthropic 連線</button>
+  </form>
+  {% endif %}
+
+  {% if ai_status.source == 'database' %}
+  <form method="post" action="/ui/admin/ai-settings/reset" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定移除後台 AI 設定？若無伺服器備援值，AI 將改為 FAQ 規則模式。')">移除後台設定</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>設定教學</h2>
+  <ol>
+    <li>登入 <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer">Anthropic Console</a>，先完成帳務與用量上限設定。</li>
+    <li>到 API Keys 建立平台專用 Key；不要與個人開發環境共用。</li>
+    <li>從 <a href="https://docs.anthropic.com/en/docs/about-claude/models/overview" target="_blank" rel="noopener noreferrer">Anthropic 模型文件</a>複製要使用的模型 ID。</li>
+    <li>在本頁貼上 API Key 與模型 ID，儲存後按「測試 Anthropic 連線」。測試會送出一個極小請求，可能產生極少量 API 費用。</li>
+    <li>到店家「AI 客服」頁輸入測試問題，再從 LINE 實際測試；回答來源顯示 Anthropic 即代表正式 AI 已啟用。</li>
+  </ol>
+  <p class="muted">建議在 Anthropic Console 設定每月預算與警示。移除設定後會安全退回 FAQ 規則模式，既有 FAQ 不會遺失。</p>
+</div>
+{% endblock %}

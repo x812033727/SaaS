@@ -1,7 +1,7 @@
 """AI router — AI 客服問答 widget + FAQ 知識庫 CRUD（PHASE 4-1）。
 
 受認證 + require_feature(AI_ASSISTANT)。/ai/ask 用 get_assistant() 回答（離線預設
-StubAIAssistant，設定 SAAS_ANTHROPIC_API_KEY 後走 Claude），並以 faq.match 注入 context。
+StubAIAssistant，後台或環境設定 Anthropic 後走 Claude），並以 faq.match 注入 context。
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def ask(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AskResponse:
-    assistant = get_assistant()
+    assistant = get_assistant(db)
     context = _build_context(
         db, current_user.tenant_id, body.question, assistant.context_max_entries
     )

@@ -167,11 +167,17 @@ def _turn_from(data: dict) -> AgentTurn:
 class AnthropicAgent(AIAgent):
     """Claude tool-use loop(D2):≤3 輪,末輪強制 propose_action 收斂。"""
 
-    def __init__(self, *, client_factory=None) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        model: str | None = None,
+        client_factory=None,
+    ) -> None:
         from saas_mvp.config import settings
 
-        self._api_key = settings.anthropic_api_key
-        self._model = settings.ai_model
+        self._api_key = api_key if api_key is not None else settings.anthropic_api_key
+        self._model = model if model is not None else settings.ai_model
         self._client_factory = client_factory  # 測試注入 fake client
 
     def is_available(self) -> bool:
@@ -309,10 +315,12 @@ def _valid_date(v) -> str | None:
     return None
 
 
-def get_agent() -> AIAgent:
-    """依 settings 選實作:有 SAAS_ANTHROPIC_API_KEY 走 Claude,否則 Stub。"""
+def get_agent(db=None) -> AIAgent:
+    """資料庫設定優先、環境備援；未設定時安全退回 Stub。"""
     from saas_mvp.config import settings
+    from saas_mvp.services.platform_ai_config import effective_ai_config
 
-    if settings.anthropic_api_key:
-        return AnthropicAgent()
+    config = effective_ai_config(db, settings)
+    if config is not None:
+        return AnthropicAgent(api_key=config.api_key, model=config.model)
     return StubAgent()

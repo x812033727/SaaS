@@ -1928,7 +1928,7 @@ def _ai_reply(db: Session, tenant_id: int, text: str) -> str:
     from saas_mvp.ai import AIError, get_assistant
     from saas_mvp.services import faq as faq_svc
 
-    assistant = get_assistant()
+    assistant = get_assistant(db)
     context = faq_svc.build_context(
         db, tenant_id, text, max_entries=assistant.context_max_entries
     )

@@ -16,7 +16,7 @@
 ## AI
 - **AI 永不直接改資料**:改期/取消一律回確認按鈕,由既有含擁有者驗證的 postback 分支執行。
 - **tool loop 上限 3 輪**,末輪強制收斂;內部查詢不計 AI 月額度(每則訊息仍扣 1)。
-- 無 Anthropic key 時退化為規則式 StubAgent(關鍵字比對),能力有限。
+- 平台管理員可在「平台管理 → AI 設定」加密保存 Anthropic key 並立即生效；未設定時退化為規則式 StubAgent(關鍵字比對),能力有限。
 
 ## 營運
 - **代管(impersonation)30 分強制過期**、不可代管 admin、不可鏈式;API Bearer 路徑不受理代管 token。

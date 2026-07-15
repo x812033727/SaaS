@@ -21,21 +21,23 @@ from saas_mvp.ai.base import AIAssistant, AIError, AIResult
 from saas_mvp.ai.stub import StubAIAssistant
 
 
-def get_assistant() -> AIAssistant:
+def get_assistant(db=None) -> AIAssistant:
     """Return an ``AIAssistant`` instance based on current settings.
 
     Selection logic (first match wins):
 
-    1. ``SAAS_ANTHROPIC_API_KEY`` is set → :class:`AnthropicAssistant` (real Claude)
-    2. Otherwise                          → :class:`StubAIAssistant` (offline, safe)
+    1. 後台資料庫或 ``SAAS_ANTHROPIC_API_KEY`` 有設定 → 真 Claude
+    2. 否則 → :class:`StubAIAssistant`（離線、安全退化）
 
     Mirrors :func:`saas_mvp.translation.get_translator`. Callers never need to
     know which concrete backend was returned; both satisfy :class:`AIAssistant`.
     """
     from saas_mvp.config import settings  # lazy — avoid circular import at load
+    from saas_mvp.services.platform_ai_config import effective_ai_config
 
-    if settings.anthropic_api_key:
-        return AnthropicAssistant()
+    config = effective_ai_config(db, settings)
+    if config is not None:
+        return AnthropicAssistant(api_key=config.api_key, model=config.model)
     return StubAIAssistant()
 
 

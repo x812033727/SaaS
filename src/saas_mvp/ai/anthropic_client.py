@@ -27,11 +27,11 @@ class AnthropicAssistant(AIAssistant):
     succeeds but ``answer()`` raises :class:`AIError` on use.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
         from saas_mvp.config import settings  # lazy — avoid circular import
 
-        self._api_key = settings.anthropic_api_key
-        self._model = settings.ai_model
+        self._api_key = api_key if api_key is not None else settings.anthropic_api_key
+        self._model = model if model is not None else settings.ai_model
 
     def is_available(self) -> bool:
         return bool(self._api_key)
