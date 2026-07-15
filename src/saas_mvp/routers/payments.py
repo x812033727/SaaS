@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import datetime
 import html
 import logging
 import time
@@ -22,15 +21,20 @@ from starlette.concurrency import run_in_threadpool
 
 from saas_mvp.config import settings
 from saas_mvp.db import get_db
-from saas_mvp.models.feature_subscription import SUB_PENDING
+from saas_mvp.models.feature_subscription import (
+    SUB_CANCEL_FAILED,
+    SUB_CANCELLED,
+    SUB_PENDING,
+)
 from saas_mvp.models.order import ORDER_PENDING, Order
 from saas_mvp.obs.alerts import capture_alert
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import subscriptions as subs_svc
-from saas_mvp.services.payment_ecpay import EcpayClient
+from saas_mvp.services.payment_ecpay import get_ecpay_client
 from saas_mvp.services.payment_newebpay import NewebPayClient
+from saas_mvp.services.platform_payment_config import payment_provider
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +62,11 @@ def ecpay_checkout(
     order_id: int,
     db: Session = Depends(get_db),
 ):
+    if payment_provider(db, settings) != "ecpay":
+        return HTMLResponse(
+            "<h1>綠界付款目前未啟用</h1>",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     order = db.get(Order, order_id)
     if order is None:
         return HTMLResponse("<h1>找不到訂單</h1>", status_code=status.HTTP_404_NOT_FOUND)
@@ -75,7 +84,7 @@ def ecpay_checkout(
         db.refresh(order)
 
     base = settings.public_base_url.rstrip("/")
-    client = EcpayClient()
+    client = get_ecpay_client(db)
     form = client.build_order_form(
         merchant_trade_no=order.merchant_trade_no,
         amount_twd=order.total_cents // 100,
@@ -111,7 +120,7 @@ async def ecpay_callback(
 
 
 def _handle_ecpay_callback(db: Session, params: dict) -> PlainTextResponse:
-    client = EcpayClient()
+    client = get_ecpay_client(db)
 
     # 1) 先驗簽（拒絕偽造）
     if not client.verify(params):
@@ -167,6 +176,11 @@ def ecpay_subscribe(
     subscription_id: int,
     db: Session = Depends(get_db),
 ):
+    if payment_provider(db, settings) != "ecpay":
+        return HTMLResponse(
+            "<h1>綠界訂閱付款目前未啟用</h1>",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     sub = subs_svc.get_subscription_by_id(db, subscription_id)
     if sub is None:
         return HTMLResponse("<h1>找不到訂閱</h1>", status_code=status.HTTP_404_NOT_FOUND)
@@ -176,7 +190,7 @@ def ecpay_subscribe(
         return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
 
     base = settings.public_base_url.rstrip("/")
-    client = EcpayClient()
+    client = get_ecpay_client(db)
     form = client.build_period_form(
         merchant_trade_no=sub.merchant_trade_no,
         period_amount_twd=sub.period_amount_cents // 100,
@@ -208,7 +222,7 @@ async def ecpay_subscribe_callback(
 
 
 def _handle_ecpay_subscribe_callback(db: Session, params: dict) -> PlainTextResponse:
-    client = EcpayClient()
+    client = get_ecpay_client(db)
     if not client.verify(params):
         _log.warning("ecpay subscribe-callback rejected: bad CheckMacValue")
         capture_alert("payment: ecpay subscribe-callback bad CheckMacValue")
@@ -219,6 +233,15 @@ def _handle_ecpay_subscribe_callback(db: Session, params: dict) -> PlainTextResp
     if sub is None:
         _log.warning("ecpay subscribe-callback: subscription not found %s", trade_no)
         return PlainTextResponse("0|subscription not found")
+
+    if sub.status in (SUB_CANCELLED, SUB_CANCEL_FAILED):
+        # 使用者取消 pending 後仍可能在舊付款頁完成交易；不可因此重新開通。
+        # 回 1|OK 防止無限重送，同時告警由營運者在綠界後台核對退款。
+        if params.get("RtnCode") == "1":
+            capture_alert(
+                f"payment: subscription paid AFTER cancellation sub={sub.id}"
+            )
+        return PlainTextResponse("1|OK")
 
     if params.get("RtnCode") == "1":
         subs_svc.activate(
@@ -251,7 +274,7 @@ async def ecpay_period_callback(
 
 
 def _handle_ecpay_period_callback(db: Session, params: dict) -> PlainTextResponse:
-    client = EcpayClient()
+    client = get_ecpay_client(db)
     if not client.verify(params):
         _log.warning("ecpay period-callback rejected: bad CheckMacValue")
         capture_alert("payment: ecpay period-callback bad CheckMacValue")
@@ -323,7 +346,7 @@ def ecpay_deposit_checkout(
         return HTMLResponse("<h1>付款期限已過</h1><p>預約已取消,請重新預約。</p>")
 
     amount_twd = (resv.deposit_cents or 0) // 100
-    if settings.payment_provider == "stub":
+    if payment_provider(db, settings) == "stub":
         # stub:本地模擬付款頁(按鈕打模擬回調)
         return HTMLResponse(
             "<!doctype html><meta charset='utf-8'><h1>模擬定金付款</h1>"
@@ -331,7 +354,7 @@ def ecpay_deposit_checkout(
             f"<form method='post' action='/payments/stub/deposit-paid/{resv.deposit_merchant_trade_no}'>"
             "<button type='submit'>模擬付款成功</button></form>"
         )
-    if settings.payment_provider != "ecpay":
+    if payment_provider(db, settings) != "ecpay":
         # 定金收款後端目前僅實作 ecpay AIO(與 stub 模擬頁);newebpay/linepay 沒有
         # 定金實作。**絕不可**退化成免費模擬頁 —— 那個 POST 端點會未收款就標 paid,
         # 等於在正式金流設定下開放公開的免費定金繞過。
@@ -342,7 +365,7 @@ def ecpay_deposit_checkout(
         )
 
     base = settings.public_base_url.rstrip("/")
-    client = EcpayClient()
+    client = get_ecpay_client(db)
     form = client.build_order_form(
         merchant_trade_no=resv.deposit_merchant_trade_no,
         amount_twd=amount_twd,
@@ -362,7 +385,7 @@ def stub_deposit_paid(
     trade_no 為鍵,未授權者無法枚舉 reservation_id 竊改他人定金(PEA-1)。"""
     from saas_mvp.services import deposit as deposit_svc
 
-    if settings.payment_provider != "stub":
+    if payment_provider(db, settings) != "stub":
         # 只有 stub 模式允許『模擬付款成功』;任何真實 provider(ecpay/newebpay/
         # linepay)都必須走真實回調驗簽,不得由此公開端點免費標 paid。
         return HTMLResponse("<h1>正式金流模式不提供模擬付款</h1>", status_code=403)
@@ -389,7 +412,7 @@ def _handle_ecpay_deposit_callback(db: Session, params: dict) -> PlainTextRespon
     from saas_mvp.obs.alerts import capture_alert
     from saas_mvp.services import deposit as deposit_svc
 
-    client = EcpayClient()
+    client = get_ecpay_client(db)
     if not client.verify(params):
         _log.warning("ecpay deposit-callback rejected: bad CheckMacValue")
         capture_alert("payment: ecpay deposit-callback bad CheckMacValue")

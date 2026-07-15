@@ -12,16 +12,15 @@ cd /opt/saas && docker-compose exec web python -m saas_mvp.ops.check_readiness
 - [ ] 向綠界申請開通「**信用卡定期定額**」功能（需另外申請，非預設開通）
 - [ ] 確認撥款帳戶與手續費率
 
-## 1. 主機設定（.env）
-```bash
-SAAS_PAYMENT_PROVIDER=ecpay
-SAAS_ECPAY_MERCHANT_ID=<正式商店代號>
-SAAS_ECPAY_HASH_KEY=<正式 HashKey>
-SAAS_ECPAY_HASH_IV=<正式 HashIV>
-SAAS_ECPAY_ENV=prod
-SAAS_PUBLIC_BASE_URL=https://saas.aibubu.cloud
-```
-改完 `.env` 後重新部署（`docker-compose up -d`）才生效。
+## 1. 平台後台設定（不需主機指令）
+
+1. 以平台管理員登入「平台管理 → 金流設定」。
+2. 先選測試環境，輸入測試 MerchantID、HashKey、HashIV 並儲存。
+3. 按「執行設定自我檢查」，再完成下方 stage 全流程。
+4. 正式商店核准後切換正式環境，改填正式憑證。
+
+憑證會加密保存並立即生效，不需修改 `.env`、Docker 重建或重啟服務。環境變數
+`SAAS_PAYMENT_PROVIDER` / `SAAS_ECPAY_*` 僅保留作災難復原備援，後台設定優先。
 
 ## 2. 綠界後台設定
 - [ ] 付款結果通知網址允許清單加入 `https://saas.aibubu.cloud/payments/ecpay/*`

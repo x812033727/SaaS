@@ -155,6 +155,21 @@ class TestSubscribeCallback:
         assert r.text == "1|OK"
         assert _sub_status(trade_no) == "failed" and _enabled(tid) is False
 
+    def test_success_after_pending_was_cancelled_never_reactivates(self, client):
+        _, trade_no, tid = _make_pending_sub()
+        with _Session() as db:
+            sub = subs_svc.get_subscription_by_trade_no(db, trade_no)
+            subs_svc.mark_cancelled(db, sub, ok=True)
+
+        r = client.post(
+            "/payments/ecpay/subscribe-callback",
+            data=_first_auth_params(trade_no),
+        )
+
+        assert r.text == "1|OK"
+        assert _sub_status(trade_no) == "cancelled"
+        assert _enabled(tid) is False
+
     def test_unknown_trade_no(self, client):
         r = client.post("/payments/ecpay/subscribe-callback", data=_first_auth_params("NOPE"))
         assert r.text == "0|subscription not found"

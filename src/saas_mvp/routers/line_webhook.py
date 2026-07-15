@@ -2022,7 +2022,7 @@ def _buy_reply(
         return f"商品 #{product_id} 庫存不足。"
     except shop_svc.CouponApplyError as exc:
         return f"優惠券無法套用：{exc}"
-    checkout = get_payment_provider().create_checkout(
+    checkout = get_payment_provider(db).create_checkout(
         order_id=order.id, amount_cents=order.total_cents, currency=order.currency
     )
     # 有折抵（會員等級 / 優惠券）時附上折抵金額，讓顧客看到優惠。

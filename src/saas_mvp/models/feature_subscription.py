@@ -4,7 +4,7 @@
 ``merchant_trade_no``。首期授權成功（ReturnURL 回調 RtnCode==1）才將功能開通；
 退訂時呼叫綠界 CreditCardPeriodAction 停扣後標記 cancelled。
 
-僅在 settings.payment_provider == "ecpay" 時建立；stub 模式維持即時開通、不建此列。
+僅在有效金流 provider 為 ecpay 時建立；stub 模式維持即時開通、不建此列。
 """
 
 from __future__ import annotations

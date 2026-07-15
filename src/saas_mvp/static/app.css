@@ -297,6 +297,12 @@ tr:hover td { background: var(--brand-soft); }
   border-left: 3px solid var(--ok);
   margin-bottom: 14px; font-size: 14px;
 }
+.warning {
+  background: var(--warn-soft); color: var(--warn);
+  padding: 10px 14px; border-radius: var(--radius-sm);
+  border-left: 3px solid var(--warn);
+  margin-bottom: 14px; font-size: 14px;
+}
 code { background: var(--gold-soft); color: var(--ink); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
 a { color: var(--brand); }
 

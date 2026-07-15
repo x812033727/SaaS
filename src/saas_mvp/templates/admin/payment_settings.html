@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}金流設定 · 平台管理{% endblock %}
+{% block content %}
+<h1>平台金流設定</h1>
+
+<div class="card">
+  <h2>綠界 ECPay</h2>
+  <p class="muted">同一組平台商店憑證供商品訂單、預約定金、方案月費與進階功能定期定額使用。只有平台管理員能修改，儲存後立即生效，不需修改 .env 或重啟服務。</p>
+
+  {% if saved %}<div class="success">綠界設定已加密儲存並立即生效。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if check_ok %}<div class="success">設定完整、HTTPS 回呼與 CheckMacValue 簽章自我檢查均通過。</div>{% endif %}
+  {% if check_error %}<div class="error">自我檢查失敗：{{ check_error }}</div>{% endif %}
+
+  {% if payment_status.provider == 'ecpay' %}
+    <p><span class="badge valid">綠界已啟用</span>
+      {{ '正式環境' if payment_status.environment == 'prod' else '測試環境' }}
+      · 商店 {{ payment_status.merchant_id }}
+      · {% if payment_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">模擬付款模式</span> 目前不會真的收款。</p>
+  {% endif %}
+
+  {% if unsettled_subscriptions %}
+    <div class="warning">目前有 {{ unsettled_subscriptions }} 筆待付款、扣款中或停扣失敗的訂閱。為避免持續扣款或回呼驗簽失敗，處理完成前系統會禁止更換憑證、停用或移除設定。</div>
+  {% endif %}
+
+  <form method="post" action="/ui/admin/payment-settings/ecpay" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>環境
+      <select name="environment" required>
+        <option value="stage"{% if payment_status.environment == 'stage' %} selected{% endif %}>測試環境（Stage）</option>
+        <option value="prod"{% if payment_status.environment == 'prod' %} selected{% endif %}>正式環境（Production）</option>
+      </select>
+    </label>
+    <label>MerchantID（商店代號）
+      <input name="merchant_id" value="{{ payment_status.merchant_id }}" maxlength="64" pattern="[A-Za-z0-9]{5,64}" required>
+    </label>
+    <label>HashKey
+      <input name="hash_key" type="password" maxlength="128"
+             placeholder="{% if payment_status.source == 'database' and payment_status.has_hash_key %}已設定；留空保留原 HashKey{% else %}請貼上綠界提供的 HashKey{% endif %}"
+             {% if payment_status.source != 'database' or not payment_status.has_hash_key %}required{% endif %} autocomplete="new-password">
+    </label>
+    <label>HashIV
+      <input name="hash_iv" type="password" maxlength="128"
+             placeholder="{% if payment_status.source == 'database' and payment_status.has_hash_iv %}已設定；留空保留原 HashIV{% else %}請貼上綠界提供的 HashIV{% endif %}"
+             {% if payment_status.source != 'database' or not payment_status.has_hash_iv %}required{% endif %} autocomplete="new-password">
+    </label>
+    <p class="muted">HashKey 與 HashIV 會以 Fernet 加密保存，頁面、日誌及稽核紀錄都不會顯示明文。正式環境禁止使用測試商店代號。</p>
+    <button type="submit">儲存並啟用綠界</button>
+  </form>
+
+  {% if payment_status.provider == 'ecpay' %}
+  <form method="post" action="/ui/admin/payment-settings/check" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">執行設定自我檢查</button>
+  </form>
+  <p class="muted">自我檢查驗證設定完整、HTTPS 回呼網址與本地簽章；綠界不提供免交易的正式憑證驗證，因此仍須在測試環境完成一筆實際測試付款。</p>
+  {% endif %}
+
+  {% if payment_status.source == 'database' and payment_status.provider == 'ecpay' %}
+  <form method="post" action="/ui/admin/payment-settings/disable" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定切回模擬付款？正式站將不再真的收款，且只有沒有未結訂閱時才允許。')">停用正式金流</button>
+  </form>
+  {% endif %}
+
+  {% if payment_status.source == 'database' %}
+  <form method="post" action="/ui/admin/payment-settings/reset" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定移除後台設定並改用伺服器備援值？')">移除後台設定</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>綠界後台設定教學</h2>
+  <ol>
+    <li>申請公司或商號名義的綠界商店，並另外申請「信用卡定期定額」；只有一次性付款權限無法收取平台月費。</li>
+    <li>先選「測試環境」，填入綠界測試商店資料，完成商品、定金及訂閱各一筆測試。</li>
+    <li>正式商店審核通過後，到綠界廠商後台取得 MerchantID、HashKey、HashIV，切換「正式環境」後儲存。</li>
+    <li>確認正式網站網址為 <code>{{ payment_public_base_url or '尚未設定' }}</code>，且下列付款通知網址可從外網以 HTTPS 存取。</li>
+    <li>正式上線後用自己的信用卡完成一筆低額付款，核對本平台訂單、綠界交易紀錄與實際入帳。</li>
+  </ol>
+  <p><a href="https://developers.ecpay.com.tw/" target="_blank" rel="noopener noreferrer">開啟綠界官方技術文件</a></p>
+</div>
+
+<div class="card">
+  <h2>付款通知網址</h2>
+  <p class="muted">這些網址由系統自動放入付款請求，不需要一般使用者操作。若綠界後台要求通知網址或防火牆允許清單，請逐字使用：</p>
+  <label>商品訂單 ReturnURL<input value="{{ payment_callbacks.order }}" readonly></label>
+  <label>訂閱首期 ReturnURL<input value="{{ payment_callbacks.subscription }}" readonly></label>
+  <label>訂閱每期 PeriodReturnURL<input value="{{ payment_callbacks.period }}" readonly></label>
+  <label>預約定金 ReturnURL<input value="{{ payment_callbacks.deposit }}" readonly></label>
+  <p class="muted">回呼端點公開但每次都驗證 CheckMacValue 並交叉核對金額；驗證失敗不會改變訂單或訂閱狀態。</p>
+</div>
+{% endblock %}

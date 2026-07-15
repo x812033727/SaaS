@@ -7,7 +7,7 @@ Usage:
 設計（比照 ops/send_due_reminders.py）：
   * 掃 status=cancel_failed 的 FeatureSubscription（退訂時綠界
     CreditCardPeriodAction 失敗者;功能已關但可能仍在扣卡）。
-  * 逐筆呼叫 EcpayClient().cancel_period(merchant_trade_no)：
+  * 逐筆以後台設定優先的 ECPay client 呼叫 cancel_period(merchant_trade_no)：
     RtnCode==1 → mark_cancelled(ok=True);否則留在 cancel_failed 等下輪。
   * 每筆獨立 try/except（單筆網路失敗不中斷批次）;--dry-run 只列不打。
   * ecpay_client 可注入供測試。
@@ -73,9 +73,9 @@ def retry_cancel_failed(
             ]
 
         if ecpay_client is None:
-            from saas_mvp.services.payment_ecpay import EcpayClient
+            from saas_mvp.services.payment_ecpay import get_ecpay_client
 
-            ecpay_client = EcpayClient()
+            ecpay_client = get_ecpay_client(db)
 
         from saas_mvp.services import subscriptions as subs_svc
 

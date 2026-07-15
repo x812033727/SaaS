@@ -1,8 +1,7 @@
 """金流 provider 抽象 — 比照 translator / line_client 的「先 stub、後接真實」。
 
-本輪只實作 StubPaymentProvider（回傳假 checkout URL，供開發/測試）。
-真實 provider（綠界 ECPay / Stripe / LINE Pay…）需使用者指定後，以同一介面接上，
-不影響 services/shop 與 routers/orders。
+支援 Stub、綠界 ECPay、藍新與 LINE Pay；平台後台設定優先於環境備援值，
+呼叫端只依賴同一介面。
 """
 
 from __future__ import annotations
@@ -34,20 +33,22 @@ class StubPaymentProvider(PaymentProvider):
         return "stub"
 
 
-def get_payment_provider() -> PaymentProvider:
+def get_payment_provider(db=None) -> PaymentProvider:
     """FastAPI dependency / 服務用：依設定回傳 provider。
 
-    目前僅 ``stub``；未知值一律回 StubPaymentProvider（安全預設）。
+    未知值一律回 StubPaymentProvider（安全預設）。
     """
     from saas_mvp.config import settings
+    from saas_mvp.services.platform_payment_config import effective_payment_config
 
-    if settings.payment_provider == "ecpay":
+    config = effective_payment_config(db, settings)
+    if config.provider == "ecpay":
         from saas_mvp.services.payment_ecpay import EcpayPaymentProvider
-        return EcpayPaymentProvider()
-    if settings.payment_provider == "newebpay":
+        return EcpayPaymentProvider(public_base_url=settings.public_base_url)
+    if config.provider == "newebpay":
         from saas_mvp.services.payment_newebpay import NewebPayProvider
         return NewebPayProvider()
-    if settings.payment_provider == "linepay":
+    if config.provider == "linepay":
         from saas_mvp.services.payment_linepay import LinePayPaymentProvider
         return LinePayPaymentProvider()
     return StubPaymentProvider()

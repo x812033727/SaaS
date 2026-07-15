@@ -454,7 +454,7 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 | `SAAS_MAX_LOCATIONS_PER_TENANT` | 每租戶可建分店上限 | `5` |
 | `SAAS_ANTHROPIC_API_KEY` | AI 客服 LLM 金鑰備援值；後台「平台管理 → AI 設定」的加密資料庫設定優先 | `""` |
 | `SAAS_AI_MODEL` | 後台未設定時使用的 Claude 模型備援值 | `claude-sonnet-4-6` |
-| `SAAS_PAYMENT_PROVIDER` | 金流 provider：`stub` / `ecpay` / `newebpay` | `stub` |
+| `SAAS_PAYMENT_PROVIDER` | 金流 provider 備援值；後台「平台管理 → 金流設定」優先 | `stub` |
 | `SAAS_NEWEBPAY_MERCHANT_ID` | 藍新 NewebPay 商店代號 | `""` |
 | `SAAS_NEWEBPAY_HASH_KEY` | 藍新 HashKey | `""` |
 | `SAAS_NEWEBPAY_HASH_IV` | 藍新 HashIV | `""` |
@@ -985,7 +985,10 @@ ops / UI 全部走它。
 | `SAAS_ECPAY_HASH_IV` | HashIV（預設測試值，正式請覆寫） | `v77hoKGq4kWxNNIS` |
 | `SAAS_ECPAY_ENV` | `stage`（測試）/ `prod`（正式） | `stage` |
 
-正式上線需填入綠界**正式**金鑰、`SAAS_ECPAY_ENV=prod` 與對外可達的 `SAAS_PUBLIC_BASE_URL`。
+正式上線請由平台管理員到 `/ui/admin/payment-settings` 填入綠界正式金鑰並切換
+Production；HashKey/HashIV 會加密保存且立即套用到商品、定金、方案與進階功能訂閱。
+`SAAS_ECPAY_*` 僅為後台未設定時的備援。對外仍需設定可達的 HTTPS
+`SAAS_PUBLIC_BASE_URL`，供綠界付款通知回呼。
 
 ### 定期定額訂閱月費（綠界信用卡定期定額）
 

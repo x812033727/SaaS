@@ -62,6 +62,7 @@ def import_all_models() -> None:
     from saas_mvp.models import platform_oauth_config  # noqa: F401
     from saas_mvp.models import platform_email_config  # noqa: F401
     from saas_mvp.models import platform_ai_config  # noqa: F401
+    from saas_mvp.models import platform_payment_config  # noqa: F401
     from saas_mvp.models import email_delivery  # noqa: F401
     from saas_mvp.models import api_key, api_key_usage, usage  # noqa: F401
     from saas_mvp.models import plan_change_history  # noqa: F401

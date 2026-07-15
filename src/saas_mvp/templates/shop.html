@@ -6,5 +6,5 @@
   {% include "_shop.html" %}
 </div>
 <p class="muted">顧客可在 LINE 輸入「商品」瀏覽、點按或「購買 &lt;編號&gt;」下單（回傳付款連結）。
-金流目前為測試 Stub；接真實金流需另指定 provider。</p>
+目前金流：{% if shop_payment_provider == 'ecpay' %}綠界 ECPay{% elif shop_payment_provider == 'stub' %}模擬付款（不會真收款）{% else %}{{ shop_payment_provider }}{% endif %}。</p>
 {% endblock %}

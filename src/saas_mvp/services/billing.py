@@ -29,6 +29,12 @@ from saas_mvp.quota import PLAN_DAILY_LIMITS
 _log = logging.getLogger(__name__)
 
 
+def _payment_provider(db: Session) -> str:
+    from saas_mvp.services.platform_payment_config import payment_provider
+
+    return payment_provider(db, settings)
+
+
 def _generate_payment_id() -> str:
     return "simulated_" + secrets.token_hex(6)
 
@@ -148,7 +154,7 @@ def subscribe_feature(
 
     features_svc.validate_feature(feature)
 
-    if settings.payment_provider == "ecpay":
+    if _payment_provider(db) == "ecpay":
         from saas_mvp.services import subscriptions as subs_svc
 
         sub = subs_svc.create_subscription(
@@ -186,21 +192,25 @@ def unsubscribe_feature(
 
     features_svc.validate_feature(feature)
 
-    if settings.payment_provider == "ecpay":
+    if _payment_provider(db) == "ecpay":
         from saas_mvp.services import subscriptions as subs_svc
-        from saas_mvp.services.payment_ecpay import EcpayClient
+        from saas_mvp.services.payment_ecpay import get_ecpay_client
 
         sub = subs_svc.latest_active_for(db, tenant.id, feature)
         if sub is not None:
-            ok = False
-            try:
-                resp = EcpayClient().cancel_period(sub.merchant_trade_no)
-                ok = str(resp.get("RtnCode")) == "1"
-            except Exception:  # noqa: BLE001 — 網路/解析失敗不得阻擋退訂
-                _log.exception(
-                    "ecpay cancel_period raised for trade_no=%s", sub.merchant_trade_no
-                )
+            if sub.status == "pending":
+                # 尚未完成首期授權，綠界端沒有生效中的定期扣款，可直接取消。
+                ok = True
+            else:
                 ok = False
+                try:
+                    resp = get_ecpay_client(db).cancel_period(sub.merchant_trade_no)
+                    ok = str(resp.get("RtnCode")) == "1"
+                except Exception:  # noqa: BLE001 — 網路/解析失敗不得阻擋退訂
+                    _log.exception(
+                        "ecpay cancel_period raised for trade_no=%s",
+                        sub.merchant_trade_no,
+                    )
             subs_svc.mark_cancelled(db, sub, ok=ok)
             if not ok:
                 _log.warning(
@@ -224,21 +234,26 @@ def _ecpay_cancel_active_bundle_subs(db: Session, tenant_id: int) -> None:
     """
     from saas_mvp.services import features as features_svc
     from saas_mvp.services import subscriptions as subs_svc
-    from saas_mvp.services.payment_ecpay import EcpayClient
+    from saas_mvp.services.payment_ecpay import get_ecpay_client
+
+    client = get_ecpay_client(db)
 
     for bundle_key in features_svc.VALID_BUNDLES:
         sub = subs_svc.latest_active_for(db, tenant_id, bundle_key)
         if sub is None:
             continue
-        ok = False
-        try:
-            resp = EcpayClient().cancel_period(sub.merchant_trade_no)
-            ok = str(resp.get("RtnCode")) == "1"
-        except Exception:  # noqa: BLE001 — 網路失敗不得阻擋換約/退訂
-            _log.exception(
-                "ecpay cancel_period raised for bundle trade_no=%s",
-                sub.merchant_trade_no,
-            )
+        if sub.status == "pending":
+            ok = True
+        else:
+            ok = False
+            try:
+                resp = client.cancel_period(sub.merchant_trade_no)
+                ok = str(resp.get("RtnCode")) == "1"
+            except Exception:  # noqa: BLE001 — 網路失敗不得阻擋換約/退訂
+                _log.exception(
+                    "ecpay cancel_period raised for bundle trade_no=%s",
+                    sub.merchant_trade_no,
+                )
         subs_svc.mark_cancelled(db, sub, ok=ok)
         if not ok:
             _log.warning(
@@ -287,7 +302,7 @@ def subscribe_bundle(
         tenant.trial_ends_at = anchor + datetime.timedelta(days=31)
         db.commit()
 
-    if settings.payment_provider == "ecpay":
+    if _payment_provider(db) == "ecpay":
         from saas_mvp.services import subscriptions as subs_svc
 
         _ecpay_cancel_active_bundle_subs(db, tenant.id)
@@ -317,13 +332,11 @@ def unsubscribe_bundle(db: Session, tenant: Tenant, actor_user_id: int) -> None:
     寬限：已付費者保留原方案至「最後扣款日 + 31 天」（複用 trial 機制，
     effective_plan 到期即刻降回），不立即沒收當期已付的功能。
     """
-    from saas_mvp.services import features as features_svc
     from saas_mvp.services import plans as plans_svc
-    from saas_mvp.services import subscriptions as subs_svc
 
     old_plan = plans_svc.normalize_plan(tenant.plan)
 
-    if settings.payment_provider == "ecpay":
+    if _payment_provider(db) == "ecpay":
         _ecpay_cancel_active_bundle_subs(db, tenant.id)
 
     if old_plan != "free":

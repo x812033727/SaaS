@@ -104,7 +104,7 @@ def create(
     except (ProductInactive, OutOfStock) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     resp = _with_items(db, current_user.tenant_id, order)
-    resp.checkout_url = get_payment_provider().create_checkout(
+    resp.checkout_url = get_payment_provider(db).create_checkout(
         order_id=order.id, amount_cents=order.total_cents, currency=order.currency
     )
     return resp

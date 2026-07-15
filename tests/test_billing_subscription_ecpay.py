@@ -121,6 +121,25 @@ class TestEcpayUnsubscribe:
         assert sub.status == SUB_CANCELLED and sub.cancelled_at is not None
         assert features_svc.is_enabled(db, t.id, FEAT) is False
 
+    def test_pending_subscription_cancels_locally_without_stop_charge_api(
+        self, db, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "payment_provider", "ecpay")
+        monkeypatch.setattr(
+            pe,
+            "_urllib_post",
+            lambda *_: pytest.fail("pending subscription must not call ECPay cancel API"),
+        )
+        t = _tenant(db)
+        sub = subs_svc.create_subscription(
+            db, tenant_id=t.id, feature=FEAT, amount_cents=20000
+        )
+
+        billing_svc.unsubscribe_feature(db, t, FEAT, actor_user_id=None)
+
+        db.refresh(sub)
+        assert sub.status == SUB_CANCELLED
+
     def test_cancel_api_failure_still_disables_but_flags(self, db, monkeypatch):
         monkeypatch.setattr(settings, "payment_provider", "ecpay")
 

@@ -72,6 +72,7 @@ from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import platform_email_config as platform_email_svc
 from saas_mvp.services import platform_ai_config as platform_ai_svc
+from saas_mvp.services import platform_payment_config as platform_payment_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -1718,6 +1719,186 @@ def admin_ai_settings_reset(
     )
 
 
+def _platform_payment_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    **extra,
+) -> dict:
+    from saas_mvp.models.feature_subscription import (
+        SUB_ACTIVE,
+        SUB_CANCEL_FAILED,
+        SUB_PENDING,
+        FeatureSubscription,
+    )
+
+    base = settings.public_base_url.rstrip("/")
+    unsettled = db.query(FeatureSubscription).filter(
+        FeatureSubscription.status.in_((SUB_PENDING, SUB_ACTIVE, SUB_CANCEL_FAILED))
+    ).count()
+    return _ctx(
+        request,
+        actor,
+        payment_status=platform_payment_svc.payment_status(db, settings),
+        payment_public_base_url=base,
+        payment_callbacks={
+            "order": f"{base}/payments/ecpay/callback",
+            "subscription": f"{base}/payments/ecpay/subscribe-callback",
+            "period": f"{base}/payments/ecpay/period-callback",
+            "deposit": f"{base}/payments/ecpay/deposit-callback",
+        },
+        unsettled_subscriptions=unsettled,
+        **extra,
+    )
+
+
+@router.get("/admin/payment-settings", response_class=HTMLResponse)
+def admin_payment_settings(
+    request: Request,
+    saved: int = Query(0),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "admin/payment_settings.html",
+        _platform_payment_ctx(request, actor, db, saved=bool(saved)),
+    )
+
+
+@router.post("/admin/payment-settings/ecpay", response_class=HTMLResponse)
+def admin_payment_settings_save(
+    request: Request,
+    merchant_id: str = Form(..., max_length=64),
+    hash_key: str = Form("", max_length=128),
+    hash_iv: str = Form("", max_length=128),
+    environment: str = Form(..., max_length=16),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_payment_svc.save_ecpay_config(
+            db,
+            merchant_id=merchant_id,
+            hash_key=hash_key,
+            hash_iv=hash_iv,
+            environment=environment,
+            actor_user_id=actor.user.id,
+            public_base_url=settings.public_base_url,
+        )
+    except platform_payment_svc.PlatformPaymentConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/payment_settings.html",
+            _platform_payment_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.payment.ecpay.update",
+        target="payment:ecpay",
+        detail={
+            "merchant_id": merchant_id.strip(),
+            "environment": environment.strip().lower(),
+            "hash_key_changed": bool(hash_key.strip()),
+            "hash_iv_changed": bool(hash_iv.strip()),
+        },
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/payment-settings?saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/payment-settings/check", response_class=HTMLResponse)
+def admin_payment_settings_check(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_payment_svc.self_check(db, settings)
+    except platform_payment_svc.PlatformPaymentConfigError as exc:
+        return templates.TemplateResponse(
+            "admin/payment_settings.html",
+            _platform_payment_ctx(request, actor, db, check_error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.payment.ecpay.check",
+        target="payment:ecpay",
+        request=request,
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        "admin/payment_settings.html",
+        _platform_payment_ctx(request, actor, db, check_ok=True),
+    )
+
+
+@router.post("/admin/payment-settings/disable", response_class=HTMLResponse)
+def admin_payment_settings_disable(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_payment_svc.disable_payment(db, actor_user_id=actor.user.id)
+    except platform_payment_svc.PlatformPaymentConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/payment_settings.html",
+            _platform_payment_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.payment.disable",
+        target="payment:stub",
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/payment-settings",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/payment-settings/reset", response_class=HTMLResponse)
+def admin_payment_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        removed = platform_payment_svc.clear_payment_override(db)
+    except platform_payment_svc.PlatformPaymentConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/payment_settings.html",
+            _platform_payment_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    if removed:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.payment.reset",
+            target="payment:environment",
+            request=request,
+        )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/payment-settings",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 @router.get("/admin/audit", response_class=HTMLResponse)
 def admin_audit(
     request: Request,
@@ -2956,6 +3137,7 @@ def _shop_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         request, actor,
         products=shop_svc.list_products(db, tenant_id=tid),
         orders=shop_svc.list_orders(db, tenant_id=tid),
+        shop_payment_provider=platform_payment_svc.payment_provider(db, settings),
         **extra,
     )
 

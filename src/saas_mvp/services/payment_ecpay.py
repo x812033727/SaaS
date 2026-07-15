@@ -200,9 +200,27 @@ class EcpayClient:
 class EcpayPaymentProvider(PaymentProvider):
     """綠界 provider：create_checkout 回我方 checkout 頁網址（瀏覽器到該頁自動 submit）。"""
 
+    def __init__(self, *, public_base_url: str | None = None) -> None:
+        self._public_base_url = (
+            settings.public_base_url if public_base_url is None else public_base_url
+        )
+
     def create_checkout(self, *, order_id: int, amount_cents: int, currency: str) -> str:
-        base = settings.public_base_url.rstrip("/")
+        base = self._public_base_url.rstrip("/")
         return f"{base}/payments/ecpay/checkout/{order_id}"
 
     def name(self) -> str:
         return "ecpay"
+
+
+def get_ecpay_client(db=None) -> EcpayClient:
+    """後台加密設定優先、環境變數備援。回調驗簽也必須使用同一來源。"""
+    from saas_mvp.services.platform_payment_config import effective_payment_config
+
+    config = effective_payment_config(db, settings)
+    return EcpayClient(
+        merchant_id=config.merchant_id,
+        hash_key=config.hash_key,
+        hash_iv=config.hash_iv,
+        env=config.environment,
+    )

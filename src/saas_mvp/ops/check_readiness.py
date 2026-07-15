@@ -63,22 +63,52 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
         add(Check("ui_csrf", "PASS", "開啟"))
 
     # ── 2. 金流 ────────────────────────────────────────────────
-    if settings.payment_provider == "stub":
-        add(Check("payment", "WARN", "provider=stub(模擬付款,不會真收錢)"))
-    elif settings.payment_provider == "ecpay":
-        if settings.ecpay_env == "prod" and settings.ecpay_merchant_id == _ECPAY_TEST_MERCHANT:
+    try:
+        from saas_mvp.services.platform_payment_config import effective_payment_config
+
+        with session_factory() as db:
+            payment_config = effective_payment_config(db, settings)
+    except Exception as exc:  # noqa: BLE001
+        payment_config = None
+        add(Check("payment", "FAIL", f"無法讀取金流設定:{type(exc).__name__}"))
+
+    if payment_config is None:
+        pass
+    elif payment_config.provider == "stub":
+        add(Check(
+            "payment",
+            "WARN",
+            f"provider=stub source={payment_config.source}(模擬付款,不會真收錢)",
+        ))
+    elif payment_config.provider == "ecpay":
+        if (
+            payment_config.environment == "prod"
+            and payment_config.merchant_id == _ECPAY_TEST_MERCHANT
+        ):
             add(Check("payment", "FAIL",
                       "ecpay_env=prod 但仍用綠界測試商店 2000132;填正式商店代號"))
-        elif settings.ecpay_env != "prod":
-            add(Check("payment", "WARN", f"ecpay stage 演練模式(merchant={settings.ecpay_merchant_id})"))
+        elif not (payment_config.hash_key and payment_config.hash_iv):
+            add(Check("payment", "FAIL", "ecpay 缺 HashKey 或 HashIV"))
+        elif payment_config.environment != "prod":
+            add(Check(
+                "payment",
+                "WARN",
+                f"ecpay stage 演練模式(merchant={payment_config.merchant_id} "
+                f"source={payment_config.source})",
+            ))
         else:
-            add(Check("payment", "PASS", f"ecpay prod(merchant={settings.ecpay_merchant_id})"))
+            add(Check(
+                "payment",
+                "PASS",
+                f"ecpay prod(merchant={payment_config.merchant_id} "
+                f"source={payment_config.source})",
+            ))
         if not settings.public_base_url.startswith("https://"):
             add(Check("public_base_url", "FAIL",
                       "ecpay 模式需 https 的 SAAS_PUBLIC_BASE_URL(回調用)"))
         else:
             add(Check("public_base_url", "PASS", settings.public_base_url))
-    elif settings.payment_provider == "linepay":
+    elif payment_config.provider == "linepay":
         if not (settings.line_pay_channel_id and settings.line_pay_channel_secret):
             add(Check("payment", "FAIL",
                       "provider=linepay 但缺 SAAS_LINE_PAY_CHANNEL_ID/SECRET"
@@ -95,7 +125,7 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
         else:
             add(Check("public_base_url", "PASS", settings.public_base_url))
     else:
-        add(Check("payment", "WARN", f"provider={settings.payment_provider}"))
+        add(Check("payment", "WARN", f"provider={payment_config.provider}"))
 
     # ── 3. 發票 ────────────────────────────────────────────────
     invoice_provider = getattr(settings, "invoice_provider", "stub")
