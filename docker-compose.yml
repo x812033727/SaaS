@@ -165,7 +165,9 @@ services:
       timeout: 5s
       start_period: 90s
       retries: 3
-    mem_limit: 256m
+    # 每分鐘工作可與每 5 分鐘／每小時工作同時啟動；各 Python
+    # 進程載入完整應用後，256 MiB 會在尖峰被 OOM 終止單筆任務。
+    mem_limit: 512m
     cpus: 1.0
     pids_limit: 256
     security_opt:
