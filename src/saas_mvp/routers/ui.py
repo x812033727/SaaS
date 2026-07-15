@@ -8430,7 +8430,7 @@ def commissions_goal_save(
     return RedirectResponse("/ui/commissions?saved=1", status_code=303)
 
 
-def _csv_response(rows: list[list], filename: str) -> Response:
+def _commission_csv_response(rows: list[list], filename: str) -> Response:
     def safe_cell(value):
         # 避免員工名稱／商品名稱被 Excel 當成公式執行。
         if isinstance(value, str) and value.startswith(
@@ -8483,7 +8483,7 @@ def commissions_pay_run_export(
             f"{item.total_cents / 100:.2f}",
             item.adjustment_note or "",
         ])
-    return _csv_response(rows, f"pay-run-{run.id}.csv")
+    return _commission_csv_response(rows, f"pay-run-{run.id}.csv")
 
 
 @router.get("/commissions/activity.csv")
@@ -8532,7 +8532,7 @@ def commissions_activity_export(
             earning.pay_run_id or "",
             "已沖銷" if earning.reversed_at else "",
         ])
-    return _csv_response(
+    return _commission_csv_response(
         rows,
         f"commission-activity-{period_start.isoformat()}-{period_end.isoformat()}.csv",
     )
