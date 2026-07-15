@@ -166,22 +166,24 @@ def upgrade() -> None:
         )
     ).mappings()
     for tenant in tenants:
-        result = bind.execute(
+        slug = _slug(tenant["name"], tenant["id"])
+        bind.execute(
             sa.text(
                 "INSERT INTO organizations (name, slug, is_active, share_customers, share_loyalty, share_coupons, created_at, updated_at) VALUES (:name, :slug, true, false, false, false, :now, :now)"
             ),
             {
                 "name": tenant["name"],
-                "slug": _slug(tenant["name"], tenant["id"]),
+                "slug": slug,
                 "now": now,
             },
         )
-        organization_id = result.lastrowid
-        if organization_id is None:
-            organization_id = bind.execute(
-                sa.text("SELECT id FROM organizations WHERE slug=:slug"),
-                {"slug": _slug(tenant["name"], tenant["id"])},
-            ).scalar_one()
+        # psycopg cursors do not expose ``lastrowid``.  Resolve the generated
+        # primary key through the migration's unique slug instead so the
+        # backfill remains portable across PostgreSQL and SQLite.
+        organization_id = bind.execute(
+            sa.text("SELECT id FROM organizations WHERE slug=:slug"),
+            {"slug": slug},
+        ).scalar_one()
         bind.execute(
             sa.text("UPDATE tenants SET organization_id=:oid WHERE id=:tid"),
             {"oid": organization_id, "tid": tenant["id"]},
