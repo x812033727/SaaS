@@ -80,6 +80,15 @@ def _retryable_invoice_count(db: Session) -> int:
     ).count()
 
 
+def _open_ecpay_invoice_count(db: Session) -> int:
+    from saas_mvp.models.invoice import INVOICE_ISSUED, INVOICE_VOIDING, Invoice
+
+    return db.query(Invoice).filter(
+        Invoice.provider == "ecpay",
+        Invoice.status.in_((INVOICE_ISSUED, INVOICE_VOIDING)),
+    ).count()
+
+
 def _ensure_safe_change(db: Session, current, next_values: tuple[str, str, str, str]) -> None:
     if not _retryable_invoice_count(db):
         return
@@ -132,6 +141,12 @@ def save_ecpay_config(
 
     current = effective_invoice_config(db, settings)
     _ensure_safe_change(db, current, (merchant_id, environment, next_key, next_iv))
+    if _open_ecpay_invoice_count(db) and (
+        merchant_id != current.merchant_id or environment != current.environment
+    ):
+        raise PlatformInvoiceConfigError(
+            "仍有尚未作廢的綠界發票；不可更換發票 MerchantID 或環境，否則將無法作廢舊發票。"
+        )
 
     if row is None:
         row = PlatformInvoiceConfig(id=1, provider="ecpay")
@@ -158,11 +173,19 @@ def disable_invoice(db: Session, *, actor_user_id: int) -> PlatformInvoiceConfig
         )
     row = _row(db)
     if row is None:
+        from saas_mvp.config import settings
+
+        current = effective_invoice_config(db, settings)
         row = PlatformInvoiceConfig(
-            id=1, provider="stub", environment="stage", merchant_id=""
+            id=1,
+            provider="stub",
+            environment=current.environment,
+            merchant_id=current.merchant_id,
         )
-        row.hash_key = ""
-        row.hash_iv = ""
+        # 從環境備援停用時仍須保留一份加密憑證，否則先前已開立的發票
+        # 會因 provider 切成 stub 而失去日後作廢所需的原商店資料。
+        row.hash_key = current.hash_key
+        row.hash_iv = current.hash_iv
         db.add(row)
     row.provider = "stub"
     row.updated_by_user_id = actor_user_id
@@ -174,6 +197,10 @@ def clear_invoice_override(db: Session) -> bool:
     if _retryable_invoice_count(db):
         raise PlatformInvoiceConfigError(
             "仍有等待開立或開立失敗的發票，不能移除目前設定。"
+        )
+    if _open_ecpay_invoice_count(db):
+        raise PlatformInvoiceConfigError(
+            "仍有尚未作廢的綠界發票，不能移除作廢時所需的發票憑證。"
         )
     row = _row(db)
     if row is None:

@@ -28,6 +28,8 @@ from saas_mvp.config import settings
 
 _STAGE_URL = "https://einvoice-stage.ecpay.com.tw/B2CInvoice/Issue"
 _PROD_URL = "https://einvoice.ecpay.com.tw/B2CInvoice/Issue"
+_STAGE_INVALID_URL = "https://einvoice-stage.ecpay.com.tw/B2CInvoice/Invalid"
+_PROD_INVALID_URL = "https://einvoice.ecpay.com.tw/B2CInvoice/Invalid"
 
 
 class InvoiceError(Exception):
@@ -42,6 +44,12 @@ class IssueResult:
     raw: dict
 
 
+@dataclasses.dataclass(frozen=True)
+class VoidResult:
+    invoice_no: str
+    raw: dict
+
+
 class InvoiceIssuer:
     """介面:issue() 成功回 IssueResult,失敗拋 InvoiceError。"""
 
@@ -50,12 +58,18 @@ class InvoiceIssuer:
     ) -> IssueResult:
         raise NotImplementedError
 
+    def void(
+        self, *, invoice_no: str, invoice_date: str, reason: str
+    ) -> VoidResult:
+        raise NotImplementedError
+
 
 class StubInvoiceIssuer(InvoiceIssuer):
     """離線 stub:決定性假號(ST + relate hash),issued 清單供測試斷言。"""
 
     def __init__(self) -> None:
         self.issued: list[dict] = []
+        self.voided: list[dict] = []
 
     def issue(
         self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
@@ -74,6 +88,17 @@ class StubInvoiceIssuer(InvoiceIssuer):
             random_number=digest[:4],
             raw=record,
         )
+
+    def void(
+        self, *, invoice_no: str, invoice_date: str, reason: str
+    ) -> VoidResult:
+        record = {
+            "invoice_no": invoice_no,
+            "invoice_date": invoice_date,
+            "reason": reason,
+        }
+        self.voided.append(record)
+        return VoidResult(invoice_no=invoice_no, raw=record)
 
 
 def _urllib_post(url: str, body: bytes) -> str:
@@ -130,6 +155,9 @@ class EcpayInvoiceIssuer(InvoiceIssuer):
         self._hash_iv = settings.ecpay_invoice_hash_iv if hash_iv is None else hash_iv
         effective_env = settings.ecpay_invoice_env if env is None else env
         self._url = _PROD_URL if effective_env == "prod" else _STAGE_URL
+        self._invalid_url = (
+            _PROD_INVALID_URL if effective_env == "prod" else _STAGE_INVALID_URL
+        )
         self._http_post = http_post or _urllib_post
 
     def issue(
@@ -182,16 +210,55 @@ class EcpayInvoiceIssuer(InvoiceIssuer):
             raw=payload,
         )
 
+    def void(
+        self, *, invoice_no: str, invoice_date: str, reason: str
+    ) -> VoidResult:
+        if not (self._merchant_id and self._hash_key and self._hash_iv):
+            raise InvoiceError("ecpay invoice credentials not configured")
+        data = {
+            "MerchantID": self._merchant_id,
+            "InvoiceNo": invoice_no,
+            "InvoiceDate": invoice_date,
+            "Reason": reason,
+        }
+        envelope = {
+            "MerchantID": self._merchant_id,
+            "RqHeader": {"Timestamp": int(time.time())},
+            "Data": aes_encrypt_data(data, self._hash_key, self._hash_iv),
+        }
+        try:
+            raw = self._http_post(self._invalid_url, json.dumps(envelope).encode())
+            resp = json.loads(raw)
+            if str(resp.get("TransCode")) != "1":
+                raise InvoiceError(f"transport error: {resp.get('TransMsg')}")
+            payload = aes_decrypt_data(resp["Data"], self._hash_key, self._hash_iv)
+        except InvoiceError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 統一包裝
+            raise InvoiceError(f"ecpay invoice void request failed: {exc}") from exc
+
+        if str(payload.get("RtnCode")) != "1":
+            raise InvoiceError(
+                f"void rejected: {payload.get('RtnCode')} {payload.get('RtnMsg')}"
+            )
+        returned_no = str(payload.get("InvoiceNo") or "")
+        if returned_no != invoice_no:
+            raise InvoiceError("void response invoice number mismatch")
+        return VoidResult(invoice_no=returned_no, raw=payload)
+
 
 _stub_singleton = StubInvoiceIssuer()
 
 
-def get_invoice_issuer(db: Session | None = None) -> InvoiceIssuer:
+def get_invoice_issuer(
+    db: Session | None = None, *, provider: str | None = None
+) -> InvoiceIssuer:
     """資料庫後台設定優先；未建立設定時才使用環境變數備援。"""
     from saas_mvp.services.platform_invoice_config import effective_invoice_config
 
     config = effective_invoice_config(db, settings)
-    if config.provider == "ecpay":
+    requested_provider = provider or config.provider
+    if requested_provider == "ecpay":
         return EcpayInvoiceIssuer(
             merchant_id=config.merchant_id,
             hash_key=config.hash_key,

@@ -160,6 +160,108 @@ class TestIssueForCharge:
         assert captured["data"]["SalesAmount"] == 899
         assert "einvoice-stage" in captured["url"]
 
+    def test_ecpay_void_payload_encrypts(self):
+        captured = {}
+
+        def fake_post(url, body):
+            import json
+
+            captured["url"] = url
+            envelope = json.loads(body)
+            captured["data"] = aes_decrypt_data(envelope["Data"], _KEY, _IV)
+            response_data = aes_encrypt_data(
+                {
+                    "RtnCode": "1",
+                    "RtnMsg": "作廢發票成功",
+                    "InvoiceNo": "AB12345678",
+                },
+                _KEY,
+                _IV,
+            )
+            return json.dumps({"TransCode": "1", "Data": response_data})
+
+        issuer = EcpayInvoiceIssuer(
+            merchant_id="2000132",
+            hash_key=_KEY,
+            hash_iv=_IV,
+            env="stage",
+            http_post=fake_post,
+        )
+        result = issuer.void(
+            invoice_no="AB12345678",
+            invoice_date="2030-06-15",
+            reason="退款",
+        )
+        assert result.invoice_no == "AB12345678"
+        assert captured["data"] == {
+            "MerchantID": "2000132",
+            "InvoiceNo": "AB12345678",
+            "InvoiceDate": "2030-06-15",
+            "Reason": "退款",
+        }
+        assert captured["url"].endswith("/B2CInvoice/Invalid")
+
+
+class TestVoidInvoice:
+    def _issued(self, db, *, status="issued", provider="stub"):
+        tenant = _tenant(db)
+        row = Invoice(
+            tenant_id=tenant.id,
+            relate_number=f"SCVOID{uuid.uuid4().hex[:8]}",
+            invoice_no="ST12345678",
+            invoice_date="2030-06-15",
+            amount_cents=89900,
+            buyer_email="owner@example.com",
+            status=status,
+            provider=provider,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    def test_success_and_idempotent(self, db):
+        row = self._issued(db)
+        issuer = StubInvoiceIssuer()
+        result = invoices_svc.void_invoice(
+            db, row.id, reason="訂單退款", issuer=issuer
+        )
+        assert result.status == "void"
+        assert result.void_reason == "訂單退款"
+        assert result.voided_at is not None
+        assert result.void_error_msg is None
+        again = invoices_svc.void_invoice(
+            db, row.id, reason="訂單退款", issuer=issuer
+        )
+        assert again.status == "void"
+        assert len(issuer.voided) == 1
+
+    def test_provider_failure_keeps_invoice_issued(self, db):
+        class Boom(StubInvoiceIssuer):
+            def void(self, **kwargs):
+                raise InvoiceError("allowance exists")
+
+        row = self._issued(db)
+        with pytest.raises(invoices_svc.InvoiceProviderError, match="綠界拒絕作廢"):
+            invoices_svc.void_invoice(db, row.id, reason="退款", issuer=Boom())
+        db.refresh(row)
+        assert row.status == "issued"
+        assert "allowance exists" in row.void_error_msg
+        assert row.voided_at is None
+
+    @pytest.mark.parametrize("reason", ["", "太" * 21])
+    def test_reason_required_and_limited(self, db, reason):
+        row = self._issued(db)
+        with pytest.raises(invoices_svc.InvoiceOperationError, match="1–20"):
+            invoices_svc.void_invoice(db, row.id, reason=reason)
+        db.refresh(row)
+        assert row.status == "issued"
+
+    def test_only_issued_invoice_can_be_voided(self, db):
+        row = self._issued(db, status="failed")
+        with pytest.raises(invoices_svc.InvoiceOperationError, match="只有已開立"):
+            invoices_svc.void_invoice(db, row.id, reason="退款")
+
 
 # ── C4 定金 ──────────────────────────────────────────────────────────────────
 

@@ -1920,6 +1920,7 @@ def _platform_invoice_ctx(
             "pending": counts.get("pending", 0),
             "issued": counts.get("issued", 0),
             "failed": counts.get("failed", 0),
+            "voiding": counts.get("voiding", 0),
             "void": counts.get("void", 0),
         },
         invoices=db.query(Invoice).order_by(Invoice.id.desc()).limit(50).all(),
@@ -1932,6 +1933,7 @@ def admin_invoice_settings(
     request: Request,
     saved: int = Query(0),
     retried: int = Query(-1),
+    voided: str = Query("", max_length=16),
     actor: Actor = Depends(require_ui_admin),
     db: Session = Depends(get_db),
 ):
@@ -1943,6 +1945,7 @@ def admin_invoice_settings(
             db,
             saved=bool(saved),
             retried=None if retried < 0 else retried,
+            voided=voided,
         ),
     )
 
@@ -2097,6 +2100,57 @@ def admin_invoice_settings_reset(
     db.commit()
     return RedirectResponse(
         "/ui/admin/invoice-settings", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post(
+    "/admin/invoice-settings/{invoice_id}/void", response_class=HTMLResponse
+)
+def admin_invoice_void(
+    invoice_id: int,
+    request: Request,
+    reason: str = Form(..., min_length=1, max_length=20),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import invoices as invoices_svc
+
+    try:
+        row = invoices_svc.void_invoice(db, invoice_id, reason=reason)
+    except invoices_svc.InvoiceProviderError as exc:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.invoice.void_failed",
+            target=f"invoice:{invoice_id}",
+            detail={"reason": reason.strip(), "error": str(exc)[:255]},
+            request=request,
+        )
+        db.commit()
+        return templates.TemplateResponse(
+            "admin/invoice_settings.html",
+            _platform_invoice_ctx(request, actor, db, operation_error=str(exc)),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    except invoices_svc.InvoiceOperationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/invoice_settings.html",
+            _platform_invoice_ctx(request, actor, db, operation_error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.invoice.void",
+        target=f"invoice:{row.id}",
+        detail={"invoice_no": row.invoice_no, "reason": row.void_reason},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        f"/ui/admin/invoice-settings?voided={row.invoice_no}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

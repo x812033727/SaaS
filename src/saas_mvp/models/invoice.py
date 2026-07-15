@@ -11,6 +11,7 @@ from saas_mvp.db import Base
 INVOICE_PENDING = "pending"
 INVOICE_ISSUED = "issued"
 INVOICE_FAILED = "failed"
+INVOICE_VOIDING = "voiding"
 INVOICE_VOID = "void"
 
 
@@ -46,5 +47,8 @@ class Invoice(Base):
     status = Column(String(8), nullable=False, default=INVOICE_PENDING)
     provider = Column(String(8), nullable=False, default="stub")  # stub | ecpay
     error_msg = Column(String(255), nullable=True)
+    void_reason = Column(String(20), nullable=True)
+    void_error_msg = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     issued_at = Column(DateTime(timezone=True), nullable=True)
+    voided_at = Column(DateTime(timezone=True), nullable=True)

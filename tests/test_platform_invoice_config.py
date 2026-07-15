@@ -96,6 +96,9 @@ def test_regular_user_cannot_manage_invoice_settings(client):
             "environment": "stage",
         },
     ).status_code == 403
+    assert client.post(
+        "/ui/admin/invoice-settings/1/void", data={"reason": "退款"}
+    ).status_code == 403
 
 
 def test_admin_saves_encrypted_config_and_factory_changes_immediately(client):
@@ -258,6 +261,124 @@ def test_retry_button_reissues_failed_stub_invoice(client):
         assert row.status == "issued" and row.error_msg is None
 
 
+def test_admin_can_void_issued_invoice_and_audit(client):
+    email = _login(client, admin=True)
+    with _Session() as db:
+        user = db.query(User).filter_by(email=email).one()
+        row = Invoice(
+            tenant_id=user.tenant_id,
+            relate_number="SCVOIDUI001",
+            invoice_no="ST12345678",
+            invoice_date="2030-06-15",
+            amount_cents=89900,
+            buyer_email=email,
+            status="issued",
+            provider="stub",
+        )
+        db.add(row)
+        db.commit()
+        invoice_id = row.id
+    response = client.post(
+        f"/ui/admin/invoice-settings/{invoice_id}/void",
+        data={"reason": "訂單退款"},
+    )
+    assert response.status_code == 303
+    assert "voided=ST12345678" in response.headers["location"]
+    with _Session() as db:
+        row = db.get(Invoice, invoice_id)
+        assert row.status == "void" and row.void_reason == "訂單退款"
+        assert db.query(AuditLog).filter_by(
+            action="platform.invoice.void",
+            target=f"invoice:{invoice_id}",
+        ).count() == 1
+    page = client.get("/ui/admin/invoice-settings")
+    assert "已作廢" in page.text
+    assert "訂單退款" in page.text
+
+
+def test_void_provider_failure_is_visible_and_audited(client, monkeypatch):
+    from saas_mvp.services import invoices as invoices_svc
+    from saas_mvp.services.invoice_ecpay import InvoiceError, StubInvoiceIssuer
+
+    class Boom(StubInvoiceIssuer):
+        def void(self, **kwargs):
+            raise InvoiceError("invoice already allowed")
+
+    email = _login(client, admin=True)
+    with _Session() as db:
+        user = db.query(User).filter_by(email=email).one()
+        row = Invoice(
+            tenant_id=user.tenant_id,
+            relate_number="SCVOIDFAIL1",
+            invoice_no="ST87654321",
+            invoice_date="2030-06-15",
+            amount_cents=89900,
+            status="issued",
+            provider="stub",
+        )
+        db.add(row)
+        db.commit()
+        invoice_id = row.id
+    monkeypatch.setattr(invoices_svc, "get_invoice_issuer", lambda *a, **k: Boom())
+    response = client.post(
+        f"/ui/admin/invoice-settings/{invoice_id}/void",
+        data={"reason": "退款"},
+    )
+    assert response.status_code == 502
+    assert "綠界拒絕作廢" in response.text
+    assert "invoice already allowed" in response.text
+    with _Session() as db:
+        row = db.get(Invoice, invoice_id)
+        assert row.status == "issued"
+        assert "invoice already allowed" in row.void_error_msg
+        assert db.query(AuditLog).filter_by(
+            action="platform.invoice.void_failed"
+        ).count() == 1
+
+
+def test_open_ecpay_invoice_blocks_merchant_change_and_reset_but_allows_key_rotation(
+    client,
+):
+    email = _login(client, admin=True)
+    with _Session() as db:
+        user = db.query(User).filter_by(email=email).one()
+        _save(db, actor_id=user.id)
+        db.add(Invoice(
+            tenant_id=user.tenant_id,
+            relate_number="SCECPAYOPEN1",
+            invoice_no="AB12345678",
+            invoice_date="2030-06-15",
+            amount_cents=89900,
+            status="issued",
+            provider="ecpay",
+        ))
+        db.commit()
+
+    changed_merchant = client.post(
+        "/ui/admin/invoice-settings/ecpay",
+        data={
+            "merchant_id": "3000007",
+            "hash_key": "",
+            "hash_iv": "",
+            "environment": "stage",
+        },
+    )
+    assert changed_merchant.status_code == 400
+    assert "尚未作廢的綠界發票" in changed_merchant.text
+    assert client.post("/ui/admin/invoice-settings/reset").status_code == 400
+
+    rotate_keys = client.post(
+        "/ui/admin/invoice-settings/ecpay",
+        data={
+            "merchant_id": "2000132",
+            "hash_key": "1234567890abcdef",
+            "hash_iv": "fedcba0987654321",
+            "environment": "stage",
+        },
+    )
+    assert rotate_keys.status_code == 303
+
+
 def test_disable_and_reset_use_database_override(client):
     _login(client, admin=True)
     with _Session() as db:
@@ -269,6 +390,38 @@ def test_disable_and_reset_use_database_override(client):
     assert client.post("/ui/admin/invoice-settings/reset").status_code == 303
     with _Session() as db:
         assert db.query(PlatformInvoiceConfig).count() == 0
+
+
+def test_disabling_environment_ecpay_snapshots_credentials_for_later_void(
+    client, monkeypatch
+):
+    email = _login(client, admin=True)
+    monkeypatch.setattr(settings, "invoice_provider", "ecpay")
+    monkeypatch.setattr(settings, "ecpay_invoice_merchant_id", "2000132")
+    monkeypatch.setattr(settings, "ecpay_invoice_hash_key", _HASH_KEY)
+    monkeypatch.setattr(settings, "ecpay_invoice_hash_iv", _HASH_IV)
+    monkeypatch.setattr(settings, "ecpay_invoice_env", "stage")
+    with _Session() as db:
+        user = db.query(User).filter_by(email=email).one()
+        db.add(Invoice(
+            tenant_id=user.tenant_id,
+            relate_number="SCENVOPEN001",
+            invoice_no="AB87654321",
+            invoice_date="2030-06-15",
+            amount_cents=89900,
+            status="issued",
+            provider="ecpay",
+        ))
+        db.commit()
+    assert client.post("/ui/admin/invoice-settings/disable").status_code == 303
+    with _Session() as db:
+        row = db.query(PlatformInvoiceConfig).one()
+        assert row.provider == "stub"
+        assert row.merchant_id == "2000132"
+        assert row.hash_key == _HASH_KEY and row.hash_iv == _HASH_IV
+        issuer = get_invoice_issuer(db, provider="ecpay")
+        assert isinstance(issuer, EcpayInvoiceIssuer)
+        assert issuer._merchant_id == "2000132"
 
 
 def test_readiness_recognizes_database_invoice_config(client):

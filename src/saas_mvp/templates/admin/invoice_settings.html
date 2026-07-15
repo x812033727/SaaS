@@ -12,6 +12,8 @@
   {% if check_ok %}<div class="success">MerchantID 格式、環境及 AES-128-CBC 加解密自我檢查均通過。</div>{% endif %}
   {% if check_error %}<div class="error">自我檢查失敗：{{ check_error }}</div>{% endif %}
   {% if retried is not none %}<div class="success">已重試 {{ retried }} 張失敗發票；結果請查看下方紀錄。</div>{% endif %}
+  {% if voided %}<div class="success">發票 {{ voided }} 已送交作廢。</div>{% endif %}
+  {% if operation_error %}<div class="error">{{ operation_error }}</div>{% endif %}
 
   {% if invoice_status.provider == 'ecpay' %}
     <p><span class="badge valid">綠界發票已啟用</span>
@@ -23,8 +25,8 @@
     <p><span class="badge unchecked">模擬發票模式</span> 目前只產生測試號碼，不會向財政部開立正式發票。</p>
   {% endif %}
 
-  {% if invoice_counts.pending or invoice_counts.failed %}
-    <div class="warning">目前有 {{ invoice_counts.pending }} 張等待開立、{{ invoice_counts.failed }} 張開立失敗。處理完成前，系統會禁止更換憑證、停用或移除設定，避免用錯商店重送。</div>
+  {% if invoice_counts.pending or invoice_counts.failed or invoice_counts.voiding %}
+    <div class="warning">目前有 {{ invoice_counts.pending }} 張等待開立、{{ invoice_counts.failed }} 張開立失敗、{{ invoice_counts.voiding }} 張正在作廢。處理完成前，系統會限制危險的憑證變更，避免用錯商店重送。</div>
   {% endif %}
 
   <form method="post" action="/ui/admin/invoice-settings/ecpay" autocomplete="off">
@@ -80,6 +82,7 @@
     <li>先選測試環境，使用綠界測試資料完成一筆付款與自動開票；Stage 只驗證 Email 格式，不會真的寄發票通知。</li>
     <li>正式帳號與字軌均啟用後，切換正式環境並填入正式發票憑證，再執行設定自我檢查。</li>
     <li>正式上線後完成一筆低額付款，對照本頁、綠界電子發票後台及財政部平台的發票號碼與金額。</li>
+    <li>退款或發票開立錯誤時，可在下方紀錄輸入原因後作廢；已折讓發票須先處理折讓，超過申報期限也可能被綠界拒絕。</li>
   </ol>
   <p><a href="https://developers.ecpay.com.tw/22040/" target="_blank" rel="noopener noreferrer">開啟綠界官方「開立發票」文件</a></p>
 </div>
@@ -90,6 +93,7 @@
     <div class="stat"><div class="label">等待開立</div><div class="value">{{ invoice_counts.pending }}</div></div>
     <div class="stat"><div class="label">已開立</div><div class="value">{{ invoice_counts.issued }}</div></div>
     <div class="stat"><div class="label">開立失敗</div><div class="value">{{ invoice_counts.failed }}</div></div>
+    <div class="stat"><div class="label">正在作廢</div><div class="value">{{ invoice_counts.voiding }}</div></div>
     <div class="stat"><div class="label">已作廢</div><div class="value">{{ invoice_counts.void }}</div></div>
   </div>
   {% if invoice_counts.failed %}
@@ -100,7 +104,7 @@
   {% endif %}
   <h3>最近 50 張</h3>
   <div class="table-wrap"><table>
-    <thead><tr><th>建立時間</th><th>店家</th><th>關聯單號</th><th>發票號碼</th><th>金額</th><th>狀態</th><th>原因</th></tr></thead>
+    <thead><tr><th>建立時間</th><th>店家</th><th>關聯單號</th><th>發票號碼</th><th>金額</th><th>狀態</th><th>原因／操作</th></tr></thead>
     <tbody>
     {% for row in invoices %}
       <tr>
@@ -109,8 +113,21 @@
         <td>{{ row.relate_number }}</td>
         <td>{{ row.invoice_no or '—' }}</td>
         <td>NT$ {{ '%.0f'|format(row.amount_cents / 100) }}</td>
-        <td><span class="badge {{ 'valid' if row.status == 'issued' else ('unchecked' if row.status in ('pending', 'void') else 'invalid') }}">{{ {'pending':'等待開立','issued':'已開立','failed':'失敗','void':'已作廢'}.get(row.status, row.status) }}</span></td>
-        <td>{{ row.error_msg or '—' }}</td>
+        <td><span class="badge {{ 'valid' if row.status == 'issued' else ('unchecked' if row.status in ('pending', 'voiding', 'void') else 'invalid') }}">{{ {'pending':'等待開立','issued':'已開立','failed':'失敗','voiding':'正在作廢','void':'已作廢'}.get(row.status, row.status) }}</span></td>
+        <td>
+          {% if row.status == 'issued' %}
+            {% if row.void_error_msg %}<div class="error">上次作廢失敗：{{ row.void_error_msg }}</div>{% endif %}
+            <form method="post" action="/ui/admin/invoice-settings/{{ row.id }}/void" onsubmit="return confirm('確定作廢發票 {{ row.invoice_no }}？成功後不可復原。')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input name="reason" maxlength="20" required placeholder="作廢原因（20 字內）" aria-label="作廢原因">
+              <button type="submit" class="danger">作廢發票</button>
+            </form>
+          {% elif row.status == 'void' %}
+            {{ row.void_reason or '—' }}{% if row.voided_at %} · {{ row.voided_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+          {% else %}
+            {{ row.error_msg or row.void_error_msg or '—' }}
+          {% endif %}
+        </td>
       </tr>
     {% else %}
       <tr><td colspan="7" class="muted">目前尚無發票紀錄。</td></tr>

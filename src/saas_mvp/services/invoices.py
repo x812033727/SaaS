@@ -17,11 +17,21 @@ from saas_mvp.models.invoice import (
     INVOICE_FAILED,
     INVOICE_ISSUED,
     INVOICE_PENDING,
+    INVOICE_VOID,
+    INVOICE_VOIDING,
     Invoice,
 )
 from saas_mvp.services.invoice_ecpay import InvoiceError, get_invoice_issuer
 
 _log = logging.getLogger(__name__)
+
+
+class InvoiceOperationError(ValueError):
+    """管理操作不可執行或外部發票 API 拒絕。"""
+
+
+class InvoiceProviderError(InvoiceOperationError):
+    """外部發票供應商拒絕或連線失敗。"""
 
 
 def _utcnow() -> datetime.datetime:
@@ -106,3 +116,60 @@ def _attempt_issue(db: Session, row: Invoice, *, issuer=None) -> None:
         row.error_msg = str(exc)[:255]
         _log.warning("invoice issue failed relate=%s: %s", row.relate_number, exc)
     db.commit()
+
+
+def void_invoice(
+    db: Session,
+    invoice_id: int,
+    *,
+    reason: str,
+    issuer=None,
+) -> Invoice:
+    """作廢已開立發票；以資料庫列鎖避免重複呼叫外部 API。"""
+    reason = reason.strip()
+    if not reason or len(reason) > 20:
+        raise InvoiceOperationError("作廢原因必須為 1–20 個字。")
+
+    row = db.execute(
+        select(Invoice).where(Invoice.id == invoice_id).with_for_update()
+    ).scalar_one_or_none()
+    if row is None:
+        raise InvoiceOperationError("找不到指定發票。")
+    if row.status == INVOICE_VOID:
+        return row
+    if row.status == INVOICE_VOIDING:
+        raise InvoiceOperationError("此發票正在作廢，請稍後重新整理。")
+    if row.status != INVOICE_ISSUED:
+        raise InvoiceOperationError("只有已開立發票可以作廢。")
+    if not row.invoice_no or len(row.invoice_no) != 10 or not row.invoice_date:
+        raise InvoiceOperationError("發票號碼或開立日期不完整，無法送出作廢。")
+
+    effective = issuer or get_invoice_issuer(db, provider=row.provider)
+    row.status = INVOICE_VOIDING
+    row.void_reason = reason
+    row.void_error_msg = None
+    db.flush()
+    try:
+        result = effective.void(
+            invoice_no=row.invoice_no,
+            invoice_date=row.invoice_date,
+            reason=reason,
+        )
+    except InvoiceError as exc:
+        row.status = INVOICE_ISSUED
+        row.void_error_msg = str(exc)[:255]
+        db.commit()
+        _log.warning("invoice void failed invoice=%s: %s", row.invoice_no, exc)
+        raise InvoiceProviderError(f"綠界拒絕作廢：{exc}") from exc
+
+    if result.invoice_no != row.invoice_no:  # pragma: no cover - issuer invariant
+        row.status = INVOICE_ISSUED
+        row.void_error_msg = "void response invoice number mismatch"
+        db.commit()
+        raise InvoiceOperationError("作廢回應的發票號碼不一致。")
+    row.status = INVOICE_VOID
+    row.voided_at = _utcnow()
+    row.void_error_msg = None
+    db.commit()
+    db.refresh(row)
+    return row

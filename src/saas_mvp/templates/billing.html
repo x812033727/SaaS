@@ -39,6 +39,7 @@
           {% if inv and inv.status == 'issued' %}{{ inv.invoice_no }}（已開立）
           {% elif inv and inv.status == 'pending' %}等待開立
           {% elif inv and inv.status == 'failed' %}開立處理中
+          {% elif inv and inv.status == 'voiding' %}{{ inv.invoice_no }}（正在作廢）
           {% elif inv and inv.status == 'void' %}{{ inv.invoice_no or '—' }}（已作廢）
           {% else %}—{% endif %}
         </td>
