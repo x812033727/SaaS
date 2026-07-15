@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}發票設定 · 平台管理{% endblock %}
+{% block content %}
+<h1>平台電子發票設定</h1>
+
+<div class="card">
+  <h2>綠界 B2C 電子發票</h2>
+  <p class="muted">付款成功後自動開立月費發票。發票服務的 MerchantID、HashKey、HashIV 與綠界金流憑證是不同的一組，只有平台管理員能修改；儲存後立即生效，不需修改 .env 或重啟服務。</p>
+
+  {% if saved %}<div class="success">電子發票設定已加密儲存並立即生效。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if check_ok %}<div class="success">MerchantID 格式、環境及 AES-128-CBC 加解密自我檢查均通過。</div>{% endif %}
+  {% if check_error %}<div class="error">自我檢查失敗：{{ check_error }}</div>{% endif %}
+  {% if retried is not none %}<div class="success">已重試 {{ retried }} 張失敗發票；結果請查看下方紀錄。</div>{% endif %}
+
+  {% if invoice_status.provider == 'ecpay' %}
+    <p><span class="badge valid">綠界發票已啟用</span>
+      {{ '正式環境' if invoice_status.environment == 'prod' else '測試環境' }}
+      · MerchantID {{ invoice_status.merchant_id }}
+      · {% if invoice_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">模擬發票模式</span> 目前只產生測試號碼，不會向財政部開立正式發票。</p>
+  {% endif %}
+
+  {% if invoice_counts.pending or invoice_counts.failed %}
+    <div class="warning">目前有 {{ invoice_counts.pending }} 張等待開立、{{ invoice_counts.failed }} 張開立失敗。處理完成前，系統會禁止更換憑證、停用或移除設定，避免用錯商店重送。</div>
+  {% endif %}
+
+  <form method="post" action="/ui/admin/invoice-settings/ecpay" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>環境
+      <select name="environment" required>
+        <option value="stage"{% if invoice_status.environment == 'stage' %} selected{% endif %}>測試環境（Stage）</option>
+        <option value="prod"{% if invoice_status.environment == 'prod' %} selected{% endif %}>正式環境（Production）</option>
+      </select>
+    </label>
+    <label>MerchantID（電子發票商店代號）
+      <input name="merchant_id" value="{{ invoice_status.merchant_id }}" maxlength="10" pattern="[A-Za-z0-9]{5,10}" required>
+    </label>
+    <label>發票 HashKey
+      <input name="hash_key" type="password" maxlength="16"
+             placeholder="{% if invoice_status.source == 'database' and invoice_status.has_hash_key %}已設定；留空保留原 HashKey{% else %}請貼上電子發票專用 HashKey{% endif %}"
+             {% if invoice_status.source != 'database' or not invoice_status.has_hash_key %}required{% endif %} autocomplete="new-password">
+    </label>
+    <label>發票 HashIV
+      <input name="hash_iv" type="password" maxlength="16"
+             placeholder="{% if invoice_status.source == 'database' and invoice_status.has_hash_iv %}已設定；留空保留原 HashIV{% else %}請貼上電子發票專用 HashIV{% endif %}"
+             {% if invoice_status.source != 'database' or not invoice_status.has_hash_iv %}required{% endif %} autocomplete="new-password">
+    </label>
+    <p class="muted">HashKey 與 HashIV 必須各 16 bytes，會以 Fernet 加密保存，頁面、日誌與稽核紀錄都不顯示明文。</p>
+    <button type="submit">儲存並啟用電子發票</button>
+  </form>
+
+  {% if invoice_status.provider == 'ecpay' %}
+  <form method="post" action="/ui/admin/invoice-settings/check" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">執行設定自我檢查</button>
+  </form>
+  {% endif %}
+  {% if invoice_status.source == 'database' and invoice_status.provider == 'ecpay' %}
+  <form method="post" action="/ui/admin/invoice-settings/disable" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定切回模擬發票？之後付款將不會開立正式發票。')">停用電子發票</button>
+  </form>
+  {% endif %}
+  {% if invoice_status.source == 'database' %}
+  <form method="post" action="/ui/admin/invoice-settings/reset" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定移除後台設定並改用伺服器備援值？')">移除後台設定</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>綠界電子發票啟用教學</h2>
+  <ol>
+    <li>先完成綠界 B2C 電子發票加值中心申請與財政部字軌配號；只有金流帳號不能直接開發票。</li>
+    <li>登入綠界「電子發票系統」，取得電子發票專用 MerchantID、HashKey、HashIV。請勿貼入金流頁面的那一組憑證。</li>
+    <li>先選測試環境，使用綠界測試資料完成一筆付款與自動開票；Stage 只驗證 Email 格式，不會真的寄發票通知。</li>
+    <li>正式帳號與字軌均啟用後，切換正式環境並填入正式發票憑證，再執行設定自我檢查。</li>
+    <li>正式上線後完成一筆低額付款，對照本頁、綠界電子發票後台及財政部平台的發票號碼與金額。</li>
+  </ol>
+  <p><a href="https://developers.ecpay.com.tw/22040/" target="_blank" rel="noopener noreferrer">開啟綠界官方「開立發票」文件</a></p>
+</div>
+
+<div class="card">
+  <h2>發票營運狀態</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">等待開立</div><div class="value">{{ invoice_counts.pending }}</div></div>
+    <div class="stat"><div class="label">已開立</div><div class="value">{{ invoice_counts.issued }}</div></div>
+    <div class="stat"><div class="label">開立失敗</div><div class="value">{{ invoice_counts.failed }}</div></div>
+    <div class="stat"><div class="label">已作廢</div><div class="value">{{ invoice_counts.void }}</div></div>
+  </div>
+  {% if invoice_counts.failed %}
+  <form method="post" action="/ui/admin/invoice-settings/retry">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">立即重試所有失敗發票</button>
+  </form>
+  {% endif %}
+  <h3>最近 50 張</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>建立時間</th><th>店家</th><th>關聯單號</th><th>發票號碼</th><th>金額</th><th>狀態</th><th>原因</th></tr></thead>
+    <tbody>
+    {% for row in invoices %}
+      <tr>
+        <td>{{ row.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>#{{ row.tenant_id }}</td>
+        <td>{{ row.relate_number }}</td>
+        <td>{{ row.invoice_no or '—' }}</td>
+        <td>NT$ {{ '%.0f'|format(row.amount_cents / 100) }}</td>
+        <td><span class="badge {{ 'valid' if row.status == 'issued' else ('unchecked' if row.status in ('pending', 'void') else 'invalid') }}">{{ {'pending':'等待開立','issued':'已開立','failed':'失敗','void':'已作廢'}.get(row.status, row.status) }}</span></td>
+        <td>{{ row.error_msg or '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">目前尚無發票紀錄。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endblock %}

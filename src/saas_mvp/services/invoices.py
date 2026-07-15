@@ -45,8 +45,9 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
         if existing is not None:
             return existing  # 回調重放:已有列(任何狀態)不重開
 
-        from saas_mvp.config import settings
         from saas_mvp.models.user import User
+        from saas_mvp.config import settings
+        from saas_mvp.services.platform_invoice_config import effective_invoice_config
 
         owner = db.execute(
             select(User).where(
@@ -56,6 +57,7 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
         ).scalars().first()
         buyer_email = owner.email if owner else ""
 
+        config = effective_invoice_config(db, settings)
         row = Invoice(
             tenant_id=charge.tenant_id,
             subscription_charge_id=charge.id,
@@ -63,7 +65,7 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
             amount_cents=charge.amount_cents,
             buyer_email=buyer_email,
             status=INVOICE_PENDING,
-            provider=settings.invoice_provider,
+            provider=config.provider,
         )
         db.add(row)
         db.commit()  # 先落 pending:issuer 掛掉也留有可重試的紀錄
@@ -85,7 +87,7 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
 
 def _attempt_issue(db: Session, row: Invoice, *, issuer=None) -> None:
     """對一筆 pending/failed 發票列嘗試開立(供首開與 ops 重試共用)。"""
-    effective = issuer or get_invoice_issuer()
+    effective = issuer or get_invoice_issuer(db)
     try:
         result = effective.issue(
             relate_number=row.relate_number,

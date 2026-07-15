@@ -128,19 +128,27 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
         add(Check("payment", "WARN", f"provider={payment_config.provider}"))
 
     # ── 3. 發票 ────────────────────────────────────────────────
-    invoice_provider = getattr(settings, "invoice_provider", "stub")
-    if invoice_provider == "stub":
-        add(Check("invoice", "WARN", "provider=stub(不會真開發票;C2 上線後切 ecpay)"))
-    else:
-        missing = [
-            k for k in ("ecpay_invoice_merchant_id", "ecpay_invoice_hash_key",
-                        "ecpay_invoice_hash_iv")
-            if not getattr(settings, k, "")
-        ]
-        if missing:
-            add(Check("invoice", "FAIL", f"ecpay 發票缺憑證:{', '.join(missing)}"))
+    try:
+        from saas_mvp.services.platform_invoice_config import effective_invoice_config
+
+        with session_factory() as db:
+            invoice_config = effective_invoice_config(db, settings)
+        if invoice_config.provider == "stub":
+            add(Check("invoice", "WARN", "provider=stub(不會真開發票)"))
+        elif not (
+            invoice_config.merchant_id
+            and invoice_config.hash_key
+            and invoice_config.hash_iv
+        ):
+            add(Check("invoice", "FAIL", "ecpay 發票憑證不完整"))
         else:
-            add(Check("invoice", "PASS", "ecpay 發票憑證已填"))
+            add(Check(
+                "invoice",
+                "PASS",
+                f"ecpay {invoice_config.environment} source={invoice_config.source}",
+            ))
+    except Exception as exc:  # noqa: BLE001
+        add(Check("invoice", "WARN", f"無法讀取發票設定:{type(exc).__name__}"))
 
     # ── 4. Email / Sentry / AI(空 → 退化行為 WARN)───────────────
     try:

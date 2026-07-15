@@ -22,6 +22,7 @@ import urllib.request
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from sqlalchemy.orm import Session
 
 from saas_mvp.config import settings
 
@@ -113,11 +114,22 @@ def aes_decrypt_data(data_b64: str, hash_key: str, hash_iv: str) -> dict:
 class EcpayInvoiceIssuer(InvoiceIssuer):
     """綠界 B2C 發票(個人、電子發票寄 email、含稅價;統編/載具延後)。"""
 
-    def __init__(self, *, http_post=None) -> None:
-        self._merchant_id = settings.ecpay_invoice_merchant_id
-        self._hash_key = settings.ecpay_invoice_hash_key
-        self._hash_iv = settings.ecpay_invoice_hash_iv
-        self._url = _PROD_URL if settings.ecpay_invoice_env == "prod" else _STAGE_URL
+    def __init__(
+        self,
+        *,
+        merchant_id: str | None = None,
+        hash_key: str | None = None,
+        hash_iv: str | None = None,
+        env: str | None = None,
+        http_post=None,
+    ) -> None:
+        self._merchant_id = (
+            settings.ecpay_invoice_merchant_id if merchant_id is None else merchant_id
+        )
+        self._hash_key = settings.ecpay_invoice_hash_key if hash_key is None else hash_key
+        self._hash_iv = settings.ecpay_invoice_hash_iv if hash_iv is None else hash_iv
+        effective_env = settings.ecpay_invoice_env if env is None else env
+        self._url = _PROD_URL if effective_env == "prod" else _STAGE_URL
         self._http_post = http_post or _urllib_post
 
     def issue(
@@ -174,8 +186,16 @@ class EcpayInvoiceIssuer(InvoiceIssuer):
 _stub_singleton = StubInvoiceIssuer()
 
 
-def get_invoice_issuer() -> InvoiceIssuer:
-    """factory:SAAS_INVOICE_PROVIDER=ecpay 走真實,否則 Stub 單例。"""
-    if settings.invoice_provider == "ecpay":
-        return EcpayInvoiceIssuer()
+def get_invoice_issuer(db: Session | None = None) -> InvoiceIssuer:
+    """資料庫後台設定優先；未建立設定時才使用環境變數備援。"""
+    from saas_mvp.services.platform_invoice_config import effective_invoice_config
+
+    config = effective_invoice_config(db, settings)
+    if config.provider == "ecpay":
+        return EcpayInvoiceIssuer(
+            merchant_id=config.merchant_id,
+            hash_key=config.hash_key,
+            hash_iv=config.hash_iv,
+            env=config.environment,
+        )
     return _stub_singleton

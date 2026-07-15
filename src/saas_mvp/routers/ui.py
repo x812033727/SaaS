@@ -73,6 +73,7 @@ from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import platform_email_config as platform_email_svc
 from saas_mvp.services import platform_ai_config as platform_ai_svc
 from saas_mvp.services import platform_payment_config as platform_payment_svc
+from saas_mvp.services import platform_invoice_config as platform_invoice_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -1896,6 +1897,206 @@ def admin_payment_settings_reset(
     return RedirectResponse(
         "/ui/admin/payment-settings",
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _platform_invoice_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    **extra,
+) -> dict:
+    from sqlalchemy import func
+    from saas_mvp.models.invoice import Invoice
+
+    counts = dict(
+        db.query(Invoice.status, func.count(Invoice.id)).group_by(Invoice.status).all()
+    )
+    return _ctx(
+        request,
+        actor,
+        invoice_status=platform_invoice_svc.invoice_status(db, settings),
+        invoice_counts={
+            "pending": counts.get("pending", 0),
+            "issued": counts.get("issued", 0),
+            "failed": counts.get("failed", 0),
+            "void": counts.get("void", 0),
+        },
+        invoices=db.query(Invoice).order_by(Invoice.id.desc()).limit(50).all(),
+        **extra,
+    )
+
+
+@router.get("/admin/invoice-settings", response_class=HTMLResponse)
+def admin_invoice_settings(
+    request: Request,
+    saved: int = Query(0),
+    retried: int = Query(-1),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "admin/invoice_settings.html",
+        _platform_invoice_ctx(
+            request,
+            actor,
+            db,
+            saved=bool(saved),
+            retried=None if retried < 0 else retried,
+        ),
+    )
+
+
+@router.post("/admin/invoice-settings/ecpay", response_class=HTMLResponse)
+def admin_invoice_settings_save(
+    request: Request,
+    merchant_id: str = Form(..., max_length=64),
+    hash_key: str = Form("", max_length=128),
+    hash_iv: str = Form("", max_length=128),
+    environment: str = Form(..., max_length=16),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_invoice_svc.save_ecpay_config(
+            db,
+            merchant_id=merchant_id,
+            hash_key=hash_key,
+            hash_iv=hash_iv,
+            environment=environment,
+            actor_user_id=actor.user.id,
+        )
+    except platform_invoice_svc.PlatformInvoiceConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/invoice_settings.html",
+            _platform_invoice_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.invoice.ecpay.update",
+        target="invoice:ecpay",
+        detail={
+            "merchant_id": merchant_id.strip(),
+            "environment": environment.strip().lower(),
+            "hash_key_changed": bool(hash_key.strip()),
+            "hash_iv_changed": bool(hash_iv.strip()),
+        },
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/invoice-settings?saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/invoice-settings/check", response_class=HTMLResponse)
+def admin_invoice_settings_check(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_invoice_svc.self_check(db, settings)
+    except platform_invoice_svc.PlatformInvoiceConfigError as exc:
+        return templates.TemplateResponse(
+            "admin/invoice_settings.html",
+            _platform_invoice_ctx(request, actor, db, check_error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.invoice.ecpay.check",
+        target="invoice:ecpay",
+        request=request,
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        "admin/invoice_settings.html",
+        _platform_invoice_ctx(request, actor, db, check_ok=True),
+    )
+
+
+@router.post("/admin/invoice-settings/retry", response_class=HTMLResponse)
+def admin_invoice_settings_retry(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.models.invoice import INVOICE_FAILED, Invoice
+    from saas_mvp.services.invoices import _attempt_issue
+
+    rows = db.query(Invoice).filter(Invoice.status == INVOICE_FAILED).all()
+    for row in rows:
+        _attempt_issue(db, row)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.invoice.retry",
+        target="invoice:failed",
+        detail={"count": len(rows)},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        f"/ui/admin/invoice-settings?retried={len(rows)}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _invoice_config_error_response(request, actor, db, exc):
+    db.rollback()
+    return templates.TemplateResponse(
+        "admin/invoice_settings.html",
+        _platform_invoice_ctx(request, actor, db, error=str(exc)),
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+@router.post("/admin/invoice-settings/disable", response_class=HTMLResponse)
+def admin_invoice_settings_disable(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_invoice_svc.disable_invoice(db, actor_user_id=actor.user.id)
+    except platform_invoice_svc.PlatformInvoiceConfigError as exc:
+        return _invoice_config_error_response(request, actor, db, exc)
+    audit_svc.record_from_actor(
+        db, actor, action="platform.invoice.disable", target="invoice:ecpay", request=request
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/invoice-settings", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post("/admin/invoice-settings/reset", response_class=HTMLResponse)
+def admin_invoice_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        removed = platform_invoice_svc.clear_invoice_override(db)
+    except platform_invoice_svc.PlatformInvoiceConfigError as exc:
+        return _invoice_config_error_response(request, actor, db, exc)
+    if removed:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.invoice.reset",
+            target="invoice:ecpay",
+            request=request,
+        )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/invoice-settings", status_code=status.HTTP_303_SEE_OTHER
     )
 
 
