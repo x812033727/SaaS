@@ -53,3 +53,28 @@ def test_scheduler_writes_heartbeat_continuously():
     assert any(l.split()[:5] == ["*", "*", "*", "*", "*"] for l in heartbeat_lines), (
         "心跳排程必須每分鐘執行（compose healthcheck 判 180 秒新鮮度）"
     )
+
+
+def test_scheduler_staggers_heavy_jobs_away_from_top_of_hour():
+    """避免多個 Python 程序在整點同時啟動造成記憶體尖峰。"""
+    crontab = (_ROOT / "docker" / "crontab").read_text(encoding="utf-8")
+    commands = [
+        line.strip()
+        for line in crontab.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    heavy_modules = (
+        "run_scheduled_campaigns",
+        "run_birthday_campaigns",
+        "run_reactivation",
+        "purge_webhook_events",
+        "send_trial_notices",
+        "retry_stuck_webhook_events",
+        "check_webhook_health",
+        "cancel_unpaid_deposits",
+    )
+
+    for line in commands:
+        if any(module in line for module in heavy_modules):
+            minute = line.split(maxsplit=1)[0]
+            assert minute not in {"0", "*/5", "*/10"}, line
