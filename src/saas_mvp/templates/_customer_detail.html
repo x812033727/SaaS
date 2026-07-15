@@ -103,6 +103,44 @@
 </div>
 {% endif %}
 
+{% if client_forms_enabled %}
+<div class="card">
+  <h2>諮詢表／同意書</h2>
+  {% if can_manage_client_forms and reservations %}
+  <details>
+    <summary>補派既有預約的適用表單</summary>
+    <p class="muted">適合在範本啟用前已建立的預約；重複操作不會建立重複表單。</p>
+    {% for reservation in reservations %}
+      {% if reservation.status != 'cancelled' %}
+      <form hx-post="/ui/customers/{{ customer.id }}/reservations/{{ reservation.id }}/client-forms"
+            hx-target="#customer-card" hx-swap="innerHTML" style="display:inline">
+        <button type="submit">補派至預約 #{{ reservation.id }}</button>
+      </form>
+      {% endif %}
+    {% endfor %}
+  </details>
+  {% endif %}
+  {% if client_form_requests %}
+  <table>
+    <thead><tr><th>表單</th><th>預約</th><th>版本</th><th>狀態</th><th>查看</th></tr></thead>
+    <tbody>
+      {% for item in client_form_requests %}
+      <tr>
+        <td>{{ item.template_name_snapshot }}</td>
+        <td>#{{ item.reservation_id }}</td>
+        <td>{{ item.template_version }}</td>
+        <td>{{ '已完成' if item.status == 'completed' else '待填寫' }}</td>
+        <td><a href="{{ client_form_url(item) }}" target="_blank" rel="noopener noreferrer">{{ '查看／列印' if item.status == 'completed' else '開啟／代填' }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">此顧客目前沒有表單紀錄。</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card">
   <h2>標籤</h2>
   <form hx-post="/ui/customers/{{ customer.id }}/tags" hx-target="#customer-card" hx-swap="innerHTML" class="col">

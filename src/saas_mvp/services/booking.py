@@ -283,6 +283,12 @@ def book_slot(
             reservation_id=reservation.id,
         )
 
+    # 綁定服務的諮詢表／同意書與預約同交易派發，保存當下範本版本快照。
+    if features_svc.is_enabled(db, tenant_id, features_svc.CLIENT_FORMS):
+        from saas_mvp.services import client_forms as client_forms_svc
+
+        client_forms_svc.attach_to_reservation(db, reservation=reservation)
+
     # 與預約同交易保存 Google 同步意圖；即使程序在 commit 後、API 呼叫前中止，
     # scheduler 仍能補送。未連結 Google 的租戶為 no-op。
     from saas_mvp.services import gcal as gcal_svc

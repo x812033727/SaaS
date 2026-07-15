@@ -65,6 +65,8 @@ DEPOSIT_PAYMENT = "DEPOSIT_PAYMENT"
 SERVICE_PACKAGES = "SERVICE_PACKAGES"
 # 電子禮物卡／儲值金：發行、領取、顧客錢包與 POS 分次折抵。
 GIFT_CARDS = "GIFT_CARDS"
+# 預約諮詢表／同意書：服務綁定、自動派發、免登入簽署與版本快照。
+CLIENT_FORMS = "CLIENT_FORMS"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -90,6 +92,7 @@ _FEATURE_LABELS: dict[str, str] = {
     DEPOSIT_PAYMENT: "定金收款",
     SERVICE_PACKAGES: "服務套票",
     GIFT_CARDS: "電子禮物卡",
+    CLIENT_FORMS: "顧客表單／同意書",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

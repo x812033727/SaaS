@@ -39,6 +39,7 @@ from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import catalog as catalog_svc
+from saas_mvp.services import client_forms as client_forms_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import faq as faq_svc
 from saas_mvp.services import features as features_svc
@@ -450,6 +451,66 @@ def _ensure_customer(db: Session, tenant_id: int) -> int:
     return 1
 
 
+def _ensure_client_form(db: Session, tenant_id: int) -> int:
+    """建立可直接展示的全服務諮詢表，並補到示範預約（冪等）。"""
+    name = "服務前健康諮詢與同意書"
+    template = next(
+        (
+            row
+            for row in client_forms_svc.list_templates(db, tenant_id=tenant_id)
+            if row.name == name
+        ),
+        None,
+    )
+    if template is None:
+        template = client_forms_svc.create_template(
+            db,
+            tenant_id=tenant_id,
+            name=name,
+            intro="請於服務前如實填寫；送出後會保存於本次預約紀錄。",
+            consent_text="本人確認上述資料正確，並已了解服務內容、可能風險與注意事項。",
+            service_id=None,
+            require_signature=True,
+        )
+        client_forms_svc.add_question(
+            db,
+            tenant_id=tenant_id,
+            template_id=template.id,
+            label="是否有藥物或成分過敏史？",
+            field_type="select",
+            required=True,
+            options="沒有\n有，將於備註說明",
+        )
+        client_forms_svc.add_question(
+            db,
+            tenant_id=tenant_id,
+            template_id=template.id,
+            label="需要店家特別留意的事項",
+            field_type="textarea",
+            required=False,
+        )
+        client_forms_svc.add_question(
+            db,
+            tenant_id=tenant_id,
+            template_id=template.id,
+            label="以上資料均為本人如實填寫",
+            field_type="checkbox",
+            required=True,
+        )
+        client_forms_svc.set_active(
+            db, tenant_id=tenant_id, template_id=template.id, active=True
+        )
+
+    # 測試與正式 session 都關閉 autoflush；先落下 active/問題狀態，派發查詢才看得到。
+    db.flush()
+    reservations = db.execute(
+        select(Reservation).where(Reservation.tenant_id == tenant_id)
+    ).scalars()
+    for reservation in reservations:
+        client_forms_svc.attach_to_reservation(db, reservation=reservation)
+    return 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def run(
     *,
@@ -493,6 +554,7 @@ def run(
         counts["faq"] = _ensure_faq(db, tenant_id)
         counts["campaigns"] = _ensure_campaign(db, tenant_id)
         counts["customers"] = _ensure_customer(db, tenant_id)
+        counts["client_forms"] = _ensure_client_form(db, tenant_id)
 
         # 取一個員工 access_token 給員工入口連結。
         staff_token = next(

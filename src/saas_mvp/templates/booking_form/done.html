@@ -24,6 +24,7 @@
     <h1>✅ 預約完成</h1>
     <p>預約編號 <strong>#{{ reservation.id }}</strong>，共 {{ reservation.party_size }} 位。</p>
     {% if package_redeemed %}<p><strong>服務套票已扣 1 次。</strong> 若取消此預約，系統會自動退回。</p>{% endif %}
+    {% if client_form_links %}<div class="card"><h2>預約前請完成</h2>{% for item in client_form_links %}<p><a class="btn" href="{{ item.url }}">填寫 {{ item.name }}</a></p>{% endfor %}<p class="muted">送出後會安全保存到本次預約與顧客紀錄。</p></div>{% endif %}
     {% if deposit_url %}
     <p class="pay-note"><strong>{{ deposit_note }}</strong></p>
     <p><a href="{{ deposit_url }}" class="pay-btn">前往付定金</a></p>

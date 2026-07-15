@@ -208,6 +208,13 @@ def booking_form_submit(
         if tenant is not None:
             deposit_url = deposit_svc.payment_url(resv)
             deposit_note = deposit_svc.deposit_prompt(resv, tenant)
+    from saas_mvp.services import client_forms as client_forms_svc
+    client_form_links = [
+        {"name": row.template_name_snapshot, "url": client_forms_svc.form_url(row)}
+        for row in client_forms_svc.for_reservation(
+            db, tenant_id=resv.tenant_id, reservation_id=resv.id
+        ) if row.status == "pending"
+    ]
     return templates.TemplateResponse(
         "booking_form/done.html",
         {
@@ -216,6 +223,7 @@ def booking_form_submit(
             "deposit_url": deposit_url,
             "deposit_note": deposit_note,
             "package_redeemed": package_redeemed,
+            "client_form_links": client_form_links,
         },
     )
 

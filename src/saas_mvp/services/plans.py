@@ -71,6 +71,7 @@ PLAN_BUNDLES: dict[str, frozenset[str]] = {
         features_svc.DEPOSIT_PAYMENT,
         features_svc.SERVICE_PACKAGES,
         features_svc.GIFT_CARDS,
+        features_svc.CLIENT_FORMS,
     }),
     # PUSH_BOOST / AI_BOOST 刻意不在任何 bundle（單點加購）。
 }

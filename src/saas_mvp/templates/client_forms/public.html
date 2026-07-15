@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>{{ form_request.template_name_snapshot }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .public-form { max-width: 720px; margin: 2rem auto; }
+    .answer { white-space: pre-wrap; }
+    .signature { border-top: 1px solid #777; margin-top: 2rem; padding-top: .5rem; }
+    @media print {
+      button, .no-print { display: none; }
+      .public-form { margin: 0; max-width: none; }
+    }
+  </style>
+</head>
+<body>
+<main class="public-form">
+  <div class="card">
+    <h1>{{ form_request.template_name_snapshot }}</h1>
+    <p class="muted">預約 #{{ form_request.reservation_id }} · 範本版本 {{ form_request.template_version }}</p>
+    {% if form_request.intro_snapshot %}<p>{{ form_request.intro_snapshot }}</p>{% endif %}
+    {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+    {% if saved %}<div class="success" role="status">已安全保存，完成後不能再修改。</div>{% endif %}
+
+    {% if form_request.status == 'completed' %}
+      {% for q in questions %}
+        <section>
+          <strong>{{ q.label }}</strong>
+          {% set value = answers.get(q.id|string) %}
+          <p class="answer">
+            {% if q.type == 'checkbox' %}{{ '是' if value else '否' }}{% else %}{{ value or '—' }}{% endif %}
+          </p>
+        </section>
+      {% endfor %}
+      <section>
+        <strong>同意聲明</strong>
+        <p>{{ form_request.consent_text_snapshot }}</p>
+      </section>
+      <p class="signature">
+        {% if form_request.signer_name %}簽署人：<strong>{{ form_request.signer_name }}</strong><br>{% endif %}
+        確認時間：{{ form_request.signed_at.strftime('%Y-%m-%d %H:%M:%S') if form_request.signed_at else '—' }}
+      </p>
+      <button type="button" onclick="window.print()">列印／另存 PDF</button>
+    {% elif blocked %}
+      <div class="error" role="alert">{{ blocked }}</div>
+      <p class="muted">如需協助，請直接聯絡店家。</p>
+    {% else %}
+      <form method="post" class="col">
+        {% for q in questions %}
+          {% set field_name = 'q_' ~ q.id %}
+          {% set draft_value = draft.get(field_name) if draft else '' %}
+          <label>{{ q.label }}{% if q.required %} *{% endif %}
+            {% if q.type == 'textarea' %}
+              <textarea name="{{ field_name }}" maxlength="4000" {% if q.required %}required{% endif %}>{{ draft_value }}</textarea>
+            {% elif q.type == 'select' %}
+              <select name="{{ field_name }}" {% if q.required %}required{% endif %}>
+                <option value="">請選擇</option>
+                {% for option in q.options %}
+                  <option value="{{ option }}" {% if draft_value == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+              </select>
+            {% elif q.type == 'checkbox' %}
+              <input type="checkbox" name="{{ field_name }}" value="true"
+                     {% if draft_value == 'true' %}checked{% endif %}
+                     {% if q.required %}required{% endif %}>
+            {% elif q.type == 'number' %}
+              <input type="number" step="any" name="{{ field_name }}" value="{{ draft_value }}"
+                     {% if q.required %}required{% endif %}>
+            {% elif q.type == 'date' %}
+              <input type="date" name="{{ field_name }}" value="{{ draft_value }}"
+                     {% if q.required %}required{% endif %}>
+            {% else %}
+              <input type="text" name="{{ field_name }}" value="{{ draft_value }}" maxlength="4000"
+                     {% if q.required %}required{% endif %}>
+            {% endif %}
+          </label>
+        {% endfor %}
+        <div class="card">
+          <strong>同意聲明</strong>
+          <p>{{ form_request.consent_text_snapshot }}</p>
+          <label>
+            <input type="checkbox" name="consent" value="true" required
+                   {% if draft and draft.get('consent') == 'true' %}checked{% endif %}>
+            我已閱讀並同意上述內容
+          </label>
+        </div>
+        {% if form_request.require_signature_snapshot %}
+          <label>簽署人姓名 *
+            <input name="signer_name" value="{{ draft.get('signer_name', '') if draft else '' }}"
+                   maxlength="128" required autocomplete="name">
+          </label>
+        {% endif %}
+        <p class="muted">送出後將保存本次表單版本、回答、確認時間及安全稽核資訊，且不能自行修改。</p>
+        <button type="submit">確認並送出</button>
+      </form>
+    {% endif %}
+  </div>
+</main>
+</body>
+</html>

@@ -1462,6 +1462,16 @@ def _confirm_text(db: Session, tenant_id: int, resv, slot_id: int) -> str:
                 + f"\n付款連結：{deposit_svc.payment_url(resv)}"
                 + f"\n預約編號：{resv.id}(人數 {resv.party_size} 位)"
             )
+    from saas_mvp.services import client_forms as client_forms_svc
+    form_rows = client_forms_svc.for_reservation(
+        db, tenant_id=tenant_id, reservation_id=resv.id
+    )
+    pending_forms = [row for row in form_rows if row.status == "pending"]
+    if pending_forms:
+        base += "\n預約前請完成：" + "；".join(
+            f"{row.template_name_snapshot} {client_forms_svc.form_url(row)}"
+            for row in pending_forms
+        )
     # 取時段時間組「加入 Google 行事曆」連結。
     from saas_mvp.models.booking_slot import BookingSlot
 

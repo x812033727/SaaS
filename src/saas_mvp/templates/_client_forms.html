@@ -1,0 +1,85 @@
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+
+<h2>建立表單範本</h2>
+<p class="muted">啟用後，符合綁定服務的新預約會自動產生免登入填寫連結；「所有服務」適用每一筆預約。</p>
+<form hx-post="/ui/client-forms" hx-target="#client-forms-card" hx-swap="innerHTML" class="col">
+  <div class="row">
+    <label>名稱
+      <input name="name" required maxlength="128" placeholder="染髮諮詢與同意書">
+    </label>
+    <label>適用服務
+      <select name="service_id">
+        <option value="">所有服務</option>
+        {% for service in services %}<option value="{{ service.id }}">{{ service.name }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  <label>填寫說明
+    <textarea name="intro" maxlength="4000" placeholder="請於療程前如實填寫"></textarea>
+  </label>
+  <label>同意聲明
+    <textarea name="consent_text" minlength="10" maxlength="4000" required
+              placeholder="本人確認以上資料真實，並已了解服務內容、可能風險與注意事項。"></textarea>
+  </label>
+  <label><input type="checkbox" name="require_signature" value="true" checked> 要求輸入簽署人姓名</label>
+  <button type="submit">建立草稿</button>
+</form>
+
+<hr>
+<h2>範本</h2>
+{% for form in form_templates %}
+  <div class="card">
+    <h3>
+      {{ form.name }}
+      <span class="badge {{ 'on' if form.is_active else 'off' }}">{{ '派發中' if form.is_active else '草稿／停用' }}</span>
+    </h3>
+    <p>
+      {{ service_names.get(form.service_id, '所有服務') if form.service_id else '所有服務' }}
+      · 版本 {{ form.version }} · {{ '需簽署人姓名' if form.require_signature else '免填簽署人姓名' }}
+    </p>
+    {% if form.intro %}<p class="muted">{{ form.intro }}</p>{% endif %}
+    <ol>
+      {% for question in questions_by_template.get(form.id, []) %}
+        <li>
+          {{ question.label }}（{{ {'text':'單行文字','textarea':'多行文字','number':'數字','date':'日期','select':'下拉選單','checkbox':'核取確認'}.get(question.field_type, question.field_type) }}{% if question.is_required %}，必填{% endif %}）
+          {% if question_options.get(question.id) %}：{{ question_options.get(question.id)|join('／') }}{% endif %}
+        </li>
+      {% else %}
+        <li class="muted">尚未加入問題</li>
+      {% endfor %}
+    </ol>
+
+    <form hx-post="/ui/client-forms/{{ form.id }}/questions"
+          hx-target="#client-forms-card" hx-swap="innerHTML" class="col">
+      <div class="row">
+        <label>問題<input name="label" maxlength="255" required></label>
+        <label>類型
+          <select name="field_type">
+            <option value="text">單行文字</option>
+            <option value="textarea">多行文字</option>
+            <option value="number">數字</option>
+            <option value="date">日期</option>
+            <option value="select">下拉選單</option>
+            <option value="checkbox">核取確認</option>
+          </select>
+        </label>
+        <label><input type="checkbox" name="required" value="true"> 必填</label>
+      </div>
+      <label>下拉選項（僅下拉類型，每行一個）
+        <textarea name="options" maxlength="6000"></textarea>
+      </label>
+      <button type="submit">加入問題</button>
+    </form>
+
+    <form hx-post="/ui/client-forms/{{ form.id }}/active"
+          hx-target="#client-forms-card" hx-swap="innerHTML"
+          hx-confirm="確定{{ '停止自動派發' if form.is_active else '啟用並開始自動派發' }}？">
+      <input type="hidden" name="active" value="{{ 'false' if form.is_active else 'true' }}">
+      <button type="submit" class="{{ 'danger' if form.is_active else '' }}">
+        {{ '停止派發' if form.is_active else '啟用派發' }}
+      </button>
+    </form>
+  </div>
+{% else %}
+  <p class="muted">尚無表單範本。</p>
+{% endfor %}
