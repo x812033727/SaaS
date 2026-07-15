@@ -419,6 +419,13 @@ a { color: var(--brand); }
   table td:not([data-label]),
   table td[data-label=""] { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
   table td button, table td .btn { margin-top: 0; }
+  table td .cell-value { flex: 1; min-width: 0; text-align: right; }
+  table td.tiered-cell { flex-wrap: wrap; align-items: flex-start; }
+  table td.tiered-cell .cell-value {
+    flex: 0 0 100%;
+    padding-top: 4px;
+    text-align: left;
+  }
   /* 標籤儲存格內的行內編輯表單直排滿寬 */
   table td .inline { display: flex; flex-direction: column; gap: 6px; flex: 1; align-items: stretch; }
 }

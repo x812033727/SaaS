@@ -3,7 +3,7 @@
 {% block content %}
 <h1>員工抽成與薪資結算</h1>
 <p class="muted">POS 完成收款後才會產生抽成快照；規則改版不會回寫歷史。取消已付訂單會保留沖銷紀錄，已確認的結算單不會被靜默修改。</p>
-{% if saved %}<div class="success">抽成規則已儲存，下一筆符合生效日的成交會自動套用。</div>{% endif %}
+{% if saved %}<div class="success">設定已儲存；抽成規則會從生效日起自動套用。</div>{% endif %}
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
 <div class="card">
@@ -17,23 +17,33 @@
       {% set product_rule = commission_rules.get((person.id, 'product')) %}
       <tr>
         <td data-label="員工"><strong>{{ person.name }}</strong><br><span class="muted">{{ person.role or '未設定職稱' }}</span></td>
-        <td data-label="服務抽成">
+        <td data-label="服務抽成"{% if service_rule and service_rule.structure == 'tiered' %} class="tiered-cell"{% endif %}>
+          <div class="cell-value">
           {% if service_rule %}
-            {% if service_rule.method == 'percent' %}{{ '%.2f'|format(service_rule.value / 100) }}%{% else %}每件 NT$ {{ service_rule.value // 100 }}{% endif %}
+            {% if service_rule.structure == 'tiered' %}
+              <strong>階梯式 · {{ {'daily':'每日','weekly':'每週','biweekly':'每 2 週','four_week':'每 4 週','monthly':'每月','quarterly':'每季'}.get(service_rule.sales_period, service_rule.sales_period) }}</strong>
+              {% for tier in commission_tiers.get(service_rule.id, []) %}<div class="muted">NT$ {{ tier.threshold_cents|money }} 起：{% if service_rule.method == 'percent' %}{{ '%.2f'|format(tier.value / 100) }}%{% else %}每件 NT$ {{ tier.value|money }}{% endif %}</div>{% endfor %}
+            {% elif service_rule.method == 'percent' %}{{ '%.2f'|format(service_rule.value / 100) }}%{% else %}每件 NT$ {{ service_rule.value|money }}{% endif %}
             <br><span class="muted">{{ '折扣後淨額' if service_rule.calculation_basis == 'net' else '折扣前原價' }} · {{ service_rule.effective_from }}</span>
           {% else %}<span class="muted">尚未設定</span>{% endif %}
+          </div>
         </td>
-        <td data-label="商品抽成">
+        <td data-label="商品抽成"{% if product_rule and product_rule.structure == 'tiered' %} class="tiered-cell"{% endif %}>
+          <div class="cell-value">
           {% if product_rule %}
-            {% if product_rule.method == 'percent' %}{{ '%.2f'|format(product_rule.value / 100) }}%{% else %}每件 NT$ {{ product_rule.value // 100 }}{% endif %}
+            {% if product_rule.structure == 'tiered' %}
+              <strong>階梯式 · {{ {'daily':'每日','weekly':'每週','biweekly':'每 2 週','four_week':'每 4 週','monthly':'每月','quarterly':'每季'}.get(product_rule.sales_period, product_rule.sales_period) }}</strong>
+              {% for tier in commission_tiers.get(product_rule.id, []) %}<div class="muted">NT$ {{ tier.threshold_cents|money }} 起：{% if product_rule.method == 'percent' %}{{ '%.2f'|format(tier.value / 100) }}%{% else %}每件 NT$ {{ tier.value|money }}{% endif %}</div>{% endfor %}
+            {% elif product_rule.method == 'percent' %}{{ '%.2f'|format(product_rule.value / 100) }}%{% else %}每件 NT$ {{ product_rule.value|money }}{% endif %}
             <br><span class="muted">{{ '折扣後淨額' if product_rule.calculation_basis == 'net' else '折扣前原價' }} · {{ product_rule.effective_from }}</span>
           {% else %}<span class="muted">尚未設定</span>{% endif %}
+          </div>
         </td>
       </tr>
     {% endfor %}
     </tbody>
   </table></div>
-  <h3>建立新規則版本</h3>
+  <h3>建立固定規則版本</h3>
   <form method="post" action="/ui/commissions/rules" class="row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>員工<select name="staff_id" required>{% for person in staff %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
@@ -44,8 +54,68 @@
     <label>生效日<input name="effective_from" type="date" value="{{ today }}" required></label>
     <button type="submit">儲存新版本</button>
   </form>
+
+  <details style="margin-top:18px">
+    <summary><strong>建立階梯式抽成</strong></summary>
+    <p class="muted">銷售額越高抽成越高。百分比會依各級距分段計算，不會因跨級就回頭改寫早期成交。</p>
+    <form method="post" action="/ui/commissions/tiered-rules" class="col">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="row">
+        <label>員工<select name="staff_id" required>{% for person in staff %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
+        <label>類型<select name="item_type"><option value="service">服務</option><option value="product">商品</option></select></label>
+        <label>方式<select name="method"><option value="percent">百分比（%）</option><option value="fixed">達級後每件固定金額</option></select></label>
+        <label>累計期間<select name="sales_period"><option value="daily">每日</option><option value="weekly">每週</option><option value="biweekly">每 2 週</option><option value="four_week">每 4 週</option><option value="monthly" selected>每月</option><option value="quarterly">每季</option></select></label>
+        <label>計算基礎<select name="calculation_basis"><option value="net">折扣後淨額</option><option value="gross">折扣前原價</option></select></label>
+        <label>生效日<input name="effective_from" type="date" value="{{ today }}" required></label>
+      </div>
+      <div class="row">
+        <input type="hidden" name="threshold_0" value="0">
+        <label>第 1 級（NT$ 0 起）<input name="tier_value_0" type="number" min="0" step="0.01" placeholder="例如 10" required></label>
+        <label>第 2 級門檻（NT$）<input name="threshold_1" type="number" min="0.01" step="0.01" placeholder="例如 50000" required></label>
+        <label>第 2 級抽成值<input name="tier_value_1" type="number" min="0" step="0.01" placeholder="例如 15" required></label>
+        <label>第 3 級門檻（選填）<input name="threshold_2" type="number" min="0.01" step="0.01" placeholder="例如 100000"></label>
+        <label>第 3 級抽成值（選填）<input name="tier_value_2" type="number" min="0" step="0.01" placeholder="例如 20"></label>
+        <label>第 4 級門檻（選填）<input name="threshold_3" type="number" min="0.01" step="0.01"></label>
+        <label>第 4 級抽成值（選填）<input name="tier_value_3" type="number" min="0" step="0.01"></label>
+        <label>第 5 級門檻（選填）<input name="threshold_4" type="number" min="0.01" step="0.01"></label>
+        <label>第 5 級抽成值（選填）<input name="tier_value_4" type="number" min="0" step="0.01"></label>
+      </div>
+      <button type="submit">儲存階梯規則版本</button>
+    </form>
+  </details>
   {% else %}
   <p class="muted">請先到「員工」建立員工，才能設定抽成。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>員工業績目標</h2>
+  <p class="muted">以已付款、未取消的成交原價計算；可分別追蹤服務、商品或全部業績。</p>
+  {% if goal_progress %}
+  <div class="grid">
+    {% for progress in goal_progress %}
+    {% set goal = progress.goal %}
+    <div class="card" style="margin:0">
+      <strong>{{ staff_by_id[goal.staff_id].name if staff_by_id.get(goal.staff_id) else ('員工 #' ~ goal.staff_id) }}</strong>
+      <div class="muted">{{ {'all':'全部業績','service':'服務','product':'商品'}.get(goal.item_type, goal.item_type) }} · {{ progress.period_start }} ～ {{ progress.period_end }}</div>
+      <p><strong>NT$ {{ progress.actual_cents|money }}</strong> / NT$ {{ goal.target_cents|money }}</p>
+      <progress value="{{ [progress.percent, 100]|min }}" max="100" style="width:100%"></progress>
+      <div class="muted">{{ '%.1f'|format(progress.percent) }}%</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}<p class="muted">尚未設定業績目標。</p>{% endif %}
+  {% if staff %}
+  <h3>建立目標版本</h3>
+  <form method="post" action="/ui/commissions/goals" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>員工<select name="staff_id" required>{% for person in staff %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
+    <label>範圍<select name="item_type"><option value="all">全部業績</option><option value="service">服務</option><option value="product">商品</option></select></label>
+    <label>週期<select name="sales_period"><option value="daily">每日</option><option value="weekly">每週</option><option value="biweekly">每 2 週</option><option value="four_week">每 4 週</option><option value="monthly" selected>每月</option><option value="quarterly">每季</option></select></label>
+    <label>目標（NT$）<input name="target_twd" type="number" min="0.01" step="0.01" required placeholder="例如 100000"></label>
+    <label>生效日<input name="effective_from" type="date" value="{{ today }}" required></label>
+    <button type="submit">儲存目標版本</button>
+  </form>
   {% endif %}
 </div>
 
@@ -82,6 +152,7 @@
 <div class="card">
   <h2>結算單 #{{ selected_pay_run.id }}</h2>
   <p>{{ selected_pay_run.period_start }} ～ {{ selected_pay_run.period_end }} · <strong>{{ {'draft':'草稿','finalized':'已確認','paid':'已付款'}.get(selected_pay_run.status, selected_pay_run.status) }}</strong></p>
+  <p><a class="btn" href="/ui/commissions/pay-runs/{{ selected_pay_run.id }}/export.csv">下載結算 CSV</a></p>
   <div class="table-wrap"><table>
     <thead><tr><th>員工</th><th>抽成</th><th>小費</th><th>加減項</th><th>應付</th><th>調整說明</th></tr></thead>
     <tbody>
@@ -128,6 +199,13 @@
 
 <div class="card">
   <h2>最近成交抽成</h2>
+  <form method="get" action="/ui/commissions/activity.csv" class="row">
+    <label>開始日<input name="period_start" type="date" value="{{ month_start }}" required></label>
+    <label>結束日<input name="period_end" type="date" value="{{ today }}" required></label>
+    <label>員工<select name="staff_id"><option value="">全部</option>{% for person in staff %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
+    <label>類型<select name="item_type"><option value="">全部</option><option value="service">服務</option><option value="product">商品</option><option value="tip">小費</option></select></label>
+    <button type="submit">下載明細 CSV</button>
+  </form>
   <div class="table-wrap"><table>
     <thead><tr><th>成交時間</th><th>員工</th><th>項目</th><th>成交原價</th><th>折扣後</th><th>抽成／小費</th><th>結算</th></tr></thead>
     <tbody>

@@ -18,6 +18,8 @@ from saas_mvp.models.commission import (
     ITEM_SERVICE,
     ITEM_TIP,
     METHOD_PERCENT,
+    METHOD_FIXED,
+    PERIOD_MONTHLY,
     PAY_RUN_FINALIZED,
     PAY_RUN_PAID,
     CommissionEarning,
@@ -64,9 +66,7 @@ def _seed(db):
         phone="0911222333",
         points_balance=2_000,
     )
-    product = Product(
-        tenant_id=tenant.id, name="洗髮精", price_cents=10_000, stock=10
-    )
+    product = Product(tenant_id=tenant.id, name="洗髮精", price_cents=10_000, stock=10)
     db.add_all([staff, customer, product])
     db.flush()
     return tenant, staff, customer, product
@@ -108,7 +108,9 @@ def test_paid_product_uses_net_after_points_and_snapshots_tip(db):
     assert order.tip_cents == 500
     assert order.total_cents == 9_500
     earnings = db.query(CommissionEarning).order_by(CommissionEarning.id).all()
-    assert [(row.item_type, row.net_cents, row.commission_cents) for row in earnings] == [
+    assert [
+        (row.item_type, row.net_cents, row.commission_cents) for row in earnings
+    ] == [
         (ITEM_PRODUCT, 9_000, 1_800),
         (ITEM_TIP, 500, 500),
     ]
@@ -202,7 +204,11 @@ def test_pay_run_adjust_finalize_and_mark_paid(db):
     )
     db.flush()
     item = db.query(PayRunItem).filter_by(pay_run_id=run.id).one()
-    assert (item.commission_cents, item.tip_cents, run.total_cents) == (1_000, 300, 1_300)
+    assert (item.commission_cents, item.tip_cents, run.total_cents) == (
+        1_000,
+        300,
+        1_300,
+    )
 
     commissions_svc.update_adjustment(
         db,
@@ -345,3 +351,168 @@ def test_paid_sale_with_rules_or_tip_requires_staff_attribution(db):
         )
     db.rollback()
     assert db.query(OrderItem).count() == 0
+
+
+def test_monthly_tiered_percent_splits_only_crossing_sale(db):
+    tenant, staff, customer, product = _seed(db)
+    product.price_cents = 8_000
+    commissions_svc.save_tiered_rule(
+        db,
+        tenant_id=tenant.id,
+        staff_id=staff.id,
+        item_type=ITEM_PRODUCT,
+        method=METHOD_PERCENT,
+        tiers=[(0, 1_000), (10_000, 2_000)],
+        calculation_basis=BASIS_NET,
+        sales_period=PERIOD_MONTHLY,
+        effective_from=datetime.date(2020, 1, 1),
+        actor_user_id=1,
+    )
+    db.commit()
+
+    for _ in range(2):
+        pos_svc.checkout(
+            db,
+            tenant_id=tenant.id,
+            customer_id=customer.id,
+            items=[{"product_id": product.id, "qty": 1}],
+            staff_id=staff.id,
+            payment_method="cash",
+            mark_paid=True,
+        )
+
+    rows = db.query(CommissionEarning).order_by(CommissionEarning.id).all()
+    # 第二筆會同時受會員等級折扣：淨額 7,200 中 2,000 仍在 10%，
+    # 剩餘 5,200 進入 20% 級距。
+    assert [row.commission_cents for row in rows] == [800, 1_240]
+    assert rows[1].period_sales_before_cents == 8_000
+    assert '"basis_cents":2000' in rows[1].tier_detail_snapshot
+    assert '"basis_cents":5200' in rows[1].tier_detail_snapshot
+
+
+def test_tiered_fixed_uses_level_reached_after_current_sale(db):
+    tenant, staff, customer, product = _seed(db)
+    product.price_cents = 8_000
+    commissions_svc.save_tiered_rule(
+        db,
+        tenant_id=tenant.id,
+        staff_id=staff.id,
+        item_type=ITEM_PRODUCT,
+        method=METHOD_FIXED,
+        tiers=[(0, 100), (10_000, 250)],
+        calculation_basis=BASIS_NET,
+        sales_period=PERIOD_MONTHLY,
+        effective_from=datetime.date(2020, 1, 1),
+        actor_user_id=1,
+    )
+    db.commit()
+    for _ in range(2):
+        pos_svc.checkout(
+            db,
+            tenant_id=tenant.id,
+            customer_id=customer.id,
+            items=[{"product_id": product.id, "qty": 1}],
+            staff_id=staff.id,
+            payment_method="cash",
+            mark_paid=True,
+        )
+    rows = db.query(CommissionEarning).order_by(CommissionEarning.id).all()
+    assert [row.commission_cents for row in rows] == [100, 250]
+
+
+def test_tier_values_cannot_decrease(db):
+    tenant, staff, _customer, _product = _seed(db)
+    with pytest.raises(commissions_svc.CommissionError, match="持平或提高"):
+        commissions_svc.save_tiered_rule(
+            db,
+            tenant_id=tenant.id,
+            staff_id=staff.id,
+            item_type=ITEM_PRODUCT,
+            method=METHOD_PERCENT,
+            tiers=[(0, 2_000), (10_000, 1_000)],
+            calculation_basis=BASIS_NET,
+            sales_period=PERIOD_MONTHLY,
+            effective_from=datetime.date(2020, 1, 1),
+            actor_user_id=1,
+        )
+
+
+def test_sales_goal_progress_uses_paid_non_cancelled_gross_sales(db):
+    tenant, staff, customer, product = _seed(db)
+    commissions_svc.save_sales_goal(
+        db,
+        tenant_id=tenant.id,
+        staff_id=staff.id,
+        item_type=ITEM_PRODUCT,
+        target_cents=20_000,
+        sales_period=PERIOD_MONTHLY,
+        effective_from=datetime.date(2020, 1, 1),
+        actor_user_id=1,
+    )
+    db.commit()
+    paid = pos_svc.checkout(
+        db,
+        tenant_id=tenant.id,
+        customer_id=customer.id,
+        items=[{"product_id": product.id, "qty": 1}],
+        staff_id=staff.id,
+        payment_method="cash",
+        mark_paid=True,
+    )
+    progress = commissions_svc.sales_goal_progress(
+        db,
+        tenant_id=tenant.id,
+        on_date=datetime.datetime.now(datetime.timezone.utc).date(),
+    )
+    assert progress[0]["actual_cents"] == 10_000
+    assert progress[0]["percent"] == 50
+
+    shop_svc.cancel_order(db, tenant_id=tenant.id, order_id=paid.id)
+    progress = commissions_svc.sales_goal_progress(
+        db,
+        tenant_id=tenant.id,
+        on_date=datetime.datetime.now(datetime.timezone.utc).date(),
+    )
+    assert progress[0]["actual_cents"] == 0
+
+
+@pytest.mark.parametrize(
+    ("period", "on_date", "expected"),
+    [
+        (
+            "daily",
+            datetime.date(2026, 7, 15),
+            (datetime.date(2026, 7, 15), datetime.date(2026, 7, 15)),
+        ),
+        (
+            "weekly",
+            datetime.date(2026, 7, 15),
+            (datetime.date(2026, 7, 13), datetime.date(2026, 7, 19)),
+        ),
+        (
+            "biweekly",
+            datetime.date(2026, 7, 15),
+            (datetime.date(2026, 7, 8), datetime.date(2026, 7, 21)),
+        ),
+        (
+            "four_week",
+            datetime.date(2026, 7, 30),
+            (datetime.date(2026, 7, 8), datetime.date(2026, 8, 4)),
+        ),
+        (
+            "monthly",
+            datetime.date(2026, 7, 15),
+            (datetime.date(2026, 7, 1), datetime.date(2026, 7, 31)),
+        ),
+        (
+            "quarterly",
+            datetime.date(2026, 7, 15),
+            (datetime.date(2026, 7, 1), datetime.date(2026, 9, 30)),
+        ),
+    ],
+)
+def test_sales_period_bounds(period, on_date, expected):
+    assert (
+        commissions_svc.period_bounds(on_date, period, anchor=datetime.date(2026, 7, 8))
+        == expected
+    )

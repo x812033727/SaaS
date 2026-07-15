@@ -542,8 +542,15 @@ def _ensure_commissions(
     actor_user_id: int,
     staff: list[Staff],
 ) -> int:
-    """建立抽成規則、已付 POS 範例與一張草稿結算單（冪等）。"""
-    from saas_mvp.models.commission import BASIS_NET, ITEM_PRODUCT, ITEM_SERVICE, METHOD_PERCENT
+    """建立抽成規則、業績目標、已付 POS 範例與草稿結算單（冪等）。"""
+    from saas_mvp.models.commission import (
+        BASIS_NET,
+        ITEM_ALL,
+        ITEM_PRODUCT,
+        ITEM_SERVICE,
+        METHOD_PERCENT,
+        PERIOD_MONTHLY,
+    )
 
     created = 0
     current = commissions_svc.latest_rules(db, tenant_id=tenant_id)
@@ -564,6 +571,20 @@ def _ensure_commissions(
                 actor_user_id=actor_user_id,
             )
             created += 1
+    if staff and not commissions_svc.latest_sales_goals(
+        db, tenant_id=tenant_id, on_date=today
+    ):
+        commissions_svc.save_sales_goal(
+            db,
+            tenant_id=tenant_id,
+            staff_id=staff[0].id,
+            item_type=ITEM_ALL,
+            target_cents=15_000_000,
+            sales_period=PERIOD_MONTHLY,
+            effective_from=today.replace(day=1),
+            actor_user_id=actor_user_id,
+        )
+        created += 1
     db.commit()
 
     if not commissions_svc.recent_earnings(db, tenant_id=tenant_id, limit=1):

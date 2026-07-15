@@ -839,6 +839,88 @@ class TestCommissionsUI:
         assert "結算單 #" in detail.text
         assert "65.00" in detail.text  # 商品抽成 NT$15 + 小費 NT$50
 
+        export_match = re.search(
+            r'href="(/ui/commissions/pay-runs/\d+/export\.csv)"', detail.text
+        )
+        assert export_match is not None
+        exported = client.get(export_match.group(1))
+        assert exported.status_code == 200
+        assert exported.content.startswith(b"\xef\xbb\xbf")
+        assert "Amy" in exported.content.decode("utf-8-sig")
+
+    def test_tiered_rule_goal_progress_and_activity_export(self, client):
+        email = _login(client)
+        staff_id, product_id = self._seed(email)
+        today = __import__("datetime").date.today().isoformat()
+
+        saved = client.post(
+            "/ui/commissions/tiered-rules",
+            data={
+                "staff_id": str(staff_id),
+                "item_type": "product",
+                "method": "percent",
+                "calculation_basis": "net",
+                "sales_period": "monthly",
+                "effective_from": today,
+                "threshold_0": "0",
+                "tier_value_0": "10",
+                "threshold_1": "150",
+                "tier_value_1": "20",
+            },
+            follow_redirects=False,
+        )
+        assert saved.status_code == 303
+        goal = client.post(
+            "/ui/commissions/goals",
+            data={
+                "staff_id": str(staff_id),
+                "item_type": "product",
+                "target_twd": "200",
+                "sales_period": "monthly",
+                "effective_from": today,
+            },
+            follow_redirects=False,
+        )
+        assert goal.status_code == 303
+
+        sale = client.post(
+            "/ui/pos/checkout",
+            data={
+                "customer_id": "",
+                "phone": "",
+                f"qty_{product_id}": "1",
+                "staff_id": str(staff_id),
+                "payment_method": "cash",
+                "mark_paid": "true",
+                "tip_twd": "0",
+                "points_to_redeem": "0",
+            },
+        )
+        assert sale.status_code == 200
+        page = client.get("/ui/commissions")
+        assert "階梯式" in page.text
+        assert "50.0%" in page.text
+
+        with _Session() as db:
+            from saas_mvp.models.staff import Staff
+
+            db.get(Staff, staff_id).name = "=1+1"
+            db.commit()
+        activity = client.get(
+            "/ui/commissions/activity.csv"
+            f"?period_start={today}&period_end={today}&staff_id=&item_type="
+        )
+        assert activity.status_code == 200
+        decoded = activity.content.decode("utf-8-sig")
+        assert "'=1+1" in decoded
+        assert "護髮品" in decoded
+
+        invalid = client.get(
+            "/ui/commissions/activity.csv"
+            f"?period_start={today}&period_end={today}&staff_id=not-a-number"
+        )
+        assert invalid.status_code == 400
+
     def test_feature_gate_blocks_page_and_mutation(self, client):
         email = _login(client)
         staff_id, _product_id = self._seed(email)
