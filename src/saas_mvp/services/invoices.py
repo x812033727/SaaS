@@ -57,6 +57,7 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
 
         from saas_mvp.models.user import User
         from saas_mvp.config import settings
+        from saas_mvp.services.invoice_profiles import get_profile
         from saas_mvp.services.platform_invoice_config import effective_invoice_config
 
         owner = db.execute(
@@ -66,6 +67,7 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
             ).order_by(User.id)
         ).scalars().first()
         buyer_email = owner.email if owner else ""
+        profile = get_profile(db, charge.tenant_id)
 
         config = effective_invoice_config(db, settings)
         row = Invoice(
@@ -74,9 +76,15 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
             relate_number=_relate_number(charge.id),
             amount_cents=charge.amount_cents,
             buyer_email=buyer_email,
+            invoice_mode=profile.mode,
+            buyer_name=profile.buyer_name,
+            buyer_identifier=profile.buyer_identifier,
+            carrier_type=profile.carrier_type,
+            donation_code=profile.donation_code,
             status=INVOICE_PENDING,
             provider=config.provider,
         )
+        row.carrier_number = profile.carrier_number
         db.add(row)
         db.commit()  # 先落 pending:issuer 掛掉也留有可重試的紀錄
         db.refresh(row)
@@ -104,6 +112,11 @@ def _attempt_issue(db: Session, row: Invoice, *, issuer=None) -> None:
             amount_twd=row.amount_cents // 100,
             buyer_email=row.buyer_email or "",
             item_name="LINE 預約平台月費",
+            buyer_name=row.buyer_name or "",
+            buyer_identifier=row.buyer_identifier or "",
+            carrier_type=row.carrier_type or "ecpay",
+            carrier_number=row.carrier_number,
+            donation_code=row.donation_code or "",
         )
         row.status = INVOICE_ISSUED
         row.invoice_no = result.invoice_no

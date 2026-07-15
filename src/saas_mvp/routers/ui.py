@@ -75,6 +75,7 @@ from saas_mvp.services import platform_ai_config as platform_ai_svc
 from saas_mvp.services import platform_payment_config as platform_payment_svc
 from saas_mvp.services import platform_invoice_config as platform_invoice_svc
 from saas_mvp.services import readiness_dashboard as readiness_dashboard_svc
+from saas_mvp.services import invoice_profiles as invoice_profiles_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -584,13 +585,8 @@ def plan_unsubscribe(
     return RedirectResponse("/ui/plan", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/billing", response_class=HTMLResponse)
-def billing_page(
-    request: Request,
-    actor: Actor = Depends(require_ui_owner),
-    db: Session = Depends(get_db),
-):
-    """帳單頁：目前方案、bundle 訂閱狀態、逐期扣款明細（即收據）。"""
+def _billing_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    """帳單頁共用資料；儲存發票資料失敗時可原頁顯示錯誤。"""
     from saas_mvp.models.feature_subscription import FeatureSubscription
     from saas_mvp.models.subscription_charge import SubscriptionCharge
     from sqlalchemy import select as _select
@@ -628,19 +624,90 @@ def billing_page(
             )
         ).scalars().all()
         invoice_by_charge = {r.subscription_charge_id: r for r in rows}
+    return _ctx(
+        request,
+        actor,
+        plan_info=_plan_info(tenant),
+        subscription=sub,
+        bundle_label=(
+            features_svc.BUNDLE_LABELS.get(sub.feature, sub.feature) if sub else None
+        ),
+        charges=charges,
+        next_charge_at=next_charge_at,
+        invoice_by_charge=invoice_by_charge,
+        invoice_profile=invoice_profiles_svc.profile_status(db, tid),
+        **extra,
+    )
+
+
+@router.get("/billing", response_class=HTMLResponse)
+def billing_page(
+    request: Request,
+    invoice_profile_saved: bool = Query(False),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """帳單頁：方案、扣款明細與發票買受資訊。"""
     return templates.TemplateResponse(
         "billing.html",
-        _ctx(
-            request, actor,
-            plan_info=_plan_info(tenant),
-            subscription=sub,
-            bundle_label=(
-                features_svc.BUNDLE_LABELS.get(sub.feature, sub.feature) if sub else None
-            ),
-            charges=charges,
-            next_charge_at=next_charge_at,
-            invoice_by_charge=invoice_by_charge,
+        _billing_ctx(
+            request,
+            actor,
+            db,
+            invoice_profile_saved=invoice_profile_saved,
         ),
+    )
+
+
+@router.post("/billing/invoice-profile", response_class=HTMLResponse)
+def billing_invoice_profile_save(
+    request: Request,
+    mode: str = Form(..., max_length=16),
+    buyer_name: str = Form("", max_length=60),
+    buyer_identifier: str = Form("", max_length=8),
+    carrier_type: str = Form("ecpay", max_length=16),
+    carrier_number: str = Form("", max_length=64),
+    donation_code: str = Form("", max_length=7),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """店家 owner 自助保存發票資料；敏感載具號碼加密保存。"""
+    try:
+        row = invoice_profiles_svc.save_profile(
+            db,
+            tenant_id=actor.user.tenant_id,
+            mode=mode,
+            buyer_name=buyer_name,
+            buyer_identifier=buyer_identifier,
+            carrier_type=carrier_type,
+            carrier_number=carrier_number,
+            donation_code=donation_code,
+            actor_user_id=actor.user.id,
+        )
+    except invoice_profiles_svc.InvoiceProfileError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "billing.html",
+            _billing_ctx(request, actor, db, invoice_profile_error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.invoice_profile.update",
+        target=f"tenant:{actor.user.tenant_id}",
+        detail={
+            "mode": row.mode,
+            "carrier_type": row.carrier_type,
+            "has_identifier": bool(row.buyer_identifier),
+            "has_donation_code": bool(row.donation_code),
+        },
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/billing?invoice_profile_saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1932,6 +1999,7 @@ def _platform_invoice_ctx(
     counts = dict(
         db.query(Invoice.status, func.count(Invoice.id)).group_by(Invoice.status).all()
     )
+    invoices = db.query(Invoice).order_by(Invoice.id.desc()).limit(50).all()
     return _ctx(
         request,
         actor,
@@ -1943,7 +2011,11 @@ def _platform_invoice_ctx(
             "voiding": counts.get("voiding", 0),
             "void": counts.get("void", 0),
         },
-        invoices=db.query(Invoice).order_by(Invoice.id.desc()).limit(50).all(),
+        invoices=invoices,
+        invoice_buyer_summaries={
+            row.id: invoice_profiles_svc.invoice_buyer_summary(row)
+            for row in invoices
+        },
         **extra,
     )
 

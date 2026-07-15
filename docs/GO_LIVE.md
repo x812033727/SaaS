@@ -37,10 +37,12 @@ cd /opt/saas && docker-compose exec web python -m saas_mvp.ops.check_readiness
 - [ ] 用自己的信用卡訂閱一次，全流程走通並對帳（綠界後台 vs SubscriptionCharge）
 - [ ] 首月底人工核對每期扣款 vs 綠界後台（定期定額期扣在 stage 無法快轉，正式首月必對）
 
-## 5. 已知界線（刻意延後）
-- 電子發票：月營收達起徵點/10+ 付費店家後再接綠界 B2C 發票 API（service 掛
-  activate/record_period hook 即可，架構已留位）；在此之前提供 /ui/billing
-  扣款明細作為收據。
-- 期扣失敗通知店家：email 通知隨 B3（mailer）補上；目前失敗會降 free 並記
-  PlanChangeHistory + warning log。
+## 5. 電子發票驗收
+- [ ] 平台管理員到「平台管理 → 發票設定」先以測試環境完成自我檢查，再切換正式憑證。
+- [ ] 店家 owner 到「帳務設定 → 帳單」選擇個人、公司統編、手機條碼／自然人憑證或愛心捐贈資料。
+- [ ] 完成一筆低額正式扣款，核對發票號碼、買受資訊、載具／捐贈狀態與綠界後台一致。
+- [ ] 演練開立失敗重試及作廢；確認原發票使用開立當下的資料快照，不受後續設定修改影響。
+
+## 6. 已知界線（刻意延後）
+- 期扣失敗會降 free、保留資料、寫入 PlanChangeHistory 並寄送 Email 通知；正式驗收時需演練失敗信件與寄送重試。
 - 退款：個案人工處理（綠界後台），暫不做自助退款 UI。

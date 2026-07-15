@@ -54,7 +54,17 @@ class InvoiceIssuer:
     """介面:issue() 成功回 IssueResult,失敗拋 InvoiceError。"""
 
     def issue(
-        self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
+        self,
+        *,
+        relate_number: str,
+        amount_twd: int,
+        buyer_email: str,
+        item_name: str,
+        buyer_name: str = "",
+        buyer_identifier: str = "",
+        carrier_type: str = "ecpay",
+        carrier_number: str = "",
+        donation_code: str = "",
     ) -> IssueResult:
         raise NotImplementedError
 
@@ -72,7 +82,17 @@ class StubInvoiceIssuer(InvoiceIssuer):
         self.voided: list[dict] = []
 
     def issue(
-        self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
+        self,
+        *,
+        relate_number: str,
+        amount_twd: int,
+        buyer_email: str,
+        item_name: str,
+        buyer_name: str = "",
+        buyer_identifier: str = "",
+        carrier_type: str = "ecpay",
+        carrier_number: str = "",
+        donation_code: str = "",
     ) -> IssueResult:
         digest = hashlib.sha1(relate_number.encode()).hexdigest()[:8].upper()
         record = {
@@ -80,6 +100,11 @@ class StubInvoiceIssuer(InvoiceIssuer):
             "amount_twd": amount_twd,
             "buyer_email": buyer_email,
             "item_name": item_name,
+            "buyer_name": buyer_name,
+            "buyer_identifier": buyer_identifier,
+            "carrier_type": carrier_type,
+            "carrier_number": carrier_number,
+            "donation_code": donation_code,
         }
         self.issued.append(record)
         return IssueResult(
@@ -137,7 +162,7 @@ def aes_decrypt_data(data_b64: str, hash_key: str, hash_iv: str) -> dict:
 
 
 class EcpayInvoiceIssuer(InvoiceIssuer):
-    """綠界 B2C 發票(個人、電子發票寄 email、含稅價;統編/載具延後)。"""
+    """綠界 B2C 發票：個人／統編、電子載具或愛心捐贈，金額含稅。"""
 
     def __init__(
         self,
@@ -154,6 +179,7 @@ class EcpayInvoiceIssuer(InvoiceIssuer):
         self._hash_key = settings.ecpay_invoice_hash_key if hash_key is None else hash_key
         self._hash_iv = settings.ecpay_invoice_hash_iv if hash_iv is None else hash_iv
         effective_env = settings.ecpay_invoice_env if env is None else env
+        self._environment = effective_env
         self._url = _PROD_URL if effective_env == "prod" else _STAGE_URL
         self._invalid_url = (
             _PROD_INVALID_URL if effective_env == "prod" else _STAGE_INVALID_URL
@@ -161,17 +187,45 @@ class EcpayInvoiceIssuer(InvoiceIssuer):
         self._http_post = http_post or _urllib_post
 
     def issue(
-        self, *, relate_number: str, amount_twd: int, buyer_email: str, item_name: str
+        self,
+        *,
+        relate_number: str,
+        amount_twd: int,
+        buyer_email: str,
+        item_name: str,
+        buyer_name: str = "",
+        buyer_identifier: str = "",
+        carrier_type: str = "ecpay",
+        carrier_number: str = "",
+        donation_code: str = "",
     ) -> IssueResult:
         if not (self._merchant_id and self._hash_key and self._hash_iv):
             raise InvoiceError("ecpay invoice credentials not configured")
+        carrier_codes = {"ecpay": "1", "citizen": "2", "mobile": "3"}
+        if carrier_type not in carrier_codes:
+            raise InvoiceError("unsupported invoice carrier type")
+        is_donation = bool(donation_code)
+        if self._environment != "prod":
+            # 綠界明確要求 Stage 不帶真實個資；保留相同欄位組合與合法格式驗證。
+            buyer_email = "test@ecpay.com.tw"
+            buyer_name = "綠界科技股份有限公司" if buyer_name else ""
+            buyer_identifier = "97025978" if buyer_identifier else ""
+            donation_code = "168001" if is_donation else ""
+            if carrier_type == "mobile":
+                carrier_number = "/ABC1234"
+            elif carrier_type == "citizen":
+                carrier_number = "AB12345678901234"
         data = {
             "MerchantID": self._merchant_id,
             "RelateNumber": relate_number,
+            "CustomerIdentifier": "" if is_donation else buyer_identifier,
+            "CustomerName": "" if is_donation else buyer_name,
             "CustomerEmail": buyer_email,
             "Print": "0",
-            "Donation": "0",
-            "CarrierType": "1",       # 綠界會員載具(email);雲端/手機條碼延後
+            "Donation": "1" if is_donation else "0",
+            "LoveCode": donation_code if is_donation else "",
+            "CarrierType": "" if is_donation else carrier_codes[carrier_type],
+            "CarrierNum": "" if is_donation or carrier_type == "ecpay" else carrier_number,
             "TaxType": "1",           # 應稅
             "SalesAmount": amount_twd,  # 含稅總額
             "InvType": "07",

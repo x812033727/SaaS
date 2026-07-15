@@ -79,12 +79,12 @@
   <ol>
     <li>先完成綠界 B2C 電子發票加值中心申請與財政部字軌配號；只有金流帳號不能直接開發票。</li>
     <li>登入綠界「電子發票系統」，取得電子發票專用 MerchantID、HashKey、HashIV。請勿貼入金流頁面的那一組憑證。</li>
-    <li>先選測試環境，使用綠界測試資料完成一筆付款與自動開票；Stage 只驗證 Email 格式，不會真的寄發票通知。</li>
+    <li>先選測試環境，使用綠界測試資料完成一筆付款與自動開票；系統會以合規測試值取代真實 Email、統編與載具號碼，避免個資送入 Stage，且 Stage 不會真的寄發票通知。</li>
     <li>正式帳號與字軌均啟用後，切換正式環境並填入正式發票憑證，再執行設定自我檢查。</li>
     <li>正式上線後完成一筆低額付款，對照本頁、綠界電子發票後台及財政部平台的發票號碼與金額。</li>
     <li>退款或發票開立錯誤時，可在下方紀錄輸入原因後作廢；已折讓發票須先處理折讓，超過申報期限也可能被綠界拒絕。</li>
   </ol>
-  <p><a href="https://developers.ecpay.com.tw/22040/" target="_blank" rel="noopener noreferrer">開啟綠界官方「開立發票」文件</a></p>
+  <p><a href="https://developers.ecpay.com.tw/53662/" target="_blank" rel="noopener noreferrer">開啟綠界官方「一般開立發票」文件</a></p>
 </div>
 
 <div class="card">
@@ -104,13 +104,14 @@
   {% endif %}
   <h3>最近 50 張</h3>
   <div class="table-wrap"><table>
-    <thead><tr><th>建立時間</th><th>店家</th><th>關聯單號</th><th>發票號碼</th><th>金額</th><th>狀態</th><th>原因／操作</th></tr></thead>
+    <thead><tr><th>建立時間</th><th>店家</th><th>關聯單號</th><th>買受資訊</th><th>發票號碼</th><th>金額</th><th>狀態</th><th>原因／操作</th></tr></thead>
     <tbody>
     {% for row in invoices %}
       <tr>
         <td>{{ row.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
         <td>#{{ row.tenant_id }}</td>
         <td>{{ row.relate_number }}</td>
+        <td>{{ invoice_buyer_summaries.get(row.id, '個人 · Email 電子載具') }}</td>
         <td>{{ row.invoice_no or '—' }}</td>
         <td>NT$ {{ '%.0f'|format(row.amount_cents / 100) }}</td>
         <td><span class="badge {{ 'valid' if row.status == 'issued' else ('unchecked' if row.status in ('pending', 'voiding', 'void') else 'invalid') }}">{{ {'pending':'等待開立','issued':'已開立','failed':'失敗','voiding':'正在作廢','void':'已作廢'}.get(row.status, row.status) }}</span></td>
@@ -130,7 +131,7 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="7" class="muted">目前尚無發票紀錄。</td></tr>
+      <tr><td colspan="8" class="muted">目前尚無發票紀錄。</td></tr>
     {% endfor %}
     </tbody>
   </table></div>

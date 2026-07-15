@@ -22,6 +22,82 @@
   {% endif %}
 </div>
 
+<div class="card">
+  <h2>電子發票資料</h2>
+  <p class="muted">設定會套用到下一筆成功扣款；已建立的發票會保留當時資料，不會被後續修改影響。</p>
+  {% if invoice_profile_saved %}<div class="success">發票資料已安全儲存，下一張發票會自動使用。</div>{% endif %}
+  {% if invoice_profile_error %}<div class="error">{{ invoice_profile_error }}</div>{% endif %}
+
+  <p>
+    <span class="badge valid">
+      {{ {'personal':'個人電子發票','business':'公司統編發票','donation':'愛心捐贈'}.get(invoice_profile.mode, '個人電子發票') }}
+    </span>
+    {% if invoice_profile.mode == 'business' %}
+      {{ invoice_profile.buyer_name }}（統編 {{ invoice_profile.buyer_identifier }}）
+    {% elif invoice_profile.mode == 'donation' %}
+      捐贈碼 {{ invoice_profile.donation_code }}
+    {% else %}
+      {{ invoice_profile.masked_carrier }}
+    {% endif %}
+  </p>
+
+  <form id="invoice-profile-form" method="post" action="/ui/billing/invoice-profile" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>發票用途
+      <select name="mode" required>
+        <option value="personal"{% if invoice_profile.mode == 'personal' %} selected{% endif %}>個人電子發票</option>
+        <option value="business"{% if invoice_profile.mode == 'business' %} selected{% endif %}>公司統編發票</option>
+        <option value="donation"{% if invoice_profile.mode == 'donation' %} selected{% endif %}>愛心捐贈</option>
+      </select>
+    </label>
+
+    <fieldset data-invoice-section="business">
+      <legend>公司統編資料（選擇公司統編發票時填寫）</legend>
+      <label>公司／買受人名稱
+        <input name="buyer_name" value="{{ invoice_profile.buyer_name }}" maxlength="60" placeholder="範例股份有限公司">
+      </label>
+      <label>統一編號
+        <input name="buyer_identifier" value="{{ invoice_profile.buyer_identifier }}" maxlength="8" inputmode="numeric" pattern="[0-9]{8}" placeholder="8 碼數字">
+      </label>
+    </fieldset>
+
+    <fieldset data-invoice-section="carrier">
+      <legend>電子載具（個人或公司發票使用）</legend>
+      <label>載具類型
+        <select name="carrier_type">
+          <option value="ecpay"{% if invoice_profile.carrier_type == 'ecpay' %} selected{% endif %}>Email 電子載具</option>
+          <option value="mobile"{% if invoice_profile.carrier_type == 'mobile' %} selected{% endif %}>手機條碼</option>
+          <option value="citizen"{% if invoice_profile.carrier_type == 'citizen' %} selected{% endif %}>自然人憑證</option>
+        </select>
+      </label>
+      <label data-invoice-section="carrier-number">載具號碼
+        <input name="carrier_number" maxlength="64" autocomplete="off" data-stored-type="{{ invoice_profile.carrier_type if invoice_profile.has_carrier_number else '' }}"
+               placeholder="{% if invoice_profile.has_carrier_number %}已加密儲存 {{ invoice_profile.masked_carrier }}；留空保留{% else %}手機條碼 /XXXXXXX，或自然人憑證 16 碼{% endif %}">
+      </label>
+      <p class="muted">Email 載具不需填號碼；手機條碼會自動轉成大寫。載具號碼加密保存，之後不顯示完整內容。</p>
+    </fieldset>
+
+    <fieldset data-invoice-section="donation">
+      <legend>愛心捐贈（選擇愛心捐贈時填寫）</legend>
+      <label>捐贈碼
+        <input name="donation_code" value="{{ invoice_profile.donation_code }}" maxlength="7" inputmode="numeric" pattern="[0-9]{3,7}" placeholder="3–7 碼數字">
+      </label>
+    </fieldset>
+
+    <button type="submit">儲存發票資料</button>
+  </form>
+  <details>
+    <summary>設定規則與注意事項</summary>
+    <ul>
+      <li>捐贈發票不能同時開立公司統編；系統會依選擇的用途自動排除衝突欄位。</li>
+      <li>公司統編會依財政部新版檢查碼邏輯驗證，避免到扣款後才發現無法開票。</li>
+      <li>本平台採電子發票，不會標記為已列印紙本；Email 通知寄到帳號擁有者信箱。</li>
+      <li>手機條碼格式為「/」加 7 碼；自然人憑證為 2 碼大寫英文加 14 碼數字。</li>
+    </ul>
+  </details>
+</div>
+<script src="/static/invoice-profile.js" defer></script>
+
 {% if charges %}
 <div class="card">
   <h2>扣款明細（近 24 期）</h2>
