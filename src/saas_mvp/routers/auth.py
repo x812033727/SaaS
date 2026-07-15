@@ -20,6 +20,7 @@ from saas_mvp.auth.security import create_access_token, hash_password, verify_pa
 from saas_mvp.db import get_db
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
+from saas_mvp.services import organizations as organizations_svc
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -84,7 +85,12 @@ def register(
             detail="Tenant name already taken. Use a unique tenant name.",
         )
 
-    tenant = Tenant(name=body.tenant_name, plan="free")
+    organization = organizations_svc.create_organization(
+        db, name=body.tenant_name, flush=True
+    )
+    tenant = Tenant(
+        name=body.tenant_name, plan="free", organization_id=organization.id
+    )
     db.add(tenant)
     db.flush()  # populate tenant.id before we reference it
 
@@ -95,6 +101,10 @@ def register(
         tenant_id=tenant.id,
     )
     db.add(user)
+    db.flush()
+    organizations_svc.add_owner_memberships(
+        db, organization_id=organization.id, tenant_id=tenant.id, user_id=user.id
+    )
     db.commit()
     db.refresh(user)
 

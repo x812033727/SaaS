@@ -28,5 +28,14 @@ class User(Base):
     oauth_subject = Column(String(128), nullable=True)
 
     tenant = relationship("Tenant", back_populates="users")
+    organization_memberships = relationship(
+        "OrganizationMember", back_populates="user", cascade="all, delete-orphan"
+    )
+    tenant_memberships = relationship(
+        "TenantMember", back_populates="user", cascade="all, delete-orphan"
+    )
+    location_memberships = relationship(
+        "LocationMember", back_populates="user", cascade="all, delete-orphan"
+    )
     notes = relationship("Note", back_populates="owner", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")

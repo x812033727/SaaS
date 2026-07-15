@@ -29,7 +29,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -75,7 +75,15 @@ def oauth_login(provider: str, link: int = 0):
     _validate_provider(provider)
     state = secrets.token_urlsafe(24)
     redirect_uri = _redirect_uri(provider)
-    p = oauth_svc.get_provider(provider, settings=settings)
+    try:
+        p = oauth_svc.get_provider(provider, settings=settings)
+    except oauth_svc.OAuthNotConfigured:
+        if link:
+            return _account_redirect(oauth_error="not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{provider.upper()} OAuth is not configured",
+        )
     url = p.authorize_url(state, redirect_uri)
 
     resp = RedirectResponse(url, status_code=status.HTTP_302_FOUND)
@@ -124,7 +132,15 @@ def oauth_callback(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Missing authorization code"
         )
 
-    p = oauth_svc.get_provider(provider, settings=settings)
+    try:
+        p = oauth_svc.get_provider(provider, settings=settings)
+    except oauth_svc.OAuthNotConfigured:
+        if request.cookies.get(_INTENT_COOKIE_NAME) == "link":
+            return _account_redirect(oauth_error="not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{provider.upper()} OAuth is not configured",
+        )
     try:
         identity = p.exchange_code(code, _redirect_uri(provider))
     except oauth_svc.OAuthError:
@@ -132,7 +148,7 @@ def oauth_callback(
             status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth exchange failed"
         )
 
-    email = identity["email"]
+    email = identity.get("email")
     subject = identity["subject"]
 
     # 綁定模式：login 時帶過 ?link=1，且 callback 當下確實已登入 → 綁到目前使用者。
@@ -158,19 +174,19 @@ def oauth_callback(
         .filter(User.oauth_provider == provider, User.oauth_subject == subject)
         .first()
     )
-    if user is None:
-        user = (
-            db.query(User)
-            .filter(func.lower(User.email) == email.lower())
-            .first()
-        )
+    if user is None and email:
+        user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
 
     # 帳號連結規則（見模組 docstring）：找不到使用者時，**絕不**自動建立租戶，
     # 否則任何 OAuth 帳號都能憑空開新店家、繞過 routers/auth.py 的租戶名專屬保護。
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="此電子郵件尚未註冊，請先以該信箱註冊或請店家邀請後再使用社群登入。",
+            detail=(
+                "LINE 未提供可驗證的電子郵件，請先登入後台並從帳號設定連結 LINE 帳戶。"
+                if provider == "line" and not email
+                else "此電子郵件尚未註冊，請先以該信箱註冊或請店家邀請後再使用社群登入。"
+            ),
         )
 
     # 補綁外部身分（僅在尚未設定時），不覆寫既有連結。

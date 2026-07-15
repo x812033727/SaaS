@@ -42,7 +42,7 @@ services:
   web:
     build: .
     command: ["web"]
-    env_file: .env
+    env_file: ${SAAS_ENV_FILE:-.env}
     environment:
       SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
       SAAS_RATE_LIMIT_BACKEND: redis
@@ -71,6 +71,27 @@ services:
     mem_limit: 1500m
     cpus: 2.0
     pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      SAAS_API_INTERNAL_URL: http://web:8000
+    ports:
+      # 新版 Next.js 管理端；正式環境由 nginx 將網站根路徑導向此服務，
+      # /api、/auth、/line、/payments 等 FastAPI 路徑仍反代至 web。
+      - "127.0.0.1:${FRONTEND_PORT:-3100}:3000"
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -124,7 +145,7 @@ services:
     # crash loop（2026-07-04 上線起 8000+ 次重啟，cron 全停）。init: true
     # 讓 tini 當 PID 1、supercronic 退居子行程（自動停用 reaping）即正常。
     init: true
-    env_file: .env
+    env_file: ${SAAS_ENV_FILE:-.env}
     environment:
       SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
       SAAS_RATE_LIMIT_BACKEND: redis

@@ -66,6 +66,7 @@ from saas_mvp.services import account_email as account_email_svc
 from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import onboarding as onboarding_svc
+from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -267,13 +268,24 @@ def register_submit(
     if db.query(Tenant).filter(Tenant.name == tenant_name).first():
         return _err("店家名稱已被使用，請換一個唯一名稱")
 
-    tenant = Tenant(name=tenant_name, plan="free")
+    from saas_mvp.services import organizations as organizations_svc
+
+    organization = organizations_svc.create_organization(
+        db, name=tenant_name, flush=True
+    )
+    tenant = Tenant(
+        name=tenant_name, plan="free", organization_id=organization.id
+    )
     db.add(tenant)
     db.flush()
     # 註冊即開試用（預設 pro 14 天；SAAS_TRIAL_DAYS=0 停用）。
     plans_svc.start_trial(tenant)
     user = User(email=email, hashed_password=hash_password(password), tenant_id=tenant.id)
     db.add(user)
+    db.flush()
+    organizations_svc.add_owner_memberships(
+        db, organization_id=organization.id, tenant_id=tenant.id, user_id=user.id
+    )
     db.commit()
     db.refresh(user)
     # 驗證信 best-effort：寄失敗不阻擋註冊（dashboard banner 可重寄）。
@@ -674,6 +686,14 @@ def join_submit(
         role="staff",
     )
     db.add(user)
+    db.flush()
+    tenant = db.get(Tenant, inviter.tenant_id)
+    if tenant is None:
+        db.rollback()
+        return _err("邀請連結無效")
+    from saas_mvp.services import organizations as organizations_svc
+
+    organizations_svc.ensure_user_memberships(db, tenant=tenant, user=user)
     db.commit()
     db.refresh(user)
     audit_svc.record(
@@ -966,6 +986,11 @@ def account_page(
     # 綁定結果（由 /auth/oauth/.../callback 導回時帶 query 參數）轉成可顯示文案。
     linked_label = _OAUTH_PROVIDER_LABELS.get(linked or "")
     provider_label = _OAUTH_PROVIDER_LABELS.get(actor.user.oauth_provider or "")
+    callback_base = (
+        settings.oauth_redirect_base
+        or settings.public_base_url
+        or str(request.base_url)
+    ).rstrip("/")
     return templates.TemplateResponse(
         "account.html",
         _ctx(
@@ -974,6 +999,12 @@ def account_page(
             linked_label=linked_label,
             oauth_error=oauth_error,
             provider_label=provider_label,
+            line_login_configured=oauth_svc.provider_credentials_present(
+                "line", settings=settings
+            ),
+            line_login_callback_url=(
+                f"{callback_base}/auth/oauth/line/callback"
+            ),
             # 重新佈署按鈕：僅平台管理員 + 已設定觸發路徑時才顯示（template 另把關 is_admin）。
             deploy_available=bool(settings.deploy_trigger_path),
         ),

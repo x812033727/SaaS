@@ -25,8 +25,25 @@ from abc import ABC, abstractmethod
 VALID_PROVIDERS: frozenset[str] = frozenset({"line", "google"})
 
 
+def provider_credentials_present(name: str, *, settings) -> bool:
+    """Return configuration status without exposing credential values."""
+    if name == "line":
+        return bool(
+            settings.line_login_channel_id and settings.line_login_channel_secret
+        )
+    if name == "google":
+        return bool(
+            settings.google_oauth_client_id and settings.google_oauth_client_secret
+        )
+    return False
+
+
 class OAuthError(Exception):
     """OAuth provider 失敗（網路、token 交換、回應格式異常等）。"""
+
+
+class OAuthNotConfigured(OAuthError):
+    """Production OAuth credentials are missing."""
 
 
 class OAuthProvider(ABC):
@@ -41,7 +58,7 @@ class OAuthProvider(ABC):
         """以授權碼換取使用者身分。
 
         Returns:
-            dict 含 ``email``（str）、``subject``（provider 端穩定使用者 ID）、
+            dict 含 ``email``（str | None）、``subject``（provider 端穩定使用者 ID）、
             ``name``（str | None）。
 
         Raises:
@@ -50,6 +67,7 @@ class OAuthProvider(ABC):
 
 
 # ── 決定性離線 stub（測試 / dev 預設） ────────────────────────────────────────
+
 
 class StubOAuthProvider(OAuthProvider):
     """離線決定性 stub：不連網，由授權碼直接推導身分。
@@ -68,9 +86,7 @@ class StubOAuthProvider(OAuthProvider):
         self._email_verified = email_verified
 
     def authorize_url(self, state: str, redirect_uri: str) -> str:
-        params = urllib.parse.urlencode(
-            {"state": state, "redirect_uri": redirect_uri}
-        )
+        params = urllib.parse.urlencode({"state": state, "redirect_uri": redirect_uri})
         return f"https://stub-oauth.local/{self._name}/authorize?{params}"
 
     def exchange_code(self, code: str, redirect_uri: str) -> dict:
@@ -87,6 +103,7 @@ class StubOAuthProvider(OAuthProvider):
 
 
 # ── 真實 provider（僅用 stdlib urllib） ───────────────────────────────────────
+
 
 def _post_form(url: str, data: dict, *, timeout: int = 10) -> dict:
     """POST application/x-www-form-urlencoded，回 JSON dict；失敗包成 OAuthError。"""
@@ -158,7 +175,9 @@ class LineLoginProvider(OAuthProvider):
     _AUTHORIZE = "https://access.line.me/oauth2/v2.1/authorize"
     _TOKEN = "https://api.line.me/oauth2/v2.1/token"
 
-    def __init__(self, channel_id: str, channel_secret: str, *, timeout: int = 10) -> None:
+    def __init__(
+        self, channel_id: str, channel_secret: str, *, timeout: int = 10
+    ) -> None:
         self._channel_id = channel_id
         self._channel_secret = channel_secret
         self._timeout = timeout
@@ -191,14 +210,14 @@ class LineLoginProvider(OAuthProvider):
         if not id_token:
             raise OAuthError("LINE token response missing id_token")
         claims = _decode_id_token_claims(id_token)
-        email = claims.get("email")
         subject = claims.get("sub")
-        if not email or not subject:
-            raise OAuthError("LINE id_token missing email/sub")
+        if not subject:
+            raise OAuthError("LINE id_token missing sub")
+        email = claims.get("email")
         # 帳號接管防護：LINE id_token 的 email 僅在帶 email scope 且由 LINE 認證時
         # 出現，視為已驗證；但若 provider 明確回 email_verified==False 仍拒絕。
-        if claims.get("email_verified") is False:
-            raise OAuthError("LINE email not verified")
+        if email and claims.get("email_verified") is False:
+            email = None
         return {"email": email, "subject": subject, "name": claims.get("name")}
 
 
@@ -209,7 +228,9 @@ class GoogleOAuthProvider(OAuthProvider):
     _TOKEN = "https://oauth2.googleapis.com/token"
     _USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
 
-    def __init__(self, client_id: str, client_secret: str, *, timeout: int = 10) -> None:
+    def __init__(
+        self, client_id: str, client_secret: str, *, timeout: int = 10
+    ) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
         self._timeout = timeout
@@ -259,6 +280,7 @@ class GoogleOAuthProvider(OAuthProvider):
 
 # ── factory（比照 translation.get_translator） ────────────────────────────────
 
+
 def get_provider(name: str, *, settings) -> OAuthProvider:
     """依 provider 名稱回傳實例。
 
@@ -266,17 +288,21 @@ def get_provider(name: str, *, settings) -> OAuthProvider:
     （離線、決定性、永遠可用），呼叫端無需知道實際 backend。
     """
     if name == "line":
-        if settings.line_login_channel_id and settings.line_login_channel_secret:
+        if provider_credentials_present("line", settings=settings):
             return LineLoginProvider(
                 channel_id=settings.line_login_channel_id,
                 channel_secret=settings.line_login_channel_secret,
             )
+        if getattr(settings, "env", "dev") not in ("dev", "test"):
+            raise OAuthNotConfigured("LINE Login credentials are not configured")
         return StubOAuthProvider(name="line")
     if name == "google":
-        if settings.google_oauth_client_id and settings.google_oauth_client_secret:
+        if provider_credentials_present("google", settings=settings):
             return GoogleOAuthProvider(
                 client_id=settings.google_oauth_client_id,
                 client_secret=settings.google_oauth_client_secret,
             )
+        if getattr(settings, "env", "dev") not in ("dev", "test"):
+            raise OAuthNotConfigured("Google OAuth credentials are not configured")
         return StubOAuthProvider(name="google")
     raise OAuthError(f"unknown oauth provider: {name!r}")

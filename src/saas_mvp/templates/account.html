@@ -23,14 +23,48 @@
   <p class="muted">連結 LINE 帳戶後，即可直接用 LINE 一鍵登入後台管理，免再輸入密碼。</p>
   {% if linked_label %}<div class="success">已成功連結 {{ linked_label }} 帳戶。</div>{% endif %}
   {% if oauth_error == "in_use" %}<div class="error">此 LINE 帳戶已被其他後台帳號連結，無法重複綁定。</div>{% endif %}
+  {% if oauth_error == "not_configured" %}<div class="error">平台尚未完成 LINE Login 設定，請管理員設定 LINE Login Channel ID、Channel Secret 與 Callback URL。</div>{% endif %}
   {% if current_user.oauth_provider %}
+    <p><span class="badge on">已連結</span></p>
     <p>目前已連結：<strong>{{ provider_label or current_user.oauth_provider }}</strong></p>
     <form method="post" action="/ui/account/oauth/unlink">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="danger" type="submit">解除連結</button>
     </form>
+  {% elif line_login_configured %}
+    <p><span class="badge valid">LINE Login 已啟用</span></p>
+    <ol>
+      <li>點擊下方按鈕前往 LINE 官方授權頁。</li>
+      <li>確認授權此平台取得你的 LINE 身分。</li>
+      <li>完成後會自動回到本頁，並顯示「已成功連結」。</li>
+      <li>下次可在登入頁直接選擇「使用 LINE 登入」。</li>
+    </ol>
+    <a class="btn" data-testid="line-link-button" href="/auth/oauth/line/login?link=1">開始連結 LINE 帳戶</a>
   {% else %}
-    <a class="btn" href="/auth/oauth/line/login?link=1">連結 LINE 帳戶</a>
+    <p><span class="badge unchecked">尚未啟用 LINE Login</span></p>
+    {% if is_admin %}
+      <div class="setup-guide" data-testid="line-login-admin-guide">
+        <p>請依序完成以下平台設定；這是<strong>平台共用的 LINE Login Channel</strong>，不是各店家的 Messaging API Channel。</p>
+        <ol>
+          <li>前往 LINE Developers Console，在正確的 Provider 下建立 <strong>LINE Login</strong> Channel，App type 選擇 <strong>Web app</strong>。</li>
+          <li>在 LINE Login 分頁新增 Callback URL：</li>
+        </ol>
+        <pre><code>{{ line_login_callback_url }}</code></pre>
+        <ol start="3">
+          <li>將 Channel ID 與 Channel Secret 直接寫入正式主機的 <code>.env</code>，不要貼到對話、畫面或提交 Git：</li>
+        </ol>
+        <pre><code>SAAS_LINE_LOGIN_CHANNEL_ID=&lt;Channel ID&gt;
+SAAS_LINE_LOGIN_CHANNEL_SECRET=&lt;Channel Secret&gt;
+SAAS_OAUTH_REDIRECT_BASE={{ line_login_callback_url.rsplit('/auth/oauth/line/callback', 1)[0] }}</code></pre>
+        <ol start="4">
+          <li>重新建置 web 服務：<code>docker-compose up -d --build web</code>。</li>
+          <li>重新整理本頁；狀態變為「LINE Login 已啟用」後，再執行帳戶連結。</li>
+        </ol>
+        <p><a href="https://developers.line.biz/en/docs/line-login/getting-started/" target="_blank" rel="noopener noreferrer">開啟 LINE 官方設定文件</a></p>
+      </div>
+    {% else %}
+      <p class="muted" data-testid="line-login-contact-admin">平台尚未完成 LINE Login 設定，請聯絡平台管理員；設定完成後此處會自動出現連結按鈕。</p>
+    {% endif %}
   {% endif %}
 </div>
 

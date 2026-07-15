@@ -71,6 +71,12 @@ def promote_admin(
             is_admin=True,
         )
         session.add(user)
+        session.flush()
+        from saas_mvp.services import organizations as organizations_svc
+
+        organizations_svc.ensure_user_memberships(
+            session, tenant=tenant, user=user
+        )
         session.commit()
         session.refresh(user)
         return ("created", user)

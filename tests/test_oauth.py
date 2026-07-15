@@ -5,6 +5,8 @@ CSRF state 防護、factory stub/real 切換、未知 provider 404。
 from __future__ import annotations
 
 import os
+import base64
+import json
 import uuid
 
 import pytest
@@ -18,6 +20,7 @@ os.environ.setdefault("SAAS_RATE_LIMIT_ENABLED", "false")
 from saas_mvp.models import tenant as _t, user as _u  # noqa: F401,E402
 
 from saas_mvp.app import create_app  # noqa: E402
+from saas_mvp.config import settings as app_settings  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
 from saas_mvp.models.user import User  # noqa: E402
@@ -50,11 +53,14 @@ def client():
 
 
 def _register(client, email: str) -> None:
-    r = client.post("/auth/register", json={
-        "email": email,
-        "password": "Test1234!",
-        "tenant_name": f"t_{uuid.uuid4().hex[:8]}",
-    })
+    r = client.post(
+        "/auth/register",
+        json={
+            "email": email,
+            "password": "Test1234!",
+            "tenant_name": f"t_{uuid.uuid4().hex[:8]}",
+        },
+    )
     assert r.status_code == 201, r.text
 
 
@@ -77,9 +83,7 @@ class TestOAuthLogin:
         code = email.split("@")[0]
 
         state = _login_and_get_state(client, "google")
-        r = client.get(
-            f"/auth/oauth/google/callback?code={code}&state={state}"
-        )
+        r = client.get(f"/auth/oauth/google/callback?code={code}&state={state}")
         assert r.status_code == 303, r.text
         assert r.headers["location"] == "/ui/"
         # 設定登入 cookie
@@ -160,16 +164,14 @@ class TestOAuthLogin:
 
     def test_unknown_provider_404(self, client):
         assert client.get("/auth/oauth/wechat/login").status_code == 404
-        assert client.get(
-            "/auth/oauth/wechat/callback?code=a&state=b"
-        ).status_code == 404
+        assert (
+            client.get("/auth/oauth/wechat/callback?code=a&state=b").status_code == 404
+        )
 
 
 def _ui_login(client, email: str, password: str = "Test1234!") -> None:
     """以 UI 表單登入，讓 client jar 持有 access_token cookie。"""
-    r = client.post(
-        "/ui/login", data={"email": email, "password": password}
-    )
+    r = client.post("/ui/login", data={"email": email, "password": password})
     assert r.status_code == 303, r.text
     assert client.cookies.get("access_token")
 
@@ -185,6 +187,53 @@ def _link_login_and_get_state(client, provider: str) -> str:
 
 
 class TestOAuthLink:
+    def test_account_page_hides_broken_link_when_platform_unconfigured(self, client):
+        email = f"guide_owner_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+
+        response = client.get("/ui/account")
+
+        assert response.status_code == 200
+        assert 'data-testid="line-login-contact-admin"' in response.text
+        assert 'data-testid="line-link-button"' not in response.text
+        client.cookies.clear()
+
+    def test_platform_admin_sees_safe_line_setup_guide(self, client):
+        email = f"guide_admin_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        with _Session() as db:
+            user = db.query(User).filter(User.email == email).one()
+            user.is_admin = True
+            db.commit()
+        _ui_login(client, email)
+
+        response = client.get("/ui/account")
+
+        assert response.status_code == 200
+        assert 'data-testid="line-login-admin-guide"' in response.text
+        assert "http://testserver/auth/oauth/line/callback" in response.text
+        assert "SAAS_LINE_LOGIN_CHANNEL_ID" in response.text
+        assert "SAAS_LINE_LOGIN_CHANNEL_SECRET" in response.text
+        assert 'data-testid="line-link-button"' not in response.text
+        client.cookies.clear()
+
+    def test_configured_platform_shows_correct_link_flow(self, client, monkeypatch):
+        email = f"configured_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+        monkeypatch.setattr(app_settings, "line_login_channel_id", "123456789")
+        monkeypatch.setattr(app_settings, "line_login_channel_secret", "secret-value")
+
+        response = client.get("/ui/account")
+
+        assert response.status_code == 200
+        assert "LINE Login 已啟用" in response.text
+        assert 'data-testid="line-link-button"' in response.text
+        assert "secret-value" not in response.text
+        assert 'data-testid="line-login-admin-guide"' not in response.text
+        client.cookies.clear()
+
     def test_link_binds_to_current_user_regardless_of_email(self, client):
         """綁定模式：已登入者連結 LINE，即使 LINE 信箱 ≠ 後台信箱也綁到本人。"""
         email = f"owner_{uuid.uuid4().hex[:8]}@example.com"
@@ -214,9 +263,12 @@ class TestOAuthLink:
         _ui_login(client, email)
         code = f"lineid2_{uuid.uuid4().hex[:8]}"
         state = _link_login_and_get_state(client, "line")
-        assert client.get(
-            f"/auth/oauth/line/callback?code={code}&state={state}"
-        ).status_code == 303
+        assert (
+            client.get(
+                f"/auth/oauth/line/callback?code={code}&state={state}"
+            ).status_code
+            == 303
+        )
         client.cookies.clear()
 
         # 之後純以 LINE 登入（同 subject，但 LINE email≠後台 email）→ 命中本人。
@@ -236,9 +288,12 @@ class TestOAuthLink:
         _register(client, email_a)
         _ui_login(client, email_a)
         state = _link_login_and_get_state(client, "line")
-        assert client.get(
-            f"/auth/oauth/line/callback?code={code}&state={state}"
-        ).status_code == 303
+        assert (
+            client.get(
+                f"/auth/oauth/line/callback?code={code}&state={state}"
+            ).status_code
+            == 303
+        )
         client.cookies.clear()
 
         # 使用者 B 嘗試綁定同一 LINE 身分 → 導回 account 帶 in_use 錯誤，且未綁定。
@@ -265,9 +320,12 @@ class TestOAuthLink:
         _ui_login(client, email)
         code = f"u_{uuid.uuid4().hex[:8]}"
         state = _link_login_and_get_state(client, "line")
-        assert client.get(
-            f"/auth/oauth/line/callback?code={code}&state={state}"
-        ).status_code == 303
+        assert (
+            client.get(
+                f"/auth/oauth/line/callback?code={code}&state={state}"
+            ).status_code
+            == 303
+        )
 
         r = client.post("/ui/account/oauth/unlink")
         assert r.status_code == 303
@@ -280,6 +338,53 @@ class TestOAuthLink:
             assert u.oauth_subject is None
         finally:
             db.close()
+        client.cookies.clear()
+
+    def test_link_accepts_line_identity_without_email(self, client, monkeypatch):
+        """LINE 未核准 email scope 時，既有登入者仍可用 subject 安全綁定。"""
+        email = f"noemail_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+
+        class _SubjectOnlyProvider(oauth_svc.OAuthProvider):
+            def authorize_url(self, state: str, redirect_uri: str) -> str:
+                return "https://line.example/authorize"
+
+            def exchange_code(self, code: str, redirect_uri: str) -> dict:
+                return {
+                    "email": None,
+                    "subject": "line-subject-only",
+                    "name": "LINE User",
+                }
+
+        monkeypatch.setattr(
+            oauth_svc, "get_provider", lambda name, *, settings: _SubjectOnlyProvider()
+        )
+        state = _link_login_and_get_state(client, "line")
+        response = client.get(f"/auth/oauth/line/callback?code=no-email&state={state}")
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/account?linked=line"
+        with _Session() as db:
+            user = db.query(User).filter(User.email == email).one()
+            assert user.oauth_subject == "line-subject-only"
+        client.cookies.clear()
+
+    def test_missing_production_credentials_show_account_error(
+        self, client, monkeypatch
+    ):
+        email = f"notconfigured_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+
+        def _missing(name, *, settings):
+            raise oauth_svc.OAuthNotConfigured("missing")
+
+        monkeypatch.setattr(oauth_svc, "get_provider", _missing)
+        response = client.get("/auth/oauth/line/login?link=1")
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/account?oauth_error=not_configured"
         client.cookies.clear()
 
 
@@ -323,6 +428,17 @@ class TestFactory:
         with pytest.raises(oauth_svc.OAuthError):
             oauth_svc.get_provider("nope", settings=_S())
 
+    def test_production_missing_credentials_fail_closed(self):
+        class _S:
+            env = "prod"
+            line_login_channel_id = ""
+            line_login_channel_secret = ""
+            google_oauth_client_id = ""
+            google_oauth_client_secret = ""
+
+        with pytest.raises(oauth_svc.OAuthNotConfigured):
+            oauth_svc.get_provider("line", settings=_S())
+
     def test_stub_deterministic(self):
         p = oauth_svc.StubOAuthProvider(name="google")
         out = p.exchange_code("alice", "https://cb")
@@ -331,3 +447,17 @@ class TestFactory:
             "subject": "stub-alice",
             "name": "alice",
         }
+
+
+def test_line_provider_allows_missing_email_for_account_link(monkeypatch):
+    claims = {"sub": "U123", "name": "LINE User"}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    token = f"e30.{payload}.signature"
+    monkeypatch.setattr(
+        oauth_svc, "_post_form", lambda *args, **kwargs: {"id_token": token}
+    )
+    provider = oauth_svc.LineLoginProvider("channel", "secret")
+
+    identity = provider.exchange_code("code", "https://example.com/callback")
+
+    assert identity == {"email": None, "subject": "U123", "name": "LINE User"}

@@ -119,6 +119,9 @@ def _ensure_tenant_user(
     )
     db.add(user)
     db.flush()
+    from saas_mvp.services import organizations as organizations_svc
+
+    organizations_svc.ensure_user_memberships(db, tenant=tenant, user=user)
     return tenant, user, created
 
 

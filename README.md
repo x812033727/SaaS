@@ -20,6 +20,26 @@ python -m saas_mvp        # 或 saas-mvp
 python -m saas_mvp.ops.seed_demo
 ```
 
+### 新版管理端（Next.js foundation）
+
+新版商用管理端位於 `frontend/`，以 Next.js + TypeScript 建置；FastAPI 仍是
+業務與整合 API。登入憑證由 Next.js server route 寫入 httpOnly cookie，瀏覽器端
+JavaScript 不會取得 bearer token。
+
+```bash
+# Terminal 1：FastAPI
+python -m saas_mvp
+
+# Terminal 2：Next.js
+cd frontend
+cp .env.example .env.local   # 本機開發可改為 http://127.0.0.1:8000
+npm install
+npm run dev
+```
+
+目前第一階段提供 `/login`、`/dashboard`，並使用新的 `/api/v1/context` 與
+organization scoped RBAC。既有 `/ui` 在全面切換前仍保留作回歸基準。
+
 ## 功能總覽
 
 各模組以**功能旗標**（`services/features.py`，per-tenant 訂閱開關）控管，並對應 REST 端點前綴。
@@ -438,6 +458,7 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 | `SAAS_NEWEBPAY_ENV` | 藍新環境 `stage` / `prod` | `stage` |
 | `SAAS_LINE_LOGIN_CHANNEL_ID` | LINE Login（OAuth 登入）channel id | `""` |
 | `SAAS_LINE_LOGIN_CHANNEL_SECRET` | LINE Login channel secret | `""` |
+| `SAAS_OAUTH_REDIRECT_BASE` | OAuth callback 對外 base URL；空則使用 `SAAS_PUBLIC_BASE_URL` | `""` |
 | `SAAS_GOOGLE_OAUTH_CLIENT_ID` | Google OAuth 登入 client id | `""` |
 | `SAAS_GOOGLE_OAUTH_CLIENT_SECRET` | Google OAuth client secret | `""` |
 | `SAAS_PUSH_ALLOWANCE_BASE` | 每月基礎推播額度（提醒/通知/行銷共用） | `200` |

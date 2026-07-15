@@ -268,6 +268,20 @@ tr:hover td { background: var(--brand-soft); }
 .badge.unchecked { background: var(--warn-soft); color: var(--warn); }
 .badge.none { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
 
+/* Integration setup instructions: readable on desktop and safe on narrow screens. */
+.setup-guide ol { padding-left: 1.4rem; }
+.setup-guide li + li { margin-top: .45rem; }
+.setup-guide pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: .9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ---- 訊息與雜項 --------------------------------------------- */
 
 .muted { color: var(--muted); font-size: 13px; }
