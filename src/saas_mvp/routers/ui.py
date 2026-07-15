@@ -51,6 +51,7 @@ from saas_mvp.line_client import (
     get_rich_menu_client,
 )
 from saas_mvp.models.tenant import Tenant, normalize_store_type
+from saas_mvp.models.service import Service
 from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
@@ -93,6 +94,7 @@ from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import pos as pos_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import service_packages as packages_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import notifications_history as notif_history_svc
 from saas_mvp.services import faq as faq_svc
@@ -2604,6 +2606,18 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
     booking_slots = slots_svc.list_slots(db, tenant_id=tid)
     waitlist_rows = waitlist_svc.list_waitlist(db, tenant_id=tid)
+    from saas_mvp.models.service_package import PackageCreditLedger
+
+    package_reservation_ids = {
+        reservation_id
+        for (reservation_id,) in tenant_query(db, PackageCreditLedger, tid)
+        .filter(
+            PackageCreditLedger.kind == "redeem",
+            PackageCreditLedger.reservation_id.is_not(None),
+        )
+        .with_entities(PackageCreditLedger.reservation_id)
+        .all()
+    }
     reminder_hours = (
         (tenant_row.reminder_hours_before if tenant_row else None)
         or settings.reminder_hours_before_default
@@ -2636,6 +2650,7 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         # 預約列以 customer_id 對應顧客檔，顯示可核對的 LINE 名稱/電話（免額外查詢）。
         customer_by_id={c.id: c for c in customers},
         customer_by_line={c.line_user_id: c for c in customers if c.line_user_id},
+        package_reservation_ids=package_reservation_ids,
         **extra,
     )
 
@@ -5057,6 +5072,26 @@ def _customer_detail_ctx(
         .limit(20)
         .all()
     )
+    packages_enabled = features_svc.is_enabled(
+        db, tid, features_svc.SERVICE_PACKAGES
+    )
+    package_wallet = (
+        packages_svc.customer_wallet(
+            db, tenant_id=tid, customer_id=customer_id, include_empty=True
+        )
+        if packages_enabled
+        else []
+    )
+    package_ledger = (
+        packages_svc.ledger_for_customer(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+        if packages_enabled
+        else []
+    )
+    package_services = {
+        service.id: service for service in tenant_query(db, Service, tid).all()
+    }
     return _ctx(
         request, actor,
         customer=customer,
@@ -5065,7 +5100,170 @@ def _customer_detail_ctx(
         reservations=reservations,
         slots=slots,
         ledger=ledger,
+        packages_enabled=packages_enabled,
+        package_wallet=package_wallet,
+        package_ledger=package_ledger,
+        package_services=package_services,
+        available_packages=(
+            packages_svc.list_packages(db, tenant_id=tid, active_only=True)
+            if packages_enabled
+            else []
+        ),
+        can_issue_packages=(
+            (getattr(actor.user, "role", None) or "owner") == "owner"
+            or actor.user.is_admin
+        ),
+        package_issue_key=secrets.token_urlsafe(24),
         **extra,
+    )
+
+
+def _packages_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    package_rows = packages_svc.list_packages(db, tenant_id=tid)
+    services = catalog_svc.list_services(db, tenant_id=tid)
+    return _ctx(
+        request,
+        actor,
+        packages=package_rows,
+        services=services,
+        service_by_id={service.id: service for service in services},
+        items_by_package={
+            package.id: packages_svc.package_items(
+                db, tenant_id=tid, package_id=package.id
+            )
+            for package in package_rows
+        },
+        can_manage=(
+            (getattr(actor.user, "role", None) or "owner") == "owner"
+            or actor.user.is_admin
+        ),
+        **extra,
+    )
+
+
+@router.get("/packages", response_class=HTMLResponse)
+def packages_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_PACKAGES):
+        return _feature_locked(request, actor, features_svc.SERVICE_PACKAGES, "服務套票")
+    return templates.TemplateResponse("packages.html", _packages_ctx(request, actor, db))
+
+
+@router.post("/packages", response_class=HTMLResponse)
+def packages_create(
+    request: Request,
+    name: str = Form(..., max_length=128),
+    description: str = Form("", max_length=2000),
+    price_twd: int = Form(...),
+    validity_days: int = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_PACKAGES):
+        return _feature_locked(request, actor, features_svc.SERVICE_PACKAGES, "服務套票")
+    error = None
+    try:
+        row = packages_svc.create_package(
+            db,
+            tenant_id=actor.user.tenant_id,
+            name=name,
+            description=description,
+            price_cents=price_twd * 100,
+            validity_days=validity_days,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.create",
+            target=f"package:{row.id}",
+            detail={
+                "price_cents": row.price_cents,
+                "validity_days": row.validity_days,
+            },
+            request=request,
+        )
+        db.commit()
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_packages.html", _packages_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/packages/{package_id}/items", response_class=HTMLResponse)
+def packages_add_item(
+    request: Request,
+    package_id: int,
+    service_id: int = Form(...),
+    included_quantity: int = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_PACKAGES):
+        return _feature_locked(request, actor, features_svc.SERVICE_PACKAGES, "服務套票")
+    error = None
+    try:
+        packages_svc.add_or_update_item(
+            db,
+            tenant_id=actor.user.tenant_id,
+            package_id=package_id,
+            service_id=service_id,
+            included_quantity=included_quantity,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.item.update",
+            target=f"package:{package_id}",
+            detail={"service_id": service_id, "quantity": included_quantity},
+            request=request,
+        )
+        db.commit()
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_packages.html", _packages_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/packages/{package_id}/active", response_class=HTMLResponse)
+def packages_set_active(
+    request: Request,
+    package_id: int,
+    active: str = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_PACKAGES):
+        return _feature_locked(request, actor, features_svc.SERVICE_PACKAGES, "服務套票")
+    error = None
+    try:
+        packages_svc.set_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            package_id=package_id,
+            active=active == "true",
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.active",
+            target=f"package:{package_id}",
+            detail={"active": active == "true"},
+            request=request,
+        )
+        db.commit()
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_packages.html", _packages_ctx(request, actor, db, error=error)
     )
 
 
@@ -5356,6 +5554,98 @@ def customer_adjust_points(
                 error = "點數不足，無法扣點"
     except HTTPException:
         return HTMLResponse("<h1>找不到顧客</h1>", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(
+            request, actor, db, customer_id, error=error, saved=saved
+        ),
+    )
+
+
+@router.post("/customers/{customer_id}/packages", response_class=HTMLResponse)
+def customer_issue_package(
+    request: Request,
+    customer_id: int,
+    package_id: int = Form(...),
+    issuance_key: str = Form(..., max_length=64),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    error = None
+    saved = None
+    if not _require_ui_feature(db, actor, features_svc.SERVICE_PACKAGES):
+        error = "服務套票功能尚未開通。"
+    else:
+        try:
+            owned = packages_svc.issue_package(
+                db,
+                tenant_id=actor.user.tenant_id,
+                customer_id=customer_id,
+                package_id=package_id,
+                actor_user_id=actor.user.id,
+                issuance_key=issuance_key,
+            )
+            audit_svc.record_from_actor(
+                db,
+                actor,
+                action="packages.issue",
+                target=f"customer_package:{owned.id}",
+                detail={
+                    "customer_id": customer_id,
+                    "package_id": package_id,
+                    "price_cents": owned.price_cents_snapshot,
+                },
+                request=request,
+            )
+            db.commit()
+            saved = f"已發行「{owned.package_name_snapshot}」"
+        except packages_svc.ServicePackageError as exc:
+            db.rollback()
+            error = str(exc)
+    return templates.TemplateResponse(
+        "_customer_detail.html",
+        _customer_detail_ctx(
+            request, actor, db, customer_id, error=error, saved=saved
+        ),
+    )
+
+
+@router.post(
+    "/customers/{customer_id}/packages/{customer_package_id}/cancel",
+    response_class=HTMLResponse,
+)
+def customer_cancel_package(
+    request: Request,
+    customer_id: int,
+    customer_package_id: int,
+    note: str = Form("", max_length=255),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    error = None
+    saved = None
+    try:
+        owned = packages_svc.cancel_customer_package(
+            db,
+            tenant_id=actor.user.tenant_id,
+            customer_id=customer_id,
+            customer_package_id=customer_package_id,
+            actor_user_id=actor.user.id,
+            note=note,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.customer.cancel",
+            target=f"customer_package:{owned.id}",
+            detail={"customer_id": customer_id, "note": note.strip()[:255]},
+            request=request,
+        )
+        db.commit()
+        saved = f"已作廢「{owned.package_name_snapshot}」未用次數；款項請另行退款／對帳。"
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        error = str(exc)
     return templates.TemplateResponse(
         "_customer_detail.html",
         _customer_detail_ctx(

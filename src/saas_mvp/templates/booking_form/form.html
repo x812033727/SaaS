@@ -44,6 +44,9 @@
     .slot-row:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
     .slot-row input[type="radio"] { width: auto; accent-color: var(--brand); }
     .slot-row small { color: var(--muted); }
+    .package-option { display:flex; align-items:flex-start; gap:.6rem; margin:1rem 0;
+                      padding:.8rem; background:var(--brand-soft); border-radius:8px; }
+    .package-option input { width:auto; margin-top:.3rem; accent-color:var(--brand); }
   </style>
 </head>
 <body>
@@ -127,6 +130,12 @@
         <select id="party_size" name="party_size">
           {% for n in range(1, 7) %}<option value="{{ n }}">{{ n }} 位</option>{% endfor %}
         </select>
+        {% if package_credits %}
+          <label class="package-option">
+            <input type="checkbox" name="use_package" value="true">
+            <span>使用服務套票扣 1 次<br><small>目前共有 {{ package_credits }} 次可用，系統會優先使用最早到期的套票。</small></span>
+          </label>
+        {% endif %}
         <button type="submit">確認預約 {{ date }}</button>
       </form>
     {% endif %}

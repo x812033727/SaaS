@@ -23,6 +23,7 @@
   <div class="state">
     <h1>✅ 預約完成</h1>
     <p>預約編號 <strong>#{{ reservation.id }}</strong>，共 {{ reservation.party_size }} 位。</p>
+    {% if package_redeemed %}<p><strong>服務套票已扣 1 次。</strong> 若取消此預約，系統會自動退回。</p>{% endif %}
     {% if deposit_url %}
     <p class="pay-note"><strong>{{ deposit_note }}</strong></p>
     <p><a href="{{ deposit_url }}" class="pay-btn">前往付定金</a></p>

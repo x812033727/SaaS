@@ -50,6 +50,9 @@ _TEXT_ALIASES: dict[str, str] = {
     "/points": "points",
     "點數": "points",
     "我的點數": "points",
+    "/packages": "packages",
+    "套票": "packages",
+    "我的套票": "packages",
     # P4 商品銷售
     "/shop": "shop",
     "商品": "shop",
@@ -199,7 +202,7 @@ def parse_booking_command(text: str) -> tuple[str | None, dict]:
         if len(args) > 2 and args[2]:
             params["coupon"] = args[2]
         return action, params
-    # slots / my / help / coupons / points / shop / my_orders 無參數
+    # slots / my / help / coupons / points / packages / shop / my_orders 無參數
     return action, {}
 
 
@@ -230,7 +233,7 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
         "reschedule", "resched_date", "resched_slot",
         "waitlist", "waitlist_join", "waitlist_cancel",
         "confirm", "contact",
-        "coupons", "redeem", "points",
+        "coupons", "redeem", "points", "packages",
         "rate",
         "shop", "buy", "my_orders",
     }:

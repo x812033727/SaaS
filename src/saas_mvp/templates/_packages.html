@@ -1,0 +1,49 @@
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<div class="card">
+  <h2>建立套票</h2>
+  <p class="muted">套票可包含多個服務與各自次數。發行後會保留當時售價與效期，不受日後修改影響。</p>
+  {% if can_manage %}
+  <form hx-post="/ui/packages" hx-target="#packages-card" hx-swap="innerHTML" class="row">
+    <label>套票名稱<input name="name" maxlength="128" required placeholder="例如：洗髮護理 10 次卡"></label>
+    <label>售價（NT$）<input name="price_twd" type="number" min="0" max="20000000" required value="0" inputmode="numeric"></label>
+    <label>有效天數<input name="validity_days" type="number" min="1" max="3650" required value="365"></label>
+    <label>說明<textarea name="description" maxlength="2000"></textarea></label>
+    <button type="submit">建立套票</button>
+  </form>
+  {% else %}<p class="muted">只有店主可以建立、調整與發行套票。</p>{% endif %}
+</div>
+
+{% for package in packages %}
+<div class="card">
+  <h2>{{ package.name }} <span class="badge {{ 'on' if package.is_active else 'off' }}">{{ '販售中' if package.is_active else '已停售' }}</span></h2>
+  <p>售價 NT$ {{ package.price_cents // 100 }} · 購買後 {{ package.validity_days }} 天有效</p>
+  {% if package.description %}<p class="muted">{{ package.description }}</p>{% endif %}
+  <h3>包含服務</h3>
+  {% set items = items_by_package.get(package.id, []) %}
+  {% if items %}
+  <ul>
+    {% for item in items %}
+      {% set service = service_by_id.get(item.service_id) %}
+      <li>{{ service.name if service else ('服務 #' ~ item.service_id) }}：{{ item.included_quantity }} 次</li>
+    {% endfor %}
+  </ul>
+  {% else %}<div class="error">尚未加入服務，無法發行給顧客。</div>{% endif %}
+
+  {% if can_manage %}
+  <form hx-post="/ui/packages/{{ package.id }}/items" hx-target="#packages-card" hx-swap="innerHTML" class="row">
+    <label>服務<select name="service_id" required>
+      {% for service in services %}<option value="{{ service.id }}">{{ service.name }}</option>{% endfor %}
+    </select></label>
+    <label>包含次數<input name="included_quantity" type="number" min="1" max="999" value="1" required></label>
+    <button type="submit">新增／更新服務次數</button>
+  </form>
+  <form hx-post="/ui/packages/{{ package.id }}/active" hx-target="#packages-card" hx-swap="innerHTML">
+    <input type="hidden" name="active" value="{{ 'false' if package.is_active else 'true' }}">
+    <button type="submit" class="{{ 'danger' if package.is_active else '' }}">{{ '停止販售' if package.is_active else '重新販售' }}</button>
+  </form>
+  {% endif %}
+</div>
+{% else %}
+<p class="muted">尚未建立套票。</p>
+{% endfor %}

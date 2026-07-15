@@ -18,6 +18,76 @@
   </form>
 </div>
 
+{% if packages_enabled %}
+<div class="card">
+  <h2>服務套票</h2>
+  {% if can_issue_packages and available_packages %}
+  <form hx-post="/ui/customers/{{ customer.id }}/packages" hx-target="#customer-card" hx-swap="innerHTML" class="row"
+        hx-confirm="確定已完成收款，並發行此套票給顧客？">
+    <input type="hidden" name="issuance_key" value="{{ package_issue_key }}">
+    <label>發行套票<select name="package_id" required>
+      {% for package in available_packages %}
+      <option value="{{ package.id }}">{{ package.name }}（NT$ {{ package.price_cents // 100 }}）</option>
+      {% endfor %}
+    </select></label>
+    <button type="submit">確認收款並發行</button>
+  </form>
+  <p class="muted">發行是有價操作，只有店主可執行；系統會記錄操作人、售價快照與完整次數帳本。</p>
+  {% elif can_issue_packages %}<p class="muted">目前沒有可販售套票，請先到「商店銷售 → 服務套票」建立並加入服務。</p>{% endif %}
+
+  {% if package_wallet %}
+  <table>
+    <thead><tr><th>套票</th><th>服務</th><th>剩餘</th><th>到期日</th></tr></thead>
+    <tbody>
+      {% for credit in package_wallet %}
+      <tr>
+        <td>{{ credit.customer_package.package_name_snapshot }}</td>
+        <td>{{ credit.service.name }}</td>
+        <td><strong>{{ credit.remaining }}</strong> 次</td>
+        <td>{{ credit.customer_package.expires_at.strftime('%Y-%m-%d') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if can_issue_packages %}
+  {% set ns = namespace(last_id=none) %}
+  {% for credit in package_wallet %}
+    {% if ns.last_id != credit.customer_package.id %}
+    <form hx-post="/ui/customers/{{ customer.id }}/packages/{{ credit.customer_package.id }}/cancel"
+          hx-target="#customer-card" hx-swap="innerHTML" class="row"
+          hx-confirm="確定作廢「{{ credit.customer_package.package_name_snapshot }}」所有未用次數？款項不會由系統自動退款。">
+      <input name="note" maxlength="255" required placeholder="作廢原因／退款對帳註記">
+      <button type="submit" class="danger">作廢 {{ credit.customer_package.package_name_snapshot }}</button>
+    </form>
+    {% set ns.last_id = credit.customer_package.id %}
+    {% endif %}
+  {% endfor %}
+  {% endif %}
+  {% else %}<p class="muted">此顧客目前沒有有效套票。</p>{% endif %}
+
+  {% if package_ledger %}
+  <details>
+    <summary>查看最近次數異動</summary>
+    <table>
+      <thead><tr><th>時間</th><th>服務</th><th>增減</th><th>原因</th><th>預約</th></tr></thead>
+      <tbody>
+      {% for tx in package_ledger %}
+        {% set service = package_services.get(tx.service_id) %}
+        <tr>
+          <td>{{ tx.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td>{{ service.name if service else ('#' ~ tx.service_id) }}</td>
+          <td>{{ '+' if tx.delta > 0 else '' }}{{ tx.delta }}</td>
+          <td>{{ {'issue':'發行','redeem':'預約扣次','refund':'取消退回','adjust':'人工調整'}.get(tx.kind, tx.kind) }}</td>
+          <td>{{ ('#' ~ tx.reservation_id) if tx.reservation_id else '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card">
   <h2>標籤</h2>
   <form hx-post="/ui/customers/{{ customer.id }}/tags" hx-target="#customer-card" hx-swap="innerHTML" class="col">

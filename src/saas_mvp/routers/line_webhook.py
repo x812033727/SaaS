@@ -1003,6 +1003,7 @@ _BOOKING_HELP = (
     "・改期 <預約編號> — 引導改到其他時段\n"
     "・取消 <預約編號> — 例：取消 7\n"
     "・候補 — 查看/取消我的額滿候補"
+    "\n・套票 — 查看可用服務次數與到期日"
 )
 # follow（加好友）預設歡迎文案：租戶未自訂（welcome_message NULL/空白）時依 bot_mode 選用。
 _DEFAULT_WELCOME_BOOKING = (
@@ -1837,6 +1838,9 @@ def _dispatch_booking(
     if action == "points":
         return _points_reply(db, tenant_id, line_user_id), None
 
+    if action == "packages":
+        return _packages_reply(db, tenant_id, line_user_id), None
+
     # 顧客自助留聯絡資料：PRIVACY_MODE 開通時回 tokenized PII 表單連結
     # （不在聊天室索取個資）；未開通回引導文案。
     if action == "contact":
@@ -1998,6 +2002,35 @@ def _points_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
     if customer is None:
         return "你目前沒有會員資料，完成預約後即可累積點數。"
     return f"你的點數：{customer.points_balance or 0}\n會員等級：{customer.tier or 'regular'}"
+
+
+def _packages_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
+    if not features_svc.is_enabled(db, tenant_id, features_svc.SERVICE_PACKAGES):
+        return "本店尚未開放服務套票功能。"
+    from saas_mvp.models.customer import Customer
+    from saas_mvp.services import service_packages as packages_svc
+
+    customer = (
+        db.query(Customer)
+        .filter(Customer.tenant_id == tenant_id, Customer.line_user_id == line_user_id)
+        .first()
+    )
+    if customer is None:
+        return "你目前沒有服務套票。"
+    wallet = packages_svc.customer_wallet(
+        db, tenant_id=tenant_id, customer_id=customer.id
+    )
+    if not wallet:
+        return "你目前沒有可用的服務套票（可能已用完或過期）。"
+    lines = ["你的服務套票："]
+    for credit in wallet[:20]:
+        expires = credit.customer_package.expires_at.strftime("%Y-%m-%d")
+        lines.append(
+            f"・{credit.customer_package.package_name_snapshot}／{credit.service.name}："
+            f"剩 {credit.remaining} 次（{expires} 到期）"
+        )
+    lines.append("網頁預約時可勾選「使用服務套票」自動扣次。")
+    return "\n".join(lines)
 
 
 def _list_products_reply(db: Session, tenant_id: int) -> tuple[str, list | None]:

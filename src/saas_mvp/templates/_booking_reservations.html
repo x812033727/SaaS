@@ -32,7 +32,8 @@
       </td>
       <td data-label="狀態"><span class="badge {{ 'on' if r.status == 'confirmed' else 'off' }}">{{ '已確認' if r.status == 'confirmed' else '已取消' }}</span></td>
       <td data-label="定金">
-        {% if not r.deposit_status %}<span class="muted">免定金</span>
+        {% if r.id in package_reservation_ids %}<span class="badge valid">套票扣次</span>{% if r.status == 'cancelled' %}<br><span class="muted">已自動退回</span>{% endif %}
+        {% elif not r.deposit_status %}<span class="muted">免定金</span>
         {% elif r.deposit_status == 'pending' %}<span class="badge unchecked">待付款</span>
         {% elif r.deposit_status == 'paid' %}
           <span class="badge valid">已付 NT${{ (r.deposit_cents or 0) // 100 }}</span>

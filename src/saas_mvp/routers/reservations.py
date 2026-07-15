@@ -28,6 +28,7 @@ from saas_mvp.services.booking import (
     mark_attendance,
     reschedule_reservation,
 )
+from saas_mvp.services.service_packages import PackageCreditUnavailable
 
 router = APIRouter(
     prefix="/booking/reservations",
@@ -46,6 +47,8 @@ class ReservationCreate(BaseModel):
     note: str | None = Field(default=None, max_length=1024)
     staff_id: int | None = Field(default=None)
     service_id: int | None = Field(default=None)
+    use_package: bool = False
+    customer_package_id: int | None = Field(default=None)
 
 
 class ReservationResponse(BaseModel):
@@ -93,11 +96,18 @@ def create(
             note=body.note,
             staff_id=body.staff_id,
             service_id=body.service_id,
+            use_package=body.use_package,
+            customer_package_id=body.customer_package_id,
         )
     except CustomerBlacklistedError:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Customer is blacklisted",
+        )
+    except PackageCreditUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Package credit is unavailable",
         )
     except CrossTenantReferenceError:
         raise HTTPException(

@@ -161,6 +161,7 @@ def submit_booking(
     party_size: int,
     service_id: int | None,
     staff_id: int | None,
+    use_package: bool = False,
 ):
     """驗 token → 建單（走既有 book_slot）→ 標記 used。回傳 Reservation。
 
@@ -179,6 +180,7 @@ def submit_booking(
         display_name=row.display_name,
         staff_id=staff_id,
         service_id=service_id,
+        use_package=use_package,
     )
     row.used_at = _utcnow()
     db.commit()

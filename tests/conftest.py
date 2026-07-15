@@ -111,6 +111,7 @@ import saas_mvp.models.staff_leave as _sleave  # noqa: F401, E402
 import saas_mvp.models.service_category as _scat  # noqa: F401, E402
 import saas_mvp.models.service as _svc  # noqa: F401, E402
 import saas_mvp.models.service_staff as _svcstaff  # noqa: F401, E402
+import saas_mvp.models.service_package as _svcpkg  # noqa: F401, E402
 import saas_mvp.models.customer_tag as _ctag  # noqa: F401, E402
 import saas_mvp.models.customer_tag_link as _ctaglink  # noqa: F401, E402
 import saas_mvp.models.booking_notification as _bnotif  # noqa: F401, E402

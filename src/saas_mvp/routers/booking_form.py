@@ -21,11 +21,13 @@ from saas_mvp.auth.ratelimit import public_limiter
 from saas_mvp.db import get_db
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import booking_form as booking_form_svc
+from saas_mvp.services import features as features_svc
 from saas_mvp.services.booking_form import (
     TokenAlreadyUsed,
     TokenExpired,
     TokenNotFound,
 )
+from saas_mvp.services import service_packages as packages_svc
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
@@ -91,6 +93,27 @@ def booking_form_page(
         booking_form_svc.service_staff(db, tid, service_id)
         if service_id is not None else []
     )
+    package_credits = 0
+    if service_id is not None and features_svc.is_enabled(
+        db, tid, features_svc.SERVICE_PACKAGES
+    ):
+        from saas_mvp.models.customer import Customer
+
+        customer = (
+            db.query(Customer)
+            .filter(
+                Customer.tenant_id == tid,
+                Customer.line_user_id == row.line_user_id,
+            )
+            .first()
+        )
+        if customer is not None:
+            package_credits = packages_svc.eligible_credit_count(
+                db,
+                tenant_id=tid,
+                customer_id=customer.id,
+                service_id=service_id,
+            )
     return _render_state(
         request, token, "pick_slot",
         service_id=service_id,
@@ -98,6 +121,7 @@ def booking_form_page(
         slots=[slot for slot in slots if slot.online_available > 0],
         full_slots=[slot for slot in slots if slot.online_available <= 0],
         staff=staff,
+        package_credits=package_credits,
     )
 
 
@@ -110,6 +134,7 @@ def booking_form_submit(
     party_size: int = Form(1),
     service_id: int | None = Form(default=None),
     staff_id: int | None = Form(default=None),
+    use_package: bool = Form(default=False),
 ):
     if party_size < 1:
         party_size = 1
@@ -121,6 +146,7 @@ def booking_form_submit(
             party_size=party_size,
             service_id=service_id,
             staff_id=staff_id,
+            use_package=use_package,
         )
     except TokenNotFound:
         return HTMLResponse(
@@ -145,6 +171,14 @@ def booking_form_submit(
             request, token, "error",
             message="很抱歉，您目前無法在線上預約，請直接與店家聯繫。",
         )
+    except packages_svc.PackageCreditUnavailable:
+        return _render_state(
+            request,
+            token,
+            "error",
+            message="套票次數已用完或已過期，請取消勾選套票後重新預約。",
+            service_id=service_id,
+        )
     except (booking_svc.SlotNotFoundError, booking_svc.CrossTenantReferenceError):
         return _render_state(
             request, token, "error",
@@ -154,6 +188,18 @@ def booking_form_submit(
 
     deposit_url = None
     deposit_note = None
+    from saas_mvp.models.service_package import PackageCreditLedger
+
+    package_redeemed = (
+        db.query(PackageCreditLedger)
+        .filter(
+            PackageCreditLedger.tenant_id == resv.tenant_id,
+            PackageCreditLedger.reservation_id == resv.id,
+            PackageCreditLedger.kind == "redeem",
+        )
+        .first()
+        is not None
+    )
     if getattr(resv, "deposit_status", None) == "pending":
         from saas_mvp.models.tenant import Tenant
         from saas_mvp.services import deposit as deposit_svc
@@ -169,6 +215,7 @@ def booking_form_submit(
             "reservation": resv,
             "deposit_url": deposit_url,
             "deposit_note": deposit_note,
+            "package_redeemed": package_redeemed,
         },
     )
 

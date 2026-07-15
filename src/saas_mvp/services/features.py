@@ -61,6 +61,8 @@ AI_BOOKING_AGENT = "AI_BOOKING_AGENT"
 AI_BOOST = "AI_BOOST"
 # 定金收款（C4 防 no-show）:建單後限時付定金,逾時自動取消。
 DEPOSIT_PAYMENT = "DEPOSIT_PAYMENT"
+# 服務套票／療程次數：建立套票、販售給顧客、預約扣次與取消退次。
+SERVICE_PACKAGES = "SERVICE_PACKAGES"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -84,6 +86,7 @@ _FEATURE_LABELS: dict[str, str] = {
     AI_BOOKING_AGENT: "AI 預約助理",
     AI_BOOST: "加購 AI 對話額度",
     DEPOSIT_PAYMENT: "定金收款",
+    SERVICE_PACKAGES: "服務套票",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

@@ -58,9 +58,10 @@
           {{ item('/ui/flex-menu', '圖文卡片') }}
           {{ item('/ui/faq', 'AI 客服') }}
         </details>
-        <details class="side-group"{% if path.startswith(('/ui/services', '/ui/pos', '/ui/shop', '/ui/coupons', '/ui/locations', '/ui/staff')) %} open{% endif %}>
+        <details class="side-group"{% if path.startswith(('/ui/services', '/ui/packages', '/ui/pos', '/ui/shop', '/ui/coupons', '/ui/locations', '/ui/staff')) %} open{% endif %}>
           <summary>商店銷售</summary>
           {{ item('/ui/services', '服務項目') }}
+          {{ item('/ui/packages', '服務套票') }}
           {{ item('/ui/pos', 'POS 結帳') }}
           {{ item('/ui/shop', '商品') }}
           {{ item('/ui/coupons', '優惠券') }}

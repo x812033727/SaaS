@@ -80,6 +80,8 @@ def book_slot(
     note: str | None = None,
     staff_id: int | None = None,
     service_id: int | None = None,
+    use_package: bool = False,
+    customer_package_id: int | None = None,
     source_webhook_event_id: str | None = None,
 ) -> Reservation:
     """原子建單：鎖時段 → 重驗容量 → 建顧客檔 → INSERT 預約 → 遞增 booked_count
@@ -214,6 +216,30 @@ def book_slot(
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
+
+    # 套票扣次為明確 opt-in；與建單同一交易，沒有可用次數時整筆預約失敗，
+    # 不會出現已佔名額但未扣到套票的半套狀態。
+    if use_package:
+        if not features_svc.is_enabled(
+            db, tenant_id, features_svc.SERVICE_PACKAGES
+        ):
+            from saas_mvp.services.service_packages import PackageCreditUnavailable
+
+            raise PackageCreditUnavailable("服務套票功能尚未開通。")
+        if customer is None or service_id is None:
+            from saas_mvp.services.service_packages import PackageCreditUnavailable
+
+            raise PackageCreditUnavailable("使用套票必須有顧客身分與服務項目。")
+        from saas_mvp.services import service_packages as packages_svc
+
+        packages_svc.redeem_for_reservation(
+            db,
+            tenant_id=tenant_id,
+            customer_id=customer.id,
+            service_id=service_id,
+            reservation=reservation,
+            customer_package_id=customer_package_id,
+        )
     # 候補者實際完成建單才算補位成功；單純點開通知不結案。
     waitlist_svc.fulfill_for_booking_in_txn(db, reservation=reservation, slot=slot)
 
@@ -223,7 +249,7 @@ def book_slot(
 
     # 定金（C4）：線上來源（LINE/網頁表單 = 有 line_user_id）且租戶啟用時,
     # 同交易快照定金欄位;店家手動建單不觸發。
-    if line_user_id and tenant_row is not None:
+    if line_user_id and tenant_row is not None and not use_package:
         from saas_mvp.services import deposit as deposit_svc
 
         if deposit_svc.tenant_deposit_required(db, tenant_row):
@@ -293,11 +319,16 @@ def cancel_reservation(
     line_user_id 非 None 時（LINE 來源取消）額外驗證與建單者相符，防他人取消。
     重複取消為 no-op（不重複回補）。
     """
-    reservation = (
-        tenant_query(db, Reservation, tenant_id)
-        .filter(Reservation.id == reservation_id)
-        .first()
-    )
+    # 先鎖預約本身：兩個 worker 同時取消時，後取得鎖者會看到最新 cancelled
+    # 狀態並直接 no-op，避免容量、套票與通知被重複回補。
+    reservation = db.execute(
+        select(Reservation)
+        .where(
+            Reservation.id == reservation_id,
+            Reservation.tenant_id == tenant_id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
     if reservation is None:
         raise ReservationNotFoundError(f"reservation {reservation_id} not found")
 
@@ -321,6 +352,13 @@ def cancel_reservation(
 
     reservation.status = RESERVATION_CANCELLED
     reservation.cancelled_at = _utcnow()
+    # 若此預約曾使用套票，取消時在同一交易自動退回；ledger 唯一約束與
+    # 服務層查重共同保證重複取消不會多退。
+    from saas_mvp.services import service_packages as packages_svc
+
+    packages_svc.refund_for_cancelled_reservation(
+        db, tenant_id=tenant_id, reservation_id=reservation_id
+    )
     cancel_reminders_for_reservation(db, reservation_id=reservation_id)
 
     # 預約異動通知（進階功能）：取消時 LINE 推播給顧客。同一交易內入列。

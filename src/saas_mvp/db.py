@@ -90,6 +90,7 @@ def import_all_models() -> None:
     from saas_mvp.models import location  # noqa: F401
     from saas_mvp.models import staff, staff_shift, staff_leave  # noqa: F401
     from saas_mvp.models import service_category, service, service_staff  # noqa: F401
+    from saas_mvp.models import service_package  # noqa: F401
     # PHASE 2：顧客標籤/分眾、行事曆 ICS、預約異動通知。
     from saas_mvp.models import customer_tag, customer_tag_link  # noqa: F401
     from saas_mvp.models import booking_notification  # noqa: F401
