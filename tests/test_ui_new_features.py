@@ -834,6 +834,14 @@ class TestFaqUI:
         assert r.status_code == 200
         assert f"/ui/faq/{fid}/update" in r.text
         assert "可以刷卡嗎？" in r.text  # 預填現有問題
+        assert 'hx-get="/ui/faq/list"' in r.text
+
+        # 取消只回 FAQ partial，不可把完整 HTML 頁面塞進 #faq-card。
+        cancelled = client.get("/ui/faq/list")
+        assert cancelled.status_code == 200
+        assert "可以刷卡嗎？" in cancelled.text
+        assert "<!doctype html>" not in cancelled.text.lower()
+        assert "<h1>AI 客服</h1>" not in cancelled.text
 
     def test_update_content(self, client):
         email = _login(client)

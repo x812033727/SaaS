@@ -59,6 +59,7 @@ def import_all_models() -> None:
     """
     # 順序：被依賴者先——Tenant → User → Note/ApiKey → ApiKeyUsage/ApiUsage → PlanChangeHistory
     from saas_mvp.models import organization, tenant, user, note  # noqa: F401
+    from saas_mvp.models import platform_oauth_config  # noqa: F401
     from saas_mvp.models import api_key, api_key_usage, usage  # noqa: F401
     from saas_mvp.models import plan_change_history  # noqa: F401
     from saas_mvp.models import line_channel_config  # noqa: F401

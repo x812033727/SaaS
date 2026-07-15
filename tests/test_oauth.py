@@ -133,7 +133,7 @@ class TestOAuthLogin:
             db.close()
 
         # 旋鈕：讓 get_provider 回 email_verified=False 的 stub。
-        def _unverified_provider(name, *, settings):
+        def _unverified_provider(name, *, settings, db=None):
             return oauth_svc.StubOAuthProvider(name=name, email_verified=False)
 
         monkeypatch.setattr(oauth_svc, "get_provider", _unverified_provider)
@@ -212,9 +212,8 @@ class TestOAuthLink:
 
         assert response.status_code == 200
         assert 'data-testid="line-login-admin-guide"' in response.text
-        assert "http://testserver/auth/oauth/line/callback" in response.text
-        assert "一般使用者不需要使用終端機" in response.text
-        assert "平台維運人員" in response.text
+        assert "前往平台登入設定" in response.text
+        assert "/ui/admin/oauth-settings" in response.text
         assert "SAAS_LINE_LOGIN_CHANNEL_ID" not in response.text
         assert "docker-compose" not in response.text
         assert 'data-testid="line-link-button"' not in response.text
@@ -360,7 +359,9 @@ class TestOAuthLink:
                 }
 
         monkeypatch.setattr(
-            oauth_svc, "get_provider", lambda name, *, settings: _SubjectOnlyProvider()
+            oauth_svc,
+            "get_provider",
+            lambda name, *, settings, db=None: _SubjectOnlyProvider(),
         )
         state = _link_login_and_get_state(client, "line")
         response = client.get(f"/auth/oauth/line/callback?code=no-email&state={state}")
@@ -379,7 +380,7 @@ class TestOAuthLink:
         _register(client, email)
         _ui_login(client, email)
 
-        def _missing(name, *, settings):
+        def _missing(name, *, settings, db=None):
             raise oauth_svc.OAuthNotConfigured("missing")
 
         monkeypatch.setattr(oauth_svc, "get_provider", _missing)

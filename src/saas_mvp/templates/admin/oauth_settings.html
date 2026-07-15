@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}登入設定 · 平台管理{% endblock %}
+{% block content %}
+<h1>平台登入設定</h1>
+
+<div class="card">
+  <h2>LINE Login</h2>
+  <p class="muted">這是全平台共用設定。設定完成後，所有使用者都能在自己的帳號頁連結 LINE；只有平台管理員可以修改憑證。</p>
+
+  {% if saved %}<div class="success">LINE Login 設定已加密儲存並立即生效，不需要重啟服務。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  {% if line_status.configured %}
+    <p><span class="badge valid">已啟用</span>
+      {% if line_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">尚未啟用</span></p>
+  {% endif %}
+
+  <label for="line-callback-url">Callback URL（貼到 LINE Developers Console）</label>
+  <input id="line-callback-url" value="{{ callback_url }}" readonly>
+
+  <form method="post" action="/ui/admin/oauth-settings/line" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="line-channel-id">Channel ID</label>
+    <input id="line-channel-id" name="channel_id" value="{{ line_status.client_id }}"
+           inputmode="numeric" pattern="[0-9]{5,20}" maxlength="20" required>
+
+    <label for="line-channel-secret">Channel Secret</label>
+    <input id="line-channel-secret" name="channel_secret" type="password" maxlength="255"
+           placeholder="{% if line_status.source == 'database' %}已設定；留空可保留原 Secret{% else %}建立後台設定時必填{% endif %}"
+           {% if line_status.source != 'database' %}required{% endif %} autocomplete="new-password">
+    <p class="muted">Secret 只在送出時使用，將以 Fernet 加密保存，之後不會在頁面顯示明文。</p>
+    <button type="submit">儲存並啟用</button>
+  </form>
+
+  {% if line_status.configured %}
+    <p><a class="btn" href="/auth/oauth/line/login?link=1">測試 LINE 授權與連結</a></p>
+  {% endif %}
+
+  {% if line_status.source == 'database' %}
+    <form method="post" action="/ui/admin/oauth-settings/line/reset">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger" onclick="return confirm('確定移除後台設定並改用伺服器備援值？')">移除後台設定</button>
+    </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>一般使用者流程</h2>
+  <ol>
+    <li>平台管理員在本頁完成一次 LINE Login 設定。</li>
+    <li>所有使用者前往「帳號設定」，點擊「開始連結 LINE 帳戶」。</li>
+    <li>完成 LINE 授權後即可使用 LINE 登入，不需終端機或重啟服務。</li>
+  </ol>
+</div>
+{% endblock %}

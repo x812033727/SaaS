@@ -25,12 +25,12 @@ from abc import ABC, abstractmethod
 VALID_PROVIDERS: frozenset[str] = frozenset({"line", "google"})
 
 
-def provider_credentials_present(name: str, *, settings) -> bool:
+def provider_credentials_present(name: str, *, settings, db=None) -> bool:
     """Return configuration status without exposing credential values."""
     if name == "line":
-        return bool(
-            settings.line_login_channel_id and settings.line_login_channel_secret
-        )
+        from saas_mvp.services.platform_oauth_config import effective_line_credentials
+
+        return effective_line_credentials(db, settings) is not None
     if name == "google":
         return bool(
             settings.google_oauth_client_id and settings.google_oauth_client_secret
@@ -281,17 +281,20 @@ class GoogleOAuthProvider(OAuthProvider):
 # ── factory（比照 translation.get_translator） ────────────────────────────────
 
 
-def get_provider(name: str, *, settings) -> OAuthProvider:
+def get_provider(name: str, *, settings, db=None) -> OAuthProvider:
     """依 provider 名稱回傳實例。
 
     真實 client_id/secret 已設 → 回真實 provider；否則回 StubOAuthProvider
     （離線、決定性、永遠可用），呼叫端無需知道實際 backend。
     """
     if name == "line":
-        if provider_credentials_present("line", settings=settings):
+        from saas_mvp.services.platform_oauth_config import effective_line_credentials
+
+        credentials = effective_line_credentials(db, settings)
+        if credentials:
             return LineLoginProvider(
-                channel_id=settings.line_login_channel_id,
-                channel_secret=settings.line_login_channel_secret,
+                channel_id=credentials[0],
+                channel_secret=credentials[1],
             )
         if getattr(settings, "env", "dev") not in ("dev", "test"):
             raise OAuthNotConfigured("LINE Login credentials are not configured")

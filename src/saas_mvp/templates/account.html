@@ -44,18 +44,8 @@
     <p><span class="badge unchecked">尚未啟用 LINE Login</span></p>
     {% if is_admin %}
       <div class="setup-guide" data-testid="line-login-admin-guide">
-        <p>目前是<strong>平台共用的 LINE Login</strong> 尚未啟用，不是你的帳戶需要重啟。這項設定全平台只需由平台維運人員完成一次。</p>
-        <ol>
-          <li>前往 LINE Developers Console，在正確的 Provider 下建立 <strong>LINE Login</strong> Channel，App type 選擇 <strong>Web app</strong>。</li>
-          <li>在 LINE Login 分頁新增 Callback URL：</li>
-        </ol>
-        <pre><code>{{ line_login_callback_url }}</code></pre>
-        <ol start="3">
-          <li>透過安全管道將 Channel ID 與 Channel Secret 交給平台維運人員；不要貼在對話、畫面或提交到 GitHub。</li>
-          <li>維運人員完成平台設定後，重新整理本頁；看到「LINE Login 已啟用」即可直接連結。</li>
-        </ol>
-        <div class="notice"><strong>一般使用者不需要使用終端機，也不需要重啟或重建任何服務。</strong></div>
-        <p><a href="https://developers.line.biz/en/docs/line-login/getting-started/" target="_blank" rel="noopener noreferrer">開啟 LINE 官方設定文件</a></p>
+        <p>平台共用的 LINE Login 尚未設定。請到平台管理頁輸入 Channel ID 與 Channel Secret；儲存後立即生效，不需終端機或重啟。</p>
+        <p><a class="btn" href="/ui/admin/oauth-settings">前往平台登入設定</a></p>
       </div>
     {% else %}
       <p class="muted" data-testid="line-login-contact-admin">平台尚未完成 LINE Login 設定，請聯絡平台管理員；設定完成後此處會自動出現連結按鈕。</p>

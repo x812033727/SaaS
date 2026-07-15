@@ -71,12 +71,16 @@ def _redirect_uri(provider: str) -> str:
 
 
 @router.get("/{provider}/login")
-def oauth_login(provider: str, link: int = 0):
+def oauth_login(
+    provider: str,
+    link: int = 0,
+    db: Session = Depends(get_db),
+):
     _validate_provider(provider)
     state = secrets.token_urlsafe(24)
     redirect_uri = _redirect_uri(provider)
     try:
-        p = oauth_svc.get_provider(provider, settings=settings)
+        p = oauth_svc.get_provider(provider, settings=settings, db=db)
     except oauth_svc.OAuthNotConfigured:
         if link:
             return _account_redirect(oauth_error="not_configured")
@@ -133,7 +137,7 @@ def oauth_callback(
         )
 
     try:
-        p = oauth_svc.get_provider(provider, settings=settings)
+        p = oauth_svc.get_provider(provider, settings=settings, db=db)
     except oauth_svc.OAuthNotConfigured:
         if request.cookies.get(_INTENT_COOKIE_NAME) == "link":
             return _account_redirect(oauth_error="not_configured")

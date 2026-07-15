@@ -64,12 +64,12 @@ from saas_mvp.services import features as features_svc
 from saas_mvp.services import api_keys as api_keys_svc
 from saas_mvp.services import auto_reply as auto_reply_svc
 from saas_mvp.services import customers as customers_svc
-from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import account_email as account_email_svc
 from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import line_config as line_config_svc
 from saas_mvp.services import onboarding as onboarding_svc
 from saas_mvp.services import oauth as oauth_svc
+from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, MailerError, get_mailer
 from saas_mvp.services import rich_menu as rich_menu_svc
@@ -1048,17 +1048,13 @@ _OAUTH_PROVIDER_LABELS = {"line": "LINE", "google": "Google"}
 def account_page(
     request: Request,
     actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
     linked: str | None = Query(default=None),
     oauth_error: str | None = Query(default=None),
 ):
     # 綁定結果（由 /auth/oauth/.../callback 導回時帶 query 參數）轉成可顯示文案。
     linked_label = _OAUTH_PROVIDER_LABELS.get(linked or "")
     provider_label = _OAUTH_PROVIDER_LABELS.get(actor.user.oauth_provider or "")
-    callback_base = (
-        settings.oauth_redirect_base
-        or settings.public_base_url
-        or str(request.base_url)
-    ).rstrip("/")
     return templates.TemplateResponse(
         "account.html",
         _ctx(
@@ -1068,10 +1064,7 @@ def account_page(
             oauth_error=oauth_error,
             provider_label=provider_label,
             line_login_configured=oauth_svc.provider_credentials_present(
-                "line", settings=settings
-            ),
-            line_login_callback_url=(
-                f"{callback_base}/auth/oauth/line/callback"
+                "line", settings=settings, db=db
             ),
             # 重新佈署按鈕：僅平台管理員 + 已設定觸發路徑時才顯示（template 另把關 is_admin）。
             deploy_available=bool(settings.deploy_trigger_path),
@@ -1179,6 +1172,99 @@ def admin_overview(
     return templates.TemplateResponse(
         "admin/overview.html",
         _ctx(request, actor, overview=admin_svc.platform_overview(db)),
+    )
+
+
+def _platform_line_login_ctx(
+    request: Request,
+    actor: Actor,
+    db: Session,
+    **extra,
+) -> dict:
+    callback_base = (
+        settings.oauth_redirect_base
+        or settings.public_base_url
+        or str(request.base_url)
+    ).rstrip("/")
+    return _ctx(
+        request,
+        actor,
+        line_status=platform_oauth_svc.line_status(db, settings),
+        callback_url=f"{callback_base}/auth/oauth/line/callback",
+        **extra,
+    )
+
+
+@router.get("/admin/oauth-settings", response_class=HTMLResponse)
+def admin_oauth_settings(
+    request: Request,
+    saved: int = Query(0),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """平台共用 LINE Login 憑證；只有平台管理員可讀取狀態或修改。"""
+    return templates.TemplateResponse(
+        "admin/oauth_settings.html",
+        _platform_line_login_ctx(request, actor, db, saved=bool(saved)),
+    )
+
+
+@router.post("/admin/oauth-settings/line", response_class=HTMLResponse)
+def admin_oauth_settings_save(
+    request: Request,
+    channel_id: str = Form(..., max_length=255),
+    channel_secret: str = Form("", max_length=255),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_oauth_svc.save_line_credentials(
+            db,
+            channel_id=channel_id,
+            channel_secret=channel_secret,
+            actor_user_id=actor.user.id,
+        )
+    except platform_oauth_svc.PlatformOAuthConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/oauth_settings.html",
+            _platform_line_login_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.oauth.line.update",
+        target="oauth:line",
+        detail={"channel_id": channel_id.strip(), "secret_changed": bool(channel_secret)},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/oauth-settings?saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/oauth-settings/line/reset", response_class=HTMLResponse)
+def admin_oauth_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    removed = platform_oauth_svc.clear_line_override(db)
+    if removed:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.oauth.line.reset",
+            target="oauth:line",
+            request=request,
+        )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/oauth-settings",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1382,7 +1468,7 @@ def admin_tenant_patch(
     db: Session = Depends(get_db),
 ):
     try:
-        result = admin_svc.patch_tenant(
+        admin_svc.patch_tenant(
             db, tenant_id,
             is_active=(is_active == "true"),
             plan=plan,
@@ -2945,7 +3031,7 @@ def _require_ui_feature(db: Session, actor: Actor, feature: str) -> bool:
 def _locations_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     tid = actor.user.tenant_id
     rows = locations_svc.list_locations(db, tenant_id=tid)
-    active_count = sum(1 for l in rows if l.is_active)
+    active_count = sum(1 for location in rows if location.is_active)
     return _ctx(
         request, actor,
         locations=rows,
@@ -5033,6 +5119,20 @@ def faq_page(
     if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
         return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
     return templates.TemplateResponse("faq.html", _faq_ctx(request, actor, db))
+
+
+@router.get("/faq/list", response_class=HTMLResponse)
+def faq_list_partial(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """FAQ 清單 partial；供編輯列取消時還原，避免把完整頁面嵌進卡片。"""
+    if not _require_ui_feature(db, actor, features_svc.AI_ASSISTANT):
+        return _feature_locked(request, actor, features_svc.AI_ASSISTANT, "AI 客服")
+    return templates.TemplateResponse(
+        "_faq_list.html", _faq_ctx(request, actor, db)
+    )
 
 
 @router.post("/faq", response_class=HTMLResponse)
