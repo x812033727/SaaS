@@ -56,8 +56,9 @@
         <pre><code>SAAS_LINE_LOGIN_CHANNEL_ID=&lt;Channel ID&gt;
 SAAS_LINE_LOGIN_CHANNEL_SECRET=&lt;Channel Secret&gt;
 SAAS_OAUTH_REDIRECT_BASE={{ line_login_callback_url.rsplit('/auth/oauth/line/callback', 1)[0] }}</code></pre>
+        <div class="notice"><strong>一般連結帳戶不需要重啟或重建服務。</strong>以下步驟只適用於平台管理員首次設定或更改上述 <code>.env</code>。</div>
         <ol start="4">
-          <li>重新建置 web 服務：<code>docker-compose up -d --build web</code>。</li>
+          <li>讓 web 服務重新載入環境變數：<code>docker-compose up -d --force-recreate web</code>（不需要 <code>--build</code>）。</li>
           <li>重新整理本頁；狀態變為「LINE Login 已啟用」後，再執行帳戶連結。</li>
         </ol>
         <p><a href="https://developers.line.biz/en/docs/line-login/getting-started/" target="_blank" rel="noopener noreferrer">開啟 LINE 官方設定文件</a></p>

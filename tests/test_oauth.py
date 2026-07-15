@@ -215,6 +215,9 @@ class TestOAuthLink:
         assert "http://testserver/auth/oauth/line/callback" in response.text
         assert "SAAS_LINE_LOGIN_CHANNEL_ID" in response.text
         assert "SAAS_LINE_LOGIN_CHANNEL_SECRET" in response.text
+        assert "一般連結帳戶不需要重啟或重建服務" in response.text
+        assert "docker-compose up -d --force-recreate web" in response.text
+        assert "docker-compose up -d --build web" not in response.text
         assert 'data-testid="line-link-button"' not in response.text
         client.cookies.clear()
 
