@@ -31,6 +31,7 @@ from saas_mvp.auth.security import hash_password
 from saas_mvp.config import settings
 from saas_mvp.db import SessionLocal, import_all_models, init_db
 from saas_mvp.models.campaign import CAMPAIGN_BIRTHDAY, Campaign
+from saas_mvp.models.appointment_series import AppointmentSeries
 from saas_mvp.models.coupon import DISCOUNT_AMOUNT, DISCOUNT_PERCENT
 from saas_mvp.models.customer import upsert_customer_from_line
 from saas_mvp.models.reservation import Reservation
@@ -38,6 +39,7 @@ from saas_mvp.models.staff import Staff
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import appointment_series as appointment_series_svc
 from saas_mvp.services import bookable_resources as resources_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import client_forms as client_forms_svc
@@ -338,6 +340,40 @@ def _ensure_slots_and_reservations(
     return len(slots), resv_count
 
 
+def _ensure_appointment_series(
+    db: Session, tenant_id: int, actor_user_id: int
+) -> int:
+    """建立一組每週療程，讓示範後台可直接操作系列取消與衝突狀態。"""
+    existing = db.execute(
+        select(AppointmentSeries)
+        .where(AppointmentSeries.tenant_id == tenant_id)
+        .order_by(AppointmentSeries.id)
+    ).scalars().first()
+    if existing is not None:
+        return 1
+    source = db.execute(
+        select(Reservation)
+        .where(
+            Reservation.tenant_id == tenant_id,
+            Reservation.status == "confirmed",
+        )
+        .order_by(Reservation.id)
+    ).scalars().first()
+    if source is None:
+        return 0
+    appointment_series_svc.create_from_reservation(
+        db,
+        tenant_id=tenant_id,
+        reservation_id=source.id,
+        recurrence_unit="week",
+        recurrence_interval=1,
+        occurrence_count=4,
+        auto_create_slots=True,
+        actor_user_id=actor_user_id,
+    )
+    return 1
+
+
 def _ensure_products(db: Session, tenant_id: int) -> int:
     want = [
         ("沙龍級洗髮精", 48000, 50),
@@ -592,6 +628,9 @@ def run(
         n_slots, n_resv = _ensure_slots_and_reservations(db, tenant_id, services)
         counts["slots"] = n_slots
         counts["reservations"] = n_resv
+        counts["appointment_series"] = _ensure_appointment_series(
+            db, tenant_id, user_id
+        )
 
         counts["products"] = _ensure_products(db, tenant_id)
         counts["coupons"] = _ensure_coupons(db, tenant_id)

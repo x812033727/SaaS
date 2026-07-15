@@ -81,12 +81,15 @@ def book_slot(
     party_size: int = 1,
     line_user_id: str | None = None,
     display_name: str | None = None,
+    customer_id: int | None = None,
     note: str | None = None,
     staff_id: int | None = None,
     service_id: int | None = None,
     use_package: bool = False,
     customer_package_id: int | None = None,
     source_webhook_event_id: str | None = None,
+    require_deposit: bool | None = None,
+    series_occurrence_id: int | None = None,
 ) -> Reservation:
     """原子建單：鎖時段 → 重驗容量 → 建顧客檔 → INSERT 預約 → 遞增 booked_count
     → 入列提醒 → 單一 commit。
@@ -194,22 +197,38 @@ def book_slot(
                     f"staff {staff_id} already booked for slot {slot_id}"
                 )
 
-    # 顧客建檔（LINE 來源才有 line_user_id）
+    # 顧客建檔。後台建單可直接帶既有 customer_id（包含沒有 LINE 的顧客）；
+    # LINE 來源維持既有 upsert 行為。跨租戶 customer_id 一律拒絕。
     customer = None
-    customer_id = None
-    if line_user_id:
+    chosen_customer_id = None
+    if customer_id is not None:
+        customer = (
+            tenant_query(db, Customer, tenant_id)
+            .filter(Customer.id == customer_id)
+            .first()
+        )
+        if customer is None:
+            raise CrossTenantReferenceError(
+                f"customer {customer_id} not found for tenant {tenant_id}"
+            )
+        if line_user_id and customer.line_user_id not in (None, line_user_id):
+            raise CrossTenantReferenceError("customer and LINE identity do not match")
+        chosen_customer_id = customer.id
+        customer.booking_count = (customer.booking_count or 0) + 1
+        customer.last_booked_at = _utcnow()
+    elif line_user_id:
         customer = upsert_customer_from_line(
             db,
             tenant_id=tenant_id,
             line_user_id=line_user_id,
             display_name=display_name,
         )
-        customer_id = customer.id
+        chosen_customer_id = customer.id
 
     reservation = Reservation(
         tenant_id=tenant_id,
         slot_id=slot_id,
-        customer_id=customer_id,
+        customer_id=chosen_customer_id,
         line_user_id=line_user_id,
         party_size=party_size,
         status=RESERVATION_CONFIRMED,
@@ -224,6 +243,31 @@ def book_slot(
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
+
+    # 重複預約服務可先建立 occurrence，再讓預約與 occurrence 在本次建單交易
+    # 一起連結；如此程序即使在 commit 前中止，也不會留下已佔容量但系列查不到
+    # 的孤兒預約。
+    if series_occurrence_id is not None:
+        from saas_mvp.models.appointment_series import (
+            OCCURRENCE_BOOKED,
+            AppointmentSeriesOccurrence,
+        )
+
+        occurrence = db.execute(
+            select(AppointmentSeriesOccurrence)
+            .where(
+                AppointmentSeriesOccurrence.id == series_occurrence_id,
+                AppointmentSeriesOccurrence.tenant_id == tenant_id,
+                AppointmentSeriesOccurrence.reservation_id.is_(None),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if occurrence is None:
+            db.rollback()
+            raise CrossTenantReferenceError("series occurrence is invalid or already linked")
+        occurrence.reservation_id = reservation.id
+        occurrence.status = OCCURRENCE_BOOKED
+        occurrence.conflict_reason = None
 
     # 房間／設備與預約同交易配置。候選資源列會被鎖定，避免時段仍有容量時
     # 同一間房或同一台設備被兩筆並發預約重複占用。
@@ -274,7 +318,10 @@ def book_slot(
 
     # 定金（C4）：線上來源（LINE/網頁表單 = 有 line_user_id）且租戶啟用時,
     # 同交易快照定金欄位;店家手動建單不觸發。
-    if line_user_id and tenant_row is not None and not use_package:
+    should_require_deposit = (
+        line_user_id is not None if require_deposit is None else require_deposit
+    )
+    if should_require_deposit and tenant_row is not None and not use_package:
         from saas_mvp.services import deposit as deposit_svc
 
         if deposit_svc.tenant_deposit_required(db, tenant_row):
@@ -383,6 +430,13 @@ def cancel_reservation(
 
     reservation.status = RESERVATION_CANCELLED
     reservation.cancelled_at = _utcnow()
+    # 若屬於重複預約系列，同交易同步單次狀態；一般取消與系列取消都不會留下
+    # 「預約已取消、系列卻仍顯示已建立」的不一致畫面。
+    from saas_mvp.services import appointment_series as series_svc
+
+    series_svc.mark_occurrence_cancelled_in_txn(
+        db, tenant_id=tenant_id, reservation_id=reservation_id
+    )
     # 若此預約曾使用套票，取消時在同一交易自動退回；ledger 唯一約束與
     # 服務層查重共同保證重複取消不會多退。
     from saas_mvp.services import service_packages as packages_svc

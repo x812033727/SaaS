@@ -115,6 +115,7 @@ import saas_mvp.models.service_package as _svcpkg  # noqa: F401, E402
 import saas_mvp.models.gift_card as _giftcard  # noqa: F401, E402
 import saas_mvp.models.client_form as _clientform  # noqa: F401, E402
 import saas_mvp.models.bookable_resource as _bookable_resource  # noqa: F401, E402
+import saas_mvp.models.appointment_series as _appointment_series  # noqa: F401, E402
 import saas_mvp.models.customer_tag as _ctag  # noqa: F401, E402
 import saas_mvp.models.customer_tag_link as _ctaglink  # noqa: F401, E402
 import saas_mvp.models.booking_notification as _bnotif  # noqa: F401, E402

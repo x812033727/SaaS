@@ -13,6 +13,10 @@ from sqlalchemy.pool import StaticPool
 
 from saas_mvp.db import Base, import_all_models
 from saas_mvp.models.business_profile import BusinessProfile
+from saas_mvp.models.appointment_series import (
+    AppointmentSeries,
+    AppointmentSeriesOccurrence,
+)
 from saas_mvp.models.client_form import ClientFormRequest, ClientFormTemplate
 from saas_mvp.models.bookable_resource import BookableResource, ResourceType
 from saas_mvp.models.location import Location
@@ -60,6 +64,8 @@ def test_seed_creates_demo_tenant_and_key_rows() -> None:
     assert _count(Service) >= 1
     assert _count(ClientFormTemplate) == 1
     assert _count(ClientFormRequest) >= 1
+    assert _count(AppointmentSeries) == 1
+    assert _count(AppointmentSeriesOccurrence) == 4
 
     # 使用者掛在 demo 租戶上，密碼為雜湊（非明文）。
     with _Session() as db:
@@ -90,6 +96,8 @@ def test_seed_is_idempotent() -> None:
     form_requests_after_first = _count(ClientFormRequest)
     resource_types_after_first = _count(ResourceType)
     resources_after_first = _count(BookableResource)
+    series_after_first = _count(AppointmentSeries)
+    occurrences_after_first = _count(AppointmentSeriesOccurrence)
 
     # 重跑不應拋例外。
     second = seed_demo.run(session_factory=_Session)
@@ -108,6 +116,8 @@ def test_seed_is_idempotent() -> None:
     assert _count(ClientFormRequest) == form_requests_after_first
     assert _count(ResourceType) == resource_types_after_first == 1
     assert _count(BookableResource) == resources_after_first == 2
+    assert _count(AppointmentSeries) == series_after_first == 1
+    assert _count(AppointmentSeriesOccurrence) == occurrences_after_first == 4
 
     # slug 仍解析到同一租戶。
     with _Session() as db:

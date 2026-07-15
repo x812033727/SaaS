@@ -57,6 +57,32 @@
       </td>
       <td>
         {% if r.status == 'confirmed' %}
+        {% set series_occurrence = occurrence_by_reservation.get(r.id) if occurrence_by_reservation else None %}
+        {% if series_occurrence %}
+        <span class="badge valid">系列 #{{ series_occurrence.series_id }} · 第 {{ series_occurrence.sequence }} 次</span><br>
+        {% else %}
+        <details>
+          <summary>建立重複預約</summary>
+          <form hx-post="/ui/booking/reservations/{{ r.id }}/series"
+                hx-target="#series-card" hx-swap="innerHTML">
+            <label>週期
+              <select name="recurrence_unit">
+                <option value="week">每週</option>
+                <option value="month">每月</option>
+              </select>
+            </label>
+            <label>間隔
+              <input type="number" name="recurrence_interval" value="1" min="1" max="12" required>
+            </label>
+            <label>總次數（含本次）
+              <input type="number" name="occurrence_count" value="4" min="2" max="52" required>
+            </label>
+            <label><input type="checkbox" name="auto_create_slots" value="true" checked> 缺少日期時，自動建立相同時間與容量的時段</label>
+            <p class="muted">每筆仍會檢查容量、員工與房間設備；有衝突的日期會列出原因。</p>
+            <button type="submit">建立系列</button>
+          </form>
+        </details>
+        {% endif %}
         <button hx-post="/ui/booking/reservations/{{ r.id }}/cancel"
                 hx-target="#reservations-card" hx-swap="innerHTML"
                 hx-confirm="確定取消此預約？">取消</button>
@@ -89,4 +115,10 @@
 </table>
 {% else %}
 <p class="muted">尚無預約。</p>
+{% endif %}
+
+{% if refresh_series %}
+<div id="series-card" hx-swap-oob="innerHTML">
+  {% include "_booking_series.html" %}
+</div>
 {% endif %}

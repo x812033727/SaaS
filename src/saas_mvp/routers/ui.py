@@ -67,6 +67,7 @@ from saas_mvp.services import analytics as analytics_svc
 from saas_mvp.services import reporting as reporting_svc
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import appointment_series as appointment_series_svc
 from saas_mvp.services import deposit as deposit_svc
 from saas_mvp.services import waitlist as waitlist_svc
 from saas_mvp.services import coupons as coupons_svc
@@ -2800,6 +2801,15 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     booking_slots = slots_svc.list_slots(db, tenant_id=tid)
     reservations = booking_svc.list_reservations(db, tenant_id=tid)
     waitlist_rows = waitlist_svc.list_waitlist(db, tenant_id=tid)
+    appointment_series, series_occurrences = appointment_series_svc.list_series(
+        db, tenant_id=tid
+    )
+    occurrence_by_reservation = {
+        item.reservation_id: item
+        for items in series_occurrences.values()
+        for item in items
+        if item.reservation_id is not None
+    }
     from saas_mvp.models.service_package import PackageCreditLedger
 
     package_reservation_ids = {
@@ -2824,6 +2834,9 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         has_line_config=cfg is not None,
         slots=booking_slots,
         reservations=reservations,
+        appointment_series=appointment_series,
+        series_occurrences=series_occurrences,
+        occurrence_by_reservation=occurrence_by_reservation,
         resource_allocations=resources_svc.allocations_for_reservations(
             db,
             tenant_id=tid,
@@ -3195,7 +3208,161 @@ def booking_cancel_reservation(
     except booking_svc.ReservationNotFoundError:
         error = "預約不存在或已取消"
     return templates.TemplateResponse(
-        "_booking_reservations.html", _booking_ctx(request, actor, db, error=error)
+        "_booking_reservations.html",
+        _booking_ctx(request, actor, db, error=error, refresh_series=True),
+    )
+
+
+@router.post(
+    "/booking/reservations/{reservation_id}/series", response_class=HTMLResponse
+)
+def booking_create_appointment_series(
+    request: Request,
+    reservation_id: int,
+    recurrence_unit: str = Form(...),
+    recurrence_interval: int = Form(1),
+    occurrence_count: int = Form(...),
+    auto_create_slots: bool = Form(False),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    error = None
+    series_success = None
+    try:
+        result = appointment_series_svc.create_from_reservation(
+            db,
+            tenant_id=actor.user.tenant_id,
+            reservation_id=reservation_id,
+            recurrence_unit=recurrence_unit,
+            recurrence_interval=recurrence_interval,
+            occurrence_count=occurrence_count,
+            auto_create_slots=auto_create_slots,
+            actor_user_id=actor.user.id,
+        )
+        series_success = (
+            f"系列 #{result['series'].id} 已建立：{result['booked']} 筆成功"
+            + (f"，{result['conflicts']} 筆衝突待處理。" if result["conflicts"] else "。")
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.series.create",
+            target=f"series:{result['series'].id}",
+            detail={
+                "source_reservation_id": reservation_id,
+                "booked": result["booked"],
+                "conflicts": result["conflicts"],
+            },
+            request=request,
+        )
+        db.commit()
+    except appointment_series_svc.AppointmentSeriesError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_booking_series.html",
+        _booking_ctx(
+            request,
+            actor,
+            db,
+            series_error=error,
+            series_success=series_success,
+            refresh_reservations=True,
+        ),
+    )
+
+
+@router.post("/booking/series/{series_id}/cancel", response_class=HTMLResponse)
+def booking_cancel_appointment_series(
+    request: Request,
+    series_id: int,
+    sequence_from: int = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    error = None
+    series_success = None
+    try:
+        count = appointment_series_svc.cancel_from_sequence(
+            db,
+            tenant_id=actor.user.tenant_id,
+            series_id=series_id,
+            sequence_from=sequence_from,
+        )
+        series_success = f"已取消系列 #{series_id} 自第 {sequence_from} 次起的 {count} 筆有效預約。"
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.series.cancel_following",
+            target=f"series:{series_id}",
+            detail={"sequence_from": sequence_from, "cancelled": count},
+            request=request,
+        )
+        db.commit()
+    except appointment_series_svc.AppointmentSeriesError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_booking_series.html",
+        _booking_ctx(
+            request,
+            actor,
+            db,
+            series_error=error,
+            series_success=series_success,
+            refresh_reservations=True,
+        ),
+    )
+
+
+@router.post(
+    "/booking/series/{series_id}/occurrences/{occurrence_id}/retry",
+    response_class=HTMLResponse,
+)
+def booking_retry_series_occurrence(
+    request: Request,
+    series_id: int,
+    occurrence_id: int,
+    auto_create_slot: bool = Form(False),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    error = None
+    series_success = None
+    try:
+        result = appointment_series_svc.retry_conflict(
+            db,
+            tenant_id=actor.user.tenant_id,
+            series_id=series_id,
+            occurrence_id=occurrence_id,
+            auto_create_slot=auto_create_slot,
+        )
+        if result["booked"]:
+            series_success = f"衝突日期已成功建立為預約 #{result['reservation_id']}。"
+        else:
+            error = f"仍無法建立：{result['reason']}"
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.series.retry",
+            target=f"series_occurrence:{occurrence_id}",
+            detail={"result": "booked" if result["booked"] else "conflict"},
+            request=request,
+        )
+        db.commit()
+    except appointment_series_svc.AppointmentSeriesError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_booking_series.html",
+        _booking_ctx(
+            request,
+            actor,
+            db,
+            series_error=error,
+            series_success=series_success,
+            refresh_reservations=True,
+        ),
     )
 
 

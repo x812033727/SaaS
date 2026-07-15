@@ -43,6 +43,10 @@ from saas_mvp.models.reservation import (  # noqa: E402
     Reservation,
 )
 from saas_mvp.models.audit_log import AuditLog  # noqa: E402
+from saas_mvp.models.appointment_series import (  # noqa: E402
+    AppointmentSeries,
+    AppointmentSeriesOccurrence,
+)
 from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential  # noqa: E402
 from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
@@ -133,6 +137,54 @@ class TestBookingUI:
         assert "2030-06-01 18:00" in r.text
         # 取出 slot id：線上可訂應為 6
         assert "<td>6</td>" in r.text or "6" in r.text
+
+    def test_create_recurring_appointment_series(self, client):
+        email = _login(client)
+        with _Session() as db:
+            user = db.query(User).filter_by(email=email).one()
+            slot = BookingSlot(
+                tenant_id=user.tenant_id,
+                slot_start=datetime.datetime(2033, 2, 1, 10, 0),
+                slot_end=datetime.datetime(2033, 2, 1, 11, 0),
+                max_capacity=2,
+                booked_count=1,
+            )
+            db.add(slot)
+            db.flush()
+            reservation = Reservation(
+                tenant_id=user.tenant_id,
+                slot_id=slot.id,
+                party_size=1,
+                status=RESERVATION_CONFIRMED,
+                note="週期療程",
+            )
+            db.add(reservation)
+            db.commit()
+            reservation_id = reservation.id
+            tenant_id = user.tenant_id
+
+        response = client.post(
+            f"/ui/booking/reservations/{reservation_id}/series",
+            data={
+                "recurrence_unit": "week",
+                "recurrence_interval": "1",
+                "occurrence_count": "3",
+                "auto_create_slots": "true",
+            },
+        )
+        assert response.status_code == 200
+        assert "3 筆成功" in response.text
+        assert "取消此筆及後續" in response.text
+        assert 'id="reservations-card" hx-swap-oob="innerHTML"' in response.text
+        with _Session() as db:
+            series = db.query(AppointmentSeries).filter_by(tenant_id=tenant_id).one()
+            assert series.requested_occurrences == 3
+            assert db.query(AppointmentSeriesOccurrence).filter_by(
+                series_id=series.id
+            ).count() == 3
+            assert db.query(AuditLog).filter_by(
+                action="booking.series.create", target=f"series:{series.id}"
+            ).count() == 1
 
     def test_bulk_generate_slots(self, client):
         _login(client)
