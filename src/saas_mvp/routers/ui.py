@@ -106,6 +106,13 @@ _CSRF_FORM_FIELD = "csrf_token"
 _CSRF_EXEMPT_PATHS = {"/ui/login", "/ui/register"}
 
 
+def _line_webhook_url_for(tenant_id: int) -> str:
+    """Return the copy-ready public webhook URL shown in the management UI."""
+    path = webhook_url_for(tenant_id)
+    base = settings.public_base_url.rstrip("/")
+    return f"{base}{path}" if base else path
+
+
 async def _enforce_csrf(request: Request) -> None:
     """/ui 全端點 router 級依賴：非 GET 請求驗 double-submit CSRF token。
 
@@ -858,7 +865,7 @@ def line_config_page(
     cfg = _line_config_or_none(db, tid)
     return templates.TemplateResponse(
         "line_config.html",
-        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
+        _ctx(request, actor, cfg=cfg, webhook_url=_line_webhook_url_for(tid)),
     )
 
 
@@ -884,7 +891,7 @@ def line_config_save(
     except HTTPException as exc:
         return templates.TemplateResponse(
             "_line_config_status.html",
-            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid), error=str(exc.detail)),
+            _ctx(request, actor, cfg=None, webhook_url=_line_webhook_url_for(tid), error=str(exc.detail)),
             status_code=exc.status_code,
         )
     audit_svc.record_from_actor(
@@ -894,7 +901,7 @@ def line_config_save(
     db.commit()
     return templates.TemplateResponse(
         "_line_config_status.html",
-        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
+        _ctx(request, actor, cfg=cfg, webhook_url=_line_webhook_url_for(tid)),
     )
 
 
@@ -928,12 +935,12 @@ def line_config_verify(
     except HTTPException as exc:
         return templates.TemplateResponse(
             "_line_config_status.html",
-            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid), error=str(exc.detail)),
+            _ctx(request, actor, cfg=None, webhook_url=_line_webhook_url_for(tid), error=str(exc.detail)),
             status_code=exc.status_code,
         )
     return templates.TemplateResponse(
         "_line_config_status.html",
-        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tid)),
+        _ctx(request, actor, cfg=cfg, webhook_url=_line_webhook_url_for(tid)),
     )
 
 
@@ -950,7 +957,7 @@ def line_config_delete(
         pass  # 不存在即視為已刪除
     return templates.TemplateResponse(
         "_line_config_status.html",
-        _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tid)),
+        _ctx(request, actor, cfg=None, webhook_url=_line_webhook_url_for(tid)),
     )
 
 
@@ -1365,7 +1372,7 @@ def admin_line_config_save(
     except HTTPException as exc:
         return templates.TemplateResponse(
             "_line_config_status.html",
-            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
+            _ctx(request, actor, cfg=None, webhook_url=_line_webhook_url_for(tenant_id),
                  action_base=f"/ui/admin/tenants/{tenant_id}/line-config", error=str(exc.detail)),
             status_code=exc.status_code,
         )
@@ -1376,7 +1383,7 @@ def admin_line_config_save(
     db.commit()
     return templates.TemplateResponse(
         "_line_config_status.html",
-        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tenant_id),
+        _ctx(request, actor, cfg=cfg, webhook_url=_line_webhook_url_for(tenant_id),
              action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
     )
 
@@ -1394,13 +1401,13 @@ def admin_line_config_verify(
     except HTTPException as exc:
         return templates.TemplateResponse(
             "_line_config_status.html",
-            _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
+            _ctx(request, actor, cfg=None, webhook_url=_line_webhook_url_for(tenant_id),
                  action_base=f"/ui/admin/tenants/{tenant_id}/line-config", error=str(exc.detail)),
             status_code=exc.status_code,
         )
     return templates.TemplateResponse(
         "_line_config_status.html",
-        _ctx(request, actor, cfg=cfg, webhook_url=webhook_url_for(tenant_id),
+        _ctx(request, actor, cfg=cfg, webhook_url=_line_webhook_url_for(tenant_id),
              action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
     )
 
@@ -1423,7 +1430,7 @@ def admin_line_config_delete(
         pass
     return templates.TemplateResponse(
         "_line_config_status.html",
-        _ctx(request, actor, cfg=None, webhook_url=webhook_url_for(tenant_id),
+        _ctx(request, actor, cfg=None, webhook_url=_line_webhook_url_for(tenant_id),
              action_base=f"/ui/admin/tenants/{tenant_id}/line-config"),
     )
 

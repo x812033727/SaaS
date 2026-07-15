@@ -3,6 +3,44 @@
 {% block content %}
 <h1>LINE Bot 設定</h1>
 
+<div class="card setup-guide" data-testid="line-bot-setup-guide">
+  <h2>第一次設定：完整教學</h2>
+  <p class="muted">LINE Login 與 LINE Bot 是不同 Channel。這裡需要的是 <strong>Messaging API Channel</strong> 的 Channel secret 與 Channel access token。</p>
+  <ol>
+    <li>
+      <strong>建立 LINE 官方帳號並啟用 Messaging API</strong><br>
+      前往 <a href="https://manager.line.biz/" target="_blank" rel="noopener noreferrer">LINE Official Account Manager</a> 建立或選擇官方帳號，再到「設定 → Messaging API」啟用 Messaging API，並選擇正確的 Provider。Provider 建立後不能任意更換，正式商用建議使用公司擁有的 Provider。
+    </li>
+    <li>
+      <strong>取得 Channel secret</strong><br>
+      開啟 <a href="https://developers.line.biz/console/" target="_blank" rel="noopener noreferrer">LINE Developers Console</a>，選擇剛建立的 Provider 與 Messaging API Channel，在「Basic settings」複製 <code>Channel secret</code>。
+    </li>
+    <li>
+      <strong>發行 Channel access token</strong><br>
+      到「Messaging API」分頁的 Channel access token 區塊發行 token。若目前先使用 long-lived token，重新發行後舊 token 會失效，記得同步回來更新。
+    </li>
+    <li>
+      <strong>先在本頁儲存憑證</strong><br>
+      將 Channel secret 與 Channel access token 貼到下方表單，按「儲存並驗證」。系統只會顯示是否已設定，不會把密鑰明文顯示回網頁。
+    </li>
+    <li>
+      <strong>設定 Webhook URL</strong><br>
+      回到 LINE Developers Console 的「Messaging API → Webhook settings」，貼上此店家的專屬網址：
+      <p><code data-testid="line-webhook-url">{{ webhook_url }}</code></p>
+      按 <strong>Verify</strong>，成功後開啟 <strong>Use webhook</strong>；建議同時開啟 <strong>Webhook redelivery</strong>，讓暫時失敗的事件可被重新傳送。
+    </li>
+    <li>
+      <strong>避免收到兩次回覆</strong><br>
+      到 LINE Official Account Manager 的回應設定，關閉「Greeting message／加入好友歡迎訊息」與「Auto-response／自動回應」。本平台會處理 follow 與訊息事件；若想保留官方帳號管理後台的歡迎訊息，請不要同時在下方設定平台歡迎訊息。
+    </li>
+    <li>
+      <strong>實機驗收</strong><br>
+      用 Messaging API 分頁顯示的 QR code 加官方帳號好友，傳送一則文字。回到本頁按「重新測試連線」，並確認 Bot 有正常回覆。
+    </li>
+  </ol>
+  <p class="muted">安全提醒：Channel secret 與 access token 等同 Bot 密碼，請勿貼到聊天、Issue、截圖或前端程式碼；若疑似外洩，請立即重新發行並更新本頁。</p>
+</div>
+
 <div class="card">
   <h2>連線狀態</h2>
   <div id="line-status">

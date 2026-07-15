@@ -36,6 +36,7 @@ from saas_mvp.models import plan_change_history as _pch                         
 import saas_mvp.models.line_channel_config as _lcm                               # noqa: F401
 
 from saas_mvp.app import create_app
+from saas_mvp.config import settings
 from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import StubLineBotInfoClient, get_bot_info_client
 
@@ -152,6 +153,22 @@ def test_dashboard_without_config(client):
     assert r.status_code == 200
     assert "儀表板" in r.text
     assert "尚未設定" in r.text
+
+
+def test_line_config_page_shows_complete_messaging_api_guide(client, monkeypatch):
+    email, password, _, tenant_id = _register_api(client)
+    _login_ui(client, email, password)
+    monkeypatch.setattr(settings, "public_base_url", "https://saas.example.com")
+
+    page = client.get("/ui/line-config")
+
+    assert page.status_code == 200
+    assert 'data-testid="line-bot-setup-guide"' in page.text
+    assert "LINE Official Account Manager" in page.text
+    assert "LINE Developers Console" in page.text
+    assert "Webhook redelivery" in page.text
+    assert "Auto-response" in page.text
+    assert f"https://saas.example.com/line/webhook/{tenant_id}" in page.text
 
 
 def test_dashboard_with_config_masks_secret(client):
