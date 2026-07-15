@@ -38,6 +38,7 @@ from saas_mvp.models.staff import Staff
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import booking as booking_svc
+from saas_mvp.services import bookable_resources as resources_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import client_forms as client_forms_svc
 from saas_mvp.services import coupons as coupons_svc
@@ -246,7 +247,47 @@ def _ensure_catalog(db: Session, tenant_id: int, staff: list[Staff]) -> list:
     return out
 
 
-def _ensure_slots_and_reservations(db: Session, tenant_id: int) -> tuple[int, int]:
+def _ensure_resources(db: Session, tenant_id: int, services: list) -> int:
+    """建立護髮座位與服務需求，讓示範預約可看到自動配置。"""
+    resource_types = {
+        row.name: row for row in resources_svc.list_types(db, tenant_id=tenant_id)
+    }
+    resource_type = resource_types.get("護髮座位")
+    if resource_type is None:
+        resource_type = resources_svc.create_type(
+            db,
+            tenant_id=tenant_id,
+            name="護髮座位",
+            description="深層護髮服務自動配置的座位",
+        )
+    existing = {
+        row.name for row in resources_svc.list_resources(db, tenant_id=tenant_id)
+    }
+    for name, code in (("護髮座位 A", "TREAT-A"), ("護髮座位 B", "TREAT-B")):
+        if name not in existing:
+            resources_svc.create_resource(
+                db,
+                tenant_id=tenant_id,
+                resource_type_id=resource_type.id,
+                name=name,
+                internal_code=code,
+                capacity=1,
+            )
+    target = next((service for service in services if service.name == "深層護髮"), None)
+    if target is not None:
+        resources_svc.set_requirement(
+            db,
+            tenant_id=tenant_id,
+            service_id=target.id,
+            resource_type_id=resource_type.id,
+            quantity=1,
+        )
+    return len(resources_svc.list_resources(db, tenant_id=tenant_id))
+
+
+def _ensure_slots_and_reservations(
+    db: Session, tenant_id: int, services: list
+) -> tuple[int, int]:
     """未來數日各建一個時段，並對前兩個時段各下一筆預約。冪等：以既有時段數判斷。"""
     base = _utcnow().replace(minute=0, second=0, microsecond=0) \
         + datetime.timedelta(days=1)
@@ -278,6 +319,10 @@ def _ensure_slots_and_reservations(db: Session, tenant_id: int) -> tuple[int, in
 
     # 對前兩個時段各下一筆預約（若該時段尚無預約才下，避免重跑累加）。
     resv_count = 0
+    demo_service = next(
+        (service for service in services if service.name == "深層護髮"),
+        services[0] if services else None,
+    )
     for slot in slots[:2]:
         has = db.execute(
             select(Reservation).where(Reservation.slot_id == slot.id)
@@ -287,6 +332,7 @@ def _ensure_slots_and_reservations(db: Session, tenant_id: int) -> tuple[int, in
         booking_svc.book_slot(
             db, tenant_id=tenant_id, slot_id=slot.id, party_size=1,
             line_user_id=DEMO_LINE_USER_ID, display_name="示範顧客",
+            service_id=demo_service.id if demo_service is not None else None,
         )
         resv_count += 1
     return len(slots), resv_count
@@ -541,8 +587,9 @@ def run(
 
         services = _ensure_catalog(db, tenant_id, staff)
         counts["services"] = len(services)
+        counts["resources"] = _ensure_resources(db, tenant_id, services)
 
-        n_slots, n_resv = _ensure_slots_and_reservations(db, tenant_id)
+        n_slots, n_resv = _ensure_slots_and_reservations(db, tenant_id, services)
         counts["slots"] = n_slots
         counts["reservations"] = n_resv
 

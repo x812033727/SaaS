@@ -368,6 +368,8 @@ a { color: var(--brand); }
   h1 { font-size: 20px; }
   .card { padding: 16px; margin-bottom: 16px; }
   .grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  /* 資源設定含長欄位與日期時間，手機雙欄會過窄；固定堆疊成單欄。 */
+  .resources-grid { grid-template-columns: 1fr; }
 
   /* 表單直排、控件放大(16px 防 iOS 聚焦縮放) */
   .row { flex-direction: column; gap: 0; }

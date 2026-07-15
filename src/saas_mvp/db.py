@@ -93,6 +93,7 @@ def import_all_models() -> None:
     from saas_mvp.models import service_package  # noqa: F401
     from saas_mvp.models import gift_card  # noqa: F401
     from saas_mvp.models import client_form  # noqa: F401
+    from saas_mvp.models import bookable_resource  # noqa: F401
     # PHASE 2：顧客標籤/分眾、行事曆 ICS、預約異動通知。
     from saas_mvp.models import customer_tag, customer_tag_link  # noqa: F401
     from saas_mvp.models import booking_notification  # noqa: F401

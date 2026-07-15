@@ -87,6 +87,7 @@ class TestSelfService:
             "SERVICE_PACKAGES",
             "GIFT_CARDS",
             "CLIENT_FORMS",
+            "BOOKABLE_RESOURCES",
         }
 
     def test_subscribe_returns_payment_id(self, client):

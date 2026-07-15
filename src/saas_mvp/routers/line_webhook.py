@@ -1277,14 +1277,27 @@ def _slots_fitting_service(db: Session, tenant_id: int, slots: list, service_id)
     except Exception:  # noqa: BLE001 — 服務查無：不套過濾
         return slots
     duration = getattr(service, "duration_minutes", None)
-    if not duration:
-        return slots
-    needed = datetime.timedelta(minutes=duration)
-    return [
-        s
-        for s in slots
-        if s.slot_end is None or (s.slot_end - s.slot_start) >= needed
-    ]
+    if duration:
+        needed = datetime.timedelta(minutes=duration)
+        slots = [
+            s
+            for s in slots
+            if s.slot_end is None or (s.slot_end - s.slot_start) >= needed
+        ]
+    if features_svc.is_enabled(db, tenant_id, features_svc.BOOKABLE_RESOURCES):
+        from saas_mvp.services import bookable_resources as resources_svc
+
+        slots = [
+            slot
+            for slot in slots
+            if resources_svc.slot_has_required_resources(
+                db,
+                tenant_id=tenant_id,
+                service_id=service_id,
+                slot=slot,
+            )
+        ]
+    return slots
 
 
 def _waitlist_join_buttons(
@@ -1591,6 +1604,13 @@ def _try_conversational(
                 _waitlist_join_buttons(slot_id, 1),
                 None,
             )
+        except booking_svc.ResourceUnavailableError:
+            return (
+                "此時段所需的房間或設備已被預約，請改選其他時段。"
+                f"（原預約 #{reservation_id} 仍保留）",
+                None,
+                None,
+            )
         from saas_mvp.models.booking_slot import BookingSlot
 
         new_slot = (
@@ -1701,6 +1721,8 @@ def _try_conversational(
                 _waitlist_join_buttons(slot_id, party_size, service_id, staff_id),
                 None,
             )
+        except booking_svc.ResourceUnavailableError:
+            return "此時段所需的房間或設備已被預約，請改選其他時段。", None, None
         return _confirm_text(db, tenant_id, resv, slot_id), None, None
 
     return None
@@ -1764,6 +1786,8 @@ def _dispatch_booking(
                 f"或改選其他時段。",
                 _waitlist_join_buttons(slot_id, party_size, service_id, staff_id),
             )
+        except booking_svc.ResourceUnavailableError:
+            return "此時段所需的房間或設備已被預約，請改選其他時段。", None
         # 統一走 _confirm_text（含行事曆連結與定金提示）。
         return _confirm_text(db, tenant_id, resv, slot_id), None
 

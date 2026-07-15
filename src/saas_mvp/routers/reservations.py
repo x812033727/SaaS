@@ -18,6 +18,7 @@ from saas_mvp.services.booking import (
     CrossTenantReferenceError,
     CustomerBlacklistedError,
     ReservationNotFoundError,
+    ResourceUnavailableError,
     SlotFullError,
     SlotNotFoundError,
     book_slot,
@@ -122,6 +123,11 @@ def create(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Slot is full"
         )
+    except ResourceUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Required room or equipment is unavailable",
+        )
     return ReservationResponse.model_validate(reservation)
 
 
@@ -218,6 +224,11 @@ def reschedule_one(
     except SlotFullError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Slot is full"
+        )
+    except ResourceUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Required room or equipment is unavailable",
         )
     return ReservationResponse.model_validate(reservation)
 

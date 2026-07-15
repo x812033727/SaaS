@@ -42,12 +42,13 @@
       <div class="side-brand">LINE Bot 管理</div>
       <nav class="side-nav">
         <a class="side-link{% if path in ('/ui', '/ui/') %} active{% endif %}" href="/ui/">儀表板</a>
-        <details class="side-group"{% if path.startswith(('/ui/booking', '/ui/calendar', '/ui/customers', '/ui/client-forms', '/ui/notes')) %} open{% endif %}>
+        <details class="side-group"{% if path.startswith(('/ui/booking', '/ui/calendar', '/ui/customers', '/ui/client-forms', '/ui/resources', '/ui/notes')) %} open{% endif %}>
           <summary>預約營運</summary>
           {{ item('/ui/booking', '預約管理') }}
           {{ item('/ui/calendar', '行事曆') }}
           {{ item('/ui/customers', '顧客') }}
           {{ item('/ui/client-forms', '諮詢表／同意書') }}
+          {{ item('/ui/resources', '房間／設備') }}
           {{ item('/ui/notes', '備註') }}
         </details>
         <details class="side-group"{% if path.startswith(('/ui/line-config', '/ui/line-chat', '/ui/auto-reply', '/ui/rich-menu', '/ui/flex-menu', '/ui/faq')) %} open{% endif %}>

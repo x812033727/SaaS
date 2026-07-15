@@ -166,6 +166,16 @@ def booking_form_submit(
             party_size=party_size,
             can_waitlist=True,
         )
+    except booking_svc.ResourceUnavailableError:
+        return _render_state(
+            request,
+            token,
+            "error",
+            message="此時段所需的房間或設備已被預約，請改選其他時段。",
+            service_id=service_id,
+            staff_id=staff_id,
+            party_size=party_size,
+        )
     except booking_svc.CustomerBlacklistedError:
         return _render_state(
             request, token, "error",

@@ -49,6 +49,10 @@ class SlotFullError(BookingError):
     """時段線上可用名額不足。"""
 
 
+class ResourceUnavailableError(BookingError):
+    """服務需要的房間或設備在目標時段不足。"""
+
+
 class ReservationNotFoundError(BookingError):
     """預約不存在或跨租戶。"""
 
@@ -148,6 +152,7 @@ def book_slot(
 
     # 跨租戶/偽造引用防護：staff_id / service_id 若帶入，必須屬於本租戶，
     # 否則拒絕建單（不靜默存入 raw 值）。比照其他服務的 tenant_query 隔離。
+    owned_service = None
     if service_id is not None:
         from saas_mvp.models.service import Service
 
@@ -211,11 +216,31 @@ def book_slot(
         note=note,
         staff_id=staff_id,
         service_id=service_id,
+        location_id=slot.location_id or (
+            owned_service.location_id if owned_service is not None else None
+        ),
         source_webhook_event_id=source_webhook_event_id,
     )
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
+
+    # 房間／設備與預約同交易配置。候選資源列會被鎖定，避免時段仍有容量時
+    # 同一間房或同一台設備被兩筆並發預約重複占用。
+    if service_id is not None and features_svc.is_enabled(
+        db, tenant_id, features_svc.BOOKABLE_RESOURCES
+    ):
+        from saas_mvp.services import bookable_resources as resources_svc
+
+        try:
+            resources_svc.allocate_for_reservation(
+                db, reservation=reservation, slot=slot
+            )
+        except resources_svc.ResourceUnavailable as exc:
+            # 此例外發生在 reservation/slot count 已 flush 之後；LINE 呼叫端會
+            # 繼續組回覆甚至建立表單 token，因此必須在這裡清掉整筆半成品。
+            db.rollback()
+            raise ResourceUnavailableError(str(exc)) from exc
 
     # 套票扣次為明確 opt-in；與建單同一交易，沒有可用次數時整筆預約失敗，
     # 不會出現已佔名額但未扣到套票的半套狀態。
@@ -493,6 +518,19 @@ def reschedule_reservation(
         )
     new_slot.booked_count = (new_slot.booked_count or 0) + reservation.party_size
     reservation.slot_id = new_slot_id
+
+    if reservation.service_id is not None and features_svc.is_enabled(
+        db, tenant_id, features_svc.BOOKABLE_RESOURCES
+    ):
+        from saas_mvp.services import bookable_resources as resources_svc
+
+        try:
+            resources_svc.reallocate_for_reservation(
+                db, reservation=reservation, slot=new_slot
+            )
+        except resources_svc.ResourceUnavailable as exc:
+            db.rollback()
+            raise ResourceUnavailableError(str(exc)) from exc
 
     # 預約異動通知（進階功能）：改期時 LINE 推播給顧客。同一交易內入列。
     booking_notify_svc.enqueue_change(

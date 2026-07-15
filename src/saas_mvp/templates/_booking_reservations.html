@@ -15,7 +15,7 @@
 {% if reservations %}
 <table>
   <thead>
-    <tr><th>#</th><th>時段</th><th>人數</th><th>顧客</th><th>電話</th><th>來源</th><th>狀態</th><th>定金</th><th>到場</th><th></th></tr>
+    <tr><th>#</th><th>時段</th><th>資源</th><th>人數</th><th>顧客</th><th>電話</th><th>來源</th><th>狀態</th><th>定金</th><th>到場</th><th></th></tr>
   </thead>
   <tbody>
     {% for r in reservations %}
@@ -23,6 +23,11 @@
     <tr>
       <td data-label="#">{{ r.id }}</td>
       <td data-label="時段">#{{ r.slot_id }}</td>
+      <td data-label="資源">
+        {% for allocation in resource_allocations.get(r.id, []) %}
+          <span class="badge valid">{{ allocation.resource_type_name_snapshot }}：{{ allocation.resource_name_snapshot }}{% if allocation.quantity > 1 %} ×{{ allocation.quantity }}{% endif %}</span>{% if not loop.last %}<br>{% endif %}
+        {% else %}<span class="muted">—</span>{% endfor %}
+      </td>
       <td data-label="人數">{{ r.party_size }}</td>
       <td data-label="顧客">{{ c.display_name if c and c.display_name else '—' }}</td>
       <td data-label="電話">{{ c.phone if c and c.phone else '—' }}</td>

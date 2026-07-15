@@ -67,6 +67,8 @@ SERVICE_PACKAGES = "SERVICE_PACKAGES"
 GIFT_CARDS = "GIFT_CARDS"
 # 預約諮詢表／同意書：服務綁定、自動派發、免登入簽署與版本快照。
 CLIENT_FORMS = "CLIENT_FORMS"
+# 房間／設備資源：服務需求、自動配置、資源容量與衝突防止。
+BOOKABLE_RESOURCES = "BOOKABLE_RESOURCES"
 
 # registry：key → 顯示資訊。月費取自 settings（可由環境覆寫）。
 _FEATURE_LABELS: dict[str, str] = {
@@ -93,6 +95,7 @@ _FEATURE_LABELS: dict[str, str] = {
     SERVICE_PACKAGES: "服務套票",
     GIFT_CARDS: "電子禮物卡",
     CLIENT_FORMS: "顧客表單／同意書",
+    BOOKABLE_RESOURCES: "房間／設備資源",
 }
 VALID_FEATURES = frozenset(_FEATURE_LABELS)
 

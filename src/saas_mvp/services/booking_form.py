@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.config import settings
 from saas_mvp.models.booking_form_token import BookingFormToken
 from saas_mvp.services import catalog as catalog_svc
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import slots as slots_svc
 from saas_mvp.services import staff as staff_svc
 
@@ -129,13 +130,27 @@ def slots_for(
     except Exception:  # noqa: BLE001 — 服務查無：不套過濾
         return slots
     duration = getattr(service, "duration_minutes", None)
-    if not duration:
-        return slots
-    needed = datetime.timedelta(minutes=duration)
-    return [
-        s for s in slots
-        if s.slot_end is None or (s.slot_end - s.slot_start) >= needed
-    ]
+    if duration:
+        needed = datetime.timedelta(minutes=duration)
+        slots = [
+            s
+            for s in slots
+            if s.slot_end is None or (s.slot_end - s.slot_start) >= needed
+        ]
+    if features_svc.is_enabled(db, tenant_id, features_svc.BOOKABLE_RESOURCES):
+        from saas_mvp.services import bookable_resources as resources_svc
+
+        slots = [
+            slot
+            for slot in slots
+            if resources_svc.slot_has_required_resources(
+                db,
+                tenant_id=tenant_id,
+                service_id=service_id,
+                slot=slot,
+            )
+        ]
+    return slots
 
 
 def service_staff(db: Session, tenant_id: int, service_id: int) -> list:

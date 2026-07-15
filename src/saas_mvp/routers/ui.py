@@ -104,6 +104,7 @@ from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import service_packages as packages_svc
 from saas_mvp.services import gift_cards as gift_cards_svc
 from saas_mvp.services import client_forms as client_forms_svc
+from saas_mvp.services import bookable_resources as resources_svc
 from saas_mvp.services import segments as segments_svc
 from saas_mvp.services import notifications_history as notif_history_svc
 from saas_mvp.services import faq as faq_svc
@@ -2797,6 +2798,7 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     customers = customers_svc.list_customers(db, tenant_id=tid)
     tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
     booking_slots = slots_svc.list_slots(db, tenant_id=tid)
+    reservations = booking_svc.list_reservations(db, tenant_id=tid)
     waitlist_rows = waitlist_svc.list_waitlist(db, tenant_id=tid)
     from saas_mvp.models.service_package import PackageCreditLedger
 
@@ -2821,7 +2823,12 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         bot_mode=(cfg or {}).get("bot_mode", "translation"),
         has_line_config=cfg is not None,
         slots=booking_slots,
-        reservations=booking_svc.list_reservations(db, tenant_id=tid),
+        reservations=reservations,
+        resource_allocations=resources_svc.allocations_for_reservations(
+            db,
+            tenant_id=tid,
+            reservation_ids=[row.id for row in reservations],
+        ),
         waitlist_entries=waitlist_rows,
         waitlist_offer_minutes=(
             (tenant_row.waitlist_offer_minutes if tenant_row else None)
@@ -7024,6 +7031,469 @@ def profile_save(
     return templates.TemplateResponse(
         "_profile.html", _profile_ctx(request, actor, db, error=error, saved=saved)
     )
+
+
+# ── 店家自助：房間／設備資源（BOOKABLE_RESOURCES） ───────────────────────────
+
+
+def _resources_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
+    tid = actor.user.tenant_id
+    resource_types = resources_svc.list_types(db, tenant_id=tid)
+    resources = resources_svc.list_resources(db, tenant_id=tid)
+    services = catalog_svc.list_services(db, tenant_id=tid)
+    locations = locations_svc.list_locations(db, tenant_id=tid)
+    windows = resources_svc.list_availability(db, tenant_id=tid)
+    blocks = resources_svc.list_blocks(db, tenant_id=tid)
+    windows_by_resource: dict[int, list] = {}
+    blocks_by_resource: dict[int, list] = {}
+    for window in windows:
+        windows_by_resource.setdefault(window.resource_id, []).append(window)
+    for block in blocks:
+        blocks_by_resource.setdefault(block.resource_id, []).append(block)
+    return _ctx(
+        request,
+        actor,
+        resource_types=resource_types,
+        resources=resources,
+        services=services,
+        locations=locations,
+        requirements=resources_svc.list_requirements(db, tenant_id=tid),
+        windows_by_resource=windows_by_resource,
+        blocks_by_resource=blocks_by_resource,
+        upcoming_allocations=resources_svc.list_upcoming_allocations(
+            db, tenant_id=tid
+        ),
+        type_names={row.id: row.name for row in resource_types},
+        resource_names={row.id: row.name for row in resources},
+        service_names={row.id: row.name for row in services},
+        location_names={row.id: row.name for row in locations},
+        weekday_names=("週一", "週二", "週三", "週四", "週五", "週六", "週日"),
+        can_manage_resources=(
+            (getattr(actor.user, "role", None) or "owner") == "owner"
+            or actor.user.is_admin
+        ),
+        **extra,
+    )
+
+
+def _resources_response(
+    request: Request, actor: Actor, db: Session, *, error: str | None = None
+):
+    return templates.TemplateResponse(
+        "_resources.html", _resources_ctx(request, actor, db, error=error)
+    )
+
+
+def _resources_enabled(db: Session, actor: Actor):
+    return _require_ui_feature(db, actor, features_svc.BOOKABLE_RESOURCES)
+
+
+@router.get("/resources", response_class=HTMLResponse)
+def resources_page(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    return templates.TemplateResponse(
+        "resources.html", _resources_ctx(request, actor, db)
+    )
+
+
+@router.post("/resources/types", response_class=HTMLResponse)
+def resources_create_type(
+    request: Request,
+    name: str = Form(..., max_length=128),
+    description: str = Form("", max_length=2000),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        row = resources_svc.create_type(
+            db, tenant_id=actor.user.tenant_id, name=name, description=description
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.type.create",
+            target=f"resource_type:{row.id}",
+            request=request,
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/types/{resource_type_id}/active", response_class=HTMLResponse)
+def resources_type_active(
+    request: Request,
+    resource_type_id: int,
+    active: str = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        row = resources_svc.set_type_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_type_id=resource_type_id,
+            active=active == "true",
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.type.active",
+            target=f"resource_type:{row.id}",
+            detail={"active": row.is_active},
+            request=request,
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources", response_class=HTMLResponse)
+def resources_create(
+    request: Request,
+    resource_type_id: int = Form(...),
+    name: str = Form(..., max_length=128),
+    description: str = Form("", max_length=2000),
+    internal_code: str = Form("", max_length=64),
+    capacity: int = Form(1),
+    location_id: str = Form(""),
+    available_from: str = Form(""),
+    available_until: str = Form(""),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        row = resources_svc.create_resource(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_type_id=resource_type_id,
+            name=name,
+            description=description,
+            internal_code=internal_code,
+            capacity=capacity,
+            location_id=_opt_int(location_id),
+            available_from=(
+                datetime.date.fromisoformat(available_from) if available_from else None
+            ),
+            available_until=(
+                datetime.date.fromisoformat(available_until)
+                if available_until
+                else None
+            ),
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.create",
+            target=f"resource:{row.id}",
+            request=request,
+        )
+        db.commit()
+    except (resources_svc.BookableResourceError, ValueError) as exc:
+        db.rollback()
+        error = str(exc) or "日期格式不正確。"
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/{resource_id}", response_class=HTMLResponse)
+def resources_update(
+    request: Request,
+    resource_id: int,
+    name: str = Form(..., max_length=128),
+    description: str = Form("", max_length=2000),
+    internal_code: str = Form("", max_length=64),
+    capacity: int = Form(1),
+    location_id: str = Form(""),
+    available_from: str = Form(""),
+    available_until: str = Form(""),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        row = resources_svc.update_resource(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            name=name,
+            description=description,
+            internal_code=internal_code,
+            capacity=capacity,
+            location_id=_opt_int(location_id),
+            available_from=(
+                datetime.date.fromisoformat(available_from) if available_from else None
+            ),
+            available_until=(
+                datetime.date.fromisoformat(available_until)
+                if available_until
+                else None
+            ),
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.update",
+            target=f"resource:{row.id}",
+            request=request,
+        )
+        db.commit()
+    except (resources_svc.BookableResourceError, ValueError) as exc:
+        db.rollback()
+        error = str(exc) or "日期格式不正確。"
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/{resource_id}/active", response_class=HTMLResponse)
+def resources_active(
+    request: Request,
+    resource_id: int,
+    active: str = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        row = resources_svc.set_resource_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            active=active == "true",
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.active",
+            target=f"resource:{row.id}",
+            detail={"active": row.is_active},
+            request=request,
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resource-requirements", response_class=HTMLResponse)
+def resources_set_requirement(
+    request: Request,
+    service_id: int = Form(...),
+    resource_type_id: int = Form(...),
+    quantity: int = Form(1),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        row = resources_svc.set_requirement(
+            db,
+            tenant_id=actor.user.tenant_id,
+            service_id=service_id,
+            resource_type_id=resource_type_id,
+            quantity=quantity,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.requirement.set",
+            target=f"requirement:{row.id}",
+            request=request,
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resource-requirements/{requirement_id}/delete", response_class=HTMLResponse)
+def resources_remove_requirement(
+    request: Request,
+    requirement_id: int,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        resources_svc.remove_requirement(
+            db, tenant_id=actor.user.tenant_id, requirement_id=requirement_id
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.requirement.delete",
+            target=f"requirement:{requirement_id}",
+            request=request,
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/{resource_id}/availability", response_class=HTMLResponse)
+def resources_add_availability(
+    request: Request,
+    resource_id: int,
+    weekday: int = Form(...),
+    start_time: str = Form(...),
+    end_time: str = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        resources_svc.add_availability(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            weekday=weekday,
+            start_time=datetime.time.fromisoformat(start_time),
+            end_time=datetime.time.fromisoformat(end_time),
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.availability.add",
+            target=f"resource:{resource_id}",
+            request=request,
+        )
+        db.commit()
+    except (resources_svc.BookableResourceError, ValueError) as exc:
+        db.rollback()
+        error = str(exc) or "時間格式不正確。"
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/availability/{availability_id}/delete", response_class=HTMLResponse)
+def resources_remove_availability(
+    request: Request,
+    availability_id: int,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        resources_svc.remove_availability(
+            db, tenant_id=actor.user.tenant_id, availability_id=availability_id
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/{resource_id}/blocks", response_class=HTMLResponse)
+def resources_add_block(
+    request: Request,
+    resource_id: int,
+    starts_at: str = Form(...),
+    ends_at: str = Form(...),
+    reason: str = Form("", max_length=255),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        resources_svc.add_block(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            starts_at=_parse_slot_start(starts_at),
+            ends_at=_parse_slot_start(ends_at),
+            reason=reason,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="resources.block.add",
+            target=f"resource:{resource_id}",
+            request=request,
+        )
+        db.commit()
+    except (resources_svc.BookableResourceError, ValueError) as exc:
+        db.rollback()
+        error = str(exc) or "日期時間格式不正確。"
+    return _resources_response(request, actor, db, error=error)
+
+
+@router.post("/resources/blocks/{block_id}/delete", response_class=HTMLResponse)
+def resources_remove_block(
+    request: Request,
+    block_id: int,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    if not _resources_enabled(db, actor):
+        return _feature_locked(
+            request, actor, features_svc.BOOKABLE_RESOURCES, "房間／設備資源"
+        )
+    error = None
+    try:
+        resources_svc.remove_block(
+            db, tenant_id=actor.user.tenant_id, block_id=block_id
+        )
+        db.commit()
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        error = str(exc)
+    return _resources_response(request, actor, db, error=error)
 
 
 # ── 店家自助：顧客諮詢表／同意書（CLIENT_FORMS） ──────────────────────────────
