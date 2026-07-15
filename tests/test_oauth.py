@@ -213,11 +213,10 @@ class TestOAuthLink:
         assert response.status_code == 200
         assert 'data-testid="line-login-admin-guide"' in response.text
         assert "http://testserver/auth/oauth/line/callback" in response.text
-        assert "SAAS_LINE_LOGIN_CHANNEL_ID" in response.text
-        assert "SAAS_LINE_LOGIN_CHANNEL_SECRET" in response.text
-        assert "一般連結帳戶不需要重啟或重建服務" in response.text
-        assert "docker-compose up -d --force-recreate web" in response.text
-        assert "docker-compose up -d --build web" not in response.text
+        assert "一般使用者不需要使用終端機" in response.text
+        assert "平台維運人員" in response.text
+        assert "SAAS_LINE_LOGIN_CHANNEL_ID" not in response.text
+        assert "docker-compose" not in response.text
         assert 'data-testid="line-link-button"' not in response.text
         client.cookies.clear()
 
