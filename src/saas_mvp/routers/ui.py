@@ -93,6 +93,11 @@ from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import line_chat as line_chat_svc
 from saas_mvp.services import calendar_view as calendar_view_svc
 from saas_mvp.services.events import broker as event_broker
+from saas_mvp.auth.ratelimit import (
+    email_identity_limiter,
+    email_ip_limiter,
+    email_user_limiter,
+)
 from saas_mvp.ai import AIError, get_assistant
 from saas_mvp.models.campaign import Campaign
 from saas_mvp.services.tenants import tenant_query
@@ -329,6 +334,16 @@ def resend_verification(
     mailer: Mailer = Depends(get_mailer),
 ):
     if actor.user.email_verified_at is None:
+        if settings.rate_limit_enabled:
+            try:
+                email_user_limiter._check_rate_limit(f"user:{actor.user.id}")
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+                    return RedirectResponse(
+                        "/ui/?verification_rate_limited=1",
+                        status_code=status.HTTP_303_SEE_OTHER,
+                    )
+                raise
         outcome = account_email_svc.send_verification_email(db, actor.user, mailer)
         target = (
             "/ui/?verification_resent=1"
@@ -351,6 +366,19 @@ def forgot_password_submit(
     db: Session = Depends(get_db),
     mailer: Mailer = Depends(get_mailer),
 ):
+    try:
+        email_ip_limiter(request)
+        if settings.rate_limit_enabled:
+            email_identity_limiter._check_rate_limit(email.strip().lower())
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+            raise
+        return templates.TemplateResponse(
+            "forgot_password.html",
+            _ctx(request, error="申請次數過多，請在 15 分鐘後再試。"),
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers=exc.headers,
+        )
     account_email_svc.request_password_reset(db, email, mailer)
     # 查無 email 也回相同訊息（防帳號列舉）。
     return templates.TemplateResponse(
@@ -841,6 +869,7 @@ def dashboard(
     verification_resent: int = Query(0),
     verification_error: int = Query(0),
     verification_queued: int = Query(0),
+    verification_rate_limited: int = Query(0),
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
@@ -860,6 +889,7 @@ def dashboard(
              verification_resent=bool(verification_resent),
              verification_error=bool(verification_error),
              verification_queued=bool(verification_queued),
+             verification_rate_limited=bool(verification_rate_limited),
              line_insights=_line_insights(db, tid)),
     )
 

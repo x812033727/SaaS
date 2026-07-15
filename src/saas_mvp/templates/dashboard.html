@@ -5,6 +5,7 @@
 
 {% if verification_resent %}<div class="success">驗證信已重新寄出，請檢查收件匣與垃圾郵件匣。</div>{% endif %}
 {% if verification_queued %}<div class="notice-warn">寄信服務目前忙碌，驗證信已排入自動重試，不需要重複點擊。</div>{% endif %}
+{% if verification_rate_limited %}<div class="notice-warn">重寄次數過多，請在 10 分鐘後再試；已寄出的信件仍可正常使用。</div>{% endif %}
 {% if verification_error %}<div class="error">目前無法寄出驗證信。平台寄信服務尚未設定或暫時異常，請聯絡平台管理員。</div>{% endif %}
 
 {% if email_unverified %}

@@ -38,6 +38,9 @@ __all__ = [
     "register_limiter",
     "token_limiter",
     "public_limiter",
+    "email_ip_limiter",
+    "email_identity_limiter",
+    "email_user_limiter",
     "require_rate_limit",
 ]
 
@@ -203,6 +206,18 @@ token_limiter = SlidingWindowRateLimiter(
 # 與其他 IP 限制器一樣由 settings.rate_limit_enabled 控制（測試預設關閉）。
 public_limiter = SlidingWindowRateLimiter(
     max_calls=60, window_seconds=60, backend=_backend, namespace="public"
+)
+
+# Email 防濫用：公開忘記密碼同時受 IP 與目標 Email 限制；登入後重寄驗證信
+# 以 user id 限制。Redis 後端時跨 worker 共用，避免輪詢不同 worker 繞過。
+email_ip_limiter = SlidingWindowRateLimiter(
+    max_calls=5, window_seconds=900, backend=_backend, namespace="email-ip"
+)
+email_identity_limiter = SlidingWindowRateLimiter(
+    max_calls=3, window_seconds=900, backend=_backend, namespace="email-identity"
+)
+email_user_limiter = SlidingWindowRateLimiter(
+    max_calls=3, window_seconds=600, backend=_backend, namespace="email-user"
 )
 
 

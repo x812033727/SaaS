@@ -29,6 +29,7 @@ from saas_mvp.services import account_email as ae_svc  # noqa: E402
 from saas_mvp.services import onboarding as onboarding_svc  # noqa: E402
 from saas_mvp.services import mailer as mailer_svc  # noqa: E402
 from saas_mvp.services.mailer import MailerError, StubMailer, get_mailer  # noqa: E402
+from saas_mvp.routers import ui as ui_router  # noqa: E402
 
 _engine = create_engine(
     "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -163,6 +164,24 @@ class TestEmailVerification:
         r = client.get("/ui/")
         assert "尚未驗證 Email" in r.text
 
+    def test_resend_rate_limit_does_not_send(
+        self, client, stub_mailer, monkeypatch
+    ):
+        _ui_register(client)
+        before = len(stub_mailer.sent)
+        monkeypatch.setattr(settings, "rate_limit_enabled", True)
+
+        def _blocked(_identifier):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=429, headers={"Retry-After": "600"})
+
+        monkeypatch.setattr(ui_router.email_user_limiter, "_check_rate_limit", _blocked)
+        response = client.post("/ui/resend-verification", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/ui/?verification_rate_limited=1"
+        assert len(stub_mailer.sent) == before
+
     def test_production_without_smtp_never_uses_fake_success(self, monkeypatch):
         monkeypatch.setattr(settings, "env", "prod")
         monkeypatch.setattr(settings, "smtp_host", "")
@@ -201,6 +220,24 @@ class TestPasswordReset:
         r = client.post("/ui/forgot-password", data={"email": "ghost@x.tw"})
         assert r.status_code == 200 and "已寄出" in r.text
         assert not stub_mailer.sent
+
+    def test_forgot_password_rate_limit_returns_friendly_429(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "rate_limit_enabled", True)
+
+        def _blocked(_identifier):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=429, headers={"Retry-After": "900"})
+
+        monkeypatch.setattr(ui_router.email_ip_limiter, "_check_rate_limit", _blocked)
+        response = client.post(
+            "/ui/forgot-password", data={"email": "anyone@example.com"}
+        )
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "900"
+        assert "15 分鐘後再試" in response.text
 
     def test_short_password_rejected(self, client, stub_mailer):
         email, _ = _ui_register(client)

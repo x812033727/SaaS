@@ -28,6 +28,9 @@
 # 每日 04:00 UTC：清理過期 webhook 冪等事件
 0 4 * * * python -m saas_mvp.ops.purge_webhook_events --apply --include-failed
 
+# 每日 04:10 UTC：清理過期 Email 稽核紀錄與失效 token
+10 4 * * * python -m saas_mvp.ops.purge_email_data --apply
+
 # 每日 01:00 UTC（台北 09:00）：試用到期通知（前 7/3/1 天 + 到期日 email）
 0 1 * * * python -m saas_mvp.ops.send_trial_notices --apply
 

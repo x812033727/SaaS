@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     smtp_from: str = ""
     # 驗證信 / 重設密碼連結有效分鐘數。
     email_token_ttl_minutes: int = 1440
+    # Email 派送稽核紀錄保留天數；token 到期/使用後再保留幾天供問題追查。
+    email_delivery_retention_days: int = 90
+    email_token_retention_days: int = 7
 
     # AI 對話額度（A2.4）：每租戶每月 AI 回覆則數。
     # SAAS_AI_ALLOWANCE_BASE: 基本月度額度；SAAS_AI_ALLOWANCE_BOOST: AI_BOOST 加購增量。
