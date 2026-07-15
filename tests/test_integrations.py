@@ -211,7 +211,7 @@ class TestGcalSync:
     def test_lifecycle_create_reschedule_cancel(self, db, monkeypatch):
         t, slot_id = _gcal_tenant(db)
         stub = StubGcalClient()
-        monkeypatch.setattr(gcal_svc, "get_gcal_client", lambda: stub)
+        monkeypatch.setattr(gcal_svc, "get_gcal_client", lambda db=None: stub)
         resv = booking_svc.book_slot(
             db, tenant_id=t.id, slot_id=slot_id, party_size=2, line_user_id="Ugc"
         )
@@ -244,7 +244,7 @@ class TestGcalSync:
             def insert_event(self, **kw):
                 raise gcal_svc.GcalError("api down")
 
-        monkeypatch.setattr(gcal_svc, "get_gcal_client", lambda: Boom())
+        monkeypatch.setattr(gcal_svc, "get_gcal_client", lambda db=None: Boom())
         t, slot_id = _gcal_tenant(db)
         booking_svc.book_slot(
             db, tenant_id=t.id, slot_id=slot_id, party_size=1, line_user_id="Ub"

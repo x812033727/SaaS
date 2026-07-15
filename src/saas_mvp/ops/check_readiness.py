@@ -113,10 +113,21 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
             add(Check("invoice", "PASS", "ecpay 發票憑證已填"))
 
     # ── 4. Email / Sentry / AI(空 → 退化行為 WARN)───────────────
-    if not settings.smtp_host:
-        add(Check("smtp", "WARN", "未設 SMTP(StubMailer 只記 log:驗證信/期扣失敗/試用通知不會真寄)"))
-    else:
-        add(Check("smtp", "PASS", f"smtp={settings.smtp_host}:{settings.smtp_port}"))
+    try:
+        from saas_mvp.services.platform_email_config import effective_email_config
+
+        with session_factory() as db:
+            email_config = effective_email_config(db, settings)
+        if email_config is None:
+            add(Check("smtp", "WARN", "未設 SMTP(驗證信/重設密碼信不會真寄)"))
+        else:
+            add(Check(
+                "smtp",
+                "PASS",
+                f"smtp={email_config.host}:{email_config.port} source={email_config.source}",
+            ))
+    except Exception as exc:  # noqa: BLE001
+        add(Check("smtp", "WARN", f"無法讀取 SMTP 設定:{type(exc).__name__}"))
     if not settings.sentry_dsn:
         add(Check("sentry", "WARN", "未設 SAAS_SENTRY_DSN(告警退化為 error log)"))
     else:
@@ -126,17 +137,35 @@ def run_checks(*, session_factory=SessionLocal) -> list[Check]:
     else:
         add(Check("ai", "PASS", f"model={settings.ai_model}"))
 
-    # Google Calendar OAuth:半設定(只填一半)會讓 /ui/gcal/connect 導去 Google
-    # 但 callback 換 token 必失敗;兩者皆空 = 走 Stub(功能未啟用)。
-    gcal_id = settings.google_oauth_client_id
-    gcal_secret = settings.google_oauth_client_secret
-    if not gcal_id and not gcal_secret:
-        add(Check("gcal_oauth", "WARN", "未設 SAAS_GOOGLE_OAUTH_*(GCal 走 Stub;店家無法連結真日曆)"))
-    elif not (gcal_id and gcal_secret):
-        add(Check("gcal_oauth", "FAIL",
-                  "Google OAuth 只設定一半(client_id/secret 需成對);callback 換 token 會 502"))
-    else:
-        add(Check("gcal_oauth", "PASS", "Google OAuth 憑證已成對填入"))
+    # Google OAuth：後台加密設定優先，環境變數僅作備援。
+    try:
+        from saas_mvp.services.platform_oauth_config import (
+            effective_google_credentials,
+            google_status,
+        )
+
+        with session_factory() as db:
+            credentials = effective_google_credentials(db, settings)
+            source = google_status(db, settings)["source"]
+        if credentials:
+            add(Check("gcal_oauth", "PASS", f"Google OAuth 已設定 source={source}"))
+        else:
+            gcal_id = settings.google_oauth_client_id
+            gcal_secret = settings.google_oauth_client_secret
+            if gcal_id or gcal_secret:
+                add(Check(
+                    "gcal_oauth",
+                    "FAIL",
+                    "Google OAuth 環境備援只設定一半；請改由平台後台完整設定",
+                ))
+            else:
+                add(Check(
+                    "gcal_oauth",
+                    "WARN",
+                    "Google OAuth 尚未設定；請到平台後台「登入設定」完成",
+                ))
+    except Exception as exc:  # noqa: BLE001
+        add(Check("gcal_oauth", "WARN", f"無法讀取 Google OAuth 設定:{type(exc).__name__}"))
 
     # 簡訊 fallback:旗標開了但目前恆為 Stub(只進 log 不真發),避免營運者誤以為有補送。
     if settings.sms_fallback_enabled:

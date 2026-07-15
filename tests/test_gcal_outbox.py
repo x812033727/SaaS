@@ -161,6 +161,21 @@ def test_http_insert_conflict_is_idempotent(monkeypatch):
     ) == "saas1e2"
 
 
+def test_production_without_platform_credentials_never_fake_syncs(
+    factory, monkeypatch
+):
+    monkeypatch.setattr(gcal_svc.settings, "env", "prod")
+    monkeypatch.setattr(gcal_svc.settings, "google_oauth_client_id", "")
+    monkeypatch.setattr(gcal_svc.settings, "google_oauth_client_secret", "")
+    with factory() as db:
+        client = gcal_svc.get_gcal_client(db)
+        assert isinstance(client, gcal_svc.UnconfiguredGcalClient)
+        with pytest.raises(gcal_svc.GcalError, match="平台 Google OAuth"):
+            client.insert_event(
+                calendar_id="primary", refresh_token="token", event={}
+            )
+
+
 def test_dry_run_does_not_change_job(factory):
     _reservation(factory)
     results = retry_gcal_syncs(

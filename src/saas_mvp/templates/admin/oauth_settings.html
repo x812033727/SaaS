@@ -8,7 +8,7 @@
   <p class="muted">這是全平台共用設定。設定完成後，所有使用者都能在自己的帳號頁連結 LINE；只有平台管理員可以修改憑證。</p>
 
   {% if saved %}<div class="success">LINE Login 設定已加密儲存並立即生效，不需要重啟服務。</div>{% endif %}
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if line_error %}<div class="error">{{ line_error }}</div>{% endif %}
 
   {% if line_status.configured %}
     <p><span class="badge valid">已啟用</span>
@@ -19,7 +19,7 @@
   {% endif %}
 
   <label for="line-callback-url">Callback URL（貼到 LINE Developers Console）</label>
-  <input id="line-callback-url" value="{{ callback_url }}" readonly>
+  <input id="line-callback-url" value="{{ line_callback_url }}" readonly>
 
   <form method="post" action="/ui/admin/oauth-settings/line" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -48,11 +48,71 @@
 </div>
 
 <div class="card">
+  <h2>Google 登入與日曆同步</h2>
+  <p class="muted">這組 OAuth 憑證供全平台 Google 登入及店家 Google Calendar 同步共用。儲存後立即生效，不需要修改 .env、重建或重啟服務。</p>
+
+  {% if google_saved %}<div class="success">Google OAuth 設定已加密儲存並立即生效。</div>{% endif %}
+  {% if google_error %}<div class="error">{{ google_error }}</div>{% endif %}
+
+  {% if google_status.configured %}
+    <p><span class="badge valid">已啟用</span>
+      {% if google_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">尚未啟用</span></p>
+  {% endif %}
+
+  <form method="post" action="/ui/admin/oauth-settings/google" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="google-client-id">Google OAuth Client ID</label>
+    <input id="google-client-id" name="client_id" value="{{ google_status.client_id }}"
+           maxlength="255" placeholder="123456789-abc.apps.googleusercontent.com" required>
+
+    <label for="google-client-secret">Google OAuth Client Secret</label>
+    <input id="google-client-secret" name="client_secret" type="password" maxlength="255"
+           placeholder="{% if google_status.source == 'database' %}已設定；留空可保留原 Secret{% else %}建立後台設定時必填{% endif %}"
+           {% if google_status.source != 'database' %}required{% endif %} autocomplete="new-password">
+    <p class="muted">Secret 只在送出時使用，會以 Fernet 加密保存，頁面與稽核紀錄都不會顯示明文。</p>
+    <button type="submit">儲存並啟用</button>
+  </form>
+
+  {% if google_status.configured %}
+    <p><a class="btn" href="/ui/gcal/connect">測試 Google 日曆授權</a></p>
+  {% endif %}
+
+  {% if google_status.source == 'database' %}
+    <form method="post" action="/ui/admin/oauth-settings/google/reset">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger" onclick="return confirm('確定移除後台設定並改用伺服器備援值？已連結店家的同步可能停止。')">移除後台設定</button>
+    </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Google Cloud 設定教學</h2>
+  <ol>
+    <li>前往 <a href="https://console.cloud.google.com/" target="_blank" rel="noopener noreferrer">Google Cloud Console</a>，建立或選擇公司擁有的專案。</li>
+    <li>到「API 和服務 → 程式庫」，搜尋並啟用 <strong>Google Calendar API</strong>。</li>
+    <li>到「Google Auth Platform」完成 Branding、Audience 與 Data Access。若應用仍在測試模式，請把實際測試帳號加入 Test users。</li>
+    <li>到「Clients」建立 <strong>Web application</strong> 類型的 OAuth 2.0 Client。</li>
+    <li>在「Authorized redirect URIs」逐條加入下方兩個網址，必須完全一致，不能多斜線：
+      <label for="google-login-callback">Google 登入 Callback</label>
+      <input id="google-login-callback" value="{{ google_login_callback_url }}" readonly>
+      <label for="google-calendar-callback">Google 日曆 Callback</label>
+      <input id="google-calendar-callback" value="{{ google_calendar_callback_url }}" readonly>
+    </li>
+    <li>建立後複製 Client ID 與 Client Secret，貼到上一區儲存。</li>
+    <li>先按「測試 Google 日曆授權」走完一次；若看到 <code>redirect_uri_mismatch</code>，請回 Google Console 核對網址、HTTPS、網域及尾端斜線。</li>
+  </ol>
+  <p class="muted">正式對外商用前，請依 Google Auth Platform 顯示的要求將應用發布為 Production；若 Google 要求驗證 Calendar 權限，需完成品牌網域與權限用途審查。</p>
+</div>
+
+<div class="card">
   <h2>一般使用者流程</h2>
   <ol>
-    <li>平台管理員在本頁完成一次 LINE Login 設定。</li>
-    <li>所有使用者前往「帳號設定」，點擊「開始連結 LINE 帳戶」。</li>
-    <li>完成 LINE 授權後即可使用 LINE 登入，不需終端機或重啟服務。</li>
+    <li>平台管理員只需在本頁完成一次 LINE Login 與 Google OAuth 設定。</li>
+    <li>使用者可到「帳號設定」連結 LINE，或從登入頁使用 Google 登入；店家 owner 可到「預約行事曆」連結自己的 Google 日曆。</li>
+    <li>所有設定立即生效，使用者不需要終端機、Docker 指令或重啟服務。</li>
   </ol>
 </div>
 {% endblock %}

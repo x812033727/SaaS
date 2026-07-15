@@ -1,4 +1,4 @@
-"""平台共用 OAuth 憑證（目前供 LINE Login 使用）。
+"""平台共用 OAuth 憑證（LINE Login / Google Login + Calendar）。
 
 client secret 以與 LINE Bot 憑證相同的 Fernet 金鑰加密；資料庫設定優先於
 環境變數，讓平台管理員可在後台更新且不需重啟服務。

@@ -230,8 +230,19 @@ def _line_config_or_none(db: Session, tenant_id: int) -> dict | None:
 # ── 公開：登入 / 註冊 / 登出 ───────────────────────────────────────────────────
 
 @router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request):
-    return templates.TemplateResponse("login.html", _ctx(request))
+def login_form(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(
+        "login.html",
+        _ctx(
+            request,
+            line_login_configured=oauth_svc.provider_credentials_present(
+                "line", settings=settings, db=db
+            ),
+            google_login_configured=oauth_svc.provider_credentials_present(
+                "google", settings=settings, db=db
+            ),
+        ),
+    )
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -748,10 +759,20 @@ def join_submit(
 
 # ── Google Calendar 連結（E1 Step B,owner 限定）──────────────────────────────
 
+
+def _oauth_callback_base(request: Request) -> str:
+    return (
+        settings.oauth_redirect_base
+        or settings.public_base_url
+        or str(request.base_url)
+    ).rstrip("/")
+
+
 @router.get("/gcal/connect")
 def gcal_connect(
     request: Request,
     actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
 ):
     """導向 Google OAuth(calendar.events scope,offline 拿 refresh token)。
 
@@ -760,16 +781,21 @@ def gcal_connect(
     import secrets as _secrets
     import urllib.parse as _up
 
-    if not settings.google_oauth_client_id:
+    credentials = platform_oauth_svc.effective_google_credentials(db, settings)
+    if not credentials:
+        admin_link = (
+            '<p><a href="/ui/admin/oauth-settings">前往平台登入設定</a></p>'
+            if actor.user.is_admin else "<p>請聯絡平台管理員完成 Google OAuth 設定。</p>"
+        )
         return HTMLResponse(
             "<h1>Google 整合尚未設定</h1>"
-            "<p>平台尚未設定 Google OAuth 憑證(SAAS_GOOGLE_OAUTH_CLIENT_ID),"
-            "設定後即可一鍵連結 Google 日曆。可先用行事曆頁的 ICS 訂閱方案。</p>"
+            "<p>平台管理員可在後台設定 Google OAuth，儲存後立即生效，不需重啟。"
+            "設定前仍可使用行事曆頁的 ICS 訂閱方案。</p>" + admin_link
         )
     state = _secrets.token_urlsafe(24)
-    base = settings.public_base_url.rstrip("/") or ""
+    base = _oauth_callback_base(request)
     params = _up.urlencode({
-        "client_id": settings.google_oauth_client_id,
+        "client_id": credentials[0],
         "redirect_uri": f"{base}/ui/gcal/callback",
         "response_type": "code",
         "scope": "https://www.googleapis.com/auth/calendar.events",
@@ -803,11 +829,17 @@ def gcal_callback(
         return HTMLResponse("<h1>狀態驗證失敗,請重試</h1>", status_code=400)
     if not code:
         return HTMLResponse("<h1>未取得授權碼</h1>", status_code=400)
-    base = settings.public_base_url.rstrip("/") or ""
+    credentials = platform_oauth_svc.effective_google_credentials(db, settings)
+    if not credentials:
+        return HTMLResponse(
+            "<h1>Google 整合設定已移除</h1><p>請聯絡平台管理員重新設定後再試。</p>",
+            status_code=503,
+        )
+    base = _oauth_callback_base(request)
     try:
         token_resp = _post_form("https://oauth2.googleapis.com/token", {
-            "client_id": settings.google_oauth_client_id,
-            "client_secret": settings.google_oauth_client_secret,
+            "client_id": credentials[0],
+            "client_secret": credentials[1],
             "code": code,
             "grant_type": "authorization_code",
             "redirect_uri": f"{base}/ui/gcal/callback",
@@ -1252,22 +1284,21 @@ def admin_overview(
     )
 
 
-def _platform_line_login_ctx(
+def _platform_oauth_ctx(
     request: Request,
     actor: Actor,
     db: Session,
     **extra,
 ) -> dict:
-    callback_base = (
-        settings.oauth_redirect_base
-        or settings.public_base_url
-        or str(request.base_url)
-    ).rstrip("/")
+    callback_base = _oauth_callback_base(request)
     return _ctx(
         request,
         actor,
         line_status=platform_oauth_svc.line_status(db, settings),
-        callback_url=f"{callback_base}/auth/oauth/line/callback",
+        google_status=platform_oauth_svc.google_status(db, settings),
+        line_callback_url=f"{callback_base}/auth/oauth/line/callback",
+        google_login_callback_url=f"{callback_base}/auth/oauth/google/callback",
+        google_calendar_callback_url=f"{callback_base}/ui/gcal/callback",
         **extra,
     )
 
@@ -1276,13 +1307,20 @@ def _platform_line_login_ctx(
 def admin_oauth_settings(
     request: Request,
     saved: int = Query(0),
+    google_saved: int = Query(0),
     actor: Actor = Depends(require_ui_admin),
     db: Session = Depends(get_db),
 ):
-    """平台共用 LINE Login 憑證；只有平台管理員可讀取狀態或修改。"""
+    """平台共用 LINE / Google OAuth；只有平台管理員可讀取或修改。"""
     return templates.TemplateResponse(
         "admin/oauth_settings.html",
-        _platform_line_login_ctx(request, actor, db, saved=bool(saved)),
+        _platform_oauth_ctx(
+            request,
+            actor,
+            db,
+            saved=bool(saved),
+            google_saved=bool(google_saved),
+        ),
     )
 
 
@@ -1305,7 +1343,7 @@ def admin_oauth_settings_save(
         db.rollback()
         return templates.TemplateResponse(
             "admin/oauth_settings.html",
-            _platform_line_login_ctx(request, actor, db, error=str(exc)),
+            _platform_oauth_ctx(request, actor, db, line_error=str(exc)),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     audit_svc.record_from_actor(
@@ -1336,6 +1374,77 @@ def admin_oauth_settings_reset(
             actor,
             action="platform.oauth.line.reset",
             target="oauth:line",
+            request=request,
+        )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/oauth-settings",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/oauth-settings/google", response_class=HTMLResponse)
+def admin_google_oauth_settings_save(
+    request: Request,
+    client_id: str = Form(..., max_length=255),
+    client_secret: str = Form("", max_length=255),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_oauth_svc.save_google_credentials(
+            db,
+            client_id=client_id,
+            client_secret=client_secret,
+            actor_user_id=actor.user.id,
+        )
+    except platform_oauth_svc.PlatformOAuthConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/oauth_settings.html",
+            _platform_oauth_ctx(request, actor, db, google_error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.oauth.google.update",
+        target="oauth:google",
+        detail={"client_id": client_id.strip(), "secret_changed": bool(client_secret)},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/admin/oauth-settings?google_saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/oauth-settings/google/reset", response_class=HTMLResponse)
+def admin_google_oauth_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    removed = platform_oauth_svc.clear_google_override(db)
+    if removed:
+        if platform_oauth_svc.effective_google_credentials(db, settings) is None:
+            from saas_mvp.models.tenant_gcal_credential import (
+                GCAL_ERROR,
+                TenantGcalCredential,
+            )
+
+            db.query(TenantGcalCredential).update({
+                TenantGcalCredential.status: GCAL_ERROR,
+                TenantGcalCredential.last_error: (
+                    "平台 Google OAuth 設定已移除，請聯絡平台管理員"
+                ),
+            })
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.oauth.google.reset",
+            target="oauth:google",
             request=request,
         )
     db.commit()

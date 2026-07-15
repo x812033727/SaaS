@@ -1,7 +1,7 @@
 """Google Calendar 單向寫入 + 可靠 outbox 重試。
 
-* ``StubGcalClient``:記憶體 events dict(測試斷言);``google_oauth_client_id``
-  空時 factory 走 Stub 單例(mailer 型態)。
+* ``StubGcalClient``:記憶體 events dict(測試斷言)；平台後台與環境備援皆未
+  設定 Google OAuth 時，factory 走 Stub 單例。
 * ``HttpGcalClient``:refresh_token → access_token → Calendar API v3
   (stdlib urllib,零新相依)。
 * 預約交易先寫 ``GcalSyncJob``，即時同步失敗時由 scheduler 指數退避補送。
@@ -75,13 +75,34 @@ class StubGcalClient(GcalClient):
         self.events.pop(event_id, None)
 
 
+class UnconfiguredGcalClient(GcalClient):
+    """正式環境缺平台 OAuth 憑證時明確失敗，避免 Stub 假同步成功。"""
+
+    @staticmethod
+    def _fail() -> None:
+        raise GcalError("平台 Google OAuth 尚未設定，請聯絡平台管理員")
+
+    def insert_event(self, **kwargs) -> str:
+        self._fail()
+
+    def patch_event(self, **kwargs) -> None:
+        self._fail()
+
+    def delete_event(self, **kwargs) -> None:
+        self._fail()
+
+
 class HttpGcalClient(GcalClient):
     """真實 Calendar API v3;refresh token 換 access token 後呼叫。"""
 
+    def __init__(self, client_id: str | None = None, client_secret: str | None = None):
+        self._client_id = client_id or settings.google_oauth_client_id
+        self._client_secret = client_secret or settings.google_oauth_client_secret
+
     def _access_token(self, refresh_token: str) -> str:
         body = urllib.parse.urlencode({
-            "client_id": settings.google_oauth_client_id,
-            "client_secret": settings.google_oauth_client_secret,
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
             "refresh_token": refresh_token,
             "grant_type": "refresh_token",
         }).encode()
@@ -160,10 +181,15 @@ class HttpGcalClient(GcalClient):
 _stub_singleton = StubGcalClient()
 
 
-def get_gcal_client() -> GcalClient:
-    """factory:google_oauth_client_id 空 → Stub 單例(離線/未設定)。"""
-    if settings.google_oauth_client_id:
-        return HttpGcalClient()
+def get_gcal_client(db: Session | None = None) -> GcalClient:
+    """資料庫後台設定優先；未設定時使用離線 Stub。"""
+    from saas_mvp.services.platform_oauth_config import effective_google_credentials
+
+    credentials = effective_google_credentials(db, settings)
+    if credentials:
+        return HttpGcalClient(client_id=credentials[0], client_secret=credentials[1])
+    if settings.env not in ("dev", "test"):
+        return UnconfiguredGcalClient()
     return _stub_singleton
 
 
@@ -279,7 +305,7 @@ def attempt_sync(db: Session, row, *, client: GcalClient | None = None, now=None
         row.updated_at = effective_now
         return row.status
 
-    effective = client or get_gcal_client()
+    effective = client or get_gcal_client(db)
     try:
         should_delete = row.action == GCAL_ACTION_DELETE or resv.status == RESERVATION_CANCELLED
         if should_delete:

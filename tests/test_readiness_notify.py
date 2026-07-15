@@ -19,6 +19,8 @@ from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.ops.check_readiness import run_checks  # noqa: E402
 from saas_mvp.services import billing as billing_svc  # noqa: E402
 from saas_mvp.services import features as features_svc  # noqa: E402
+from saas_mvp.services import platform_email_config as platform_email_svc  # noqa: E402
+from saas_mvp.services import platform_oauth_config as platform_oauth_svc  # noqa: E402
 from saas_mvp.services import subscriptions as subs_svc  # noqa: E402
 from saas_mvp.services.mailer import MailerError, StubMailer  # noqa: E402
 
@@ -174,6 +176,36 @@ class TestReadiness:
         monkeypatch.setattr(settings, "google_oauth_client_secret", "")
         by = self._by_name(run_checks(session_factory=_Session))
         assert by["gcal_oauth"].status == "WARN"
+
+    def test_database_google_oauth_setting_passes_without_env(self, db, monkeypatch):
+        monkeypatch.setattr(settings, "google_oauth_client_id", "")
+        monkeypatch.setattr(settings, "google_oauth_client_secret", "")
+        platform_oauth_svc.save_google_credentials(
+            db,
+            client_id="1234567890-ready.apps.googleusercontent.com",
+            client_secret="GOCSPX-ready-secret-value",
+            actor_user_id=1,
+        )
+        db.commit()
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["gcal_oauth"].status == "PASS"
+        assert "source=database" in by["gcal_oauth"].detail
+
+    def test_database_smtp_setting_passes_without_env(self, db, monkeypatch):
+        monkeypatch.setattr(settings, "smtp_host", "")
+        platform_email_svc.save_email_config(
+            db,
+            host="smtp.example.com",
+            port=587,
+            user="mailer@example.com",
+            password="smtp-secret",
+            from_address="mailer@example.com",
+            actor_user_id=1,
+        )
+        db.commit()
+        by = self._by_name(run_checks(session_factory=_Session))
+        assert by["smtp"].status == "PASS"
+        assert "source=database" in by["smtp"].detail
 
     def test_sms_fallback_on_warns_stub_only(self, monkeypatch):
         monkeypatch.setattr(settings, "sms_fallback_enabled", True)

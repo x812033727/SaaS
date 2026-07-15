@@ -13,9 +13,12 @@
       <input id="password" name="password" type="password" required>
       <button type="submit">登入</button>
     </form>
-    <div class="oauth-login">
-      <a class="btn secondary" href="/auth/oauth/line/login">使用 LINE 登入</a>
-    </div>
+    {% if line_login_configured or google_login_configured %}
+      <div class="oauth-login">
+        {% if line_login_configured %}<a class="btn secondary" href="/auth/oauth/line/login">使用 LINE 登入</a>{% endif %}
+        {% if google_login_configured %}<a class="btn secondary" href="/auth/oauth/google/login">使用 Google 登入</a>{% endif %}
+      </div>
+    {% endif %}
     <div class="center-link">還沒有帳號？<a href="/ui/register">註冊店家</a>
       ｜<a href="/ui/forgot-password">忘記密碼</a></div>
   </div>

@@ -32,9 +32,9 @@ def provider_credentials_present(name: str, *, settings, db=None) -> bool:
 
         return effective_line_credentials(db, settings) is not None
     if name == "google":
-        return bool(
-            settings.google_oauth_client_id and settings.google_oauth_client_secret
-        )
+        from saas_mvp.services.platform_oauth_config import effective_google_credentials
+
+        return effective_google_credentials(db, settings) is not None
     return False
 
 
@@ -300,10 +300,13 @@ def get_provider(name: str, *, settings, db=None) -> OAuthProvider:
             raise OAuthNotConfigured("LINE Login credentials are not configured")
         return StubOAuthProvider(name="line")
     if name == "google":
-        if provider_credentials_present("google", settings=settings):
+        from saas_mvp.services.platform_oauth_config import effective_google_credentials
+
+        credentials = effective_google_credentials(db, settings)
+        if credentials:
             return GoogleOAuthProvider(
-                client_id=settings.google_oauth_client_id,
-                client_secret=settings.google_oauth_client_secret,
+                client_id=credentials[0],
+                client_secret=credentials[1],
             )
         if getattr(settings, "env", "dev") not in ("dev", "test"):
             raise OAuthNotConfigured("Google OAuth credentials are not configured")
