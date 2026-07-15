@@ -256,6 +256,10 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
                 params["slot_id"] = slot_id
         party = _to_int(qs["party"][0]) if "party" in qs else None
         params["party_size"] = _clamp_party(party)
+        for key in ("service_id", "staff_id", "waitlist_entry_id"):
+            value = _qint(key)
+            if value is not None:
+                params[key] = value
     elif action == "pick_service":
         # 引導式第一步結果：使用者選定服務項目。
         sid = _qint("service_id")
@@ -355,6 +359,10 @@ def parse_postback_data(data: str) -> tuple[str | None, dict]:
             params["slot_id"] = sid
         party = _to_int(qs["party"][0]) if "party" in qs else None
         params["party_size"] = _clamp_party(party)
+        for key in ("service_id", "staff_id"):
+            value = _qint(key)
+            if value is not None:
+                params[key] = value
     elif action == "waitlist_cancel":
         eid = _qint("entry_id")
         if eid is not None:

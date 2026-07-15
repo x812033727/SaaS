@@ -54,6 +54,8 @@ class Tenant(Base):
     # 定金（C4 防 no-show）:NULL/0=停用;hold_minutes NULL=用 settings 預設。rev 0015。
     deposit_cents = Column(Integer, nullable=True, default=None)
     deposit_hold_minutes = Column(Integer, nullable=True, default=None)
+    # 候補釋出后留給當前候補者的回應時間；NULL=全域預設。
+    waitlist_offer_minutes = Column(Integer, nullable=True, default=None)
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     organization = relationship("Organization", back_populates="tenants")

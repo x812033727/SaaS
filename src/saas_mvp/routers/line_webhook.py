@@ -1286,14 +1286,20 @@ def _slots_fitting_service(db: Session, tenant_id: int, slots: list, service_id)
 
 
 def _waitlist_join_buttons(
-    slot_id: int | None, party_size: int
+    slot_id: int | None,
+    party_size: int,
+    service_id: int | None = None,
+    staff_id: int | None = None,
 ) -> list[tuple[str, str]] | None:
     """額滿回覆的「加入候補」quick-reply 按鈕。"""
     if slot_id is None:
         return None
-    return [
-        ("加入候補", f"action=waitlist_join&slot_id={slot_id}&party={party_size}")
-    ]
+    data = f"action=waitlist_join&slot_id={slot_id}&party={party_size}"
+    if service_id is not None:
+        data += f"&service_id={service_id}"
+    if staff_id is not None:
+        data += f"&staff_id={staff_id}"
+    return [("加入候補", data)]
 
 
 def _my_waitlist_reply(
@@ -1680,7 +1686,7 @@ def _try_conversational(
             return (
                 f"時段 #{slot_id} 已額滿，可加入候補（名額釋出時通知您）"
                 f"或改選其他時段。",
-                _waitlist_join_buttons(slot_id, party_size),
+                _waitlist_join_buttons(slot_id, party_size, service_id, staff_id),
                 None,
             )
         return _confirm_text(db, tenant_id, resv, slot_id), None, None
@@ -1722,6 +1728,8 @@ def _dispatch_booking(
     if action == "book":
         slot_id = params.get("slot_id")
         party_size = params.get("party_size", 1)
+        service_id = params.get("service_id")
+        staff_id = params.get("staff_id")
         try:
             resv = booking_svc.book_slot(
                 db,
@@ -1730,6 +1738,8 @@ def _dispatch_booking(
                 party_size=party_size,
                 line_user_id=line_user_id,
                 display_name=display_name,
+                service_id=service_id,
+                staff_id=staff_id,
                 source_webhook_event_id=source_webhook_event_id,
             )
         except booking_svc.CustomerBlacklistedError:
@@ -1740,7 +1750,7 @@ def _dispatch_booking(
             return (
                 f"時段 #{slot_id} 已額滿，可加入候補（名額釋出時通知您）"
                 f"或改選其他時段。",
-                _waitlist_join_buttons(slot_id, party_size),
+                _waitlist_join_buttons(slot_id, party_size, service_id, staff_id),
             )
         # 統一走 _confirm_text（含行事曆連結與定金提示）。
         return _confirm_text(db, tenant_id, resv, slot_id), None
@@ -1862,6 +1872,8 @@ def _dispatch_booking(
                 line_user_id=line_user_id,
                 party_size=params.get("party_size", 1),
                 display_name=display_name,
+                service_id=params.get("service_id"),
+                staff_id=params.get("staff_id"),
             )
         except waitlist_svc.WaitlistSlotNotFound:
             return f"找不到時段 #{slot_id}。", None

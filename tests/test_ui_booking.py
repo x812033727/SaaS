@@ -22,10 +22,16 @@ from saas_mvp.models import tenant as _t, user as _u  # noqa: F401,E402
 from saas_mvp.models import customer as _c, booking_slot as _bs  # noqa: F401,E402
 from saas_mvp.models import reservation as _r, reservation_reminder as _rr  # noqa: F401,E402
 import saas_mvp.models.line_channel_config as _lcm  # noqa: F401,E402
+import saas_mvp.models.booking_waitlist as _wl  # noqa: F401,E402
 
 from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
 from saas_mvp.models.booking_slot import BookingSlot  # noqa: E402
+from saas_mvp.models.booking_waitlist import (  # noqa: E402
+    WAITLIST_CANCELLED,
+    WAITLIST_WAITING,
+    WaitlistEntry,
+)
 from saas_mvp.models.gcal_sync_job import (  # noqa: E402
     GCAL_SYNC_FAILED,
     GCAL_SYNC_PENDING,
@@ -39,6 +45,7 @@ from saas_mvp.models.reservation import (  # noqa: E402
 from saas_mvp.models.audit_log import AuditLog  # noqa: E402
 from saas_mvp.models.tenant_gcal_credential import TenantGcalCredential  # noqa: E402
 from saas_mvp.models.user import User  # noqa: E402
+from saas_mvp.models.tenant import Tenant  # noqa: E402
 from saas_mvp.line_client import (  # noqa: E402
     FakeLineRichMenuClient,
     StubLineBotInfoClient,
@@ -523,6 +530,95 @@ class TestReminderHoursUI:
         r = client.post("/ui/booking/reminder-hours", data={"reminder_hours_before": 999})
         assert r.status_code == 200
         assert "1 ～ 168" in r.text or "error" in r.text.lower()
+
+
+class TestWaitlistUI:
+    @staticmethod
+    def _seed_entry(email: str, *, line_user_id: str = "Uuiwait") -> int:
+        with _Session() as db:
+            user = db.query(User).filter_by(email=email).one()
+            slot = BookingSlot(
+                tenant_id=user.tenant_id,
+                slot_start=datetime.datetime(2032, 2, 1, 10, 0),
+                max_capacity=1,
+                booked_count=1,
+            )
+            db.add(slot)
+            db.flush()
+            entry = WaitlistEntry(
+                tenant_id=user.tenant_id,
+                slot_id=slot.id,
+                line_user_id=line_user_id,
+                display_name="候補顧客",
+                party_size=1,
+                status=WAITLIST_WAITING,
+            )
+            db.add(entry)
+            db.commit()
+            return entry.id
+
+    def test_owner_can_view_and_set_offer_minutes_with_audit(self, client):
+        email = _login(client)
+        entry_id = self._seed_entry(email)
+        page = client.get("/ui/booking")
+        assert "候補名單" in page.text
+        assert "候補顧客" in page.text
+        assert f"/waitlist/{entry_id}/cancel" in page.text
+
+        response = client.post(
+            "/ui/booking/waitlist-settings",
+            data={"waitlist_offer_minutes": 20},
+        )
+        assert response.status_code == 200
+        assert "候補回應時間已儲存" in response.text
+        with _Session() as db:
+            user = db.query(User).filter_by(email=email).one()
+            assert db.get(Tenant, user.tenant_id).waitlist_offer_minutes == 20
+            assert db.query(AuditLog).filter_by(
+                action="booking.waitlist.settings",
+                target=f"tenant:{user.tenant_id}",
+            ).count() == 1
+
+    def test_staff_can_cancel_but_cannot_change_offer_minutes(self, client):
+        email = _login(client)
+        entry_id = self._seed_entry(email, line_user_id="Ustaffwait")
+        with _Session() as db:
+            user = db.query(User).filter_by(email=email).one()
+            user.role = "staff"
+            db.commit()
+
+        page = client.get("/ui/booking")
+        assert "候補顧客" in page.text
+        assert "儲存候補設定" not in page.text
+        forbidden = client.post(
+            "/ui/booking/waitlist-settings",
+            data={"waitlist_offer_minutes": 30},
+            follow_redirects=False,
+        )
+        assert forbidden.status_code == 403
+
+        cancelled = client.post(f"/ui/booking/waitlist/{entry_id}/cancel")
+        assert cancelled.status_code == 200
+        assert "已取消" in cancelled.text
+        with _Session() as db:
+            assert db.get(WaitlistEntry, entry_id).status == WAITLIST_CANCELLED
+            assert db.query(AuditLog).filter_by(
+                action="booking.waitlist.cancel",
+                target=f"waitlist:{entry_id}",
+            ).count() == 1
+
+    def test_cross_tenant_cancel_is_not_found(self, client):
+        email_a = _login(client)
+        foreign_entry_id = self._seed_entry(email_a, line_user_id="Uforeignwait")
+        _login(client)
+
+        response = client.post(
+            f"/ui/booking/waitlist/{foreign_entry_id}/cancel"
+        )
+        assert response.status_code == 200
+        assert "候補紀錄不存在" in response.text
+        with _Session() as db:
+            assert db.get(WaitlistEntry, foreign_entry_id).status == WAITLIST_WAITING
 
 
 class TestCalendarUI:

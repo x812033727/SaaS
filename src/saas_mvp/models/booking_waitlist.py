@@ -5,7 +5,8 @@
 waiting 候補標為 notified，commit 後 best-effort 推播「立即預約」按鈕。
 
 狀態：waiting（等候中）/ notified（已通知，等顧客自行預約）/
-cancelled（顧客取消候補）。同一 (slot, line_user) 僅一列
+booked（已完成補位）/ expired（通知逾時）/ cancelled（取消候補）。
+同一 (slot, line_user) 僅一列
 （UniqueConstraint；重複登記走 reactivate 冪等）。
 """
 
@@ -27,6 +28,8 @@ from saas_mvp.db import Base
 # 狀態常數（避免散落字串硬碼）
 WAITLIST_WAITING = "waiting"
 WAITLIST_NOTIFIED = "notified"
+WAITLIST_BOOKED = "booked"
+WAITLIST_EXPIRED = "expired"
 WAITLIST_CANCELLED = "cancelled"
 
 
@@ -67,6 +70,18 @@ class WaitlistEntry(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
     notified_at = Column(DateTime(timezone=True), nullable=True)
+    # 候補名額提醒有限時，逾時後排程會轉 expired 並遞補下一位。
+    offer_expires_at = Column(DateTime(timezone=True), nullable=True)
+    notification_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    # 保留顧客原本選擇，從候補通知完成預約時不會遺失服務／員工。
+    service_id = Column(Integer, nullable=True)
+    staff_id = Column(Integer, nullable=True)
+    reservation_id = Column(
+        Integer,
+        ForeignKey("booking_reservations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     __table_args__ = (
         UniqueConstraint(

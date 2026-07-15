@@ -143,6 +143,9 @@ class Settings(BaseSettings):
     # 定金（C4）:未付定金保留分鐘數預設(店家可 per-tenant 覆寫)。
     deposit_hold_minutes_default: int = 30
 
+    # 候補釋出通知的有效分鐘數（店家可 per-tenant 覆寫）。
+    waitlist_offer_minutes_default: int = 15
+
     # 簡訊 fallback(E3):LINE 推播失敗且顧客有手機時補發簡訊;預設關。
     sms_fallback_enabled: bool = False
 

@@ -46,7 +46,9 @@ from saas_mvp.line_client import (  # noqa: E402
 )
 from saas_mvp.models.booking_slot import BookingSlot  # noqa: E402
 from saas_mvp.models.booking_waitlist import (  # noqa: E402
+    WAITLIST_BOOKED,
     WAITLIST_CANCELLED,
+    WAITLIST_EXPIRED,
     WAITLIST_NOTIFIED,
     WAITLIST_WAITING,
     WaitlistEntry,
@@ -284,6 +286,102 @@ class TestCancelReleaseNotify:
         assert _entry(db, e_b.id).status == WAITLIST_WAITING
         assert fake_push.call_count == 0
 
+    def test_offer_expires_and_scheduler_moves_to_next(self, db, fake_push):
+        tid = _tenant(db)
+        tenant = db.get(Tenant, tid)
+        tenant.waitlist_offer_minutes = 10
+        db.commit()
+        sid = _slot(db, tid, cap=2)
+        rid = _fill_slot(db, tid, sid, party=2)
+        first = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Ufirst", party_size=1
+        )
+        second = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Usecond", party_size=1
+        )
+
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+        offered = _entry(db, first.id)
+        assert offered.status == WAITLIST_NOTIFIED
+        assert offered.offer_expires_at is not None
+        assert offered.notification_attempts == 1
+
+        # 有效期限內不會同時通知第二人。
+        assert waitlist_svc.notify_next_for_slot_best_effort(
+            db,
+            tenant_id=tid,
+            slot_id=sid,
+            push_client=fake_push,
+            now=offered.notified_at + datetime.timedelta(minutes=5),
+        ) is False
+        assert _entry(db, second.id).status == WAITLIST_WAITING
+
+        # 逾時後第一人結束，第二人立即收到 offer。
+        assert waitlist_svc.notify_next_for_slot_best_effort(
+            db,
+            tenant_id=tid,
+            slot_id=sid,
+            push_client=fake_push,
+            now=offered.notified_at + datetime.timedelta(minutes=11),
+        ) is True
+        assert _entry(db, first.id).status == WAITLIST_EXPIRED
+        assert _entry(db, second.id).status == WAITLIST_NOTIFIED
+        assert fake_push.sent[-1].to_user_id == "Usecond"
+
+    def test_successful_booking_fulfills_waitlist_and_keeps_choices(
+        self, db, fake_push
+    ):
+        from saas_mvp.models.service import Service
+        from saas_mvp.models.staff import Staff
+
+        tid = _tenant(db)
+        service = Service(tenant_id=tid, name="染髮", duration_minutes=60)
+        staff = Staff(tenant_id=tid, name="Amy")
+        db.add_all([service, staff])
+        db.flush()
+        sid = _slot(db, tid, cap=1)
+        rid = _fill_slot(db, tid, sid, party=1)
+        entry = waitlist_svc.join_waitlist(
+            db,
+            tenant_id=tid,
+            slot_id=sid,
+            line_user_id="Ucandidate",
+            party_size=1,
+            service_id=service.id,
+            staff_id=staff.id,
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+
+        reservation = booking_svc.book_slot(
+            db,
+            tenant_id=tid,
+            slot_id=sid,
+            party_size=1,
+            line_user_id="Ucandidate",
+            service_id=service.id,
+            staff_id=staff.id,
+        )
+        fulfilled = _entry(db, entry.id)
+        assert fulfilled.status == WAITLIST_BOOKED
+        assert fulfilled.reservation_id == reservation.id
+        assert reservation.service_id == service.id
+        assert reservation.staff_id == staff.id
+
+    def test_capacity_increase_immediately_notifies(self, db, fake_push):
+        from saas_mvp.services import slots as slots_svc
+
+        tid = _tenant(db)
+        sid = _slot(db, tid, cap=1)
+        _fill_slot(db, tid, sid, party=1)
+        entry = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Ucapacity", party_size=1
+        )
+
+        slots_svc.update_slot(db, tenant_id=tid, slot_id=sid, max_capacity=2)
+
+        assert _entry(db, entry.id).status == WAITLIST_NOTIFIED
+        assert fake_push.sent[-1].to_user_id == "Ucapacity"
+
 
 class TestCancelWaitlist:
     def test_cancel_own_entry(self, db):
@@ -323,6 +421,26 @@ class TestCancelWaitlist:
         booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
         assert _entry(db, e.id).status == WAITLIST_CANCELLED
         assert fake_push.call_count == 0
+
+    def test_cancel_notified_entry_immediately_offers_next(self, db, fake_push):
+        tid = _tenant(db)
+        sid = _slot(db, tid, cap=1)
+        rid = _fill_slot(db, tid, sid, party=1)
+        first = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Ufirst", party_size=1
+        )
+        second = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Usecond", party_size=1
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+
+        waitlist_svc.cancel_waitlist(
+            db, tenant_id=tid, entry_id=first.id, line_user_id="Ufirst"
+        )
+
+        assert _entry(db, first.id).status == WAITLIST_CANCELLED
+        assert _entry(db, second.id).status == WAITLIST_NOTIFIED
+        assert fake_push.sent[-1].to_user_id == "Usecond"
 
 
 # ── LINE webhook 端到端 ─────────────────────────────────────────────────────

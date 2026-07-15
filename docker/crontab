@@ -8,7 +8,7 @@
 #  - heartbeat：compose healthcheck 判 /tmp/sched/heartbeat 新鮮度 <180s。
 
 # 每分鐘：到期提醒 + 預約異動通知（串行、防重疊）
-* * * * * flock -n /tmp/sched/ops.lock -c "python -m saas_mvp.ops.send_due_reminders --apply && python -m saas_mvp.ops.send_due_notifications --apply"
+* * * * * flock -n /tmp/sched/ops.lock -c "python -m saas_mvp.ops.send_due_reminders --apply && python -m saas_mvp.ops.send_due_notifications --apply && python -m saas_mvp.ops.process_waitlists --apply"
 
 # 每分鐘：Email outbox（驗證信/重設密碼信失敗自動重試）
 * * * * * flock -n /tmp/sched/email.lock -c "python -m saas_mvp.ops.send_due_emails --apply"

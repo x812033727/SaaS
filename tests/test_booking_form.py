@@ -32,12 +32,14 @@ from saas_mvp.models import customer as _c, booking_slot as _bs  # noqa: F401,E4
 from saas_mvp.models import reservation as _r  # noqa: F401,E402
 from saas_mvp.models import booking_form_token as _bft  # noqa: F401,E402
 import saas_mvp.models.line_channel_config as _lcm  # noqa: F401,E402
+import saas_mvp.models.booking_waitlist as _wl  # noqa: F401,E402
 
 from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.config import settings  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client  # noqa: E402
 from saas_mvp.models.booking_slot import BookingSlot  # noqa: E402
+from saas_mvp.models.booking_waitlist import WaitlistEntry  # noqa: E402
 from saas_mvp.models.line_channel_config import LineChannelConfig  # noqa: E402
 from saas_mvp.models.reservation import Reservation  # noqa: E402
 from saas_mvp.models.service import Service  # noqa: E402
@@ -198,6 +200,46 @@ class TestFormFlow:
         # token 未消耗,可回上一步重選
         r = c.get(f"/booking/f/{token2}")
         assert r.status_code == 200 and "已完成預約" not in r.text
+
+    def test_full_slot_is_visible_and_can_join_waitlist(self, client):
+        c, _ = client
+        tid, service_id, slot_id = _seed(capacity=1)
+        first = _issue(tid, user="Ufirst")
+        c.post(
+            f"/booking/f/{first}",
+            data={"slot_id": slot_id, "party_size": 1, "service_id": service_id},
+        )
+        token = _issue(tid, user="Uwaiting")
+
+        page = c.get(
+            f"/booking/f/{token}",
+            params={"service_id": service_id, "date": "2030-06-01"},
+        )
+        assert "已額滿，可加入候補" in page.text
+        assert f'value="{slot_id}"' in page.text
+
+        response = c.post(
+            f"/booking/f/{token}/waitlist",
+            data={
+                "slot_id": slot_id,
+                "party_size": 1,
+                "service_id": service_id,
+            },
+        )
+        assert response.status_code == 200
+        assert "已加入候補" in response.text
+        with _Session() as db:
+            entry = db.execute(
+                select(WaitlistEntry).where(
+                    WaitlistEntry.tenant_id == tid,
+                    WaitlistEntry.line_user_id == "Uwaiting",
+                )
+            ).scalar_one()
+            assert entry.service_id == service_id
+            assert entry.party_size == 1
+
+        # 候補不會消耗一次性預約 token，仍可查看其他日期。
+        assert c.get(f"/booking/f/{token}").status_code == 200
 
 
 # ── webhook 整合 ─────────────────────────────────────────────────────────────

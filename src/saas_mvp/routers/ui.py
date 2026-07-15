@@ -60,6 +60,7 @@ from saas_mvp.services import reporting as reporting_svc
 from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import deposit as deposit_svc
+from saas_mvp.services import waitlist as waitlist_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import api_keys as api_keys_svc
@@ -2601,6 +2602,8 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     cfg = _line_config_or_none(db, tid)
     customers = customers_svc.list_customers(db, tenant_id=tid)
     tenant_row = db.query(Tenant).filter(Tenant.id == tid).first()
+    booking_slots = slots_svc.list_slots(db, tenant_id=tid)
+    waitlist_rows = waitlist_svc.list_waitlist(db, tenant_id=tid)
     reminder_hours = (
         (tenant_row.reminder_hours_before if tenant_row else None)
         or settings.reminder_hours_before_default
@@ -2612,16 +2615,27 @@ def _booking_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
         tenant=tenant_row,
         bot_mode=(cfg or {}).get("bot_mode", "translation"),
         has_line_config=cfg is not None,
-        slots=slots_svc.list_slots(db, tenant_id=tid),
+        slots=booking_slots,
         reservations=booking_svc.list_reservations(db, tenant_id=tid),
+        waitlist_entries=waitlist_rows,
+        waitlist_offer_minutes=(
+            (tenant_row.waitlist_offer_minutes if tenant_row else None)
+            or settings.waitlist_offer_minutes_default
+        ),
+        slot_by_id={slot.id: slot for slot in booking_slots},
         customers=customers,
         reminder_hours=reminder_hours,
         can_manage_deposits=(
             (getattr(actor.user, "role", None) or "owner") == "owner"
             or actor.user.is_admin
         ),
+        can_manage_waitlist_settings=(
+            (getattr(actor.user, "role", None) or "owner") == "owner"
+            or actor.user.is_admin
+        ),
         # 預約列以 customer_id 對應顧客檔，顯示可核對的 LINE 名稱/電話（免額外查詢）。
         customer_by_id={c.id: c for c in customers},
+        customer_by_line={c.line_user_id: c for c in customers if c.line_user_id},
         **extra,
     )
 
@@ -2710,6 +2724,72 @@ def booking_set_reminder_hours(
     return templates.TemplateResponse(
         "_booking_reminder.html",
         _booking_ctx(request, actor, db, error=error, saved=saved),
+    )
+
+
+@router.post("/booking/waitlist-settings", response_class=HTMLResponse)
+def booking_set_waitlist_settings(
+    request: Request,
+    waitlist_offer_minutes: int = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """候補回應窗口設定；owner 限定。"""
+    error = None
+    saved = False
+    if not 5 <= waitlist_offer_minutes <= 120:
+        error = "候補回應時間需介於 5～120 分鐘。"
+    else:
+        tenant = db.get(Tenant, actor.user.tenant_id)
+        tenant.waitlist_offer_minutes = waitlist_offer_minutes
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.waitlist.settings",
+            target=f"tenant:{tenant.id}",
+            detail={"offer_minutes": waitlist_offer_minutes},
+            request=request,
+        )
+        db.commit()
+        saved = True
+    return templates.TemplateResponse(
+        "_booking_waitlist.html",
+        _booking_ctx(
+            request,
+            actor,
+            db,
+            waitlist_error=error,
+            waitlist_saved=saved,
+        ),
+    )
+
+
+@router.post("/booking/waitlist/{entry_id}/cancel", response_class=HTMLResponse)
+def booking_cancel_waitlist_entry(
+    request: Request,
+    entry_id: int,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    error = None
+    try:
+        waitlist_svc.cancel_waitlist_by_staff(
+            db, tenant_id=actor.user.tenant_id, entry_id=entry_id
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="booking.waitlist.cancel",
+            target=f"waitlist:{entry_id}",
+            request=request,
+        )
+        db.commit()
+    except waitlist_svc.WaitlistEntryNotFound:
+        db.rollback()
+        error = "候補紀錄不存在。"
+    return templates.TemplateResponse(
+        "_booking_waitlist.html",
+        _booking_ctx(request, actor, db, waitlist_error=error),
     )
 
 

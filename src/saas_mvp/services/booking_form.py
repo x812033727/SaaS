@@ -104,10 +104,11 @@ def active_services(db: Session, tenant_id: int) -> list:
 
 
 def available_dates(db: Session, tenant_id: int, limit: int = 14) -> list[str]:
-    """有可預約時段的日期（升冪去重，前 limit 筆）。"""
+    """有啟用時段的日期（含額滿，讓顧客可加入候補）。"""
     seen: set[str] = set()
+    today = _utcnow().date()
     for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True):
-        if s.online_available > 0:
+        if s.slot_start.date() >= today:
             seen.add(s.slot_start.date().isoformat())
     return sorted(seen)[:limit]
 
@@ -115,11 +116,11 @@ def available_dates(db: Session, tenant_id: int, limit: int = 14) -> list[str]:
 def slots_for(
     db: Session, tenant_id: int, *, date: str, service_id: int | None
 ) -> list:
-    """該日期、可容納該服務時長的可預約時段（slot_end NULL 舊資料放行）。"""
+    """該日期、可容納該服務時長的時段（含額滿候補）。"""
     slots = [
         s
         for s in slots_svc.list_slots(db, tenant_id=tenant_id, active_only=True)
-        if s.online_available > 0 and s.slot_start.date().isoformat() == date
+        if s.slot_start.date().isoformat() == date
     ]
     if service_id is None:
         return slots
@@ -182,3 +183,28 @@ def submit_booking(
     row.used_at = _utcnow()
     db.commit()
     return resv
+
+
+def submit_waitlist(
+    db: Session,
+    *,
+    token: str,
+    slot_id: int,
+    party_size: int,
+    service_id: int | None,
+    staff_id: int | None,
+):
+    """以同一枚預約 token 登記候補；token TTL 內可候補多個時段。"""
+    from saas_mvp.services import waitlist as waitlist_svc
+
+    row = resolve_token(db, token)
+    return waitlist_svc.join_waitlist(
+        db,
+        tenant_id=row.tenant_id,
+        slot_id=slot_id,
+        line_user_id=row.line_user_id,
+        display_name=row.display_name,
+        party_size=party_size,
+        service_id=service_id,
+        staff_id=staff_id,
+    )

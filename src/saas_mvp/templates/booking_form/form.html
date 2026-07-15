@@ -55,7 +55,24 @@
 
   {% elif state == "error" %}
     <div class="error"><p>{{ message }}</p></div>
+    {% if can_waitlist %}
+      <form method="post" action="/booking/f/{{ token }}/waitlist">
+        <input type="hidden" name="slot_id" value="{{ slot_id }}">
+        <input type="hidden" name="party_size" value="{{ party_size }}">
+        {% if service_id is not none %}<input type="hidden" name="service_id" value="{{ service_id }}">{% endif %}
+        {% if staff_id is not none %}<input type="hidden" name="staff_id" value="{{ staff_id }}">{% endif %}
+        <button type="submit">加入候補</button>
+      </form>
+    {% endif %}
     <a class="back" href="/booking/f/{{ token }}{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 回上一步重新選擇</a>
+
+  {% elif state == "waitlisted" %}
+    <div class="state">
+      <h1>已加入候補</h1>
+      <p>時段釋出 {{ entry.party_size }} 位以上名額時，系統會依順序從 LINE 通知您。</p>
+      <p>收到通知後請在限時內完成預約，名額以實際建單成功為準。</p>
+    </div>
+    <a class="back" href="/booking/f/{{ token }}{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 繼續查看其他日期</a>
 
   {% elif state == "pick_service" %}
     <h1>線上預約 — 選擇服務</h1>
@@ -112,8 +129,31 @@
         </select>
         <button type="submit">確認預約 {{ date }}</button>
       </form>
-    {% else %}
-      <div class="state"><p>{{ date }} 沒有可預約的時段。</p></div>
+    {% endif %}
+    {% if full_slots %}
+      <h1 style="margin-top:2rem">已額滿，可加入候補</h1>
+      {% for s in full_slots %}
+      <form method="post" action="/booking/f/{{ token }}/waitlist" class="state" style="margin:.7rem 0;text-align:left">
+        <input type="hidden" name="slot_id" value="{{ s.id }}">
+        {% if service_id is not none %}<input type="hidden" name="service_id" value="{{ service_id }}">{% endif %}
+        <strong>{{ s.slot_start.strftime('%H:%M') }}{% if s.slot_end %} – {{ s.slot_end.strftime('%H:%M') }}{% endif %}</strong>
+        {% if staff %}
+          <label>指定服務人員（選填）</label>
+          <select name="staff_id">
+            <option value="">不指定</option>
+            {% for st in staff %}<option value="{{ st.id }}">{{ st.name }}</option>{% endfor %}
+          </select>
+        {% endif %}
+        <label>候補人數</label>
+        <select name="party_size">
+          {% for n in range(1, 7) %}<option value="{{ n }}">{{ n }} 位</option>{% endfor %}
+        </select>
+        <button type="submit">加入 {{ s.slot_start.strftime('%H:%M') }} 候補</button>
+      </form>
+      {% endfor %}
+    {% endif %}
+    {% if not slots and not full_slots %}
+      <div class="state"><p>{{ date }} 沒有可預約或候補的時段。</p></div>
     {% endif %}
     <a class="back" href="/booking/f/{{ token }}{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 重選日期</a>
   {% endif %}

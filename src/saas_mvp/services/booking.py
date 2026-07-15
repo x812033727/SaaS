@@ -214,6 +214,8 @@ def book_slot(
     db.add(reservation)
     slot.booked_count = (slot.booked_count or 0) + party_size
     db.flush()  # 取得 reservation.id 供提醒入列 / 集點帳本
+    # 候補者實際完成建單才算補位成功；單純點開通知不結案。
+    waitlist_svc.fulfill_for_booking_in_txn(db, reservation=reservation, slot=slot)
 
     # 自動提醒為進階功能：需 tenant 開通 AUTO_REMINDER 且全域 reminder_enabled。
     # 提醒提前小時數：per-tenant 設定優先，未設定沿用全域預設。
@@ -259,6 +261,11 @@ def book_slot(
     # scheduler 仍能補送。未連結 Google 的租戶為 no-op。
     from saas_mvp.services import gcal as gcal_svc
 
+    # 若本筆候補人數小於釋出容量，同交易遞補下一位；
+    # 有效 offer 尚未到期時 pick 會 no-op，不會同時通知多人。
+    waitlist_entry_id = waitlist_svc.pick_first_eligible_in_txn(
+        db, tenant_id=tenant_id, slot=slot
+    )
     gcal_svc.enqueue_reservation_sync(db, reservation, "create")
     db.commit()
     db.refresh(reservation)
@@ -267,6 +274,10 @@ def book_slot(
     # Google Calendar 同步（E1,best-effort 永不拋)。
     gcal_svc.attempt_reservation_sync(db, reservation.id)
     db.commit()
+    if waitlist_entry_id is not None:
+        waitlist_svc.notify_candidate_best_effort(
+            db, tenant_id=tenant_id, entry_id=waitlist_entry_id
+        )
     return reservation
 
 

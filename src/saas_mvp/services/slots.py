@@ -184,6 +184,7 @@ def update_slot(
     is_active: bool | None = None,
 ) -> BookingSlot:
     slot = _get_or_404(db, tenant_id, slot_id)
+    available_before = slot.online_available
     new_max = max_capacity if max_capacity is not None else slot.max_capacity
     new_walkin = (
         walkin_reserved if walkin_reserved is not None else slot.walkin_reserved
@@ -208,6 +209,13 @@ def update_slot(
         slot.is_active = is_active
     db.commit()
     db.refresh(slot)
+    # 加開容量／釋放現場保留後立即遞補；best-effort 不影響容量儲存。
+    if slot.online_available > available_before:
+        from saas_mvp.services import waitlist as waitlist_svc
+
+        waitlist_svc.notify_next_for_slot_best_effort(
+            db, tenant_id=tenant_id, slot_id=slot.id
+        )
     return slot
 
 

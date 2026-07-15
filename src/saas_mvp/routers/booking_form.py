@@ -93,7 +93,11 @@ def booking_form_page(
     )
     return _render_state(
         request, token, "pick_slot",
-        service_id=service_id, date=date, slots=slots, staff=staff,
+        service_id=service_id,
+        date=date,
+        slots=[slot for slot in slots if slot.online_available > 0],
+        full_slots=[slot for slot in slots if slot.online_available <= 0],
+        staff=staff,
     )
 
 
@@ -129,8 +133,12 @@ def booking_form_submit(
     except booking_svc.SlotFullError:
         return _render_state(
             request, token, "error",
-            message="該時段剛剛額滿了，請回上一步改選其他時段（或回 LINE 加入候補）。",
+            message="該時段剛剛額滿了，可直接加入候補或改選其他時段。",
             service_id=service_id,
+            staff_id=staff_id,
+            slot_id=slot_id,
+            party_size=party_size,
+            can_waitlist=True,
         )
     except booking_svc.CustomerBlacklistedError:
         return _render_state(
@@ -162,4 +170,59 @@ def booking_form_submit(
             "deposit_url": deposit_url,
             "deposit_note": deposit_note,
         },
+    )
+
+
+@router.post("/{token}/waitlist", response_class=HTMLResponse)
+def booking_form_waitlist_submit(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    slot_id: int = Form(...),
+    party_size: int = Form(1),
+    service_id: int | None = Form(default=None),
+    staff_id: int | None = Form(default=None),
+):
+    from saas_mvp.services import waitlist as waitlist_svc
+
+    party_size = max(1, min(party_size, 6))
+    try:
+        entry = booking_form_svc.submit_waitlist(
+            db,
+            token=token,
+            slot_id=slot_id,
+            party_size=party_size,
+            service_id=service_id,
+            staff_id=staff_id,
+        )
+    except TokenNotFound:
+        return HTMLResponse(
+            "<h1>連結不存在</h1>", status_code=status.HTTP_404_NOT_FOUND
+        )
+    except TokenExpired:
+        return _render_state(request, token, "expired")
+    except TokenAlreadyUsed:
+        return _render_state(request, token, "used")
+    except waitlist_svc.SlotNotFullError:
+        return _render_state(
+            request,
+            token,
+            "error",
+            message="這個時段已釋出名額，請回上一步直接預約。",
+            service_id=service_id,
+        )
+    except waitlist_svc.WaitlistSlotNotFound:
+        return _render_state(
+            request,
+            token,
+            "error",
+            message="候補時段或服務資料已變更，請重新選擇。",
+            service_id=service_id,
+        )
+    return _render_state(
+        request,
+        token,
+        "waitlisted",
+        entry=entry,
+        service_id=service_id,
     )

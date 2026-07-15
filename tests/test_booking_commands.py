@@ -66,6 +66,33 @@ class TestParsePostback:
             {"slot_id": 42, "party_size": 1},
         )
 
+    def test_waitlist_booking_keeps_service_staff_and_entry(self):
+        assert parse_postback_data(
+            "action=book&slot_id=42&party=2&service_id=7&staff_id=8&waitlist_entry_id=9"
+        ) == (
+            "book",
+            {
+                "slot_id": 42,
+                "party_size": 2,
+                "service_id": 7,
+                "staff_id": 8,
+                "waitlist_entry_id": 9,
+            },
+        )
+
+    def test_waitlist_join_keeps_service_and_staff(self):
+        assert parse_postback_data(
+            "action=waitlist_join&slot_id=42&party=2&service_id=7&staff_id=8"
+        ) == (
+            "waitlist_join",
+            {
+                "slot_id": 42,
+                "party_size": 2,
+                "service_id": 7,
+                "staff_id": 8,
+            },
+        )
+
     def test_cancel(self):
         assert parse_postback_data("action=cancel&reservation_id=7") == (
             "cancel",
