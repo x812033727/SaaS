@@ -17,6 +17,12 @@ from saas_mvp.line_client.base import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LineWebhookAdminClient,
+    LineWebhookAdminCredentialError,
+    LineWebhookAdminError,
+    LineWebhookAdminNetworkError,
+    LineWebhookAdminParseError,
+    LineWebhookTestResult,
     LineProfileClient,
     LineProfileCredentialError,
     LineProfileError,
@@ -425,6 +431,101 @@ class HttpLineBotInfoClient(LineBotInfoClient):
         if not user_id or not _LINE_USER_ID_RE.match(user_id):
             return None
         return user_id
+
+
+class HttpLineWebhookAdminClient(LineWebhookAdminClient):
+    """LINE Webhook endpoint 設定與連通測試 client。"""
+
+    def __init__(self, api_base: str = _LINE_API_BASE, timeout: int = 10) -> None:
+        self._api_base = api_base.rstrip("/")
+        self._timeout = timeout
+
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str,
+        access_token: str,
+        payload: dict | None = None,
+    ) -> dict:
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            f"{self._api_base}{path}",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read().decode() or "{}"
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace") if exc.fp else ""
+            if exc.code in {401, 403}:
+                raise LineWebhookAdminCredentialError(
+                    f"LINE 拒絕 Channel access token（HTTP {exc.code}）"
+                ) from exc
+            raise LineWebhookAdminError(
+                f"LINE Webhook API HTTP {exc.code}: {body[:200] or exc.reason}"
+            ) from exc
+        except OSError as exc:
+            raise LineWebhookAdminNetworkError(
+                "無法連線到 LINE Webhook API，請稍後重試"
+            ) from exc
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LineWebhookAdminParseError(
+                "LINE Webhook API 回傳無效 JSON"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise LineWebhookAdminParseError(
+                "LINE Webhook API 回傳格式不是物件"
+            )
+        return parsed
+
+    def configure_and_test(
+        self, endpoint: str, *, access_token: str
+    ) -> LineWebhookTestResult:
+        if not endpoint.startswith("https://") or len(endpoint) > 500:
+            raise LineWebhookAdminError("Webhook URL 必須是 500 字內的 HTTPS 網址")
+
+        self._request(
+            "/v2/bot/channel/webhook/endpoint",
+            method="PUT",
+            access_token=access_token,
+            payload={"endpoint": endpoint},
+        )
+        test = self._request(
+            "/v2/bot/channel/webhook/test",
+            method="POST",
+            access_token=access_token,
+            payload={"endpoint": endpoint},
+        )
+        if not isinstance(test.get("success"), bool):
+            raise LineWebhookAdminParseError("LINE Webhook 測試缺少 success 欄位")
+
+        info = self._request(
+            "/v2/bot/channel/webhook/endpoint",
+            method="GET",
+            access_token=access_token,
+        )
+        active = info.get("active") if isinstance(info.get("active"), bool) else None
+        status_code = test.get("statusCode")
+        return LineWebhookTestResult(
+            endpoint=endpoint,
+            success=test["success"],
+            active=active,
+            status_code=status_code if isinstance(status_code, int) else None,
+            reason=test.get("reason") if isinstance(test.get("reason"), str) else None,
+            detail=test.get("detail") if isinstance(test.get("detail"), str) else None,
+            timestamp=(
+                test.get("timestamp") if isinstance(test.get("timestamp"), str) else None
+            ),
+        )
 
 
 class HttpLineProfileClient(LineProfileClient):

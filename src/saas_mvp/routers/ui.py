@@ -41,9 +41,12 @@ from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
 from saas_mvp.auth.security import create_access_token, hash_password, verify_password
 from saas_mvp.line_client import (
     LineBotInfoClient,
+    LineWebhookAdminClient,
+    LineWebhookAdminError,
     LinePushClient,
     LineRichMenuClient,
     get_bot_info_client,
+    get_webhook_admin_client,
     get_push_client,
     get_rich_menu_client,
 )
@@ -941,6 +944,64 @@ def line_config_verify(
     return templates.TemplateResponse(
         "_line_config_status.html",
         _ctx(request, actor, cfg=cfg, webhook_url=_line_webhook_url_for(tid)),
+    )
+
+
+@router.post("/line-config/webhook/setup", response_class=HTMLResponse)
+def line_config_webhook_setup(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+    webhook_admin_client: LineWebhookAdminClient = Depends(get_webhook_admin_client),
+):
+    """一鍵設定租戶專屬 LINE Webhook URL 並執行官方連通測試。"""
+    tid = actor.user.tenant_id
+    endpoint = _line_webhook_url_for(tid)
+    if not endpoint.startswith("https://"):
+        return templates.TemplateResponse(
+            "_line_webhook_setup_result.html",
+            _ctx(
+                request,
+                actor,
+                error="平台尚未設定 HTTPS 對外網址，請聯絡平台管理員。",
+            ),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    try:
+        result = line_config_svc.configure_line_webhook(
+            db,
+            tid,
+            endpoint=endpoint,
+            webhook_admin_client=webhook_admin_client,
+        )
+    except HTTPException as exc:
+        return templates.TemplateResponse(
+            "_line_webhook_setup_result.html",
+            _ctx(request, actor, error=str(exc.detail)),
+            status_code=exc.status_code,
+        )
+    except LineWebhookAdminError as exc:
+        return templates.TemplateResponse(
+            "_line_webhook_setup_result.html",
+            _ctx(request, actor, error=str(exc)),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="line_config.webhook_setup",
+        target=f"tenant:{tid}",
+        detail={
+            "success": result.success,
+            "active": result.active,
+            "status_code": result.status_code,
+        },
+        request=request,
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        "_line_webhook_setup_result.html",
+        _ctx(request, actor, result=result),
     )
 
 

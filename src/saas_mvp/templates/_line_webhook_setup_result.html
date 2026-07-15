@@ -1,0 +1,19 @@
+{% if error %}
+  <div class="error" data-testid="line-webhook-setup-error">設定失敗：{{ error }}</div>
+{% elif result.success %}
+  <div class="success" data-testid="line-webhook-setup-success">
+    Webhook URL 已設定，LINE 連通測試成功{% if result.status_code %}（HTTP {{ result.status_code }}）{% endif %}。
+  </div>
+  {% if result.active is false %}
+    <p class="muted">還差最後一步：請到 LINE Developers Console 開啟 <strong>Use webhook</strong>。</p>
+  {% elif result.active is true %}
+    <p class="muted">Use webhook 已啟用，Bot 可以開始接收事件。</p>
+  {% endif %}
+{% else %}
+  <div class="error" data-testid="line-webhook-test-failed">
+    Webhook URL 已設定，但 LINE 連通測試失敗。
+    {% if result.reason %}原因：{{ result.reason }}。{% endif %}
+    {% if result.detail %}詳細：{{ result.detail }}。{% endif %}
+    {% if result.status_code is not none %}HTTP {{ result.status_code }}。{% endif %}
+  </div>
+{% endif %}

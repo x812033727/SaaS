@@ -8,6 +8,8 @@ import itertools
 
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
+    LineWebhookAdminClient,
+    LineWebhookTestResult,
     LineProfileClient,
     LinePushClient,
     LinePushError,
@@ -320,6 +322,35 @@ class StubLineBotInfoClient(LineBotInfoClient):
         if self._raises:
             raise RuntimeError("stub bot/info unavailable")
         return self._user_id
+
+
+class StubLineWebhookAdminClient(LineWebhookAdminClient):
+    """離線 Webhook 管理 client；固定回傳結果並記錄呼叫。"""
+
+    def __init__(
+        self,
+        result: LineWebhookTestResult | None = None,
+        *,
+        raises: Exception | None = None,
+    ) -> None:
+        self._result = result
+        self._raises = raises
+        self.calls: list[tuple[str, str]] = []
+
+    def configure_and_test(
+        self, endpoint: str, *, access_token: str
+    ) -> LineWebhookTestResult:
+        self.calls.append((endpoint, access_token))
+        if self._raises is not None:
+            raise self._raises
+        return self._result or LineWebhookTestResult(
+            endpoint=endpoint,
+            success=True,
+            active=True,
+            status_code=200,
+            reason="OK",
+            detail="200",
+        )
 
 
 class StubLineProfileClient(LineProfileClient):

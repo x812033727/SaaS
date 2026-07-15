@@ -34,6 +34,22 @@ class LineBotInfoParseError(LineBotInfoError):
     """bot/info 回應格式不符預期。"""
 
 
+class LineWebhookAdminError(Exception):
+    """LINE Webhook 管理 API 呼叫失敗。"""
+
+
+class LineWebhookAdminCredentialError(LineWebhookAdminError):
+    """Channel access token 無權設定 Webhook。"""
+
+
+class LineWebhookAdminNetworkError(LineWebhookAdminError):
+    """LINE Webhook 管理 API 網路層失敗。"""
+
+
+class LineWebhookAdminParseError(LineWebhookAdminError):
+    """LINE Webhook 測試回應格式不符預期。"""
+
+
 class LineReplyClient(ABC):
     """LINE Messaging API reply client 介面。
 
@@ -276,3 +292,26 @@ class LineBotInfoClient(ABC):
             LineBotInfoParseError: 回應格式不是可解析 JSON。
             LineBotInfoError: 其他 bot/info API 失敗。
         """
+
+
+@dataclass(frozen=True, slots=True)
+class LineWebhookTestResult:
+    """LINE Webhook endpoint 設定後的連通測試結果。"""
+
+    endpoint: str
+    success: bool
+    active: bool | None = None
+    status_code: int | None = None
+    reason: str | None = None
+    detail: str | None = None
+    timestamp: str | None = None
+
+
+class LineWebhookAdminClient(ABC):
+    """設定、測試並讀取 LINE Messaging API Webhook endpoint 狀態。"""
+
+    @abstractmethod
+    def configure_and_test(
+        self, endpoint: str, *, access_token: str
+    ) -> LineWebhookTestResult:
+        """設定 endpoint、送出測試事件並回傳 Use webhook 啟用狀態。"""

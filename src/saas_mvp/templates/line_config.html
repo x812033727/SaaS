@@ -25,9 +25,9 @@
     </li>
     <li>
       <strong>設定 Webhook URL</strong><br>
-      回到 LINE Developers Console 的「Messaging API → Webhook settings」，貼上此店家的專屬網址：
+      回到上方「連線狀態」按 <strong>一鍵設定並測試 Webhook</strong>，平台會自動將此店家的專屬網址送到 LINE 並檢查連通性：
       <p><code data-testid="line-webhook-url">{{ webhook_url }}</code></p>
-      按 <strong>Verify</strong>，成功後開啟 <strong>Use webhook</strong>；建議同時開啟 <strong>Webhook redelivery</strong>，讓暫時失敗的事件可被重新傳送。
+      測試成功後仍需到 LINE Developers Console 的「Messaging API → Webhook settings」開啟 <strong>Use webhook</strong>；建議同時開啟 <strong>Webhook redelivery</strong>，讓暫時失敗的事件可被重新傳送。若不使用一鍵功能，也可手動貼上網址再按 <strong>Verify</strong>。
     </li>
     <li>
       <strong>避免收到兩次回覆</strong><br>
@@ -46,6 +46,12 @@
   <div id="line-status">
     {% include "_line_config_status.html" %}
   </div>
+  {% if cfg %}
+  <form hx-post="/ui/line-config/webhook/setup" hx-target="#line-webhook-setup-result" hx-swap="innerHTML">
+    <button type="submit">一鍵設定並測試 Webhook</button>
+  </form>
+  <div id="line-webhook-setup-result"></div>
+  {% endif %}
 </div>
 
 <div class="card">

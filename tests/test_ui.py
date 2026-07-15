@@ -38,7 +38,14 @@ import saas_mvp.models.line_channel_config as _lcm                              
 from saas_mvp.app import create_app
 from saas_mvp.config import settings
 from saas_mvp.db import Base, get_db
-from saas_mvp.line_client import StubLineBotInfoClient, get_bot_info_client
+from saas_mvp.line_client import (
+    LineWebhookAdminNetworkError,
+    LineWebhookTestResult,
+    StubLineBotInfoClient,
+    StubLineWebhookAdminClient,
+    get_bot_info_client,
+    get_webhook_admin_client,
+)
 
 _engine = create_engine(
     "sqlite:///:memory:",
@@ -63,6 +70,10 @@ def _override_get_db():
 _app.dependency_overrides[get_db] = _override_get_db
 _app.dependency_overrides[get_bot_info_client] = (
     lambda: StubLineBotInfoClient("U" + uuid.uuid4().hex)
+)
+_WEBHOOK_ADMIN_HOLDER = {"client": StubLineWebhookAdminClient()}
+_app.dependency_overrides[get_webhook_admin_client] = (
+    lambda: _WEBHOOK_ADMIN_HOLDER["client"]
 )
 
 
@@ -201,6 +212,59 @@ def test_line_config_save_and_verify_flow(client):
     r2 = client.post("/ui/line-config/verify")
     assert r2.status_code == 200
     assert "憑證狀態" in r2.text
+
+
+def test_line_config_one_click_webhook_setup(client, monkeypatch):
+    email, password, token, tenant_id = _register_api(client)
+    saved = client.put(
+        "/tenants/me/line-config",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"channel_secret": "s" * 32, "access_token": "tok-webhook-secret"},
+    )
+    assert saved.status_code == 200
+    _login_ui(client, email, password)
+    monkeypatch.setattr(settings, "public_base_url", "https://saas.example.com")
+    endpoint = f"https://saas.example.com/line/webhook/{tenant_id}"
+    stub = StubLineWebhookAdminClient(
+        LineWebhookTestResult(
+            endpoint=endpoint,
+            success=True,
+            active=False,
+            status_code=200,
+            reason="OK",
+            detail="200",
+        )
+    )
+    _WEBHOOK_ADMIN_HOLDER["client"] = stub
+
+    response = client.post("/ui/line-config/webhook/setup")
+
+    assert response.status_code == 200
+    assert 'data-testid="line-webhook-setup-success"' in response.text
+    assert "Use webhook" in response.text
+    assert stub.calls == [(endpoint, "tok-webhook-secret")]
+    assert "tok-webhook-secret" not in response.text
+
+
+def test_line_config_webhook_setup_reports_network_error(client, monkeypatch):
+    email, password, token, _ = _register_api(client)
+    saved = client.put(
+        "/tenants/me/line-config",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"channel_secret": "s" * 32, "access_token": "tok-network"},
+    )
+    assert saved.status_code == 200
+    _login_ui(client, email, password)
+    monkeypatch.setattr(settings, "public_base_url", "https://saas.example.com")
+    _WEBHOOK_ADMIN_HOLDER["client"] = StubLineWebhookAdminClient(
+        raises=LineWebhookAdminNetworkError("LINE 暫時無法連線")
+    )
+
+    response = client.post("/ui/line-config/webhook/setup")
+
+    assert response.status_code == 502
+    assert 'data-testid="line-webhook-setup-error"' in response.text
+    assert "LINE 暫時無法連線" in response.text
 
 
 def test_settings_save_store_type(client):

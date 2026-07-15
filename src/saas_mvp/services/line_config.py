@@ -22,6 +22,8 @@ from saas_mvp.line_client import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LineWebhookAdminClient,
+    LineWebhookTestResult,
 )
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.line_channel_config import (
@@ -311,6 +313,29 @@ def verify_line_config(
         bot_info_client=bot_info_client,
     )
     return _to_response(cfg)
+
+
+def configure_line_webhook(
+    db: Session,
+    tenant_id: int,
+    *,
+    endpoint: str,
+    webhook_admin_client: LineWebhookAdminClient,
+) -> LineWebhookTestResult:
+    """用租戶加密保存的 token 設定並測試專屬 LINE Webhook endpoint。"""
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant not found")
+    cfg = tenant.line_channel_config
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="line channel config not found for this tenant",
+        )
+    return webhook_admin_client.configure_and_test(
+        endpoint,
+        access_token=cfg.access_token,
+    )
 
 
 def set_bot_mode(db: Session, tenant_id: int, bot_mode: str) -> dict:

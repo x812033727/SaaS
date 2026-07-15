@@ -18,6 +18,12 @@ from saas_mvp.line_client.base import (
     LineBotInfoError,
     LineBotInfoNetworkError,
     LineBotInfoParseError,
+    LineWebhookAdminClient,
+    LineWebhookAdminCredentialError,
+    LineWebhookAdminError,
+    LineWebhookAdminNetworkError,
+    LineWebhookAdminParseError,
+    LineWebhookTestResult,
     LineProfileClient,
     LineProfileCredentialError,
     LineProfileError,
@@ -39,10 +45,12 @@ from saas_mvp.line_client.fake import (
     SentPush,
     SentReply,
     StubLineBotInfoClient,
+    StubLineWebhookAdminClient,
     StubLineProfileClient,
 )
 from saas_mvp.line_client.http import (
     HttpLineBotInfoClient,
+    HttpLineWebhookAdminClient,
     HttpLineProfileClient,
     HttpLinePushClient,
     HttpLineReplyClient,
@@ -75,6 +83,11 @@ def get_bot_info_client() -> LineBotInfoClient:
     :class:`StubLineBotInfoClient`，不需任何 monkeypatch。
     """
     return HttpLineBotInfoClient()
+
+
+def get_webhook_admin_client() -> LineWebhookAdminClient:
+    """FastAPI dependency：回傳 LINE Webhook 設定與測試 client。"""
+    return HttpLineWebhookAdminClient()
 
 
 def get_profile_client() -> LineProfileClient:
@@ -123,6 +136,15 @@ __all__ = [
     "HttpLineBotInfoClient",
     "StubLineBotInfoClient",
     "get_bot_info_client",
+    "LineWebhookAdminClient",
+    "LineWebhookAdminError",
+    "LineWebhookAdminCredentialError",
+    "LineWebhookAdminNetworkError",
+    "LineWebhookAdminParseError",
+    "LineWebhookTestResult",
+    "HttpLineWebhookAdminClient",
+    "StubLineWebhookAdminClient",
+    "get_webhook_admin_client",
     "LineProfileClient",
     "LineProfileError",
     "LineProfileCredentialError",
