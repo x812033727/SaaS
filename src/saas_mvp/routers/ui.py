@@ -86,6 +86,9 @@ from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import platform_email_config as platform_email_svc
 from saas_mvp.services import platform_ai_config as platform_ai_svc
+from saas_mvp.services import (
+    platform_observability_config as platform_observability_svc,
+)
 from saas_mvp.services import platform_payment_config as platform_payment_svc
 from saas_mvp.services import platform_invoice_config as platform_invoice_svc
 from saas_mvp.services import readiness_dashboard as readiness_dashboard_svc
@@ -1935,6 +1938,116 @@ def admin_ai_settings_reset(
     db.commit()
     return RedirectResponse(
         "/ui/admin/ai-settings",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _platform_observability_ctx(
+    request: Request, actor: Actor, db: Session, **extra
+) -> dict:
+    return _ctx(
+        request,
+        actor,
+        observability_status=platform_observability_svc.observability_status(
+            db, settings
+        ),
+        **extra,
+    )
+
+
+@router.get("/admin/observability-settings", response_class=HTMLResponse)
+def admin_observability_settings(
+    request: Request,
+    saved: int = Query(0),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        "admin/observability_settings.html",
+        _platform_observability_ctx(request, actor, db, saved=bool(saved)),
+    )
+
+
+@router.post("/admin/observability-settings", response_class=HTMLResponse)
+def admin_observability_settings_save(
+    request: Request,
+    sentry_dsn: str = Form(..., max_length=1024),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_observability_svc.save_observability_config(
+            db, sentry_dsn=sentry_dsn, actor_user_id=actor.user.id
+        )
+    except platform_observability_svc.PlatformObservabilityConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "admin/observability_settings.html",
+            _platform_observability_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.observability.update",
+        target="observability:sentry",
+        request=request,
+    )
+    db.commit()
+    platform_observability_svc.apply_effective_observability_config(db, settings)
+    return RedirectResponse(
+        "/ui/admin/observability-settings?saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/admin/observability-settings/test", response_class=HTMLResponse)
+def admin_observability_settings_test(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        platform_observability_svc.send_test_event(db, settings)
+    except platform_observability_svc.PlatformObservabilityConfigError as exc:
+        return templates.TemplateResponse(
+            "admin/observability_settings.html",
+            _platform_observability_ctx(request, actor, db, test_error=str(exc)),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="platform.observability.test",
+        target="observability:sentry",
+        request=request,
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        "admin/observability_settings.html",
+        _platform_observability_ctx(request, actor, db, test_ok=True),
+    )
+
+
+@router.post("/admin/observability-settings/reset", response_class=HTMLResponse)
+def admin_observability_settings_reset(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    removed = platform_observability_svc.clear_observability_override(db)
+    if removed:
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="platform.observability.reset",
+            target="observability:sentry",
+            request=request,
+        )
+    db.commit()
+    platform_observability_svc.apply_effective_observability_config(db, settings)
+    return RedirectResponse(
+        "/ui/admin/observability-settings",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

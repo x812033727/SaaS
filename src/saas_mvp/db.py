@@ -62,6 +62,7 @@ def import_all_models() -> None:
     from saas_mvp.models import platform_oauth_config  # noqa: F401
     from saas_mvp.models import platform_email_config  # noqa: F401
     from saas_mvp.models import platform_ai_config  # noqa: F401
+    from saas_mvp.models import platform_observability_config  # noqa: F401
     from saas_mvp.models import platform_payment_config  # noqa: F401
     from saas_mvp.models import platform_invoice_config  # noqa: F401
     from saas_mvp.models import tenant_invoice_profile  # noqa: F401

@@ -171,10 +171,19 @@ def run_checks(
             ))
     except Exception as exc:  # noqa: BLE001
         add(Check("smtp", "WARN", f"無法讀取 SMTP 設定:{type(exc).__name__}"))
-    if not settings.sentry_dsn:
-        add(Check("sentry", "WARN", "未設 SAAS_SENTRY_DSN(告警退化為 error log)"))
-    else:
-        add(Check("sentry", "PASS", "DSN 已設"))
+    try:
+        from saas_mvp.services.platform_observability_config import (
+            effective_observability_config,
+        )
+
+        with session_factory() as db:
+            observability_config = effective_observability_config(db, settings)
+        if observability_config is None:
+            add(Check("sentry", "WARN", "Sentry 尚未設定(告警退化為 error log)"))
+        else:
+            add(Check("sentry", "PASS", f"DSN 已設 source={observability_config.source}"))
+    except Exception as exc:  # noqa: BLE001
+        add(Check("sentry", "WARN", f"無法讀取 Sentry 設定:{type(exc).__name__}"))
     try:
         from saas_mvp.services.platform_ai_config import effective_ai_config
 

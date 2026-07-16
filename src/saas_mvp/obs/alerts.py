@@ -16,28 +16,35 @@ _log = logging.getLogger(__name__)
 _enabled = False
 
 
-def init_sentry() -> None:
+def init_sentry(dsn: str | None = None) -> bool:
     global _enabled
-    if not settings.sentry_dsn:
-        return
+    effective_dsn = settings.sentry_dsn if dsn is None else dsn
+    _enabled = False
     try:
         import sentry_sdk
 
+        if not effective_dsn:
+            sentry_sdk.init(dsn=None)
+            return False
+
         sentry_sdk.init(
-            dsn=settings.sentry_dsn,
+            dsn=effective_dsn,
             environment=settings.env,
             # 只收錯誤/訊息，不收 performance traces（省配額）。
             traces_sample_rate=0,
         )
         _enabled = True
         _log.info("sentry initialized (env=%s)", settings.env)
+        return True
     except ImportError:
         _log.warning(
-            "SAAS_SENTRY_DSN set but sentry-sdk not installed; "
+            "Sentry DSN set but sentry-sdk not installed; "
             "pip install '.[prod]' 或 pip install sentry-sdk"
         )
+        return False
     except Exception:  # noqa: BLE001 — 告警初始化失敗不得阻擋啟動
         _log.warning("sentry init failed", exc_info=True)
+        return False
 
 
 def capture_alert(message: str) -> None:
