@@ -25,6 +25,7 @@ import html
 import io
 import secrets
 import json
+import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
@@ -189,6 +190,9 @@ async def _enforce_csrf(request: Request) -> None:
         if not request.cookies.get(_UI_COOKIE_NAME):
             raise UILoginRequired()
         raise UICSRFInvalid()
+
+
+_log = logging.getLogger(__name__)
 
 
 def maybe_renew_ui_cookie(request: Request, response: Response) -> None:
@@ -1193,6 +1197,75 @@ def dashboard(
             verification_rate_limited=bool(verification_rate_limited),
             line_insights=_line_insights(db, tid),
         ),
+    )
+
+
+# ── R4-B4:開店精靈 + 一鍵示範資料 ───────────────────────────────────────────
+
+@router.get("/onboarding", response_class=HTMLResponse)
+def onboarding_wizard(
+    request: Request,
+    demo_loaded: int = Query(0),
+    demo_cleared: int = Query(0),
+    demo_error: int = Query(0),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import demo_data as demo_svc
+
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    checklist = onboarding_svc.checklist(db, tenant=tenant, user=actor.user)
+    return templates.TemplateResponse(
+        "onboarding.html",
+        _ctx(
+            request,
+            actor,
+            tenant=tenant,
+            onboarding=checklist,
+            onboarding_done=onboarding_svc.all_done(checklist),
+            has_demo=demo_svc.has_demo(db, tenant.id),
+            demo_loaded=bool(demo_loaded),
+            demo_cleared=bool(demo_cleared),
+            demo_error=bool(demo_error),
+        ),
+    )
+
+
+@router.post("/onboarding/demo-data")
+def onboarding_demo_load(
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import demo_data as demo_svc
+
+    try:
+        demo_svc.load_demo(db, actor.user.tenant_id)
+    except Exception:  # noqa: BLE001 — 示範資料失敗不可讓精靈頁 500
+        _log.warning("demo data load failed tenant=%s", actor.user.tenant_id, exc_info=True)
+        return RedirectResponse(
+            "/ui/onboarding?demo_error=1", status_code=status.HTTP_303_SEE_OTHER
+        )
+    return RedirectResponse(
+        "/ui/onboarding?demo_loaded=1", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post("/onboarding/demo-data/clear")
+def onboarding_demo_clear(
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import demo_data as demo_svc
+
+    try:
+        demo_svc.clear_demo(db, actor.user.tenant_id)
+    except Exception:  # noqa: BLE001
+        _log.warning("demo data clear failed tenant=%s", actor.user.tenant_id, exc_info=True)
+        return RedirectResponse(
+            "/ui/onboarding?demo_error=1", status_code=status.HTTP_303_SEE_OTHER
+        )
+    return RedirectResponse(
+        "/ui/onboarding?demo_cleared=1", status_code=status.HTTP_303_SEE_OTHER
     )
 
 

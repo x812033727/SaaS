@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}開店精靈 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>開店精靈</h1>
+<p class="muted">跟著下面的步驟完成設定,即可開始用 LINE 接受預約。想先看系統怎麼運作?一鍵載入示範資料,操作熟悉後再清除。</p>
+
+{% if demo_loaded %}<div class="success">已載入示範資料:1 個服務、3 個時段、1 位顧客、1 筆預約。可到各頁面試著操作。</div>{% endif %}
+{% if demo_cleared %}<div class="success">已清除示範資料。(若示範物件已被真實預約引用,會保留以免刪到真資料。)</div>{% endif %}
+{% if demo_error %}<div class="error">示範資料操作失敗,請稍後再試或聯絡平台管理員。</div>{% endif %}
+
+<div class="card">
+  <h2>設定進度</h2>
+  <ol class="onboarding-steps">
+    {% for step in onboarding %}
+    <li>
+      {{ '✅' if step.done else '⬜' }}
+      {% if step.done %}<span>{{ step.label }}</span>
+      {% else %}<a href="{{ step.href }}">{{ step.label }}</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% if onboarding_done %}
+  <p class="success">🎉 全部完成!您已準備好正式營運。</p>
+  {% else %}
+  <p class="muted">完成以上步驟即可開始接受 LINE 預約。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>示範資料</h2>
+  {% if has_demo %}
+  <p>目前已載入示範資料。熟悉操作後,建議在正式營運前清除,避免與真實預約混淆。</p>
+  <form method="post" action="/ui/onboarding/demo-data/clear"
+        onsubmit="return confirm('確定清除示範資料?已被真實預約引用的示範物件會保留。');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger">清除示範資料</button>
+  </form>
+  {% else %}
+  <p>一鍵建立樣本服務、時段、顧客與預約,讓您立即看到系統運作方式。物件皆以「【示範】」標示,可隨時一鍵清除。</p>
+  <form method="post" action="/ui/onboarding/demo-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">載入示範資料</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
