@@ -89,8 +89,10 @@ def ensure_trade_no(db: Session, resv: Reservation) -> str:
 def payment_url(resv: Reservation) -> str:
     # URL 以不可猜的 deposit_merchant_trade_no 為鍵(非可枚舉的 resv.id),
     # 防未授權者枚舉/竊改他人定金(PEA-1/PEA-2)。
+    # provider 中立路徑:進頁時依當下金流設定分派(stub/ecpay/newebpay/linepay);
+    # 舊 /payments/ecpay/deposit/{trade_no} 保留為 alias,已寄出連結不斷。
     base = settings.public_base_url.rstrip("/") or ""
-    return f"{base}/payments/ecpay/deposit/{resv.deposit_merchant_trade_no}"
+    return f"{base}/payments/deposit/{resv.deposit_merchant_trade_no}"
 
 
 def deposit_prompt(resv: Reservation, tenant) -> str:
