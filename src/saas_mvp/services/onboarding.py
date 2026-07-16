@@ -29,6 +29,11 @@ def checklist(db: Session, *, tenant: Tenant, user: User) -> list[dict]:
     slot_count = db.execute(
         select(func.count(BookingSlot.id)).where(BookingSlot.tenant_id == tenant.id)
     ).scalar_one()
+    from saas_mvp.models.reservation import Reservation
+
+    reservation_count = db.execute(
+        select(func.count(Reservation.id)).where(Reservation.tenant_id == tenant.id)
+    ).scalar_one()
 
     from saas_mvp.services import plans as plans_svc
 
@@ -61,6 +66,12 @@ def checklist(db: Session, *, tenant: Tenant, user: User) -> list[dict]:
             "label": "開放預約時段",
             "done": slot_count > 0,
             "href": "/ui/booking",
+        },
+        {
+            "key": "try_booking",
+            "label": "試建一筆預約(可載入示範資料)",
+            "done": reservation_count > 0,
+            "href": "/ui/onboarding",
         },
         {
             "key": "plan",
