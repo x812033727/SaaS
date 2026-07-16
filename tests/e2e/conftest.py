@@ -46,7 +46,7 @@ def server(tmp_path_factory) -> dict:
         "SAAS_METRICS_TOKEN": "",
         "SAAS_PUBLIC_BASE_URL": "",
         "SAAS_SMTP_HOST": "",
-        "SAAS_ANTHROPIC_API_KEY": "",
+        "SAAS_MINIMAX_API_KEY": "",
         "SAAS_SENTRY_DSN": "",
     }
     proc = subprocess.Popen(

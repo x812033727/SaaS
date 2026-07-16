@@ -23,6 +23,7 @@ import saas_mvp.models.line_channel_config as _lcm  # noqa: F401
 import saas_mvp.models.customer as _cust  # noqa: F401
 
 from saas_mvp.ai import AnthropicAssistant, StubAIAssistant, get_assistant
+from saas_mvp.ai.claude_agent_sdk import _sdk_env
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
@@ -55,13 +56,13 @@ def db():
 
 def test_factory_returns_stub_when_no_key(monkeypatch):
     from saas_mvp import config as cfg
-    monkeypatch.setattr(cfg.settings, "anthropic_api_key", "")
+    monkeypatch.setattr(cfg.settings, "minimax_api_key", "")
     assert isinstance(get_assistant(), StubAIAssistant)
 
 
 def test_factory_returns_anthropic_when_key_set(monkeypatch):
     from saas_mvp import config as cfg
-    monkeypatch.setattr(cfg.settings, "anthropic_api_key", "sk-test")
+    monkeypatch.setattr(cfg.settings, "minimax_api_key", "minimax-test")
     assistant = get_assistant()
     assert isinstance(assistant, AnthropicAssistant)
     assert assistant.is_available() is True
@@ -94,14 +95,26 @@ def test_real_assistant_uses_claude_agent_sdk_runner_without_exposing_key():
         return "SDK 回覆"
 
     assistant = AnthropicAssistant(
-        api_key="sk-ant-secret-value", model="claude-sonnet-4-6", runner=runner
+        api_key="minimax-secret-value", model="MiniMax-M2.7", runner=runner
     )
     result = assistant.answer("營業時間？", "平日十點開門")
     assert result.answer == "SDK 回覆"
     assert result.source == "claude-agent-sdk"
-    assert calls[0]["api_key"] == "sk-ant-secret-value"
+    assert calls[0]["api_key"] == "minimax-secret-value"
+    assert calls[0]["base_url"] == "https://api.minimax.io/anthropic"
     assert calls[0]["max_turns"] == 1
     assert "平日十點開門" in calls[0]["system_prompt"]
+
+
+def test_sdk_env_uses_official_minimax_claude_code_protocol():
+    env = _sdk_env(
+        "minimax-secret", "https://api.minimax.io/anthropic", "MiniMax-M2.7"
+    )
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "minimax-secret"
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.minimax.io/anthropic"
+    assert env["ANTHROPIC_MODEL"] == "MiniMax-M2.7"
+    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 # ── faq.match ────────────────────────────────────────────────────────────────
@@ -162,7 +175,7 @@ def test_ai_ask_403_when_disabled(client):
 
 def test_ai_ask_returns_answer_with_stub(client, monkeypatch):
     from saas_mvp import config as cfg
-    monkeypatch.setattr(cfg.settings, "anthropic_api_key", "")  # force stub
+    monkeypatch.setattr(cfg.settings, "minimax_api_key", "")  # force stub
     token = _register(client)
     client.post("/billing/features/AI_ASSISTANT/subscribe", headers=_auth(token))
     # seed a FAQ → echoed in context
@@ -196,7 +209,7 @@ def test_faq_get_one(client):
 def test_ai_ask_stub_returns_only_top_faq(client, monkeypatch):
     """多筆 FAQ 都相關時，stub 只回最相關那筆，不把整排 FAQ 全列出來。"""
     from saas_mvp import config as cfg
-    monkeypatch.setattr(cfg.settings, "anthropic_api_key", "")  # force stub
+    monkeypatch.setattr(cfg.settings, "minimax_api_key", "")  # force stub
     token = _register(client)
     client.post("/billing/features/AI_ASSISTANT/subscribe", headers=_auth(token))
     # 三筆都含「營業」→ 都會 match；只有最相關的「營業時間」該被回。
@@ -273,7 +286,7 @@ def _webhook_post(client, tid, text):
 
 def test_webhook_ai_fallback_replies_when_enabled(client, monkeypatch):
     from saas_mvp import config as cfg
-    monkeypatch.setattr(cfg.settings, "anthropic_api_key", "")  # stub path
+    monkeypatch.setattr(cfg.settings, "minimax_api_key", "")  # stub path
     fake = FakeLineReplyClient()
     client.app.dependency_overrides[get_line_client] = lambda: fake
 

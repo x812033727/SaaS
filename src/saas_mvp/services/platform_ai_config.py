@@ -17,6 +17,7 @@ class PlatformAIConfigError(ValueError):
 class EffectiveAIConfig:
     provider: str
     api_key: str
+    base_url: str
     model: str
     source: str
 
@@ -28,19 +29,21 @@ def _row(db: Session) -> PlatformAIConfig | None:
 def effective_ai_config(db: Session | None, settings) -> EffectiveAIConfig | None:
     if db is not None:
         row = _row(db)
-        if row is not None:
+        if row is not None and row.provider == "minimax":
             return EffectiveAIConfig(
                 provider=row.provider,
                 api_key=row.api_key,
+                base_url=settings.minimax_base_url,
                 model=row.model,
                 source="database",
             )
-    api_key = (settings.anthropic_api_key or "").strip()
+    api_key = (settings.minimax_api_key or "").strip()
     if not api_key:
         return None
     return EffectiveAIConfig(
-        provider="anthropic",
+        provider="minimax",
         api_key=api_key,
+        base_url=settings.minimax_base_url,
         model=(settings.ai_model or "").strip(),
         source="environment",
     )
@@ -52,7 +55,7 @@ def ai_status(db: Session, settings) -> dict:
         return {
             "configured": False,
             "source": "unconfigured",
-            "provider": "anthropic",
+            "provider": "minimax",
             "model": (settings.ai_model or "").strip(),
             "key_mask": "",
             "updated_at": None,
@@ -78,26 +81,26 @@ def save_ai_config(
     api_key = api_key.strip()
     model = model.strip()
     row = _row(db)
-    if not api_key and row is None:
-        raise PlatformAIConfigError("首次設定必須輸入 Anthropic API Key。")
+    if not api_key and (row is None or row.provider != "minimax"):
+        raise PlatformAIConfigError("首次設定必須輸入 MiniMax API Key。")
     if api_key and (
         len(api_key) < 20
         or len(api_key) > 255
         or any(ch.isspace() for ch in api_key)
     ):
-        raise PlatformAIConfigError("Anthropic API Key 格式不正確。")
+        raise PlatformAIConfigError("MiniMax API Key 格式不正確。")
     if (
         not model
         or len(model) > 128
         or any(ch.isspace() for ch in model)
-        or not model.startswith("claude-")
+        or not model.startswith("MiniMax-")
     ):
-        raise PlatformAIConfigError("模型 ID 必須是 claude- 開頭且不可包含空白。")
+        raise PlatformAIConfigError("模型 ID 必須是 MiniMax- 開頭且不可包含空白。")
 
     if row is None:
-        row = PlatformAIConfig(provider="anthropic")
+        row = PlatformAIConfig(provider="minimax")
         db.add(row)
-    row.provider = "anthropic"
+    row.provider = "minimax"
     row.model = model
     if api_key:
         row.api_key = api_key
@@ -127,6 +130,7 @@ def test_ai_config(db: Session, settings) -> None:
             prompt="Reply OK.",
             system_prompt="Connection check. Reply only OK.",
             api_key=config.api_key,
+            base_url=config.base_url,
             model=config.model,
             max_turns=1,
         )

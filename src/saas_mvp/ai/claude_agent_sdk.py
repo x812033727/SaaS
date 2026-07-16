@@ -14,14 +14,24 @@ from typing import Any
 import anyio
 
 
-def _sdk_env(api_key: str) -> dict[str, str]:
+def _sdk_env(api_key: str, base_url: str, model: str) -> dict[str, str]:
     # Passing the secret through options keeps database overrides request-local;
     # never mutate os.environ in a multi-tenant web process.
-    return {"ANTHROPIC_API_KEY": api_key}
+    return {
+        "ANTHROPIC_BASE_URL": base_url,
+        "ANTHROPIC_AUTH_TOKEN": api_key,
+        "ANTHROPIC_MODEL": model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        "API_TIMEOUT_MS": "300000",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    }
 
 
 async def _text_query_async(
-    *, prompt: str, system_prompt: str, api_key: str, model: str, max_turns: int = 1
+    *, prompt: str, system_prompt: str, api_key: str, base_url: str,
+    model: str, max_turns: int = 1
 ) -> str:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
     from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
@@ -29,7 +39,7 @@ async def _text_query_async(
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system_prompt,
-        env=_sdk_env(api_key),
+        env=_sdk_env(api_key, base_url, model),
         tools=[],
         max_turns=max_turns,
         max_budget_usd=0.05,
@@ -51,13 +61,15 @@ async def _text_query_async(
 
 
 def text_query(
-    *, prompt: str, system_prompt: str, api_key: str, model: str, max_turns: int = 1
+    *, prompt: str, system_prompt: str, api_key: str, base_url: str,
+    model: str, max_turns: int = 1
 ) -> str:
     return anyio.run(partial(
         _text_query_async,
         prompt=prompt,
         system_prompt=system_prompt,
         api_key=api_key,
+        base_url=base_url,
         model=model,
         max_turns=max_turns,
     ))
@@ -68,6 +80,7 @@ async def _booking_query_async(
     prompt: str,
     system_prompt: str,
     api_key: str,
+    base_url: str,
     model: str,
     tool_dispatch: dict[str, Callable[[dict], str]],
     output_schema: dict[str, Any],
@@ -107,7 +120,7 @@ async def _booking_query_async(
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system_prompt,
-        env=_sdk_env(api_key),
+        env=_sdk_env(api_key, base_url, model),
         tools=[],
         mcp_servers={"booking": server},
         allowed_tools=allowed,

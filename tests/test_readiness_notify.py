@@ -135,7 +135,7 @@ class TestReadiness:
         monkeypatch.setattr(settings, "payment_provider", "stub")
         monkeypatch.setattr(settings, "smtp_host", "")
         monkeypatch.setattr(settings, "sentry_dsn", "")
-        monkeypatch.setattr(settings, "anthropic_api_key", "")
+        monkeypatch.setattr(settings, "minimax_api_key", "")
         by = self._by_name(run_checks(session_factory=_Session))
         for name in ("payment", "smtp", "sentry", "ai"):
             assert by[name].status == "WARN", name

@@ -233,12 +233,14 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
     metrics_token: str = ""
 
-    # AI 客服（PHASE 4-1，Anthropic Claude）
-    # SAAS_ANTHROPIC_API_KEY: 設定後 get_assistant() 回 AnthropicAssistant；
+    # AI 客服（Claude Agent SDK + MiniMax Anthropic-compatible API）
+    # SAAS_MINIMAX_API_KEY: 設定後 get_assistant() 回真實 SDK backend；
     #   留空（預設）回 StubAIAssistant（離線、決定性，供測試/dev）。
-    # SAAS_AI_MODEL: Claude 模型 ID（預設 Claude Sonnet 4.6）。
-    anthropic_api_key: str = ""
-    ai_model: str = "claude-sonnet-4-6"
+    # SAAS_MINIMAX_BASE_URL: 台灣／國際站官方 Anthropic-compatible endpoint。
+    # SAAS_AI_MODEL: MiniMax 模型 ID。
+    minimax_api_key: str = ""
+    minimax_base_url: str = "https://api.minimax.io/anthropic"
+    ai_model: str = "MiniMax-M2.7"
 
     # 後台「重新佈署」按鈕（平台管理員）：
     # web 容器無法直接執行主機腳本，故按鈕只寫一個觸發檔到此路徑（主機掛載目錄），

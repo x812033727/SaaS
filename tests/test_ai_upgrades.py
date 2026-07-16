@@ -162,7 +162,7 @@ class TestToolLoop:
     def _agent(self, script, monkeypatch):
         from saas_mvp.config import settings
 
-        monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+        monkeypatch.setattr(settings, "minimax_api_key", "test-key")
         return AnthropicAgent(client_factory=lambda: _FakeClient(script) if isinstance(script, list) else script)
 
     def test_query_tool_then_propose(self, monkeypatch):
@@ -177,7 +177,7 @@ class TestToolLoop:
         ])
         from saas_mvp.config import settings
 
-        monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+        monkeypatch.setattr(settings, "minimax_api_key", "test-key")
         agent = AnthropicAgent(client_factory=lambda: fake)
         belt = ToolBelt(list_services=lambda: "id=3 剪髮")
         turn = agent.converse("有什麼服務", {}, "ctx", tools=belt)
@@ -204,7 +204,7 @@ class TestToolLoop:
         fake = _FakeClient([q, q, final])
         from saas_mvp.config import settings
 
-        monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+        monkeypatch.setattr(settings, "minimax_api_key", "test-key")
         agent = AnthropicAgent(client_factory=lambda: fake)
         turn = agent.converse("hmm", {}, "ctx", tools=ToolBelt(
             available_dates=lambda: "2030-06-01"
@@ -221,7 +221,7 @@ class TestToolLoop:
         fake = _FakeClient([final])
         from saas_mvp.config import settings
 
-        monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+        monkeypatch.setattr(settings, "minimax_api_key", "test-key")
         agent = AnthropicAgent(client_factory=lambda: fake)
         history = [
             ("user", "你好"),
@@ -240,7 +240,7 @@ class TestToolLoop:
 def test_agent_sdk_runner_receives_only_bound_read_tools(monkeypatch):
     from saas_mvp.config import settings
 
-    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "minimax_api_key", "test-key")
     captured = {}
 
     def runner(**kwargs):

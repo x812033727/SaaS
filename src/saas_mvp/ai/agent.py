@@ -185,13 +185,15 @@ class AnthropicAgent(AIAgent):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         model: str | None = None,
         runner=None,
         client_factory=None,
     ) -> None:
         from saas_mvp.config import settings
 
-        self._api_key = api_key if api_key is not None else settings.anthropic_api_key
+        self._api_key = api_key if api_key is not None else settings.minimax_api_key
+        self._base_url = base_url if base_url is not None else settings.minimax_base_url
         self._model = model if model is not None else settings.ai_model
         # client_factory only preserves compatibility with older injected tests.
         self._runner = runner
@@ -238,6 +240,7 @@ class AnthropicAgent(AIAgent):
                 prompt=prompt,
                 system_prompt=system,
                 api_key=self._api_key,
+                base_url=self._base_url,
                 model=self._model,
                 tool_dispatch=dispatch,
                 output_schema=_AGENT_OUTPUT_SCHEMA,
@@ -338,5 +341,7 @@ def get_agent(db=None) -> AIAgent:
 
     config = effective_ai_config(db, settings)
     if config is not None:
-        return AnthropicAgent(api_key=config.api_key, model=config.model)
+        return AnthropicAgent(
+            api_key=config.api_key, base_url=config.base_url, model=config.model
+        )
     return StubAgent()
