@@ -1,0 +1,155 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+
+import TrendChart from "@/components/charts/TrendChart";
+import { fetchJson } from "@/lib/client-api";
+
+type TrendPoint = { period: string; bookings: number; revenue_cents: number };
+type Revenue = { paid_orders: number; revenue_cents: number; avg_order_cents: number };
+type Summary = {
+  total: number; confirmed: number; cancelled: number; cancel_rate: number;
+  total_covers: number; distinct_customers: number;
+  attended: number; no_show: number; no_show_rate: number | null;
+};
+type Utilization = { hour: number; booked: number; capacity: number; utilization: number };
+type TopCustomer = { id: number; display_name: string | null; booking_count: number; tier: string };
+
+export default function ReportsPage() {
+  const [period, setPeriod] = useState<"week" | "month">("week");
+
+  const trend = useQuery({
+    queryKey: ["report-trend", period],
+    queryFn: () => fetchJson<TrendPoint[]>(`/booking/analytics/trend?period=${period}&periods=12`),
+  });
+  const revenue = useQuery({
+    queryKey: ["report-revenue"],
+    queryFn: () => fetchJson<Revenue>("/booking/analytics/revenue"),
+  });
+  const summary = useQuery({
+    queryKey: ["report-summary"],
+    queryFn: () => fetchJson<Summary>("/booking/analytics/summary"),
+  });
+  const utilization = useQuery({
+    queryKey: ["report-utilization"],
+    queryFn: () => fetchJson<Utilization[]>("/booking/analytics/utilization"),
+  });
+  const customers = useQuery({
+    queryKey: ["report-customers"],
+    queryFn: () => fetchJson<TopCustomer[]>("/booking/analytics/customers?limit=10"),
+  });
+
+  const cards: [string, string, string][] = [
+    ["累計實收", `NT$${Math.floor((revenue.data?.revenue_cents ?? 0) / 100).toLocaleString()}`,
+      `${revenue.data?.paid_orders ?? 0} 張已付訂單`],
+    ["客單價", `NT$${Math.floor((revenue.data?.avg_order_cents ?? 0) / 100).toLocaleString()}`, "已付訂單平均"],
+    ["預約取消率", `${((summary.data?.cancel_rate ?? 0) * 100).toFixed(1)}%`,
+      `${summary.data?.cancelled ?? 0} / ${summary.data?.total ?? 0} 筆`],
+    ["爽約率", summary.data?.no_show_rate == null ? "—" : `${(summary.data.no_show_rate * 100).toFixed(1)}%`,
+      summary.data?.no_show_rate == null ? "尚無到場標記" : `${summary.data.no_show} 筆未到`],
+  ];
+
+  const maxUtil = Math.max(0.01, ...(utilization.data ?? []).map((u) => u.utilization));
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">營運報表</h1>
+        <div className="flex items-center gap-2 text-sm">
+          <a href="/ui/reports" className="text-muted hover:text-ink">進階報表/匯出 → 舊版</a>
+          <div className="rounded-lg border border-line p-0.5">
+            {(["week", "month"] as const).map((p) => (
+              <button key={p} onClick={() => setPeriod(p)}
+                className={`rounded-md px-3 py-1 ${period === p ? "bg-brand text-white" : "text-muted"}`}>
+                {p === "week" ? "週" : "月"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
+
+      <section className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {cards.map(([label, value, hint]) => (
+          <article key={label} className="rounded-xl border border-line bg-surface p-5 shadow-sm">
+            <p className="text-sm text-muted">{label}</p>
+            <p className="mt-2 text-2xl font-semibold text-brand">{value}</p>
+            <p className="mt-1 text-xs text-muted">{hint}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="mt-5 rounded-xl border border-line bg-surface p-6">
+        <div className="flex items-center gap-4">
+          <h2 className="font-semibold">近 12 {period === "week" ? "週" : "月"}趨勢</h2>
+          <span className="flex items-center gap-1 text-xs text-muted">
+            <span className="inline-block h-2.5 w-2.5 rounded-sm bg-brand" />預約
+          </span>
+          <span className="flex items-center gap-1 text-xs text-muted">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-gold" />營收
+          </span>
+        </div>
+        {trend.isLoading ? (
+          <p className="mt-6 text-sm text-muted">載入中…</p>
+        ) : (
+          <div className="mt-4">
+            <TrendChart
+              points={(trend.data ?? []).map((p) => ({
+                label: p.period.replace(/^\d{4}-/, ""),
+                bookings: p.bookings,
+                revenueTwd: Math.floor(p.revenue_cents / 100),
+              }))}
+            />
+          </div>
+        )}
+      </section>
+
+      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        <section className="rounded-xl border border-line bg-surface p-6">
+          <h2 className="font-semibold">時段使用率(依小時)</h2>
+          <div className="mt-4 space-y-2">
+            {(utilization.data ?? []).length === 0 && (
+              <p className="text-sm text-muted">尚無時段資料。</p>
+            )}
+            {(utilization.data ?? []).map((u) => (
+              <div key={u.hour} className="flex items-center gap-2 text-xs">
+                <span className="w-10 text-muted">{String(u.hour).padStart(2, "0")}:00</span>
+                <div className="h-4 flex-1 rounded bg-brand-soft">
+                  <div
+                    className="h-4 rounded bg-brand"
+                    style={{ width: `${(u.utilization / maxUtil) * 100}%` }}
+                  />
+                </div>
+                <span className="w-14 text-right text-muted">
+                  {(u.utilization * 100).toFixed(0)}%({u.booked}/{u.capacity})
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-line bg-surface p-6">
+          <h2 className="font-semibold">Top 10 顧客</h2>
+          <table className="mt-3 w-full text-sm">
+            <thead>
+              <tr className="border-b border-line text-left text-muted">
+                <th className="py-2 font-medium">顧客</th>
+                <th className="py-2 font-medium">預約數</th>
+                <th className="py-2 font-medium">等級</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(customers.data ?? []).map((c) => (
+                <tr key={c.id} className="border-b border-line/60">
+                  <td className="py-2">{c.display_name ?? `顧客 #${c.id}`}</td>
+                  <td className="py-2">{c.booking_count}</td>
+                  <td className="py-2">{c.tier}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </div>
+  );
+}
