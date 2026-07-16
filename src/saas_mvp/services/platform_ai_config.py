@@ -116,27 +116,27 @@ def clear_ai_override(db: Session) -> bool:
 
 
 def test_ai_config(db: Session, settings) -> None:
-    """用極小輸出呼叫驗證 API key 與模型，不保存任何測試內容。"""
+    """Use a one-turn Claude Agent SDK session to validate key and model."""
     config = effective_ai_config(db, settings)
     if config is None:
         raise PlatformAIConfigError("AI 尚未設定。")
     try:
-        import anthropic
+        from saas_mvp.ai.claude_agent_sdk import text_query
 
-        client = anthropic.Anthropic(api_key=config.api_key, timeout=15.0)
-        client.messages.create(
+        text_query(
+            prompt="Reply OK.",
+            system_prompt="Connection check. Reply only OK.",
+            api_key=config.api_key,
             model=config.model,
-            max_tokens=8,
-            system="Connection check. Reply OK.",
-            messages=[{"role": "user", "content": "OK"}],
+            max_turns=1,
         )
     except Exception as exc:  # noqa: BLE001 - 對後台提供安全且不洩密的錯誤
-        name = type(exc).__name__
-        if name in {"AuthenticationError", "PermissionDeniedError"}:
+        message = str(exc).lower()
+        if "401" in message or "authentication" in message or "api key" in message:
             detail = "API Key 無效或沒有權限。"
-        elif name == "NotFoundError":
+        elif "404" in message or "model" in message and "not found" in message:
             detail = "找不到指定模型，請確認模型 ID。"
-        elif name == "RateLimitError":
+        elif "429" in message or "rate limit" in message:
             detail = "Anthropic 額度不足或已達速率限制。"
         else:
             detail = "無法連線 Anthropic，請稍後再試。"

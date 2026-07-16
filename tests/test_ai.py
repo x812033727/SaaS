@@ -86,6 +86,24 @@ def test_context_budget_per_backend():
     assert AnthropicAssistant().context_max_entries > 1
 
 
+def test_real_assistant_uses_claude_agent_sdk_runner_without_exposing_key():
+    calls = []
+
+    def runner(**kwargs):
+        calls.append(kwargs)
+        return "SDK 回覆"
+
+    assistant = AnthropicAssistant(
+        api_key="sk-ant-secret-value", model="claude-sonnet-4-6", runner=runner
+    )
+    result = assistant.answer("營業時間？", "平日十點開門")
+    assert result.answer == "SDK 回覆"
+    assert result.source == "claude-agent-sdk"
+    assert calls[0]["api_key"] == "sk-ant-secret-value"
+    assert calls[0]["max_turns"] == 1
+    assert "平日十點開門" in calls[0]["system_prompt"]
+
+
 # ── faq.match ────────────────────────────────────────────────────────────────
 
 def test_faq_match(db):

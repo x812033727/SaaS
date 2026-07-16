@@ -235,3 +235,30 @@ class TestToolLoop:
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
         assert "你好" in msgs[0]["content"] and "想約時間" in msgs[0]["content"]
         assert "明天有空嗎" in msgs[-1]["content"]
+
+
+def test_agent_sdk_runner_receives_only_bound_read_tools(monkeypatch):
+    from saas_mvp.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    captured = {}
+
+    def runner(**kwargs):
+        captured.update(kwargs)
+        return {
+            "reply": "可以預約",
+            "intent": "book",
+            "service_id": 3,
+            "date": None,
+            "party_size": None,
+            "reservation_id": None,
+        }
+
+    agent = AnthropicAgent(runner=runner)
+    turn = agent.converse(
+        "我要剪髮", {}, "ctx", tools=ToolBelt(list_services=lambda: "id=3 剪髮")
+    )
+    assert turn.intent == "book" and turn.service_id == 3
+    assert set(captured["tool_dispatch"]) == {"list_services"}
+    assert captured["tool_dispatch"]["list_services"]({}) == "id=3 剪髮"
+    assert captured["output_schema"]["additionalProperties"] is False

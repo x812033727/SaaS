@@ -4,10 +4,9 @@
 reservation_id),mutation 永遠走既有 postback 確認 → 服務層確定性路徑
 (含擁有者驗證);LLM 幻覺不可能直接改資料。
 
-* ``AnthropicAgent``(D2):最多 3 輪 tool-use loop — 4 個唯讀查詢 tool
-  (services/dates/slots/my_reservations)+ 終結 tool ``propose_action``;
-  第 3 輪強制 propose_action 保證收斂。內部 loop 不加計額度(每則用戶
-  訊息仍只扣 1),max_tokens=512/輪、tool result 截 800 字,成本可預算。
+* ``AnthropicAgent``(D2):Claude Agent SDK 最多 3 輪，提供 4 個行程內唯讀
+  MCP 工具並以 JSON Schema structured output 收斂。內部 loop 不加計額度
+  (每則用戶訊息仍只扣 1)，SDK session 設有美元預算上限。
 * ``StubAgent``:關鍵字/正則規則,離線決定性,測試與未設 API key 時用。
 * 歷史(D3):converse 接受 history=[(role, text)],只有 AnthropicAgent 用。
 """
@@ -61,12 +60,27 @@ class AIAgent:
         return True
 
 
-_PROPOSE_TOOL = {
+_AGENT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reply": {
+            "type": "string",
+            "description": "給顧客的親切繁中回覆；缺資訊時直接追問。",
+        },
+        "intent": {"type": "string", "enum": list(VALID_INTENTS)},
+        "service_id": {"type": ["integer", "null"]},
+        "date": {"type": ["string", "null"]},
+        "party_size": {"type": ["integer", "null"]},
+        "reservation_id": {"type": ["integer", "null"]},
+    },
+    "required": [
+        "reply", "intent", "service_id", "date", "party_size", "reservation_id"
+    ],
+    "additionalProperties": False,
+}
+
+_LEGACY_PROPOSE_TOOL = {
     "name": "propose_action",
-    "description": (
-        "輸出對顧客訊息的最終理解:意圖與槽位。沒把握的欄位一律留空。"
-        "這是終結工具 — 呼叫後對話輪結束。"
-    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -165,20 +179,23 @@ def _turn_from(data: dict) -> AgentTurn:
 
 
 class AnthropicAgent(AIAgent):
-    """Claude tool-use loop(D2):≤3 輪,末輪強制 propose_action 收斂。"""
+    """Claude Agent SDK with read-only in-process MCP tools and typed output."""
 
     def __init__(
         self,
         *,
         api_key: str | None = None,
         model: str | None = None,
+        runner=None,
         client_factory=None,
     ) -> None:
         from saas_mvp.config import settings
 
         self._api_key = api_key if api_key is not None else settings.anthropic_api_key
         self._model = model if model is not None else settings.ai_model
-        self._client_factory = client_factory  # 測試注入 fake client
+        # client_factory only preserves compatibility with older injected tests.
+        self._runner = runner
+        self._client_factory = client_factory
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -195,71 +212,70 @@ class AnthropicAgent(AIAgent):
         tools=None,
         history: list | None = None,
     ) -> AgentTurn:
-        # D3:歷史(role 交錯合法化 — 連續同角色合併)。
-        messages: list[dict] = []
+        history_parts: list[str] = []
         for role, content in (history or [])[-8:]:
             role = "user" if role == "user" else "assistant"
-            snippet = str(content)[:200]
-            if messages and messages[-1]["role"] == role:
-                messages[-1]["content"] += "\n" + snippet
-            else:
-                messages.append({"role": role, "content": snippet})
-        if messages and messages[0]["role"] == "assistant":
-            messages.insert(0, {"role": "user", "content": "(先前對話)"})
-        if messages and messages[-1]["role"] == "user":
-            messages[-1]["content"] += "\n" + text[:1000]
-        else:
-            messages.append({"role": "user", "content": text[:1000]})
+            history_parts.append(f"{role}: {str(content)[:200]}")
+        prompt = ""
+        if history_parts:
+            prompt += "先前對話：\n" + "\n".join(history_parts) + "\n\n"
+        prompt += "顧客本次訊息：\n" + text[:1000]
 
         system = _AGENT_SYSTEM.format(slots=slots or "（無）", context=context)
         try:
-            client = self._client()
-            for round_no in range(_MAX_TOOL_ROUNDS):
-                final_round = round_no == _MAX_TOOL_ROUNDS - 1
-                resp = client.messages.create(
-                    model=self._model,
-                    max_tokens=512,
-                    system=system,
-                    tools=[_PROPOSE_TOOL] if final_round
-                    else [_PROPOSE_TOOL, *_QUERY_TOOLS],
-                    tool_choice=(
-                        {"type": "tool", "name": "propose_action"}
-                        if final_round else {"type": "any"}
-                    ),
-                    messages=messages,
-                )
-                tool_uses = [
-                    b for b in resp.content
-                    if getattr(b, "type", None) == "tool_use"
-                ]
-                if not tool_uses:
-                    texts = "".join(
-                        b.text for b in resp.content
-                        if getattr(b, "type", None) == "text"
-                    )
-                    return AgentTurn(reply_text=texts or "", intent="other")
+            if self._client_factory is not None:
+                return self._legacy_converse(prompt, system, tools)
+            from saas_mvp.ai.claude_agent_sdk import booking_query
 
-                proposal = next(
-                    (b for b in tool_uses if b.name == "propose_action"), None
+            dispatch = {
+                item["name"]: (
+                    lambda args, name=item["name"]: _run_tool(tools, name, args)
                 )
-                if proposal is not None:
-                    return _turn_from(proposal.input or {})
-
-                messages.append({"role": "assistant", "content": resp.content})
-                results = [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": b.id,
-                        "content": _run_tool(tools, b.name, b.input or {}),
-                    }
-                    for b in tool_uses
-                ]
-                messages.append({"role": "user", "content": results})
-            return AgentTurn(intent="other")  # pragma: no cover — 末輪強制收斂
+                for item in _QUERY_TOOLS
+                if getattr(tools, item["name"], None) is not None
+            }
+            data = (self._runner or booking_query)(
+                prompt=prompt,
+                system_prompt=system,
+                api_key=self._api_key,
+                model=self._model,
+                tool_dispatch=dispatch,
+                output_schema=_AGENT_OUTPUT_SCHEMA,
+            )
+            return _turn_from(data)
         except AIError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise AIError(f"Anthropic agent request failed: {exc}") from exc
+
+    def _legacy_converse(self, prompt: str, system: str, tools) -> AgentTurn:
+        """Compatibility seam for existing offline fake-client tests."""
+        messages = [{"role": "user", "content": prompt}]
+        client = self._client()
+        for round_no in range(_MAX_TOOL_ROUNDS):
+            final_round = round_no == _MAX_TOOL_ROUNDS - 1
+            resp = client.messages.create(
+                model=self._model,
+                max_tokens=512,
+                system=system,
+                tools=[_LEGACY_PROPOSE_TOOL] if final_round
+                else [_LEGACY_PROPOSE_TOOL, *_QUERY_TOOLS],
+                tool_choice={"type": "tool", "name": "propose_action"}
+                if final_round else {"type": "any"},
+                messages=messages,
+            )
+            uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+            proposal = next((b for b in uses if b.name == "propose_action"), None)
+            if proposal is not None:
+                return _turn_from(proposal.input or {})
+            messages.append({"role": "assistant", "content": resp.content})
+            messages.append({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": b.id,
+                             "content": _run_tool(tools, b.name, b.input or {})}
+                            for b in uses],
+            })
+        return AgentTurn(intent="other")
 
 
 class StubAgent(AIAgent):
