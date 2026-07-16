@@ -1,12 +1,10 @@
-"""LINE Webhook 管理 client 的官方 HTTP 合約（全程 mock，不連外）。"""
+"""LINE Webhook 管理 client 的官方 HTTP 合約(全程 httpx MockTransport,不連外)。"""
 
 from __future__ import annotations
 
-import io
 import json
-import urllib.error
-from unittest import mock
 
+import httpx
 import pytest
 
 from saas_mvp.line_client import (
@@ -14,87 +12,62 @@ from saas_mvp.line_client import (
     LineWebhookAdminCredentialError,
     LineWebhookAdminParseError,
 )
+from tests._line_http import mock_line_http
 
 
-class _Response:
-    def __init__(self, body: dict | str):
-        self._body = body if isinstance(body, str) else json.dumps(body)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def read(self) -> bytes:
-        return self._body.encode()
+def _seq_handler(put_body, test_body, get_body, *, captured=None):
+    """依 (method, path) 回三段回應;PUT endpoint / POST test / GET endpoint。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if captured is not None:
+            captured.append(req)
+        path = req.url.path
+        if req.method == "PUT" and path.endswith("/webhook/endpoint"):
+            return httpx.Response(200, json=put_body)
+        if req.method == "POST" and path.endswith("/webhook/test"):
+            return httpx.Response(200, json=test_body)
+        if req.method == "GET" and path.endswith("/webhook/endpoint"):
+            return httpx.Response(200, json=get_body)
+        return httpx.Response(500, json={})
+    return handler
 
 
 def test_configure_and_test_calls_put_test_and_get() -> None:
-    requests = []
-    responses = iter(
-        [
-            _Response({}),
-            _Response(
-                {
-                    "success": True,
-                    "timestamp": "2026-07-15T00:00:00Z",
-                    "statusCode": 200,
-                    "reason": "OK",
-                    "detail": "200",
-                }
-            ),
-            _Response({"endpoint": "https://example.com/line/webhook/7", "active": False}),
-        ]
+    captured: list[httpx.Request] = []
+    handler = _seq_handler(
+        {},
+        {"success": True, "timestamp": "2026-07-15T00:00:00Z",
+         "statusCode": 200, "reason": "OK", "detail": "200"},
+        {"endpoint": "https://example.com/line/webhook/7", "active": False},
+        captured=captured,
     )
-
-    def _urlopen(req, timeout=None):
-        requests.append((req, timeout))
-        return next(responses)
-
     client = HttpLineWebhookAdminClient(timeout=6)
-    with mock.patch("urllib.request.urlopen", _urlopen):
+    with mock_line_http(handler):
         result = client.configure_and_test(
-            "https://example.com/line/webhook/7",
-            access_token="secret-token",
+            "https://example.com/line/webhook/7", access_token="secret-token"
         )
 
     assert result.success is True
     assert result.active is False
     assert result.status_code == 200
-    assert [request.get_method() for request, _ in requests] == ["PUT", "POST", "GET"]
-    assert all(timeout == 6 for _, timeout in requests)
-    assert all(
-        request.headers["Authorization"] == "Bearer secret-token"
-        for request, _ in requests
-    )
-    assert json.loads(requests[0][0].data) == {
+    assert [r.method for r in captured] == ["PUT", "POST", "GET"]
+    assert all(r.headers["Authorization"] == "Bearer secret-token" for r in captured)
+    assert json.loads(captured[0].content) == {
         "endpoint": "https://example.com/line/webhook/7"
     }
-    assert json.loads(requests[1][0].data) == {
+    assert json.loads(captured[1].content) == {
         "endpoint": "https://example.com/line/webhook/7"
     }
 
 
 def test_configure_and_test_preserves_line_failure_diagnostics() -> None:
-    responses = iter(
-        [
-            _Response({}),
-            _Response(
-                {
-                    "success": False,
-                    "statusCode": 500,
-                    "reason": "ERROR_STATUS_CODE",
-                    "detail": "500",
-                }
-            ),
-            _Response({"active": True}),
-        ]
+    handler = _seq_handler(
+        {},
+        {"success": False, "statusCode": 500, "reason": "ERROR_STATUS_CODE", "detail": "500"},
+        {"active": True},
     )
-    with mock.patch("urllib.request.urlopen", lambda *_args, **_kwargs: next(responses)):
+    with mock_line_http(handler):
         result = HttpLineWebhookAdminClient().configure_and_test(
-            "https://example.com/line/webhook/7",
-            access_token="token",
+            "https://example.com/line/webhook/7", access_token="token"
         )
 
     assert result.success is False
@@ -104,26 +77,20 @@ def test_configure_and_test_preserves_line_failure_diagnostics() -> None:
 
 
 def test_configure_and_test_rejects_bad_test_response() -> None:
-    responses = iter([_Response({}), _Response({"reason": "OK"})])
-    with mock.patch("urllib.request.urlopen", lambda *_args, **_kwargs: next(responses)):
+    handler = _seq_handler({}, {"reason": "OK"}, {"active": True})
+    with mock_line_http(handler):
         with pytest.raises(LineWebhookAdminParseError):
             HttpLineWebhookAdminClient().configure_and_test(
-                "https://example.com/line/webhook/7",
-                access_token="token",
+                "https://example.com/line/webhook/7", access_token="token"
             )
 
 
 def test_configure_and_test_maps_credential_error() -> None:
-    error = urllib.error.HTTPError(
-        "https://api.line.me/v2/bot/channel/webhook/endpoint",
-        401,
-        "Unauthorized",
-        {},
-        io.BytesIO(b'{"message":"Authentication failed"}'),
-    )
-    with mock.patch("urllib.request.urlopen", side_effect=error):
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Authentication failed"})
+
+    with mock_line_http(handler):
         with pytest.raises(LineWebhookAdminCredentialError):
             HttpLineWebhookAdminClient().configure_and_test(
-                "https://example.com/line/webhook/7",
-                access_token="bad-token",
+                "https://example.com/line/webhook/7", access_token="bad-token"
             )

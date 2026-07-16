@@ -21,6 +21,8 @@ dependencies = [
     "email-validator==2.3.0",
     "jinja2==3.1.4",
     "openai==1.109.1",
+    # LINE Messaging API client 連線池化(R4-P3);TestClient 亦用同一套。
+    "httpx==0.28.1",
     "openpyxl==3.1.5",
     "fpdf2==2.8.3",
     "pillow==11.3.0",

@@ -38,19 +38,20 @@ _UID = "U" + "c" * 32
 
 @contextmanager
 def _fake_resp(body):
-    """模擬 urlopen，回傳指定 body（dict→JSON，str→原樣），並捕捉發出的 Request。"""
+    """httpx MockTransport 回指定 body(dict→JSON,str→原樣),並捕捉 request。"""
+    import httpx
+
+    from tests._line_http import mock_line_http
+
     captured = {}
 
-    @contextmanager
-    def _cm(req, timeout=None):
+    def handler(req):
         captured["req"] = req
-        captured["timeout"] = timeout
-        raw = body if isinstance(body, (bytes, str)) else json.dumps(body)
-        if isinstance(raw, str):
-            raw = raw.encode()
-        yield io.BytesIO(raw)
+        if isinstance(body, dict):
+            return httpx.Response(200, json=body)
+        return httpx.Response(200, text=body if isinstance(body, str) else body.decode())
 
-    with mock.patch("urllib.request.urlopen", _cm):
+    with mock_line_http(handler):
         yield captured
 
 
@@ -72,9 +73,9 @@ class TestHttpProfileClient:
         assert prof.picture_url == "https://example/p.jpg"
         assert prof.status_message == "hi"
         req = cap["req"]
-        assert req.full_url == f"https://api.line.me/v2/bot/profile/{_UID}"
-        assert req.get_method() == "GET"
-        assert req.get_header("Authorization") == "Bearer my-token"
+        assert str(req.url) == f"https://api.line.me/v2/bot/profile/{_UID}"
+        assert req.method == "GET"
+        assert req.headers["Authorization"] == "Bearer my-token"
 
     def test_missing_display_name_is_none(self):
         client = HttpLineProfileClient()
@@ -87,20 +88,18 @@ class TestHttpProfileClient:
     def test_credential_error_on_403(self):
         client = HttpLineProfileClient()
 
-        def _boom(req, timeout=None):
-            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+        from tests._line_http import mock_line_http, text_response
 
-        with mock.patch("urllib.request.urlopen", _boom):
+        with mock_line_http(lambda req: text_response(403, "Forbidden")):
             with pytest.raises(LineProfileCredentialError):
                 client.get_profile(_UID, access_token="tok")
 
     def test_network_error(self):
         client = HttpLineProfileClient()
 
-        def _boom(req, timeout=None):
-            raise OSError("connection refused")
+        from tests._line_http import mock_line_http, network_error
 
-        with mock.patch("urllib.request.urlopen", _boom):
+        with mock_line_http(network_error):
             with pytest.raises(LineProfileNetworkError):
                 client.get_profile(_UID, access_token="tok")
 

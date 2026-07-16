@@ -1531,6 +1531,24 @@ def admin_overview(
     )
 
 
+@router.get("/admin/ops", response_class=HTMLResponse)
+def admin_ops(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """營運總覽(R4-P2):MRR/扣款成功率/即將續扣 + 租戶健康表。"""
+    return templates.TemplateResponse(
+        "admin/ops.html",
+        _ctx(
+            request,
+            actor,
+            revenue=admin_svc.revenue_overview(db),
+            health_rows=admin_svc.tenant_health_rows(db),
+        ),
+    )
+
+
 @router.get("/admin/readiness", response_class=HTMLResponse)
 def admin_readiness(
     request: Request,

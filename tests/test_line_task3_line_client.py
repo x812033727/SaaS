@@ -136,64 +136,44 @@ class TestHttpLineReplyClient:
             c.reply("tok", "hello", access_token="fake_token")
 
     def test_raises_line_reply_error_on_http_error(self):
-        """HTTP 4xx → LineReplyError（從 HTTPError 包裝）。"""
-        import urllib.error
-        from unittest.mock import patch
+        """HTTP 4xx → LineReplyError。"""
+        from tests._line_http import mock_line_http, text_response
 
-        mock_exc = urllib.error.HTTPError(
-            url="http://x",
-            code=401,
-            msg="Unauthorized",
-            hdrs=None,
-            fp=None,
-        )
         c = HttpLineReplyClient()
-        with patch("urllib.request.urlopen", side_effect=mock_exc):
+        with mock_line_http(lambda req: text_response(401, "Unauthorized")):
             with pytest.raises(LineReplyError, match="401"):
                 c.reply("tok", "hello", access_token="bad_token")
 
     def test_reply_success_does_not_raise(self):
-        """成功路徑：urlopen 正常回應，reply() 不拋任何例外。"""
-        from unittest.mock import MagicMock, patch
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b"{}"
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        """成功路徑:200 回應,reply() 不拋任何例外。"""
+        from tests._line_http import json_response, mock_line_http
 
         c = HttpLineReplyClient()
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            # 不應拋出任何例外
+        with mock_line_http(lambda req: json_response(200, {})):
             c.reply("reply_token_abc", "hello", access_token="valid_token")
 
-        mock_resp.read.assert_called_once()
-
     def test_reply_success_sends_correct_json(self):
-        """成功路徑：驗證送出的 JSON payload 結構正確。"""
+        """成功路徑:驗證送出的 JSON payload 與 Authorization header。"""
         import json
-        from unittest.mock import MagicMock, patch, call
 
-        captured_requests = []
+        from tests._line_http import json_response, mock_line_http
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b"{}"
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        captured = []
 
-        def fake_urlopen(req, timeout=None):
-            captured_requests.append(req)
-            return mock_resp
+        def handler(req):
+            captured.append(req)
+            return json_response(200, {})
 
         c = HttpLineReplyClient()
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with mock_line_http(handler):
             c.reply("tok_xyz", "translated text", access_token="abc123")
 
-        assert len(captured_requests) == 1
-        req = captured_requests[0]
-        body = json.loads(req.data.decode())
+        assert len(captured) == 1
+        req = captured[0]
+        body = json.loads(req.content.decode())
         assert body["replyToken"] == "tok_xyz"
         assert body["messages"] == [{"type": "text", "text": "translated text"}]
-        assert req.get_header("Authorization") == "Bearer abc123"
+        assert req.headers["Authorization"] == "Bearer abc123"
 
 
 # ── get_line_client() factory ─────────────────────────────────────────────────
