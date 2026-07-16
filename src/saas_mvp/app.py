@@ -53,6 +53,19 @@ _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle (replaces deprecated @on_event)."""
     init_db()
+    # DB 加密設定優先於環境變數；讀取失敗時告警功能安全降級。
+    try:
+        from saas_mvp.db import SessionLocal
+        from saas_mvp.services.platform_observability_config import (
+            apply_effective_observability_config,
+        )
+
+        with SessionLocal() as observability_db:
+            apply_effective_observability_config(observability_db, settings)
+    except Exception:  # noqa: BLE001
+        from saas_mvp.obs.alerts import init_sentry
+
+        init_sentry(settings.sentry_dsn)
     # SSE 即時通知：events_backend=redis 時啟動跨 worker pub/sub listener
     # （memory 預設回 None，行內單 worker 廣播，行為不變）。
     from saas_mvp.services import events as events_svc
@@ -72,11 +85,6 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     # 結構化日誌（JSON/text）：在建立 app、掛 middleware 之前先設定好 root logger。
     configure_logging()
-
-    # Sentry（B4）：SAAS_SENTRY_DSN 非空才啟用；未設定/未安裝皆 no-op。
-    from saas_mvp.obs.alerts import init_sentry
-
-    init_sentry()
 
     app = FastAPI(
         title="SaaS MVP",

@@ -80,7 +80,8 @@ _META = {
         "/ui/admin/bots", "查看 LINE 綁定",
     ),
     "sentry": (
-        "錯誤監控", "維運", "建議正式商用啟用即時錯誤告警。", None, None
+        "錯誤監控", "維運", "建議正式商用啟用即時錯誤告警。",
+        "/ui/admin/observability-settings", "前往錯誤監控設定",
     ),
     "sms": (
         "簡訊備援", "通知", "未啟用供應商時維持關閉，避免誤以為已發送簡訊。", None, None

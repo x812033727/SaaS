@@ -6,6 +6,12 @@ cd /opt/saas && docker-compose exec web python -m saas_mvp.ops.check_readiness
 ```
 逐項 PASS/WARN/FAIL + 修復提示;有 FAIL 修完再往下走。
 
+### 錯誤監控
+
+- [ ] 平台管理員到「平台管理 → 錯誤監控設定」貼上正式 Sentry 專案 DSN。
+- [ ] 送出測試事件並在 Sentry 專案確認收到 `SaaS platform observability connection test`。
+- [ ] 設定正式環境告警規則、通知收件人與用量上限；DSN 不應改用具管理權限的 Auth Token。
+
 
 ## 0. 商務前置（lead time 最長，第一天就送件）
 - [ ] 申請綠界**正式商店**（需公司/行號統編；個人可評估藍新或個人賣家方案）

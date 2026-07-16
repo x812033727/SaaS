@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}錯誤監控設定 · 平台管理{% endblock %}
+{% block content %}
+<h1>平台錯誤監控設定</h1>
+
+<div class="card">
+  <h2>Sentry</h2>
+  <p class="muted">集中接收正式環境錯誤與關鍵營運告警。只有平台管理員能修改；儲存後立即生效，不需修改 .env、重建或重啟。</p>
+
+  {% if saved %}<div class="success">Sentry DSN 已加密儲存並立即生效。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if test_ok %}<div class="success">Sentry 測試事件已送出，請到 Sentry 專案確認。</div>{% endif %}
+  {% if test_error %}<div class="error">測試失敗：{{ test_error }}</div>{% endif %}
+
+  {% if observability_status.configured %}
+    <p><span class="badge valid">錯誤監控已啟用</span>
+      {% if observability_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
+      · {{ observability_status.dsn_mask }}
+    </p>
+  {% else %}
+    <p><span class="badge unchecked">尚未啟用</span> 系統只會寫入應用程式日誌，不會送到外部錯誤監控。</p>
+  {% endif %}
+
+  <form method="post" action="/ui/admin/observability-settings" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Sentry DSN
+      <input name="sentry_dsn" type="password" maxlength="1024" required
+             placeholder="https://public-key@o0.ingest.sentry.io/project-id"
+             autocomplete="new-password">
+    </label>
+    <p class="muted">DSN 會以 Fernet 加密保存，不會顯示明文或寫入稽核紀錄。</p>
+    <button type="submit">儲存並啟用</button>
+  </form>
+
+  {% if observability_status.configured %}
+  <form method="post" action="/ui/admin/observability-settings/test" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">送出 Sentry 測試事件</button>
+  </form>
+  {% endif %}
+
+  {% if observability_status.source == 'database' %}
+  <form method="post" action="/ui/admin/observability-settings/reset" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger" onclick="return confirm('確定移除後台 Sentry 設定？若無伺服器備援值，外部錯誤監控將停用。')">移除後台設定</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>設定教學</h2>
+  <ol>
+    <li>在 Sentry 建立 Python／FastAPI 專案，並確認資料保存區域與通知收件人。</li>
+    <li>到專案 Settings → Client Keys (DSN) 複製 DSN，不要貼入具有管理權限的 Auth Token。</li>
+    <li>在本頁儲存後按「送出 Sentry 測試事件」，再回 Sentry 搜尋測試訊息。</li>
+    <li>設定正式環境告警規則、值班通知與每月用量上限。</li>
+  </ol>
+  <p class="muted">系統不啟用效能追蹤，只送出錯誤與主動營運告警，以控制事件用量。</p>
+</div>
+{% endblock %}
