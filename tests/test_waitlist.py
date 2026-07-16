@@ -56,6 +56,7 @@ from saas_mvp.models.booking_waitlist import (  # noqa: E402
 from saas_mvp.models.line_channel_config import LineChannelConfig  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
 from saas_mvp.services import booking as booking_svc  # noqa: E402
+from saas_mvp.services import slots as slots_svc  # noqa: E402
 from saas_mvp.services import waitlist as waitlist_svc  # noqa: E402
 from saas_mvp.translation import get_translator  # noqa: E402
 from saas_mvp.translation.stub import StubTranslator  # noqa: E402
@@ -557,3 +558,127 @@ class TestWebhookFlow:
             f"action=waitlist_join&slot_id={sid}&party=1"
         ))
         assert "有名額" in line.sent[-1].text
+
+
+class TestCapacityHold:
+    """R4-B1:發 offer 為候補者保留容量,非 offeree 訂不到、offeree 訂得到。"""
+
+    def _slot_obj(self, db, sid):
+        db.expire_all()
+        return db.get(BookingSlot, sid)
+
+    def test_offer_holds_capacity_and_blocks_others(self, db, fake_push):
+        tid = _tenant(db)
+        sid = _slot(db, tid, cap=2)
+        rid = _fill_slot(db, tid, sid, party=2)  # 額滿
+        wl = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Uwait", party_size=1
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)  # 釋 2
+        assert _entry(db, wl.id).status == WAITLIST_NOTIFIED
+        slot = self._slot_obj(db, sid)
+        assert slot.held_count == 1  # 為候補保留 1
+        # 陌生人只能訂到未保留的 1 個(2 釋出 - 1 保留),要 2 位會被擋
+        assert slot.online_available == 1
+        with pytest.raises(booking_svc.SlotFullError):
+            booking_svc.book_slot(
+                db, tenant_id=tid, slot_id=sid, party_size=2, line_user_id="Ustranger"
+            )
+
+    def test_offeree_can_consume_own_hold(self, db, fake_push):
+        tid = _tenant(db)
+        sid = _slot(db, tid, cap=1)
+        rid = _fill_slot(db, tid, sid, party=1)  # 額滿(cap 1)
+        wl = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Uwait", party_size=1
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)  # 釋 1
+        assert _entry(db, wl.id).status == WAITLIST_NOTIFIED
+        slot = self._slot_obj(db, sid)
+        assert slot.held_count == 1 and slot.online_available == 0  # 公開池 0
+        # 陌生人訂不到(名額被保留)
+        with pytest.raises(booking_svc.SlotFullError):
+            booking_svc.book_slot(
+                db, tenant_id=tid, slot_id=sid, party_size=1, line_user_id="Ustranger"
+            )
+        # 但 offeree 本人訂得到(own_hold 加回)
+        resv = booking_svc.book_slot(
+            db, tenant_id=tid, slot_id=sid, party_size=1, line_user_id="Uwait"
+        )
+        assert resv is not None
+        slot = self._slot_obj(db, sid)
+        assert slot.held_count == 0  # 建單消耗 hold
+        assert _entry(db, wl.id).status == WAITLIST_BOOKED
+
+    def test_offer_expiry_releases_hold(self, db, fake_push):
+        tid = _tenant(db)
+        tenant = db.get(Tenant, tid)
+        tenant.waitlist_offer_minutes = 10
+        db.commit()
+        sid = _slot(db, tid, cap=1)
+        rid = _fill_slot(db, tid, sid, party=1)
+        wl = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Uwait", party_size=1
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+        offered = _entry(db, wl.id)
+        assert self._slot_obj(db, sid).held_count == 1
+        # 逾時後回補掃描:釋放 hold(此時無下一位候補)
+        waitlist_svc.notify_next_for_slot_best_effort(
+            db, tenant_id=tid, slot_id=sid, push_client=fake_push,
+            now=offered.notified_at + datetime.timedelta(minutes=11),
+        )
+        slot = self._slot_obj(db, sid)
+        assert slot.held_count == 0 and slot.online_available == 1  # 名額回公開池
+        assert _entry(db, wl.id).status == WAITLIST_EXPIRED
+
+    def test_cancel_waitlist_releases_hold(self, db, fake_push):
+        tid = _tenant(db)
+        sid = _slot(db, tid, cap=1)
+        rid = _fill_slot(db, tid, sid, party=1)
+        wl = waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Uwait", party_size=1
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+        assert self._slot_obj(db, sid).held_count == 1
+        waitlist_svc.cancel_waitlist(
+            db, tenant_id=tid, entry_id=wl.id, line_user_id="Uwait"
+        )
+        assert self._slot_obj(db, sid).held_count == 0  # 取消候補釋放保留
+
+    def test_shrink_capacity_below_held_blocked(self, db, fake_push):
+        tid = _tenant(db)
+        sid = _slot(db, tid, cap=2)
+        rid = _fill_slot(db, tid, sid, party=2)
+        waitlist_svc.join_waitlist(
+            db, tenant_id=tid, slot_id=sid, line_user_id="Uwait", party_size=1
+        )
+        booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+        # held=1;縮容量到 0 會偷走保留名額 → 409
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            slots_svc.update_slot(
+                db, tenant_id=tid, slot_id=sid, max_capacity=0,
+            )
+        assert exc.value.status_code == 409
+
+
+def test_check_waitlist_holds_invariant(db, fake_push):
+    """R4-B1 不變量檢核腳本:正常無飄移;人為戳壞可抓出。"""
+    from saas_mvp.ops.check_waitlist_holds import find_drift
+
+    tid = _tenant(db)
+    sid = _slot(db, tid, cap=2)
+    rid = _fill_slot(db, tid, sid, party=2)
+    waitlist_svc.join_waitlist(
+        db, tenant_id=tid, slot_id=sid, line_user_id="Uwait", party_size=1
+    )
+    booking_svc.cancel_reservation(db, tenant_id=tid, reservation_id=rid)
+    factory = sessionmaker(bind=db.get_bind())
+    assert find_drift(session_factory=factory) == []  # held_count == sum(hold)
+    # 人為戳壞 held_count → 被抓出
+    slot = db.get(BookingSlot, sid)
+    slot.held_count = 99
+    db.commit()
+    drift = find_drift(session_factory=factory)
+    assert len(drift) == 1 and drift[0]["slot_id"] == sid

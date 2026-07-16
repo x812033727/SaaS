@@ -142,11 +142,20 @@ def book_slot(
     if slot is None or not slot.is_active:
         raise SlotNotFoundError(f"slot {slot_id} not found or inactive")
 
-    # 鎖內重驗容量（TOCTOU 消除）
+    # 鎖內重驗容量（TOCTOU 消除）。
+    # R4-B1:公開可用量扣掉 held_count(其他候補者保留的名額),但把「本人身為
+    # offeree 保留的量」加回 —— 否則 offeree 反而訂不到系統為他保留的名額。
+    own_hold = 0
+    if line_user_id:
+        own_hold = waitlist_svc.own_hold_for(
+            db, tenant_id=tenant_id, slot_id=slot_id, line_user_id=line_user_id
+        )
     available = (
         (slot.max_capacity or 0)
         - (slot.walkin_reserved or 0)
         - (slot.booked_count or 0)
+        - (slot.held_count or 0)
+        + own_hold
     )
     if available < party_size:
         raise SlotFullError(
