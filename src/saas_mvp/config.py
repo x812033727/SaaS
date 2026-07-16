@@ -151,6 +151,12 @@ class Settings(BaseSettings):
 
     # 簡訊 fallback(E3):LINE 推播失敗且顧客有手機時補發簡訊;預設關。
     sms_fallback_enabled: bool = False
+    # 簡訊供應商:SAAS_SMS_PROVIDER=mitake + 三竹企業簡訊帳密 → 真發送;
+    # 其他值或憑證未填 → Stub(只記 log)。api_url 可覆寫(測試/專線)。
+    sms_provider: str = "stub"              # "stub" | "mitake"
+    mitake_username: str = ""
+    mitake_password: str = ""
+    mitake_api_url: str = "https://smsapi.mitake.com.tw/api/mtk/SmSend"
 
     # 電子發票（C2）:SAAS_INVOICE_PROVIDER=ecpay 走綠界 B2C 發票 API,
     # 否則 Stub(決定性假號)。發票商店憑證與金流**不共用**(獨立一組)。
