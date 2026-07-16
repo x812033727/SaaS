@@ -63,3 +63,6 @@
 
 # 每日 16:40 UTC(台北 00:40,避開 :12 系任務):回填每日營運預聚合(近 3 天)
 40 16 * * * python -m saas_mvp.ops.aggregate_daily_stats --apply --days 3
+
+# 每小時 :26 GCal 漂移偵測(店家在 Google 端改/刪同步事件→通知,不改預約)
+26 * * * * python -m saas_mvp.ops.check_gcal_drift --apply

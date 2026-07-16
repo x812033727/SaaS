@@ -1117,6 +1117,18 @@ def dashboard(
     usage = get_quota_status(db, tid, plans_svc.effective_plan(tenant))
     push = push_quota_svc.get_push_quota_status(db, tid)
     checklist = onboarding_svc.checklist(db, tenant=tenant, user=actor.user)
+    # R4-B3:Google 日曆漂移(店家在 Google 端改/刪同步事件)未處理筆數,揭露於卡片。
+    from sqlalchemy import func
+    from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
+    gcal_drift_count = db.execute(
+        select(func.count())
+        .select_from(Reservation)
+        .where(
+            Reservation.tenant_id == tid,
+            Reservation.gcal_drift_detected_at.is_not(None),
+            Reservation.status == RESERVATION_CONFIRMED,
+        )
+    ).scalar_one()
     return templates.TemplateResponse(
         "dashboard.html",
         _ctx(
@@ -1129,6 +1141,7 @@ def dashboard(
             plan_info=_plan_info(tenant),
             onboarding=checklist,
             onboarding_done=onboarding_svc.all_done(checklist),
+            gcal_drift_count=gcal_drift_count,
             email_unverified=actor.user.email_verified_at is None,
             verification_resent=bool(verification_resent),
             verification_error=bool(verification_error),

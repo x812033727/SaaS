@@ -51,6 +51,11 @@ class GcalClient:
                      event_id: str) -> None:
         raise NotImplementedError
 
+    def get_event(self, *, calendar_id: str, refresh_token: str,
+                  event_id: str) -> dict | None:
+        """回單一事件(含 status/start);不存在回 None(漂移偵測用,R4-B3)。"""
+        raise NotImplementedError
+
 
 class StubGcalClient(GcalClient):
     """離線 stub:events[event_id] = event。"""
@@ -74,6 +79,9 @@ class StubGcalClient(GcalClient):
     def delete_event(self, *, calendar_id, refresh_token, event_id) -> None:
         self.events.pop(event_id, None)
 
+    def get_event(self, *, calendar_id, refresh_token, event_id) -> dict | None:
+        return self.events.get(event_id)
+
 
 class UnconfiguredGcalClient(GcalClient):
     """正式環境缺平台 OAuth 憑證時明確失敗，避免 Stub 假同步成功。"""
@@ -89,6 +97,9 @@ class UnconfiguredGcalClient(GcalClient):
         self._fail()
 
     def delete_event(self, **kwargs) -> None:
+        self._fail()
+
+    def get_event(self, **kwargs) -> dict | None:
         self._fail()
 
 
@@ -176,6 +187,17 @@ class HttpGcalClient(GcalClient):
             )
         except GcalNotFound:
             return  # 刪除本身具冪等性：遠端已不存在即視為完成。
+
+    def get_event(self, *, calendar_id, refresh_token, event_id) -> dict | None:
+        cal = urllib.parse.quote(calendar_id)
+        try:
+            return self._call(
+                "GET",
+                f"https://www.googleapis.com/calendar/v3/calendars/{cal}/events/{event_id}",
+                refresh_token, None,
+            )
+        except GcalNotFound:
+            return None  # 事件已在 Google 端被刪 → 漂移
 
 
 _stub_singleton = StubGcalClient()
@@ -355,6 +377,10 @@ def attempt_sync(db: Session, row, *, client: GcalClient | None = None, now=None
     row.updated_at = effective_now
     cred.status = GCAL_CONNECTED
     cred.last_error = None
+    # R4-B3:重新同步成功即清除既有漂移旗標(店家改動已被本系統覆寫回)。
+    if resv.gcal_drift_detected_at is not None:
+        resv.gcal_drift_detected_at = None
+        resv.gcal_drift_note = None
     return row.status
 
 
@@ -436,3 +462,137 @@ def retry_failed(db: Session, tenant_id: int, *, now=None) -> int:
         row.last_error = None
         row.updated_at = effective_now
     return len(rows)
+
+
+# ── 漂移偵測(R4-B3):輪詢比對 Google 端是否被改/刪,通知店家,不改預約 ─────────
+
+def _drift_note(event: dict | None, resv, slot) -> str | None:
+    """比對 Google 事件與本地預約,回漂移說明;一致回 None。event=None 表已刪。"""
+    if event is None:
+        return "Google 日曆事件已被刪除"
+    status = str(event.get("status") or "").lower()
+    if status == "cancelled":
+        return "Google 日曆事件已標記取消"
+    # start 時間比對:Google 回 RFC3339,本地 slot_start 可能 naive。
+    start = (event.get("start") or {}).get("dateTime")
+    if start and slot is not None:
+        try:
+            google_dt = datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
+            local = slot.slot_start
+            g = google_dt.replace(tzinfo=None)
+            loc = local.replace(tzinfo=None) if local.tzinfo else local
+            if abs((g - loc).total_seconds()) > 60:
+                return f"Google 日曆時間被更改為 {g.strftime('%Y-%m-%d %H:%M')}"
+        except (ValueError, AttributeError):
+            pass
+    return None
+
+
+def check_drift_for_tenant(
+    db: Session,
+    tenant_id: int,
+    *,
+    client: GcalClient | None = None,
+    mailer=None,
+    now: datetime.datetime | None = None,
+    apply: bool = True,
+) -> dict:
+    """輪詢該租戶已同步的未來預約,偵測 Google 端漂移(改/刪/取消)。
+
+    命中且尚未標記過 → 設 drift 欄 + best-effort email 通知租戶使用者(每筆只寄
+    一次)。**絕不改動預約狀態**。re-sync 一致的預約清空 drift 旗標。回計數。
+
+    apply=False 為 dry-run:僅計數,不寫 drift 欄、不通知、不 commit(給 cron 預覽)。
+    """
+    from saas_mvp.models.booking_slot import BookingSlot
+    from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
+    from saas_mvp.models.tenant_gcal_credential import (
+        GCAL_CONNECTED,
+        TenantGcalCredential,
+    )
+
+    effective_now = now or _utcnow()
+    cred = db.execute(
+        select(TenantGcalCredential).where(
+            TenantGcalCredential.tenant_id == tenant_id,
+            TenantGcalCredential.status == GCAL_CONNECTED,
+        )
+    ).scalar_one_or_none()
+    if cred is None:
+        return {"checked": 0, "drift": 0, "cleared": 0}
+
+    effective = client or get_gcal_client(db)
+    # 只看「未來、已同步(有 event_id)、confirmed」的預約。
+    rows = db.execute(
+        select(Reservation, BookingSlot)
+        .join(BookingSlot, Reservation.slot_id == BookingSlot.id)
+        .where(
+            Reservation.tenant_id == tenant_id,
+            Reservation.status == RESERVATION_CONFIRMED,
+            Reservation.gcal_event_id.is_not(None),
+            BookingSlot.slot_start >= effective_now.replace(tzinfo=None),
+        )
+    ).all()
+
+    summary = {"checked": 0, "drift": 0, "cleared": 0}
+    for resv, slot in rows:
+        summary["checked"] += 1
+        try:
+            event = effective.get_event(
+                calendar_id=cred.calendar_id,
+                refresh_token=cred.refresh_token,
+                event_id=resv.gcal_event_id,
+            )
+        except Exception:  # noqa: BLE001 — 單筆查詢失敗不中斷整輪
+            _log.warning("gcal drift check failed resv=%s", resv.id, exc_info=True)
+            continue
+        note = _drift_note(event, resv, slot)
+        if note is None:
+            # 一致:若先前標記過漂移,清空(已 re-sync 或店家改回)。
+            if resv.gcal_drift_detected_at is not None:
+                summary["cleared"] += 1
+                if apply:
+                    resv.gcal_drift_detected_at = None
+                    resv.gcal_drift_note = None
+            continue
+        if resv.gcal_drift_detected_at is not None:
+            continue  # 已標記過,不重複通知
+        summary["drift"] += 1
+        if apply:
+            resv.gcal_drift_detected_at = effective_now
+            resv.gcal_drift_note = note[:255]
+            _notify_owner_drift(db, tenant_id, resv, note, mailer)
+
+    if apply:
+        cred.last_drift_check_at = effective_now
+        db.commit()
+    else:
+        db.rollback()
+    return summary
+
+
+def _notify_owner_drift(db: Session, tenant_id: int, resv, note: str, mailer) -> None:
+    """best-effort email 通知租戶 owner/staff:某預約的 Google 事件漂移。"""
+    try:
+        from saas_mvp.models.user import User
+        from saas_mvp.services import email_delivery as email_svc
+        from saas_mvp.services.mailer import get_mailer
+
+        m = mailer or get_mailer(db)
+        users = db.execute(
+            select(User).where(User.tenant_id == tenant_id)
+        ).scalars().all()
+        subject = f"【日曆同步提醒】預約 #{resv.id} 的 Google 日曆事件有異動"
+        body = (
+            f"預約 #{resv.id} 在 Google 日曆的事件偵測到異動:{note}。\n\n"
+            "系統採單向同步,不會自動改動本系統的預約;請確認是否需在後台手動處理。"
+        )
+        for u in users:
+            if not u.email:
+                continue
+            email_svc.deliver_or_queue(
+                db, m, user_id=u.id, category="gcal_drift",
+                recipient=u.email, subject=subject, body=body,
+            )
+    except Exception:  # noqa: BLE001 — 通知永不影響偵測
+        _log.warning("gcal drift notify failed resv=%s", resv.id, exc_info=True)
