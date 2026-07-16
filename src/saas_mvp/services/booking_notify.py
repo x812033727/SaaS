@@ -77,8 +77,13 @@ def _enqueue(
     payload_text: str,
     enabled: bool,
     send_after: datetime.datetime | None = None,
+    occurrence: int = 1,
 ) -> int:
-    """共用入列邏輯；回傳實際新增筆數（0 或 1）。"""
+    """共用入列邏輯；回傳實際新增筆數（0 或 1）。
+
+    occurrence(R4-B2):同預約同 kind 可多筆(分批退款各一則);change/cancel
+    恆用預設 1,維持「一預約一 kind 一筆」的冪等語意。
+    """
     if not enabled or not reservation.line_user_id:
         return 0
     row = BookingNotification(
@@ -86,6 +91,7 @@ def _enqueue(
         reservation_id=reservation.id,
         line_user_id=reservation.line_user_id,
         kind=kind,
+        occurrence=occurrence,
         status=NOTIFY_PENDING,
         payload_text=payload_text,
         send_after=send_after or _utcnow(),
@@ -163,12 +169,20 @@ def enqueue_refund(
     enabled: bool = True,
     send_after: datetime.datetime | None = None,
 ) -> int:
-    """為一筆定金退款入列通知(不 commit)。
+    """為一筆定金退款入列通知(不 commit;R4-B2 支援分批,每次一則)。
 
-    冪等同 change/cancel:UniqueConstraint(reservation_id, kind);退款本身
-    一次即終態,重複入列不可能成功第二次。
+    occurrence = 該預約既有 deposit_refund 通知數 + 1(退款已被列鎖串行化,
+    無競態);UniqueConstraint(reservation_id, kind, occurrence) 天然防同批重入。
     """
+    from sqlalchemy import func, select as _select
+
     text = build_refund_text(reservation, amount_cents)
+    existing = db.execute(
+        _select(func.count(BookingNotification.id)).where(
+            BookingNotification.reservation_id == reservation.id,
+            BookingNotification.kind == NOTIFY_REFUND,
+        )
+    ).scalar_one()
     return _enqueue(
         db,
         reservation=reservation,
@@ -176,6 +190,7 @@ def enqueue_refund(
         payload_text=text,
         enabled=enabled,
         send_after=send_after,
+        occurrence=int(existing) + 1,
     )
 
 

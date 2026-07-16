@@ -32,6 +32,8 @@ REFUND_PROCESSING = "processing"
 REFUND_REFUNDED = "refunded"
 REFUND_FAILED = "failed"
 REFUND_MANUAL_REQUIRED = "manual_required"
+# R4-B2:分批退款——已退部分金額但仍有餘額,可再退。remaining==0 才 REFUND_REFUNDED。
+REFUND_PARTIAL = "partially_refunded"
 
 
 class DepositRefundError(ValueError):
@@ -162,14 +164,42 @@ def _provider_message(response: dict) -> str:
     return " ".join(raw.split())[:160]
 
 
+def _refund_remaining(resv: Reservation) -> int:
+    """尚可退款的餘額(R4-B2):定金 - 已累計退款。"""
+    return (resv.deposit_cents or 0) - (resv.deposit_refunded_cents or 0)
+
+
 def _validate_refund_amount(resv: Reservation, amount_cents: int | None) -> int:
-    """驗證退款金額;None=全額。回傳實際退款 cents。"""
-    amount = amount_cents if amount_cents is not None else (resv.deposit_cents or 0)
-    if amount <= 0 or amount > (resv.deposit_cents or 0):
-        raise DepositRefundError("退款金額需大於 0 且不可超過定金金額。")
+    """驗證退款金額;None=退剩餘全額。回傳實際退款 cents(R4-B2:對餘額驗)。"""
+    remaining = _refund_remaining(resv)
+    amount = amount_cents if amount_cents is not None else remaining
+    if amount <= 0 or amount > remaining:
+        raise DepositRefundError(
+            f"退款金額需大於 0 且不可超過剩餘可退({remaining // 100} 元)。"
+        )
     if amount % 100 != 0:
         raise DepositRefundError("退款金額需為整數元。")
     return amount
+
+
+def _apply_refund_success(
+    resv: Reservation, amount: int, *, provider_code: str | None
+) -> None:
+    """累加退款金額並設終態/部分態(R4-B2)。呼叫端負責 commit + 通知。
+
+    remaining==0 → DEPOSIT_REFUNDED/REFUND_REFUNDED 終態;否則餘額 > 0 →
+    deposit_status 維持 paid、refund_status = REFUND_PARTIAL(可再退)。
+    """
+    resv.deposit_refunded_cents = (resv.deposit_refunded_cents or 0) + amount
+    resv.deposit_refunded_at = _utcnow()
+    resv.deposit_refund_error = None
+    if provider_code is not None:
+        resv.deposit_refund_provider_code = provider_code
+    if _refund_remaining(resv) <= 0:
+        resv.deposit_status = DEPOSIT_REFUNDED
+        resv.deposit_refund_status = REFUND_REFUNDED
+    else:
+        resv.deposit_refund_status = REFUND_PARTIAL
 
 
 def _notify_refunded(db: Session, resv: Reservation, amount_cents: int) -> None:
@@ -219,14 +249,14 @@ def request_full_refund(
     if resv.status != RESERVATION_CANCELLED:
         raise DepositRefundError("請先取消預約，再執行定金退款。")
     if resv.deposit_status == DEPOSIT_REFUNDED or resv.deposit_refund_status == REFUND_REFUNDED:
-        return resv
+        return resv  # 已全額退款(終態),冪等
     if resv.deposit_status != DEPOSIT_PAID:
         raise DepositRefundError("此預約沒有可退款的已付定金。")
     if resv.deposit_refund_status == REFUND_PROCESSING:
         raise DepositRefundError("退款正在處理，請勿重複送出。")
     if resv.deposit_refund_status == REFUND_MANUAL_REQUIRED:
         raise DepositRefundError("此筆退款需要先到金流後台核對，不能自動重送。")
-    amount = _validate_refund_amount(resv, amount_cents)
+    amount = _validate_refund_amount(resv, amount_cents)  # R4-B2:對餘額驗
 
     resv.deposit_refund_status = REFUND_PROCESSING
     resv.deposit_refund_attempts = (resv.deposit_refund_attempts or 0) + 1
@@ -237,16 +267,19 @@ def request_full_refund(
 
     provider = (resv.deposit_provider or "").lower()
     if provider == "stub":
-        resv.deposit_status = DEPOSIT_REFUNDED
-        resv.deposit_refund_status = REFUND_REFUNDED
-        resv.deposit_refunded_at = _utcnow()
-        resv.deposit_refund_provider_code = "STUB"
-        resv.deposit_refunded_cents = amount
+        _apply_refund_success(resv, amount, provider_code="STUB")
         db.commit()
         _notify_refunded(db, resv, amount)
         return resv
     if provider != "ecpay":
         _manual_required(db, resv, "缺少原付款交易資料，請在金流後台核對並人工退款。")
+    # R4-B2:綠界同一交易多次部分退刷是否被接受無法從程式碼確證 → 第一次
+    # AUTO 退刷後,後續退款一律轉人工引導(confirm_manual_refund 對帳,可多次)。
+    if (resv.deposit_refunded_cents or 0) > 0:
+        _manual_required(
+            db, resv,
+            "已有一筆綠界退刷紀錄;剩餘金額請至綠界後台退刷後,於系統確認人工退款。",
+        )
     if not (resv.deposit_payment_type or "").lower().startswith("credit"):
         _manual_required(db, resv, "此筆不是信用卡付款，請依原付款方式人工退款。")
     if (
@@ -284,11 +317,7 @@ def request_full_refund(
     code = str(response.get("RtnCode") or "")[:32]
     resv.deposit_refund_provider_code = code or None
     if code == "1":
-        resv.deposit_status = DEPOSIT_REFUNDED
-        resv.deposit_refund_status = REFUND_REFUNDED
-        resv.deposit_refunded_at = _utcnow()
-        resv.deposit_refund_error = None
-        resv.deposit_refunded_cents = amount
+        _apply_refund_success(resv, amount, provider_code=code)
         db.commit()
         _notify_refunded(db, resv, amount)
         return resv
@@ -325,15 +354,11 @@ def confirm_manual_refund(
         raise DepositRefundError("此預約沒有可確認的人工定金退款。")
     if resv.deposit_refund_status == REFUND_PROCESSING:
         raise DepositRefundError("退款仍在處理中，請先確認金流結果。")
-    amount = _validate_refund_amount(resv, amount_cents)
-    resv.deposit_status = DEPOSIT_REFUNDED
-    resv.deposit_refund_status = REFUND_REFUNDED
-    resv.deposit_refunded_at = _utcnow()
+    amount = _validate_refund_amount(resv, amount_cents)  # R4-B2:對餘額驗,可多次
     resv.deposit_refund_requested_at = resv.deposit_refund_requested_at or _utcnow()
     resv.deposit_refund_requested_by_user_id = actor_user_id
+    _apply_refund_success(resv, amount, provider_code="MANUAL")
     resv.deposit_refund_error = f"人工確認：{note}"[:255]
-    resv.deposit_refund_provider_code = "MANUAL"
-    resv.deposit_refunded_cents = amount
     db.commit()
     _notify_refunded(db, resv, amount)
     return resv

@@ -64,7 +64,12 @@ class BookingNotification(Base):
         index=True,
     )
     line_user_id = Column(String(64), nullable=False)
-    kind = Column(String(16), nullable=False)  # change | cancel
+    kind = Column(String(16), nullable=False)  # change | cancel | deposit_refund
+    # R4-B2:同一預約同 kind 可有多筆(例:分批退款各發一則通知);唯一鍵改
+    # (reservation_id, kind, occurrence)。change/cancel 恆用 1,維持原冪等語意。
+    occurrence = Column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
     status = Column(
         String(16),
         nullable=False,
@@ -88,6 +93,8 @@ class BookingNotification(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("reservation_id", "kind", name="uq_booking_notification"),
+        UniqueConstraint(
+            "reservation_id", "kind", "occurrence", name="uq_booking_notification"
+        ),
         Index("ix_booking_notification_status_due", "status", "send_after"),
     )

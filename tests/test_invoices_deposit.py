@@ -455,7 +455,9 @@ class TestDeposit:
             db, tenant_id=tenant.id, reservation_id=resv.id,
             actor_user_id=1, amount_cents=10000,
         )
-        assert refunded.deposit_status == "refunded"
+        # R4-B2:部分退款後非終態(仍 paid + partially_refunded),餘額可再退。
+        assert refunded.deposit_status == "paid"
+        assert refunded.deposit_refund_status == "partially_refunded"
         assert refunded.deposit_refunded_cents == 10000
         rows = self._refund_notifications(db, resv.id)
         assert len(rows) == 1
@@ -507,7 +509,9 @@ class TestDeposit:
             actor_user_id=1, amount_cents=5000, ecpay_client=FakeClient(),
         )
         db.refresh(resv)
-        assert resv.deposit_status == "refunded"
+        # R4-B2:綠界部分退刷後非終態(剩 NT$150 可退,但第二次 AUTO 轉人工)。
+        assert resv.deposit_status == "paid"
+        assert resv.deposit_refund_status == "partially_refunded"
         assert resv.deposit_refunded_cents == 5000
 
     def test_manual_confirm_partial_amount(self, db, monkeypatch):
@@ -539,6 +543,85 @@ class TestDeposit:
         assert resv.deposit_refunded_cents == 8000
         rows = self._refund_notifications(db, resv.id)
         assert len(rows) == 1 and "部分退款 NT$80" in rows[0].payload_text
+
+    # ── R4-B2:分批退款 ───────────────────────────────────────────────────────
+
+    def test_stub_two_partial_refunds_accumulate_to_terminal(self, db):
+        tenant, resv = self._paid_cancelled(db)  # 定金 NT$200,provider=stub
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, amount_cents=8000,
+        )
+        db.refresh(resv)
+        assert resv.deposit_refund_status == "partially_refunded"
+        assert resv.deposit_refunded_cents == 8000
+        # 第二次退剩餘 NT$120 → 累計到定金 → 終態
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, amount_cents=12000,
+        )
+        db.refresh(resv)
+        assert resv.deposit_status == "refunded"
+        assert resv.deposit_refund_status == "refunded"
+        assert resv.deposit_refunded_cents == 20000
+        # 兩則通知(occurrence 1/2),各不同金額文案
+        rows = self._refund_notifications(db, resv.id)
+        assert len(rows) == 2
+        occ = sorted(r.occurrence for r in rows)
+        assert occ == [1, 2]
+
+    def test_partial_then_over_remaining_rejected(self, db):
+        tenant, resv = self._paid_cancelled(db)  # NT$200
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, amount_cents=15000,
+        )
+        # 剩 NT$50,再退 NT$100 應被拒
+        with pytest.raises(deposit_svc.DepositRefundError):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1, amount_cents=10000,
+            )
+
+    def test_ecpay_second_auto_refund_routes_to_manual(self, db, monkeypatch):
+        monkeypatch.setattr(
+            payment_config_svc,
+            "effective_payment_config",
+            lambda *_: SimpleNamespace(
+                provider="ecpay", environment="prod", merchant_id="3000007"
+            ),
+        )
+        tenant, resv = self._paid_cancelled(
+            db, provider="ecpay", payment_type="Credit_CreditCard"
+        )
+        calls = {"n": 0}
+
+        class FakeClient:
+            def refund_credit(self, **kwargs):
+                calls["n"] += 1
+                return {"RtnCode": "1", "RtnMsg": "Success"}
+
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, amount_cents=5000, ecpay_client=FakeClient(),
+        )
+        # 第二次 AUTO 退刷不再直接打綠界,轉人工引導
+        with pytest.raises(deposit_svc.DepositRefundError, match="人工"):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1, amount_cents=5000, ecpay_client=FakeClient(),
+            )
+        assert calls["n"] == 1  # 只打過一次綠界
+        db.refresh(resv)
+        assert resv.deposit_refund_status == "manual_required"
+        # 剩餘由人工對帳累加到終態
+        deposit_svc.confirm_manual_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, note="綠界後台退款 RF-rest", amount_cents=15000,
+        )
+        db.refresh(resv)
+        assert resv.deposit_status == "refunded"
+        assert resv.deposit_refunded_cents == 20000
 
     def test_non_credit_payment_never_calls_credit_refund_api(self, db):
         tenant, resv = self._paid_cancelled(
