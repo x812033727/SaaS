@@ -60,3 +60,6 @@
 
 # 每分鐘：心跳（compose healthcheck 判活）
 * * * * * touch /tmp/sched/heartbeat
+
+# 每日 16:40 UTC(台北 00:40,避開 :12 系任務):回填每日營運預聚合(近 3 天)
+40 16 * * * python -m saas_mvp.ops.aggregate_daily_stats --apply --days 3

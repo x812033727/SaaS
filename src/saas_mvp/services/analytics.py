@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session
 
 from saas_mvp.models.booking_slot import BookingSlot
 from saas_mvp.models.customer import Customer
+# 模組層級註冊 DailyTenantStat:trend_series 讀預聚合表;測試檔多在 import 本
+# 模組後才 create_all,lazy import 會讓表缺席。
+from saas_mvp.models.daily_tenant_stat import DailyTenantStat  # noqa: F401
 from saas_mvp.models.reservation import (
     RESERVATION_CANCELLED,
     RESERVATION_CONFIRMED,
@@ -228,41 +231,36 @@ def trend_series(
     periods: int = 12,
     now: datetime.datetime | None = None,
 ) -> list[dict]:
-    """近 N 期預約量 + 營收趨勢(週/月;Python 端聚合避免方言 strftime 差異)。"""
-    from saas_mvp.models.order import ORDER_PAID, Order
+    """近 N 期預約量 + 營收趨勢(週/月)。
+
+    R3-B3:改讀 daily_tenant_stats 預聚合(缺日/今天由 daily_series 以單一
+    範圍查詢即時補,request path 只讀不寫)。分桶鍵僅依日期,與舊即時版
+    (逐 slot_start / paid_at 分桶)輸出一致 — 由 parity 測試鎖定。
+    """
+    from saas_mvp.services import daily_stats
 
     now = now or datetime.datetime.now(datetime.timezone.utc)
     keys = _period_starts(now, period, periods)
     horizon = now - datetime.timedelta(days=(periods + 1) * (31 if period == "month" else 7))
 
     buckets = {k: {"period": k, "bookings": 0, "revenue_cents": 0} for k in keys}
-    slot_rows = db.execute(
-        select(BookingSlot.slot_start, func.count())
-        .join(Reservation, Reservation.slot_id == BookingSlot.id)
-        .where(
-            Reservation.tenant_id == tenant_id,
-            Reservation.status == RESERVATION_CONFIRMED,
-            BookingSlot.slot_start >= horizon,
-        )
-        .group_by(BookingSlot.slot_start)
-    ).all()
-    for slot_start, cnt in slot_rows:
-        k = _period_key(slot_start, period)
+    # 上界取「本期期末」:舊即時版對 slot_start 無上限,本期內未來幾天的
+    # confirmed 預約也計入本期桶;只掃到今天會漏掉它們。
+    today = now.date()
+    if period == "month":
+        end_exclusive = (today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+    else:
+        end_exclusive = today + datetime.timedelta(days=8 - today.isoweekday())
+    series = daily_stats.daily_series(
+        db,
+        tenant_id=tenant_id,
+        date_from=horizon.date(),
+        date_to_exclusive=end_exclusive,
+    )
+    for day, row in series.items():
+        k = _period_key(datetime.datetime(day.year, day.month, day.day), period)
         if k in buckets:
-            buckets[k]["bookings"] += int(cnt)
-
-    order_rows = db.execute(
-        select(Order.paid_at, Order.total_cents).where(
-            Order.tenant_id == tenant_id,
-            Order.status == ORDER_PAID,
-            Order.paid_at >= horizon,
-        )
-    ).all()
-    for paid_at, cents in order_rows:
-        if paid_at is None:
-            continue
-        k = _period_key(paid_at, period)
-        if k in buckets:
-            buckets[k]["revenue_cents"] += int(cents or 0)
+            buckets[k]["bookings"] += int(row["bookings_confirmed"])
+            buckets[k]["revenue_cents"] += int(row["revenue_cents"])
 
     return [buckets[k] for k in keys]
