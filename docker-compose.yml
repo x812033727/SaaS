@@ -149,6 +149,9 @@ services:
     environment:
       SAAS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-saas}:${POSTGRES_PASSWORD:-saas_pw}@db:5432/${POSTGRES_DB:-saas}
       SAAS_RATE_LIMIT_BACKEND: redis
+      # 事件也走 redis:ops 腳本(取消預約等)的 SSE 事件才能送達 web workers
+      # (行程內 enable_redis_publisher 依此旗標接線)。
+      SAAS_EVENTS_BACKEND: redis
       SAAS_REDIS_URL: redis://redis:6379/0
       # supercronic 依 crontab（UTC 語意）排程；顯式釘 UTC 防宿主時區覆蓋
       TZ: UTC
