@@ -12,13 +12,13 @@
 ## 整合
 - **Google 日曆為單向寫入**(本系統 → 店家日曆):建單/改期/取消同步事件;店家在 Google 日曆改動不會回寫。同步暫時失敗會由 outbox 指數退避補送，達重試上限後可在行事曆頁手動重新排入。
 - **ICS 訂閱刷新延遲**:Google 對網址訂閱的刷新間隔不可控(常見數小時以上),需要即時請用 OAuth 連結。
-- **簡訊 fallback 只有介面 + stub**:未接真實簡訊商;`SAAS_SMS_FALLBACK_ENABLED` 開啟後也僅在 LINE 推播失敗且顧客有手機時觸發。
+- **簡訊 fallback**:已支援三竹 Mitake(`SAAS_SMS_PROVIDER=mitake` + 帳密即真發;未填走 stub 只記 log);`SAAS_SMS_FALLBACK_ENABLED` 開啟後僅在 LINE 推播失敗且顧客有手機時觸發。刻意不做簡訊 outbox 重試:提醒屬時效性 best-effort,排隊補送會變過時轟炸。僅支援台灣手機號(09xx)。
 - **候補通知不保留容量**:系統依順位一次通知一位並提供限時回應窗口，但容量仍採先完成建單者取得；若其他顧客先完成預約，候補者可能仍遇到額滿。這項規則會在 LINE 通知與後台明確揭露。
 
 ## AI
 - **AI 永不直接改資料**:改期/取消一律回確認按鈕,由既有含擁有者驗證的 postback 分支執行。
 - **tool loop 上限 3 輪**,末輪強制收斂;內部查詢不計 AI 月額度(每則訊息仍扣 1)。
-- 平台管理員可在「平台管理 → AI 設定」加密保存 Anthropic key 並立即生效；未設定時退化為規則式 StubAgent(關鍵字比對),能力有限。
+- 平台管理員可在「平台管理 → AI 設定」加密保存 MiniMax key 並立即生效；未設定時退化為規則式 StubAgent(關鍵字比對),能力有限。
 
 ## 營運
 - **代管(impersonation)30 分強制過期**、不可代管 admin、不可鏈式;API Bearer 路徑不受理代管 token。
