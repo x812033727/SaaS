@@ -24,4 +24,4 @@
 - **代管(impersonation)30 分強制過期**、不可代管 admin、不可鏈式;API Bearer 路徑不受理代管 token。
 - **稽核日誌與業務同交易**:業務 rollback 時 audit 一併消失(語意正確);log 永不因寫入失敗阻擋業務。
 - **E2E 冒煙為 nightly 通知性質**,不擋部署;部署門檻是主 CI(unit/integration)。
-- **報表為即時聚合**:單租戶資料量設計,無預聚合表;資料量大時報表頁變慢屬預期,屆時再引入物化。
+- **報表趨勢走每日預聚合**(daily_tenant_stats,cron 台北 00:40 回填近 3 天):trend_series 讀表、缺日/今天即時補;其餘摘要(booking_summary/popular_services/revenue_trend)維持即時(SQL 下推,單租戶量可承受)。歷史日回填後才反映事後異動(最多 3 天內由 cron 吸收)。
