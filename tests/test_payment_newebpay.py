@@ -86,9 +86,13 @@ class TestBuildOrderForm:
 
 class TestProvider:
     def test_provider_checkout_url(self, monkeypatch):
+        from types import SimpleNamespace
+
         monkeypatch.setattr(settings, "public_base_url", "https://shop.example")
-        url = NewebPayProvider().create_checkout(order_id=42, amount_cents=10000, currency="TWD")
-        assert url == "https://shop.example/payments/newebpay/checkout/42"
+        # trade_no 已存在 → ensure_order_trade_no 直接沿用,不需 db
+        order = SimpleNamespace(id=42, merchant_trade_no="OD16ABCDEF0123456789")
+        url = NewebPayProvider().create_checkout(None, order=order)
+        assert url == "https://shop.example/payments/newebpay/checkout/OD16ABCDEF0123456789"
 
     def test_factory_returns_newebpay_when_configured(self, monkeypatch):
         monkeypatch.setattr(settings, "payment_provider", "newebpay")
@@ -141,6 +145,8 @@ def http(monkeypatch):
 
 
 def _make_order(total_cents=10000, status="pending") -> int:
+    from saas_mvp.services.shop import gen_order_trade_no
+
     db = _Session()
     try:
         t = Tenant(name="shop", plan="free")
@@ -149,8 +155,18 @@ def _make_order(total_cents=10000, status="pending") -> int:
         o = Order(tenant_id=t.id, line_user_id="U1", status=status,
                   total_cents=total_cents, currency="TWD")
         db.add(o)
+        db.flush()
+        o.merchant_trade_no = gen_order_trade_no(o.id)  # 建單即產生(PEA-3)
         db.commit()
         return o.id
+    finally:
+        db.close()
+
+
+def _trade_no(oid: int) -> str:
+    db = _Session()
+    try:
+        return db.get(Order, oid).merchant_trade_no
     finally:
         db.close()
 
@@ -203,28 +219,37 @@ def _encrypt_json(c: NewebPayClient, payload: dict) -> str:
 
 
 class TestCheckout:
-    def test_renders_autosubmit_form_and_sets_trade_no(self, http):
+    def test_renders_autosubmit_form(self, http):
         oid = _make_order(total_cents=10000)
-        r = http.get(f"/payments/newebpay/checkout/{oid}")
+        r = http.get(f"/payments/newebpay/checkout/{_trade_no(oid)}")
         assert r.status_code == 200
         assert "ccore.newebpay.com" in r.text
         assert "TradeInfo" in r.text and "TradeSha" in r.text
-        assert _order(oid).merchant_trade_no is not None
 
     def test_non_pending_blocked(self, http):
         oid = _make_order(status="paid")
-        r = http.get(f"/payments/newebpay/checkout/{oid}")
+        r = http.get(f"/payments/newebpay/checkout/{_trade_no(oid)}")
         assert "無法付款" in r.text
 
     def test_missing_order_404(self, http):
-        assert http.get("/payments/newebpay/checkout/999999").status_code == 404
+        assert http.get("/payments/newebpay/checkout/ODUNKNOWNTRADE").status_code == 404
+
+    def test_integer_order_id_enumeration_404(self, http):
+        """PEA-3:改以不可猜 trade_no 為鍵,可枚舉的整數 id 一律 404。"""
+        oid = _make_order(total_cents=10000)
+        assert http.get(f"/payments/newebpay/checkout/{oid}").status_code == 404
+
+    def test_provider_gate_503(self, http, monkeypatch):
+        """payment_provider 非 newebpay 時結帳頁 503(補上與 ecpay 對等的 gate)。"""
+        monkeypatch.setattr(settings, "payment_provider", "stub")
+        oid = _make_order(total_cents=10000)
+        assert http.get(f"/payments/newebpay/checkout/{_trade_no(oid)}").status_code == 503
 
 
 class TestNotify:
     def _prepare(self, http):
         oid = _make_order(total_cents=10000)  # NT$100
-        http.get(f"/payments/newebpay/checkout/{oid}")
-        return oid, _order(oid).merchant_trade_no
+        return oid, _trade_no(oid)
 
     def test_valid_marks_paid_and_idempotent(self, http):
         oid, trade_no = self._prepare(http)

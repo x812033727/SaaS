@@ -79,9 +79,13 @@ class TestBuildOrderForm:
 
 class TestProvider:
     def test_ecpay_provider_checkout_url(self, monkeypatch):
+        from types import SimpleNamespace
+
         monkeypatch.setattr(settings, "public_base_url", "https://shop.example")
-        url = EcpayPaymentProvider().create_checkout(order_id=42, amount_cents=10000, currency="TWD")
-        assert url == "https://shop.example/payments/ecpay/checkout/42"
+        # trade_no 已存在 → ensure_order_trade_no 直接沿用,不需 db
+        order = SimpleNamespace(id=42, merchant_trade_no="OD16ABCDEF0123456789")
+        url = EcpayPaymentProvider().create_checkout(None, order=order)
+        assert url == "https://shop.example/payments/ecpay/checkout/OD16ABCDEF0123456789"
 
     def test_factory_returns_ecpay_when_configured(self, monkeypatch):
         monkeypatch.setattr(settings, "payment_provider", "ecpay")

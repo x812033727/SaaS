@@ -144,9 +144,12 @@ class NewebPayClient:
 class NewebPayProvider(PaymentProvider):
     """藍新 provider：create_checkout 回我方 checkout 頁網址（瀏覽器到該頁自動 submit）。"""
 
-    def create_checkout(self, *, order_id: int, amount_cents: int, currency: str) -> str:
+    def create_checkout(self, db, *, order) -> str:
+        from saas_mvp.services import shop as shop_svc
+
+        trade_no = shop_svc.ensure_order_trade_no(db, order)
         base = settings.public_base_url.rstrip("/")
-        return f"{base}/payments/newebpay/checkout/{order_id}"
+        return f"{base}/payments/newebpay/checkout/{trade_no}"
 
     def name(self) -> str:
         return "newebpay"

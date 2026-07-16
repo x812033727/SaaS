@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import html
 import logging
-import time
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -41,33 +40,19 @@ _log = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
-def _base36(n: int) -> str:
-    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
-    if n == 0:
-        return "0"
-    out = ""
-    while n:
-        n, r = divmod(n, 36)
-        out = chars[r] + out
-    return out
-
-
-def _gen_trade_no(order_id: int) -> str:
-    """產生 ≤20 字、英數的唯一 MerchantTradeNo。"""
-    return f"OD{order_id}T{_base36(int(time.time()))}"[:20]
-
-
-@router.get("/ecpay/checkout/{order_id}", response_class=HTMLResponse)
+@router.get("/ecpay/checkout/{trade_no}", response_class=HTMLResponse)
 def ecpay_checkout(
-    order_id: int,
+    trade_no: str,
     db: Session = Depends(get_db),
 ):
+    """訂單結帳頁。URL 以不可猜的 merchant_trade_no 為鍵(非可枚舉的 order_id),
+    未知一律 404,防跨租戶枚舉洩訂單金額/狀態(PEA-3,比照定金流)。"""
     if payment_provider(db, settings) != "ecpay":
         return HTMLResponse(
             "<h1>綠界付款目前未啟用</h1>",
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
-    order = db.get(Order, order_id)
+    order = shop_svc.get_order_by_trade_no(db, trade_no)
     if order is None:
         return HTMLResponse("<h1>找不到訂單</h1>", status_code=status.HTTP_404_NOT_FOUND)
     if order.status != ORDER_PENDING:
@@ -76,12 +61,6 @@ def ecpay_checkout(
         )
     if order.total_cents % 100 != 0:
         return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
-
-    # 產生/沿用唯一交易編號（首次寫回 order，重載沿用）
-    if not order.merchant_trade_no:
-        order.merchant_trade_no = _gen_trade_no(order.id)
-        db.commit()
-        db.refresh(order)
 
     base = settings.public_base_url.rstrip("/")
     client = get_ecpay_client(db)
@@ -471,23 +450,30 @@ def linepay_confirm(
 ):
     """LINE Pay 付款完成 redirect → Confirm API → 標 paid(冪等)。
 
-    金額以 **DB order.total_cents 為準**傳入 Confirm(不信 query string);
-    已 paid 直接回成功頁(重整/重放安全)。
+    orderId 是我方不可猜的 merchant_trade_no(非可枚舉 order_id,PEA-3);
+    transactionId 必須與 create_checkout 時落庫的 ``payment_txn_id`` 一致
+    (txid↔order 綁定,不信任 query string);金額以 **DB order.total_cents
+    為準**傳入 Confirm;已 paid 直接回成功頁(重整/重放安全)。
     """
     from saas_mvp.obs.alerts import capture_alert
     from saas_mvp.services.payment_linepay import LinePayClient, LinePayError
 
-    try:
-        order_pk = int(orderId)
-    except (TypeError, ValueError):
-        return HTMLResponse("<h1>訂單參數錯誤</h1>", status_code=400)
-    order = db.get(Order, order_pk)
+    order = shop_svc.get_order_by_trade_no(db, orderId) if orderId else None
     if order is None:
         return HTMLResponse("<h1>找不到訂單</h1>", status_code=404)
     if order.status == "paid":
         return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
     if not transactionId:
         return HTMLResponse("<h1>缺少交易編號</h1>", status_code=400)
+    if not order.payment_txn_id or transactionId != order.payment_txn_id:
+        _log.warning(
+            "linepay confirm txid mismatch order=%d got=%s", order.id, transactionId
+        )
+        capture_alert(f"payment: linepay confirm txid mismatch order={order.id}")
+        return HTMLResponse(
+            "<h1>交易編號不符</h1><p>請回 LINE 重新取得付款連結。</p>",
+            status_code=400,
+        )
 
     try:
         LinePayClient().confirm_payment(
@@ -503,7 +489,7 @@ def linepay_confirm(
             status_code=502,
         )
 
-    order.merchant_trade_no = f"LP{transactionId}"[:20]
+    # merchant_trade_no 即結帳鍵,不再以 LP{txid} 覆寫(txid 已落 payment_txn_id)。
     # 統一走訂單付款服務，補 paid_at 並在有 POS 員工歸屬時冪等建立抽成快照。
     shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
     return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
@@ -520,12 +506,18 @@ def linepay_cancel(orderId: str = ""):
 # ── 藍新金流 NewebPay（MPG 幕前） ──────────────────────────────────────────────
 
 
-@router.get("/newebpay/checkout/{order_id}", response_class=HTMLResponse)
+@router.get("/newebpay/checkout/{trade_no}", response_class=HTMLResponse)
 def newebpay_checkout(
-    order_id: int,
+    trade_no: str,
     db: Session = Depends(get_db),
 ):
-    order = db.get(Order, order_id)
+    """訂單結帳頁(藍新)。URL 鍵與 404 行為同 ecpay_checkout(PEA-3)。"""
+    if payment_provider(db, settings) != "newebpay":
+        return HTMLResponse(
+            "<h1>藍新付款目前未啟用</h1>",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    order = shop_svc.get_order_by_trade_no(db, trade_no)
     if order is None:
         return HTMLResponse("<h1>找不到訂單</h1>", status_code=status.HTTP_404_NOT_FOUND)
     if order.status != ORDER_PENDING:
@@ -534,12 +526,6 @@ def newebpay_checkout(
         )
     if order.total_cents % 100 != 0:
         return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
-
-    # 產生/沿用唯一交易編號（首次寫回 order，重載沿用）
-    if not order.merchant_trade_no:
-        order.merchant_trade_no = _gen_trade_no(order.id)
-        db.commit()
-        db.refresh(order)
 
     base = settings.public_base_url.rstrip("/")
     client = NewebPayClient()

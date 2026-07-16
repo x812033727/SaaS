@@ -78,6 +78,9 @@ class Order(Base):
     # 金流交易編號（綠界 MerchantTradeNo，唯一）；回調以此對應訂單。
     # 既有 DB 由 _migrate_add_order_merchant_trade_no() 補欄。
     merchant_trade_no = Column(String(20), nullable=True, unique=True)
+    # LINE Pay Request API 回傳的 transactionId；confirm 時必須與 query string
+    # 比對一致(txid↔order 綁定),防 txid/order 錯配或重放。
+    payment_txn_id = Column(String(32), nullable=True, index=True)
     # 分店綁定（多分店，nullable = 不限分店）；歷史上由 _migrate_add_location_id()
     # 對舊 DB 補欄，model 現已宣告使 metadata 成為 schema 唯一真相（Alembic baseline）。
     location_id = Column(Integer, nullable=True)

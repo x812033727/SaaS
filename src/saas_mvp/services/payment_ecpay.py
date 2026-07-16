@@ -258,9 +258,12 @@ class EcpayPaymentProvider(PaymentProvider):
             settings.public_base_url if public_base_url is None else public_base_url
         )
 
-    def create_checkout(self, *, order_id: int, amount_cents: int, currency: str) -> str:
+    def create_checkout(self, db, *, order) -> str:
+        from saas_mvp.services import shop as shop_svc
+
+        trade_no = shop_svc.ensure_order_trade_no(db, order)
         base = self._public_base_url.rstrip("/")
-        return f"{base}/payments/ecpay/checkout/{order_id}"
+        return f"{base}/payments/ecpay/checkout/{trade_no}"
 
     def name(self) -> str:
         return "ecpay"
