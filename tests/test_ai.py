@@ -1,6 +1,6 @@
 """AI 客服測試 — factory 選擇、stub 決定性、faq.match、/ai/ask 閘門、LINE webhook fallback。
 
-絕不呼叫真實 Anthropic API：factory 測試 monkeypatch settings；其餘走 StubAIAssistant。
+絕不呼叫真實 MiniMax API：factory 測試 monkeypatch settings；其餘走 StubAIAssistant。
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import saas_mvp.models.line_channel_config as _lcm  # noqa: F401
 import saas_mvp.models.customer as _cust  # noqa: F401
 
 from saas_mvp.ai import AnthropicAssistant, StubAIAssistant, get_assistant
-from saas_mvp.ai.claude_agent_sdk import _sdk_env
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
@@ -87,7 +86,7 @@ def test_context_budget_per_backend():
     assert AnthropicAssistant().context_max_entries > 1
 
 
-def test_real_assistant_uses_claude_agent_sdk_runner_without_exposing_key():
+def test_real_assistant_uses_minimax_api_runner_without_exposing_key():
     calls = []
 
     def runner(**kwargs):
@@ -95,26 +94,15 @@ def test_real_assistant_uses_claude_agent_sdk_runner_without_exposing_key():
         return "SDK 回覆"
 
     assistant = AnthropicAssistant(
-        api_key="minimax-secret-value", model="MiniMax-M2.7", runner=runner
+        api_key="minimax-secret-value", model="MiniMax-M3", runner=runner
     )
     result = assistant.answer("營業時間？", "平日十點開門")
     assert result.answer == "SDK 回覆"
-    assert result.source == "claude-agent-sdk"
+    assert result.source == "minimax-api"
     assert calls[0]["api_key"] == "minimax-secret-value"
-    assert calls[0]["base_url"] == "https://api.minimax.io/anthropic"
+    assert calls[0]["base_url"] == "https://api.minimax.io/v1"
     assert calls[0]["max_turns"] == 1
     assert "平日十點開門" in calls[0]["system_prompt"]
-
-
-def test_sdk_env_uses_official_minimax_claude_code_protocol():
-    env = _sdk_env(
-        "minimax-secret", "https://api.minimax.io/anthropic", "MiniMax-M2.7"
-    )
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "minimax-secret"
-    assert env["ANTHROPIC_BASE_URL"] == "https://api.minimax.io/anthropic"
-    assert env["ANTHROPIC_MODEL"] == "MiniMax-M2.7"
-    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
-    assert "ANTHROPIC_API_KEY" not in env
 
 
 # ── faq.match ────────────────────────────────────────────────────────────────

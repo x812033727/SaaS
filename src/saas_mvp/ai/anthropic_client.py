@@ -1,10 +1,10 @@
-"""Claude Agent SDK backend for the AI customer-service assistant."""
+"""Direct MiniMax API backend for the AI customer-service assistant."""
 
 from __future__ import annotations
 
 from saas_mvp.ai.base import AIError, AIResult, AIAssistant
 
-# 系統提示模板：把店家 FAQ / 資訊（context）注入為 Claude 的 system prompt，
+# 系統提示模板：把店家 FAQ / 資訊（context）注入為 MiniMax 的 system prompt，
 # 讓回答貼合該店家知識，且僅依據已知資訊作答。
 _SYSTEM_PROMPT = (
     "你是店家的 AI 客服助理，請用親切的繁體中文簡潔回答顧客問題。"
@@ -14,10 +14,10 @@ _SYSTEM_PROMPT = (
 
 
 class AnthropicAssistant(AIAssistant):
-    """AI assistant backed by Anthropic's Claude (Messages API).
+    """AI assistant backed by the direct MiniMax API.
 
     Configured from settings (``SAAS_MINIMAX_API_KEY`` / ``SAAS_AI_MODEL``).
-    The ``anthropic`` package is imported lazily; if absent, instantiation still
+    The ``openai`` package is imported lazily; if absent, instantiation still
     succeeds but ``answer()`` raises :class:`AIError` on use.
     """
 
@@ -38,7 +38,7 @@ class AnthropicAssistant(AIAssistant):
     def answer(self, question: str, context: str = "") -> AIResult:
         system_prompt = _SYSTEM_PROMPT.format(context=context or "（無）")
         try:
-            from saas_mvp.ai.claude_agent_sdk import text_query
+            from saas_mvp.ai.minimax_api import text_query
 
             runner = self._runner or text_query
             text = runner(
@@ -52,6 +52,6 @@ class AnthropicAssistant(AIAssistant):
         except AIError:
             raise
         except Exception as exc:  # noqa: BLE001 - wrap any SDK/network error
-            raise AIError(f"Claude Agent SDK request failed: {exc}") from exc
+            raise AIError(f"MiniMax API request failed: {exc}") from exc
 
-        return AIResult(answer=text, source="claude-agent-sdk")
+        return AIResult(answer=text, source="minimax-api")

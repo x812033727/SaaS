@@ -4,9 +4,9 @@
 reservation_id),mutation 永遠走既有 postback 確認 → 服務層確定性路徑
 (含擁有者驗證);LLM 幻覺不可能直接改資料。
 
-* ``AnthropicAgent``(D2):Claude Agent SDK 最多 3 輪，提供 4 個行程內唯讀
-  MCP 工具並以 JSON Schema structured output 收斂。內部 loop 不加計額度
-  (每則用戶訊息仍只扣 1)，SDK session 設有美元預算上限。
+* ``AnthropicAgent``(D2):MiniMax Direct API 最多 3 輪，提供 4 個唯讀
+  function tools，最後以 propose_action 工具收斂。內部 loop 不加計額度
+  (每則用戶訊息仍只扣 1)。
 * ``StubAgent``:關鍵字/正則規則,離線決定性,測試與未設 API key 時用。
 * 歷史(D3):converse 接受 history=[(role, text)],只有 AnthropicAgent 用。
 """
@@ -179,7 +179,7 @@ def _turn_from(data: dict) -> AgentTurn:
 
 
 class AnthropicAgent(AIAgent):
-    """Claude Agent SDK with read-only in-process MCP tools and typed output."""
+    """Direct MiniMax API agent with read-only tools and typed output."""
 
     def __init__(
         self,
@@ -227,7 +227,7 @@ class AnthropicAgent(AIAgent):
         try:
             if self._client_factory is not None:
                 return self._legacy_converse(prompt, system, tools)
-            from saas_mvp.ai.claude_agent_sdk import booking_query
+            from saas_mvp.ai.minimax_api import booking_query
 
             dispatch = {
                 item["name"]: (
@@ -249,7 +249,7 @@ class AnthropicAgent(AIAgent):
         except AIError:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise AIError(f"Anthropic agent request failed: {exc}") from exc
+            raise AIError(f"MiniMax agent request failed: {exc}") from exc
 
     def _legacy_converse(self, prompt: str, system: str, tools) -> AgentTurn:
         """Compatibility seam for existing offline fake-client tests."""

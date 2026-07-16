@@ -119,12 +119,12 @@ def clear_ai_override(db: Session) -> bool:
 
 
 def test_ai_config(db: Session, settings) -> None:
-    """Use a one-turn Claude Agent SDK session to validate key and model."""
+    """Use a direct MiniMax API request to validate key and model."""
     config = effective_ai_config(db, settings)
     if config is None:
         raise PlatformAIConfigError("AI 尚未設定。")
     try:
-        from saas_mvp.ai.claude_agent_sdk import text_query
+        from saas_mvp.ai.minimax_api import text_query
 
         text_query(
             prompt="Reply OK.",
@@ -141,7 +141,7 @@ def test_ai_config(db: Session, settings) -> None:
         elif "404" in message or "model" in message and "not found" in message:
             detail = "找不到指定模型，請確認模型 ID。"
         elif "429" in message or "rate limit" in message:
-            detail = "Anthropic 額度不足或已達速率限制。"
+            detail = "MiniMax 額度不足或已達速率限制。"
         else:
-            detail = "無法連線 Anthropic，請稍後再試。"
+            detail = "無法連線 MiniMax，請稍後再試。"
         raise PlatformAIConfigError(detail) from exc
