@@ -149,3 +149,13 @@ location ^~ /console {
 - [ ] `location /` 維持指向 FastAPI(8099)不動;`/api /auth /booking /payments /line` 皆仍由 FastAPI 服務
 
 尚未套用 nginx 前,console 在正式環境不可達;/ui 側欄的「新版主控台 Beta」連結會 404(僅此一個入口,其餘連結不受影響)。
+
+## 13. 多 worker 與 Redis 後端
+
+web 容器以 gunicorn 多 worker 運行(`GUNICORN_WORKERS`,預設 4)。跨 worker 的共享狀態走 Redis:
+
+- `SAAS_RATE_LIMIT_BACKEND=redis`:限流滑動視窗跨 worker 共享(memory 後端會被放大 N 倍)。
+- `SAAS_EVENTS_BACKEND=redis`:後台 SSE 事件以 pub/sub 廣播到所有 worker;**scheduler 容器也要設**(ops 腳本如逾時取消預約會發事件,無 redis 發佈端會靜默丟失)。
+- 誤設定不崩:redis 連不上會 fallback memory 並記 warning;`python -m saas_mvp.ops.check_readiness` 的 `redis` 檢查會抓出這種降級(backend=redis 但 ping 失敗 → FAIL)。
+- 驗證:`curl -s localhost:8099/healthz` 回應含實際生效的 backend;多 worker 下限流測試需打滿視窗驗證共享。
+- scheduler 容器**勿 scale**(cron 會重複執行);web 可依負載調 `GUNICORN_WORKERS`。
