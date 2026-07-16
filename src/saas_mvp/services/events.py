@@ -143,6 +143,42 @@ async def _redis_listener(target: EventBroker, async_client) -> None:
             pass
 
 
+def enable_redis_publisher(target: EventBroker | None = None) -> bool:
+    """在**無事件迴圈的行程**(scheduler cron / ops 腳本)啟用 redis 發佈端。
+
+    只建 sync client 並 `set_redis`(不起 listener——ops 行程不消費 SSE,只需
+    把事件推上共享頻道讓 web workers 的 listener 投遞)。沒有這一步,scheduler
+    行程內的 `publish_event`(例:cancel_unpaid_deposits 取消預約)只會走
+    `deliver_local`,而該行程沒有任何 SSE 訂閱者 ⇒ 通知靜默丟失。
+
+    比照 start_redis_fanout 的「誤設定不崩」哲學:backend != redis、url 空、
+    未裝 redis、連線失敗 → 記 warning 回 False。
+    """
+    from saas_mvp.config import settings
+
+    target = target or broker
+    if settings.events_backend != "redis":
+        return False
+    try:
+        if not settings.redis_url:
+            raise ValueError("SAAS_REDIS_URL is empty")
+        import redis
+
+        sync_client = redis.from_url(settings.redis_url)
+        sync_client.ping()
+        target.set_redis(sync_client)
+        _log.info("event publisher: redis (%s)", settings.redis_url)
+        return True
+    except Exception as exc:  # noqa: BLE001 — 任何故障都 fallback,不崩腳本
+        _log.warning(
+            "events_backend=redis requested but unavailable in ops process (%s); "
+            "events published here will NOT reach web workers",
+            type(exc).__name__,
+        )
+        target.set_redis(None)
+        return False
+
+
 async def start_redis_fanout(target: EventBroker | None = None):
     """啟用 redis pub/sub 事件廣播並回傳 listener task；不啟用/失敗回 None。
 

@@ -147,3 +147,68 @@ def test_redis_listener_decodes_message_and_delivers():
         return out
 
     assert asyncio.run(scenario())["type"] == "booking_cancel"
+
+
+# ── R4-P1:ops 行程的 redis 發佈端(enable_redis_publisher)──────────────────
+
+class _FakeRedisModule:
+    """假 redis 模組:from_url 回帶 ping/publish 的假 client。"""
+
+    class _Client:
+        def __init__(self):
+            self.published = []
+
+        def ping(self):
+            return True
+
+        def publish(self, channel, payload):
+            self.published.append((channel, payload))
+
+    def __init__(self, fail_ping=False):
+        self.fail_ping = fail_ping
+        self.client = self._Client()
+
+    def from_url(self, url):
+        if self.fail_ping:
+            raise ConnectionError("boom")
+        return self.client
+
+
+def test_enable_publisher_memory_backend_noop(monkeypatch):
+    from saas_mvp.config import settings
+
+    monkeypatch.setattr(settings, "events_backend", "memory")
+    target = EventBroker()
+    assert ev.enable_redis_publisher(target) is False
+    assert target._redis is None
+
+
+def test_enable_publisher_sets_redis_and_publish_reaches_channel(monkeypatch):
+    import sys
+
+    from saas_mvp.config import settings
+
+    monkeypatch.setattr(settings, "events_backend", "redis")
+    monkeypatch.setattr(settings, "redis_url", "redis://fake:6379/0")
+    fake = _FakeRedisModule()
+    monkeypatch.setitem(sys.modules, "redis", fake)
+    target = EventBroker()
+    assert ev.enable_redis_publisher(target) is True
+    target.publish(7, {"type": "x"})
+    assert len(fake.client.published) == 1
+    channel, raw = fake.client.published[0]
+    assert channel == REDIS_CHANNEL
+    assert json.loads(raw)["t"] == 7
+
+
+def test_enable_publisher_connection_failure_falls_back(monkeypatch):
+    import sys
+
+    from saas_mvp.config import settings
+
+    monkeypatch.setattr(settings, "events_backend", "redis")
+    monkeypatch.setattr(settings, "redis_url", "redis://fake:6379/0")
+    monkeypatch.setitem(sys.modules, "redis", _FakeRedisModule(fail_ping=True))
+    target = EventBroker()
+    assert ev.enable_redis_publisher(target) is False
+    assert target._redis is None
