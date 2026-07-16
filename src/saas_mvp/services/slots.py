@@ -191,13 +191,15 @@ def update_slot(
     )
     _validate_capacity(new_max, new_walkin)
 
-    # 不可把容量下修到低於已訂量（會造成超賣的負可用名額）。
-    if new_max - new_walkin < (slot.booked_count or 0):
+    # 不可把容量下修到低於已訂+已保留量（會造成超賣的負可用名額）。
+    # R4-B1:held_count(候補保留)一併計入,避免縮容量偷走已保留名額。
+    committed = (slot.booked_count or 0) + (slot.held_count or 0)
+    if new_max - new_walkin < committed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Cannot shrink capacity below current bookings "
-                f"(booked={slot.booked_count})"
+                "Cannot shrink capacity below current bookings/holds "
+                f"(booked={slot.booked_count} held={slot.held_count or 0})"
             ),
         )
 

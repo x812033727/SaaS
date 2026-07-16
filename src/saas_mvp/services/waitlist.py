@@ -57,6 +57,11 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _naive(dt: datetime.datetime) -> datetime.datetime:
+    """去掉 tzinfo(統一以 UTC 語意比較;sqlite 存 naive、pg 存 aware)。"""
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
 def _default_push_client():
     """通知用 push client 工廠（測試可 monkeypatch 為 FakeLinePushClient）。"""
     from saas_mvp.line_client import HttpLinePushClient
@@ -65,11 +70,31 @@ def _default_push_client():
 
 
 def _available(slot: BookingSlot) -> int:
+    # R4-B1:扣掉已為候補者保留的名額(held_count),避免對已保留量再次發 offer。
     return (
         (slot.max_capacity or 0)
         - (slot.walkin_reserved or 0)
         - (slot.booked_count or 0)
+        - (slot.held_count or 0)
     )
+
+
+def _release_hold(slot: BookingSlot, entry: WaitlistEntry) -> None:
+    """釋放某候補 entry 的容量保留(R4-B1)。
+
+    冪等:hold_party_size 為 NULL 時視為已釋放,不重複扣。呼叫端須已鎖 slot。
+    """
+    held = entry.hold_party_size
+    if held is None:
+        return
+    slot.held_count = max(0, (slot.held_count or 0) - held)
+    entry.hold_party_size = None
+
+
+def _lock_slot(db: Session, slot_id: int) -> BookingSlot | None:
+    return db.execute(
+        select(BookingSlot).where(BookingSlot.id == slot_id).with_for_update()
+    ).scalar_one_or_none()
 
 
 def _offer_minutes(db: Session, tenant_id: int) -> int:
@@ -195,6 +220,10 @@ def cancel_waitlist(
     should_offer_next = entry.status in (WAITLIST_WAITING, WAITLIST_NOTIFIED)
     slot_id = entry.slot_id
     if entry.status != WAITLIST_CANCELLED:
+        # R4-B1:取消 notified 候補要釋放它保留的容量。鎖 slot 後改。
+        slot = _lock_slot(db, slot_id)
+        if slot is not None:
+            _release_hold(slot, entry)
         entry.status = WAITLIST_CANCELLED
         entry.offer_expires_at = None
         entry.updated_at = _utcnow()
@@ -222,21 +251,31 @@ def pick_first_eligible_in_txn(
     無符合者回 None。
     """
     effective_now = now or _utcnow()
-    # 舊版已通知列沒有期限，升級後視為已逾時；同時在鎖內
-    # 收敛到期 offer，即使 scheduler 還沒掃到也不會卡住遞補。
-    db.execute(
-        update(WaitlistEntry)
-        .where(
+    # 舊版已通知列沒有期限，升級後視為已逾時；同時在鎖內收斂到期 offer，即使
+    # scheduler 還沒掃到也不會卡住遞補。R4-B1:改逐筆(原為 bulk UPDATE),
+    # 每筆到期 offer 都要釋放它保留的容量(_release_hold)。
+    notified_here = db.execute(
+        select(WaitlistEntry).where(
             WaitlistEntry.tenant_id == tenant_id,
             WaitlistEntry.slot_id == slot.id,
             WaitlistEntry.status == WAITLIST_NOTIFIED,
-            or_(
-                WaitlistEntry.offer_expires_at.is_(None),
-                WaitlistEntry.offer_expires_at <= effective_now,
-            ),
         )
-        .values(status=WAITLIST_EXPIRED, updated_at=effective_now)
-    )
+    ).scalars().all()
+    expired_any = False
+    for candidate in notified_here:
+        exp = candidate.offer_expires_at
+        # tz-safe 比較:offer_expires_at 落庫可能 naive(sqlite)或 aware(pg),
+        # effective_now 同理;統一去掉 tzinfo 後比。None=舊資料無期限,視為逾時。
+        if exp is None or _naive(exp) <= _naive(effective_now):
+            _release_hold(slot, candidate)
+            candidate.status = WAITLIST_EXPIRED
+            candidate.updated_at = effective_now
+            expired_any = True
+    # 讓下面的 active_offer / available 查詢看得到剛標 EXPIRED 的狀態變更 ——
+    # 測試 session 為 autoflush=False,不 flush 的話 SQL 仍讀到舊 NOTIFIED
+    # (原 bulk UPDATE 直接寫 DB 無此問題)。
+    if expired_any:
+        db.flush()
     # 同一時段一次只給一位候補者有效的先到先得窗口。
     active_offer = db.execute(
         select(WaitlistEntry.id).where(
@@ -271,6 +310,9 @@ def pick_first_eligible_in_txn(
     )
     entry.notification_attempts = (entry.notification_attempts or 0) + 1
     entry.updated_at = effective_now
+    # R4-B1:為此候補保留容量(限時內);held_count 累加,hold_party_size 兼冪等旗標。
+    slot.held_count = (slot.held_count or 0) + entry.party_size
+    entry.hold_party_size = entry.party_size
     return entry.id
 
 
@@ -311,7 +353,7 @@ def notify_candidate_best_effort(
         text = (
             f"好消息！您候補的時段 {when} 已釋出名額，"
             f"請在 {expires_text} 前點選下方按鈕完成預約"
-            f"（{entry.party_size} 位）。名額不會鎖定，以實際完成預約為準。"
+            f"（{entry.party_size} 位）。名額已為您保留至此,請盡快完成預約。"
         )
         data = (
             f"action=book&slot_id={slot.id}&party={entry.party_size}"
@@ -349,14 +391,41 @@ def notify_candidate_best_effort(
 
 
 def _revert_to_waiting(db: Session, entry_id: int) -> None:
-    """把 notified 候補退回 waiting（下次回補再試）。"""
+    """把 notified 候補退回 waiting（下次回補再試）。
+
+    R4-B1:退回時釋放它保留的容量(推播失敗不該繼續佔名額)。鎖 slot 後改。
+    """
     entry = db.get(WaitlistEntry, entry_id)
     if entry is not None and entry.status == WAITLIST_NOTIFIED:
+        slot = _lock_slot(db, entry.slot_id)
+        if slot is not None:
+            _release_hold(slot, entry)
         entry.status = WAITLIST_WAITING
         entry.notified_at = None
         entry.offer_expires_at = None
         entry.updated_at = _utcnow()
         db.commit()
+
+
+def own_hold_for(
+    db: Session, *, tenant_id: int, slot_id: int, line_user_id: str
+) -> int:
+    """該顧客身為 offeree 在此時段保留的名額(R4-B1;book_slot 容量特例用)。
+
+    只計 notified 且 hold_party_size 非空的自己的候補。呼叫端已鎖 slot。
+    """
+    if not line_user_id:
+        return 0
+    total = db.execute(
+        select(WaitlistEntry.hold_party_size).where(
+            WaitlistEntry.tenant_id == tenant_id,
+            WaitlistEntry.slot_id == slot_id,
+            WaitlistEntry.line_user_id == line_user_id,
+            WaitlistEntry.status == WAITLIST_NOTIFIED,
+            WaitlistEntry.hold_party_size.is_not(None),
+        )
+    ).scalars().all()
+    return sum(int(h) for h in total if h)
 
 
 def fulfill_for_booking_in_txn(
@@ -377,6 +446,9 @@ def fulfill_for_booking_in_txn(
     ).scalar_one_or_none()
     if entry is None:
         return None
+    # R4-B1:offeree 建單成功 → 釋放它保留的容量(該名額已被自己的預約佔用,
+    # booked_count 已加;不釋放會雙重佔用)。slot 已由 book_slot 鎖定。
+    _release_hold(slot, entry)
     entry.status = WAITLIST_BOOKED
     entry.reservation_id = reservation.id
     entry.offer_expires_at = None
@@ -475,6 +547,10 @@ def cancel_waitlist_by_staff(
         raise WaitlistEntryNotFound(f"waitlist entry {entry_id} not found")
     if entry.status in (WAITLIST_WAITING, WAITLIST_NOTIFIED):
         slot_id = entry.slot_id
+        # R4-B1:釋放 notified 候補保留的容量(鎖 slot 後改)。
+        slot = _lock_slot(db, slot_id)
+        if slot is not None:
+            _release_hold(slot, entry)
         entry.status = WAITLIST_CANCELLED
         entry.offer_expires_at = None
         entry.updated_at = _utcnow()

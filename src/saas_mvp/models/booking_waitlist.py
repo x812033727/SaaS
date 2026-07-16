@@ -56,6 +56,9 @@ class WaitlistEntry(Base):
     line_user_id = Column(String(64), nullable=False, index=True)
     display_name = Column(String(255), nullable=True)
     party_size = Column(Integer, nullable=False, default=1)
+    # 候補容量保留(R4-B1):發 offer 時把 party_size 記於此並累加到 slot.held_count;
+    # 兼冪等旗標——釋放後設 NULL,重複釋放不會雙扣。rev 0044。
+    hold_party_size = Column(Integer, nullable=True)
     status = Column(
         String(16),
         nullable=False,
