@@ -31,7 +31,7 @@ _Session = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr(settings, "minimax_api_key", "")
-    monkeypatch.setattr(settings, "ai_model", "MiniMax-M2.7")
+    monkeypatch.setattr(settings, "ai_model", "MiniMax-M3")
     Base.metadata.drop_all(bind=_engine)
     Base.metadata.create_all(bind=_engine)
     app = create_app()
@@ -98,7 +98,7 @@ def test_admin_saves_encrypted_key_and_all_ai_paths_change_immediately(client):
 
     page = client.get("/ui/admin/ai-settings")
     assert page.status_code == 200
-    assert "Claude 已啟用" in page.text
+    assert "MiniMax 已啟用" in page.text
     assert "資料庫加密設定" in page.text
     assert key not in page.text
     assert key[-4:] in page.text

@@ -10,7 +10,7 @@ class AIError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class AIResult:
-    """AI answer plus which backend produced it ('stub' | 'claude-agent-sdk')."""
+    """AI answer plus which backend produced it ('stub' | 'minimax-api')."""
 
     answer: str
     source: str

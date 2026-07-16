@@ -239,8 +239,8 @@ class Settings(BaseSettings):
     # SAAS_MINIMAX_BASE_URL: 台灣／國際站官方 Anthropic-compatible endpoint。
     # SAAS_AI_MODEL: MiniMax 模型 ID。
     minimax_api_key: str = ""
-    minimax_base_url: str = "https://api.minimax.io/anthropic"
-    ai_model: str = "MiniMax-M2.7"
+    minimax_base_url: str = "https://api.minimax.io/v1"
+    ai_model: str = "MiniMax-M3"
 
     # 後台「重新佈署」按鈕（平台管理員）：
     # web 容器無法直接執行主機腳本，故按鈕只寫一個觸發檔到此路徑（主機掛載目錄），

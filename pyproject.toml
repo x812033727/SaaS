@@ -16,12 +16,11 @@ dependencies = [
     "PyJWT==2.10.1",
     "cryptography==44.0.2",
     "python-multipart==0.0.20",
-    # claude-agent-sdk 的行程內 MCP server 需要 pydantic>=2.11。
     "pydantic==2.11.10",
     "pydantic-settings==2.7.0",
     "email-validator==2.3.0",
     "jinja2==3.1.4",
-    "claude-agent-sdk==0.1.81",
+    "openai==1.109.1",
     "openpyxl==3.1.5",
     "fpdf2==2.8.3",
     "pillow==11.3.0",

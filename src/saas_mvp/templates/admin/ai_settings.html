@@ -4,8 +4,8 @@
 <h1>平台 AI 設定</h1>
 
 <div class="card">
-  <h2>MiniMax × Claude Agent SDK</h2>
-  <p class="muted">透過 MiniMax Anthropic-compatible API 與 Claude Agent SDK，供全平台 AI 客服與 AI 預約助理使用。儲存後 Web 與 LINE 對話立即生效，不需修改 .env、重建或重啟。</p>
+  <h2>MiniMax Direct API</h2>
+  <p class="muted">直接呼叫 MiniMax OpenAI-compatible API，供全平台 AI 客服與 AI 預約助理使用。儲存後 Web 與 LINE 對話立即生效，不需修改 .env、重建或重啟。</p>
 
   {% if saved %}<div class="success">AI 設定已加密儲存並立即生效。</div>{% endif %}
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -13,7 +13,7 @@
   {% if test_error %}<div class="error">測試失敗：{{ test_error }}</div>{% endif %}
 
   {% if ai_status.configured %}
-    <p><span class="badge valid">Claude 已啟用 · Agent SDK</span>
+    <p><span class="badge valid">MiniMax 已啟用 · Direct API</span>
       {% if ai_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
       · {{ ai_status.model }} · Key {{ ai_status.key_mask }}
     </p>
@@ -30,9 +30,9 @@
     </label>
     <label>MiniMax 模型 ID
       <input name="model" value="{{ ai_status.model }}" maxlength="128"
-             placeholder="MiniMax-M2.7" pattern="MiniMax-[A-Za-z0-9._-]+" required>
+             placeholder="MiniMax-M3" pattern="MiniMax-[A-Za-z0-9._-]+" required>
     </label>
-    <p class="muted">Key 會以 Fernet 加密保存。國際站固定使用官方端點 https://api.minimax.io/anthropic；台灣適用此端點。</p>
+    <p class="muted">Key 會以 Fernet 加密保存。國際站使用官方 OpenAI 相容端點 https://api.minimax.io/v1；台灣適用此端點。</p>
     <button type="submit">儲存並啟用</button>
   </form>
 
@@ -55,9 +55,9 @@
   <h2>設定教學</h2>
   <ol>
     <li>登入 <a href="https://platform.minimax.io/" target="_blank" rel="noopener noreferrer">MiniMax Developer Platform</a>，建立 API Key；Token Plan 使用方案頁提供的 Token Plan Key。</li>
-    <li>模型建議使用 <code>MiniMax-M2.7</code>；需要較低延遲可用 <code>MiniMax-M2.7-highspeed</code>。</li>
-    <li>儲存後按「測試 MiniMax 連線」。測試會啟動單輪 Claude Agent SDK session，可能產生極少量用量。</li>
-    <li>到店家「AI 客服」頁及 LINE 分別測試，回答來源顯示 Claude Agent SDK 即代表已啟用。</li>
+    <li>模型建議使用最新的 <code>MiniMax-M3</code>。</li>
+    <li>儲存後按「測試 MiniMax 連線」。測試會直接送出一筆 MiniMax API 請求，可能產生極少量用量。</li>
+    <li>到店家「AI 客服」頁及 LINE 分別測試，回答來源顯示 MiniMax API 即代表已啟用。</li>
   </ol>
   <p class="muted">移除設定後會安全退回 FAQ 規則模式，既有 FAQ 不會遺失。</p>
 </div>
