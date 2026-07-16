@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.models.user import User
 from saas_mvp.services.slots import (
+    bulk_generate_slots,
     create_slot,
     deactivate_slot,
     get_slot,
@@ -59,6 +60,48 @@ class SlotResponse(BaseModel):
 
 
 # ─────────────────────────────── Endpoints ───────────────────────────────────
+
+class SlotBulkCreate(BaseModel):
+    """批次展開:日期區間 × 每日營業時間 × 間隔(語意同 /ui 批次表單)。"""
+
+    date_start: datetime.date
+    date_end: datetime.date
+    time_start: datetime.time
+    time_end: datetime.time
+    interval_minutes: int = Field(gt=0)
+    max_capacity: int = Field(ge=0)
+    walkin_reserved: int = Field(default=0, ge=0)
+    # 0=週一 … 6=週日;None/空 = 每天皆產生。
+    weekdays: list[int] | None = Field(default=None)
+
+
+class SlotBulkResult(BaseModel):
+    created: int
+    skipped: int
+    total: int
+
+
+@router.post("/bulk", response_model=SlotBulkResult)
+def bulk_create(
+    body: SlotBulkCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> SlotBulkResult:
+    """批次產生時段(console 用);同 start 既存時段自動略過計入 skipped。"""
+    result = bulk_generate_slots(
+        db,
+        tenant_id=current_user.tenant_id,
+        date_start=body.date_start,
+        date_end=body.date_end,
+        time_start=body.time_start,
+        time_end=body.time_end,
+        interval_minutes=body.interval_minutes,
+        max_capacity=body.max_capacity,
+        walkin_reserved=body.walkin_reserved,
+        weekdays=set(body.weekdays) if body.weekdays else None,
+    )
+    return SlotBulkResult(**result)
+
 
 @router.post("/", response_model=SlotResponse, status_code=status.HTTP_201_CREATED)
 def create(
