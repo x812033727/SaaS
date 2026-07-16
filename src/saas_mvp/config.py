@@ -239,10 +239,10 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
     metrics_token: str = ""
 
-    # AI 客服（Claude Agent SDK + MiniMax Anthropic-compatible API）
-    # SAAS_MINIMAX_API_KEY: 設定後 get_assistant() 回真實 SDK backend；
+    # AI 客服（MiniMax M3，OpenAI-compatible API）
+    # SAAS_MINIMAX_API_KEY: 設定後 get_assistant() 回真實 MiniMax backend；
     #   留空（預設）回 StubAIAssistant（離線、決定性，供測試/dev）。
-    # SAAS_MINIMAX_BASE_URL: 台灣／國際站官方 Anthropic-compatible endpoint。
+    # SAAS_MINIMAX_BASE_URL: 台灣／國際站官方 OpenAI-compatible endpoint。
     # SAAS_AI_MODEL: MiniMax 模型 ID。
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimax.io/v1"
