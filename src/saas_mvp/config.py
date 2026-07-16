@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     secret_key: str = _INSECURE_DEFAULT
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+    # 滑動續期(R4-C1):有效 token 剩餘壽命低於門檻時 /auth/renew 可換新;
+    # 距首次登入(oa claim)超過總上限後不再續,強制重新登入。
+    session_renew_threshold_minutes: int = 30
+    session_renew_max_hours: int = 12
 
     # Server — 127.0.0.1 by default; override with SAAS_HOST=0.0.0.0 for containers
     host: str = "127.0.0.1"

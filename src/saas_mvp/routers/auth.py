@@ -14,9 +14,15 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
-from saas_mvp.auth.dependencies import get_current_user
+from saas_mvp.auth.dependencies import get_current_user, oauth2_scheme
 from saas_mvp.auth.ratelimit import register_limiter, token_limiter
-from saas_mvp.auth.security import create_access_token, hash_password, verify_password
+from saas_mvp.auth.security import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
@@ -134,6 +140,54 @@ def login(
 
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     return TokenResponse(access_token=token)
+
+
+@router.post(
+    "/renew",
+    response_model=TokenResponse,
+    dependencies=[Depends(token_limiter)],
+)
+def renew_token(
+    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    """滑動續期(R4-C1):以**仍有效**的 token 換一顆新 token。
+
+    安全邊界:
+    * 過期票 decode 即拋 → 不可能續過期票。
+    * ``imp`` 代管票一律 403(30 分硬上限是刻意設計,不可展延)。
+    * ``oa``(首次登入時間)超過 ``session_renew_max_hours`` → 401 強制重登;
+      新票原樣攜帶 oa,滑動視窗有總長上限。
+    * 使用者已停用/刪除 → 401。
+    """
+    import datetime as _dt
+
+    import jwt as _jwt
+
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Not authenticated")
+    try:
+        payload = decode_access_token(token)
+    except _jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid or expired token")
+    if payload.get("imp") is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Impersonation tokens cannot be renewed")
+    now_ts = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+    oa = int(payload.get("oa") or now_ts)
+    if now_ts - oa > settings.session_renew_max_hours * 3600:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Session too old; please log in again")
+    user = db.get(User, int(payload["sub"]))
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="User not found")
+    new_token = create_access_token(
+        user_id=user.id, tenant_id=payload["tenant_id"], original_auth_ts=oa
+    )
+    return TokenResponse(access_token=new_token)
 
 
 @router.get("/me", response_model=UserInfo)
