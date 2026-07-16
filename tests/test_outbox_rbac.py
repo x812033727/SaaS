@@ -109,6 +109,32 @@ def _post_webhook(c, tid, event):
 # ── A0.2 outbox ──────────────────────────────────────────────────────────────
 
 class TestOutbox:
+    def test_event_is_persisted_before_background_dispatch(self, client, monkeypatch):
+        """Worker 若在 response 後、background 開始前死掉，pending 仍已落盤。"""
+        c, _ = client
+        s = _seed_booking_tenant()
+
+        async def skip_background(_self):
+            return None
+
+        monkeypatch.setattr(
+            "starlette.background.BackgroundTasks.__call__", skip_background
+        )
+        _post_webhook(c, s["tenant_id"], {
+            "type": "message", "replyToken": "rt", "webhookEventId": "ob-durable",
+            "source": {"type": "user", "userId": "Udurable"},
+            "message": {"type": "text", "text": "時段"},
+        })
+
+        with _Session() as db:
+            row = db.execute(
+                select(LineWebhookEvent).where(
+                    LineWebhookEvent.webhook_event_id == "ob-durable"
+                )
+            ).scalar_one()
+            assert row.status == LineWebhookEventStatus.PENDING.value
+            assert json.loads(row.payload_json)["message"]["text"] == "時段"
+
     def test_payload_persisted_on_claim(self, client):
         c, _ = client
         s = _seed_booking_tenant()

@@ -19,12 +19,17 @@
 
 ## M2-LINE-WEBHOOK-QUEUE
 
+Issue: https://github.com/x812033727/SaaS/issues/79
+
+狀態：已實作（DB outbox + 即時 BackgroundTasks consumer + scheduler recovery）。
+
 標題：LINE webhook 背景任務升級為持久化 queue
 
-範圍：
-- 評估 ARQ / Celery 或同等 queue。
-- 支援跨 worker process 任務交付。
-- 加入 retry、dead-letter queue 與基本任務監控。
+實作：
+- handler 在回 200 前先將已驗簽 event 與 payload commit 進 `line_webhook_events`。
+- 正常路徑由 BackgroundTasks 即時消費；worker crash/restart 由 scheduler 以 CAS 原子認領重放。
+- `attempt_count` + `SAAS_WEBHOOK_MAX_ATTEMPTS` 提供重試上限；用盡的 failed row 即 dead-letter，保留診斷。
+- Prometheus 曝露 stuck pending、retry attempts 與 dead-letter gauges；cron 健康檢查負責告警。
 
 驗收：
 - worker crash / restart 後，已接收但未處理的 event 不會靜默遺失。
