@@ -484,7 +484,8 @@ curl -X DELETE http://localhost:8000/api-keys/1 \
 
 ### 平台 AI 設定（不需終端機或重啟）
 
-平台管理員可到 `/ui/admin/ai-settings` 設定 Anthropic API Key 與 Claude 模型。
+平台管理員可到 `/ui/admin/ai-settings` 設定 Anthropic API Key 與 Claude 模型；正式
+AI 路徑與 Ti、Fincept 相同，使用 `claude-agent-sdk` 的 bundled Claude Code CLI。
 API Key 以 Fernet 加密保存，頁面與稽核紀錄不顯示明文；儲存後 AI 客服、LINE
 自由文字回覆與 AI 預約助理立即改用 Claude。頁面提供極小用量的連線測試，能分辨
 金鑰、模型、額度或連線問題。移除資料庫設定後會使用 `SAAS_ANTHROPIC_*` 備援；若

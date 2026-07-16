@@ -5,7 +5,7 @@
 
 <div class="card">
   <h2>Anthropic Claude</h2>
-  <p class="muted">供全平台 AI 客服與 AI 預約助理使用。只有平台管理員能修改；儲存後所有 Web 與 LINE 對話立即生效，不需修改 .env、重建或重啟。</p>
+  <p class="muted">透過 Claude Agent SDK 供全平台 AI 客服與 AI 預約助理使用。只有平台管理員能修改；儲存後所有 Web 與 LINE 對話立即生效，不需修改 .env、重建或重啟。</p>
 
   {% if saved %}<div class="success">AI 設定已加密儲存並立即生效。</div>{% endif %}
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -13,7 +13,7 @@
   {% if test_error %}<div class="error">測試失敗：{{ test_error }}</div>{% endif %}
 
   {% if ai_status.configured %}
-    <p><span class="badge valid">Claude 已啟用</span>
+    <p><span class="badge valid">Claude 已啟用 · Agent SDK</span>
       {% if ai_status.source == 'database' %}資料庫加密設定{% else %}伺服器備援設定{% endif %}
       · {{ ai_status.model }} · Key {{ ai_status.key_mask }}
     </p>
@@ -57,7 +57,7 @@
     <li>登入 <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer">Anthropic Console</a>，先完成帳務與用量上限設定。</li>
     <li>到 API Keys 建立平台專用 Key；不要與個人開發環境共用。</li>
     <li>從 <a href="https://docs.anthropic.com/en/docs/about-claude/models/overview" target="_blank" rel="noopener noreferrer">Anthropic 模型文件</a>複製要使用的模型 ID。</li>
-    <li>在本頁貼上 API Key 與模型 ID，儲存後按「測試 Anthropic 連線」。測試會送出一個極小請求，可能產生極少量 API 費用。</li>
+    <li>在本頁貼上 API Key 與模型 ID，儲存後按「測試 Anthropic 連線」。測試會啟動一個單輪 Claude Agent SDK session，可能產生極少量 API 費用。</li>
     <li>到店家「AI 客服」頁輸入測試問題，再從 LINE 實際測試；回答來源顯示 Anthropic 即代表正式 AI 已啟用。</li>
   </ol>
   <p class="muted">建議在 Anthropic Console 設定每月預算與警示。移除設定後會安全退回 FAQ 規則模式，既有 FAQ 不會遺失。</p>

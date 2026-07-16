@@ -1,10 +1,4 @@
-"""Real Anthropic Claude backend for the AI customer-service assistant.
-
-The ``anthropic`` package is imported **lazily** (inside ``__init__`` / ``answer``)
-so this module imports cleanly even when the package is not installed — the stub
-path keeps tests working offline. Any SDK/network error is wrapped in
-:class:`AIError`.
-"""
+"""Claude Agent SDK backend for the AI customer-service assistant."""
 
 from __future__ import annotations
 
@@ -27,41 +21,34 @@ class AnthropicAssistant(AIAssistant):
     succeeds but ``answer()`` raises :class:`AIError` on use.
     """
 
-    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
+    def __init__(
+        self, *, api_key: str | None = None, model: str | None = None, runner=None
+    ) -> None:
         from saas_mvp.config import settings  # lazy — avoid circular import
 
         self._api_key = api_key if api_key is not None else settings.anthropic_api_key
         self._model = model if model is not None else settings.ai_model
+        self._runner = runner
 
     def is_available(self) -> bool:
         return bool(self._api_key)
 
     def answer(self, question: str, context: str = "") -> AIResult:
-        try:
-            import anthropic  # lazy import — module loads even without the package
-        except ImportError as exc:  # pragma: no cover - exercised only without pkg
-            raise AIError(
-                "anthropic package is not installed"
-            ) from exc
-
         system_prompt = _SYSTEM_PROMPT.format(context=context or "（無）")
         try:
-            client = anthropic.Anthropic(api_key=self._api_key)
-            resp = client.messages.create(
+            from saas_mvp.ai.claude_agent_sdk import text_query
+
+            runner = self._runner or text_query
+            text = runner(
+                prompt=question[:4000],
+                system_prompt=system_prompt,
+                api_key=self._api_key,
                 model=self._model,
-                max_tokens=1024,
-                system=system_prompt,
-                messages=[{"role": "user", "content": question}],
-            )
-            # Concatenate text from all text-type content blocks.
-            text = "".join(
-                block.text
-                for block in resp.content
-                if getattr(block, "type", None) == "text"
+                max_turns=1,
             )
         except AIError:
             raise
         except Exception as exc:  # noqa: BLE001 - wrap any SDK/network error
-            raise AIError(f"Anthropic request failed: {exc}") from exc
+            raise AIError(f"Claude Agent SDK request failed: {exc}") from exc
 
-        return AIResult(answer=text, source="anthropic")
+        return AIResult(answer=text, source="claude-agent-sdk")
