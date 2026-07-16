@@ -94,6 +94,9 @@ class Reservation(Base):
     deposit_provider_merchant_id = Column(String(64), nullable=True)
     deposit_provider_trade_no = Column(String(20), nullable=True)
     deposit_payment_type = Column(String(32), nullable=True)
+    # LINE Pay 定金 Request API 回傳的 transactionId;deposit-confirm 時必須與
+    # query string 比對一致(txid↔reservation 綁定)。rev 0041。
+    deposit_payment_txn_id = Column(String(32), nullable=True)
     # 全額退款狀態：NULL(未申請) | processing | refunded | failed |
     # manual_required。網路結果不確定時只允許人工核對，避免重複退刷。
     deposit_refund_status = Column(String(24), nullable=True)
