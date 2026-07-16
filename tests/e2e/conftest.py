@@ -81,6 +81,52 @@ def server(tmp_path_factory) -> dict:
 
 
 @pytest.fixture(scope="session")
+def console_server(server) -> dict:
+    """啟動 Next.js console(next start,basePath=/console),透過
+    SAAS_API_INTERNAL_URL 反打同一顆 uvicorn。需先 `npm ci && npm run build`
+    (CI 步驟預建;本地跑前自行 build)。無 .next 產物則 skip。"""
+    frontend = Path(__file__).resolve().parents[2] / "frontend"
+    if not (frontend / ".next").exists():
+        pytest.skip("console 未 build(cd frontend && npm run build)")
+    port = _free_port()
+    env = {
+        **os.environ,
+        "PORT": str(port),
+        "SAAS_API_INTERNAL_URL": server["base"],
+        "NODE_ENV": "production",
+    }
+    proc = subprocess.Popen(
+        ["npm", "run", "start"],
+        cwd=str(frontend),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        import urllib.request
+
+        for _ in range(150):
+            if proc.poll() is not None:
+                out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+                raise RuntimeError(f"next 啟動失敗:\n{out[-3000:]}")
+            try:
+                with urllib.request.urlopen(f"{base}/console/login", timeout=1):
+                    break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.2)
+        else:
+            raise RuntimeError("next 未在時限內就緒")
+        yield {"base": base}
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+@pytest.fixture(scope="session")
 def browser():
     with sync_playwright() as p:
         b = p.chromium.launch()

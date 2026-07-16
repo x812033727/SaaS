@@ -153,3 +153,23 @@ describe("proxy sliding renewal", () => {
     expect((forward[1].headers as Record<string, string>).Authorization).toBe(`Bearer ${near}`);
   });
 });
+
+// ── R4-C4:tenants/me 白名單擴充 ─────────────────────────────────────────────
+
+describe("proxy tenants/me whitelist", () => {
+  it("轉發 tenants/me/line-config", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", {
+      status: 200, headers: { "content-type": "application/json" },
+    })));
+    const { request, ctx } = req(["tenants", "me", "line-config"]);
+    expect((await proxyGet(request, ctx)).status).toBe(200);
+  });
+
+  it("不放行整個 tenants/(非 me 前綴)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { request, ctx } = req(["tenants", "42", "line-config"]);
+    expect((await proxyGet(request, ctx)).status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

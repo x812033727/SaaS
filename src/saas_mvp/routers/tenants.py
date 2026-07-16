@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
-from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
+from saas_mvp.line_client import (
+    LineBotInfoClient,
+    get_bot_info_client,
+    get_webhook_admin_client,
+)
 from saas_mvp.models.tenant import Tenant, normalize_store_type
 from saas_mvp.models.line_channel_config import CredentialStatus
 from saas_mvp.models.user import User
@@ -251,3 +255,55 @@ def delete_my_line_config(
     """刪除當前租戶 LINE 設定；不存在回 404。"""
     line_config_svc.delete_line_config(db, current_user.tenant_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class WebhookSetupResult(BaseModel):
+    """一鍵設定 webhook 的 JSON 結果(console 用;/ui 有 HTML partial 版)。"""
+
+    endpoint: str
+    success: bool
+    active: bool | None = None
+    status_code: int | None = None
+    reason: str | None = None
+    detail: str | None = None
+
+
+@router.post(
+    "/me/line-config/webhook/setup",
+    response_model=WebhookSetupResult,
+    dependencies=[Depends(require_rate_limit)],
+)
+def setup_my_line_webhook(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    webhook_admin_client=Depends(get_webhook_admin_client),
+) -> WebhookSetupResult:
+    """一鍵設定租戶專屬 LINE Webhook URL 並跑官方連通測試(R4-C4,包
+    line_config_svc.configure_line_webhook,語意同 /ui 版)。"""
+    from saas_mvp.config import settings
+    from saas_mvp.line_client import LineWebhookAdminError
+
+    base = settings.public_base_url.rstrip("/")
+    endpoint = f"{base}{webhook_url_for(current_user.tenant_id)}" if base else ""
+    if not endpoint.startswith("https://"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="平台尚未設定 HTTPS 對外網址,請聯絡平台管理員。",
+        )
+    try:
+        result = line_config_svc.configure_line_webhook(
+            db,
+            current_user.tenant_id,
+            endpoint=endpoint,
+            webhook_admin_client=webhook_admin_client,
+        )
+    except LineWebhookAdminError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    return WebhookSetupResult(
+        endpoint=result.endpoint,
+        success=result.success,
+        active=result.active,
+        status_code=result.status_code,
+        reason=result.reason,
+        detail=result.detail,
+    )

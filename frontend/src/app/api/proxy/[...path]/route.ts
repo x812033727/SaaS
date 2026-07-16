@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 const apiOrigin = process.env.SAAS_API_INTERNAL_URL ?? "http://127.0.0.1:8000";
 
 // 只轉發 console 需要的 API 前綴;JWT 永遠留在 httpOnly cookie,瀏覽器不接觸。
-const ALLOWED_PREFIXES = ["api/v1/", "booking/"];
+// tenants/me 是**窄前綴**(自助 LINE 設定),不開整個 tenants/(避免暴露列表/管理端點)。
+const ALLOWED_PREFIXES = ["api/v1/", "booking/", "tenants/me"];
 
 const MUTATING = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
