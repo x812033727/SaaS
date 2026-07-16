@@ -52,16 +52,31 @@ def client(monkeypatch):
 
 
 def _make_order(total_cents=10000, status="pending") -> int:
+    from saas_mvp.services.shop import gen_order_trade_no
+
+    import uuid as _uuid
+
     db = _Session()
     try:
-        t = Tenant(name="shop", plan="free")
+        t = Tenant(name=f"shop_{_uuid.uuid4().hex[:8]}", plan="free")
         db.add(t)
         db.flush()
         o = Order(tenant_id=t.id, line_user_id="U1", status=status,
                   total_cents=total_cents, currency="TWD")
         db.add(o)
+        db.flush()
+        # 比照 create_order:建單即產生不可猜 trade_no(PEA-3 的結帳 URL 鍵)
+        o.merchant_trade_no = gen_order_trade_no(o.id)
         db.commit()
         return o.id
+    finally:
+        db.close()
+
+
+def _trade_no(oid: int) -> str:
+    db = _Session()
+    try:
+        return db.get(Order, oid).merchant_trade_no
     finally:
         db.close()
 
@@ -92,30 +107,38 @@ def _callback_params(trade_no, amount_twd, rtn_code="1"):
 
 
 class TestCheckout:
-    def test_renders_autosubmit_form_and_sets_trade_no(self, client):
+    def test_renders_autosubmit_form(self, client):
         oid = _make_order(total_cents=10000)
-        r = client.get(f"/payments/ecpay/checkout/{oid}")
+        r = client.get(f"/payments/ecpay/checkout/{_trade_no(oid)}")
         assert r.status_code == 200
         assert "payment-stage.ecpay.com.tw" in r.text
         assert "CheckMacValue" in r.text
-        # trade_no 已寫回 order
-        assert _order(oid).merchant_trade_no is not None
 
     def test_non_pending_blocked(self, client):
         oid = _make_order(status="paid")
-        r = client.get(f"/payments/ecpay/checkout/{oid}")
+        r = client.get(f"/payments/ecpay/checkout/{_trade_no(oid)}")
         assert "無法付款" in r.text
 
     def test_missing_order_404(self, client):
-        r = client.get("/payments/ecpay/checkout/999999")
+        r = client.get("/payments/ecpay/checkout/ODUNKNOWNTRADE")
         assert r.status_code == 404
+
+    def test_integer_order_id_enumeration_404(self, client):
+        """PEA-3:checkout 改以不可猜 trade_no 為鍵,可枚舉的整數 id 一律 404。"""
+        oid = _make_order(total_cents=10000)
+        assert client.get(f"/payments/ecpay/checkout/{oid}").status_code == 404
+
+    def test_trade_no_is_unguessable(self, client):
+        """trade_no = OD + id36 + 隨機 hex 填滿 20 字(≥32-bit 隨機段)。"""
+        a, b = _trade_no(_make_order()), _trade_no(_make_order())
+        assert a.startswith("OD") and len(a) == 20
+        assert a != b
 
 
 class TestCallback:
     def _prepare(self, client):
         oid = _make_order(total_cents=10000)  # NT$100
-        client.get(f"/payments/ecpay/checkout/{oid}")  # 設定 trade_no
-        return oid, _order(oid).merchant_trade_no
+        return oid, _trade_no(oid)
 
     def test_valid_marks_paid_and_idempotent(self, client):
         oid, trade_no = self._prepare(client)

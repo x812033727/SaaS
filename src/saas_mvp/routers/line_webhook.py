@@ -2161,9 +2161,7 @@ def _buy_reply(
         return f"商品 #{product_id} 庫存不足。"
     except shop_svc.CouponApplyError as exc:
         return f"優惠券無法套用：{exc}"
-    checkout = get_payment_provider(db).create_checkout(
-        order_id=order.id, amount_cents=order.total_cents, currency=order.currency
-    )
+    checkout = get_payment_provider(db).create_checkout(db, order=order)
     # 有折抵（會員等級 / 優惠券）時附上折抵金額，讓顧客看到優惠。
     discount_line = (
         f"已折抵：{order.discount_cents} {order.currency}\n"
@@ -2186,9 +2184,18 @@ def _my_orders_reply(db: Session, tenant_id: int, line_user_id: str) -> str:
     ]
     if not orders:
         return "你目前沒有訂單。輸入「商品」開始購買。"
-    return "你的訂單：\n" + "\n".join(
-        f"#{o.id} {o.total_cents} {o.currency}（{o.status}）" for o in orders
-    )
+    # pending 訂單附上付款連結:結帳 URL 改以不可猜 trade_no 為鍵後(PEA-3),
+    # 舊訊息裡的整數 id 連結會失效,這裡是顧客重取連結的入口。僅對「純組 URL」
+    # 的 provider 產生(ecpay/newebpay/stub);linepay 的 create_checkout 會真的
+    # 打 Request API,不適合在列表查詢時逐單外呼。
+    provider = get_payment_provider(db)
+    lines = []
+    for o in orders:
+        line = f"#{o.id} {o.total_cents} {o.currency}（{o.status}）"
+        if o.status == shop_svc.ORDER_PENDING and provider.name() != "linepay":
+            line += f"\n　付款：{provider.create_checkout(db, order=o)}"
+        lines.append(line)
+    return "你的訂單：\n" + "\n".join(lines)
 
 
 # 會實際建單的 booking 動作；只有這些動作才需向 LINE 取使用者 displayName，

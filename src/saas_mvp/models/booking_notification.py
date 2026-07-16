@@ -34,6 +34,7 @@ from saas_mvp.db import Base
 # kind 常數
 NOTIFY_CHANGE = "change"
 NOTIFY_CANCEL = "cancel"
+NOTIFY_REFUND = "deposit_refund"  # 定金退款成功通知(R3-A3)
 
 # status 常數
 NOTIFY_PENDING = "pending"

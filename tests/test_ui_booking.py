@@ -272,7 +272,7 @@ class TestBookingUI:
             f"/ui/booking/reservations/{reservation_id}/deposit-refund"
         )
         assert response.status_code == 200
-        assert "已完成全額退款" in response.text
+        assert "定金已退款 NT$200" in response.text
         with _Session() as db:
             row = db.get(Reservation, reservation_id)
             assert row.deposit_status == "refunded"

@@ -434,6 +434,112 @@ class TestDeposit:
         assert resv.deposit_status == "refunded"
         assert resv.deposit_refund_provider_code == "MANUAL"
 
+    # ── R3-A3:部分退款 + 退款通知 ────────────────────────────────────────────
+
+    def _refund_notifications(self, db, resv_id):
+        from saas_mvp.models.booking_notification import (
+            NOTIFY_REFUND,
+            BookingNotification,
+        )
+
+        return db.execute(
+            select(BookingNotification).where(
+                BookingNotification.reservation_id == resv_id,
+                BookingNotification.kind == NOTIFY_REFUND,
+            )
+        ).scalars().all()
+
+    def test_partial_refund_records_amount_and_notifies(self, db):
+        tenant, resv = self._paid_cancelled(db)  # 定金 NT$200
+        refunded = deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, amount_cents=10000,
+        )
+        assert refunded.deposit_status == "refunded"
+        assert refunded.deposit_refunded_cents == 10000
+        rows = self._refund_notifications(db, resv.id)
+        assert len(rows) == 1
+        assert "部分退款 NT$100" in rows[0].payload_text
+        assert "NT$200" in rows[0].payload_text
+
+    def test_full_refund_notifies_full_text(self, db):
+        tenant, resv = self._paid_cancelled(db)
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id, actor_user_id=1
+        )
+        db.refresh(resv)
+        assert resv.deposit_refunded_cents == 20000
+        rows = self._refund_notifications(db, resv.id)
+        assert len(rows) == 1 and "全額退款" in rows[0].payload_text
+
+    def test_partial_refund_amount_validation(self, db):
+        tenant, resv = self._paid_cancelled(db)
+        for bad in (0, -100, 20100, 150):  # 0/負數/超額/非整數元
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=tenant.id, reservation_id=resv.id,
+                    actor_user_id=1, amount_cents=bad,
+                )
+        db.refresh(resv)
+        # 驗證失敗不落任何狀態(仍可正常退款)
+        assert resv.deposit_status == "paid"
+        assert resv.deposit_refund_attempts == 0
+
+    def test_ecpay_partial_refund_passes_amount(self, db, monkeypatch):
+        monkeypatch.setattr(
+            payment_config_svc,
+            "effective_payment_config",
+            lambda *_: SimpleNamespace(
+                provider="ecpay", environment="prod", merchant_id="3000007"
+            ),
+        )
+        tenant, resv = self._paid_cancelled(
+            db, provider="ecpay", payment_type="Credit_CreditCard"
+        )
+
+        class FakeClient:
+            def refund_credit(self, **kwargs):
+                assert kwargs["amount_twd"] == 50  # 部分金額傳給綠界
+                return {"RtnCode": "1", "RtnMsg": "Success"}
+
+        deposit_svc.request_full_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, amount_cents=5000, ecpay_client=FakeClient(),
+        )
+        db.refresh(resv)
+        assert resv.deposit_status == "refunded"
+        assert resv.deposit_refunded_cents == 5000
+
+    def test_manual_confirm_partial_amount(self, db, monkeypatch):
+        monkeypatch.setattr(
+            payment_config_svc,
+            "effective_payment_config",
+            lambda *_: SimpleNamespace(
+                provider="ecpay", environment="prod", merchant_id="3000007"
+            ),
+        )
+        tenant, resv = self._paid_cancelled(
+            db, provider="ecpay", payment_type="Credit_CreditCard"
+        )
+
+        class TimeoutClient:
+            def refund_credit(self, **_kwargs):
+                raise TimeoutError("unknown provider result")
+
+        with pytest.raises(deposit_svc.DepositRefundError):
+            deposit_svc.request_full_refund(
+                db, tenant_id=tenant.id, reservation_id=resv.id,
+                actor_user_id=1, ecpay_client=TimeoutClient(),
+            )
+        deposit_svc.confirm_manual_refund(
+            db, tenant_id=tenant.id, reservation_id=resv.id,
+            actor_user_id=1, note="綠界後台退款單 RF999", amount_cents=8000,
+        )
+        db.refresh(resv)
+        assert resv.deposit_refunded_cents == 8000
+        rows = self._refund_notifications(db, resv.id)
+        assert len(rows) == 1 and "部分退款 NT$80" in rows[0].payload_text
+
     def test_non_credit_payment_never_calls_credit_refund_api(self, db):
         tenant, resv = self._paid_cancelled(
             db, provider="ecpay", payment_type="ATM_TAISHIN"

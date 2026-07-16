@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime
+import secrets
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -23,6 +24,38 @@ from saas_mvp.models.order import (
 from saas_mvp.models.order_item import OrderItem
 from saas_mvp.models.product import Product
 from saas_mvp.services.tenants import tenant_query
+
+
+# ── 訂單交易編號（≤20 英數、唯一且不可猜） ───────────────────────────────────
+
+def _base36(n: int) -> str:
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while n:
+        n, r = divmod(n, 36)
+        out = chars[r] + out
+    return out or "0"
+
+
+def gen_order_trade_no(order_id: int) -> str:
+    """≤20 英數、唯一且**不可猜**(綠界 MerchantTradeNo 上限 20)。
+
+    格式:OD + id36 + 隨機 hex 填滿至 20。隨機段(≥32-bit)是訂單結帳頁的
+    capability key —— URL 以 trade_no 為鍵而非可枚舉的 order_id,未授權者
+    無法枚舉他人訂單、洩漏金額(PEA-3)。id36 前綴確保跨訂單唯一。
+    """
+    prefix = f"OD{_base36(order_id)}"
+    rand_len = max(6, 20 - len(prefix))
+    return (prefix + secrets.token_hex(rand_len).upper())[:20]
+
+
+def ensure_order_trade_no(db: Session, order: Order) -> str:
+    """補齊 trade_no(pre-deploy 舊單可能沒有);有則沿用,新產生即 commit。"""
+    if not order.merchant_trade_no:
+        order.merchant_trade_no = gen_order_trade_no(order.id)
+        db.commit()
+        db.refresh(order)
+    return order.merchant_trade_no
 
 
 # ── 下單例外（REST 轉 HTTP、webhook 轉友善訊息） ──────────────────────────────
@@ -192,6 +225,9 @@ def create_order(
     )
     db.add(order)
     db.flush()  # 取得 order.id
+    # 建單即產生不可猜 trade_no:checkout 頁以此為 URL 鍵(非可枚舉的 order.id),
+    # 未授權者無法枚舉他人訂單/洩漏金額(PEA-3,比照定金 PEA-1/2 修法)。
+    order.merchant_trade_no = gen_order_trade_no(order.id)
 
     total = 0
     for product_id in sorted(merged):

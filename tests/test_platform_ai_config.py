@@ -10,8 +10,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from saas_mvp.ai import AnthropicAssistant, StubAIAssistant, get_assistant
-from saas_mvp.ai.agent import AnthropicAgent, StubAgent, get_agent
+from saas_mvp.ai import MiniMaxAssistant, StubAIAssistant, get_assistant
+from saas_mvp.ai.agent import MiniMaxAgent, StubAgent, get_agent
 from saas_mvp.app import create_app
 from saas_mvp.config import settings
 from saas_mvp.db import Base, get_db
@@ -92,8 +92,8 @@ def test_admin_saves_encrypted_key_and_all_ai_paths_change_immediately(client):
         assert row.api_key == key
         assert key.encode() not in row.api_key_enc
         assert row.updated_by_user_id == db.query(User).filter_by(email=email).one().id
-        assert isinstance(get_assistant(db), AnthropicAssistant)
-        assert isinstance(get_agent(db), AnthropicAgent)
+        assert isinstance(get_assistant(db), MiniMaxAssistant)
+        assert isinstance(get_agent(db), MiniMaxAgent)
         assert db.query(AuditLog).filter_by(action="platform.ai.update").count() == 1
 
     page = client.get("/ui/admin/ai-settings")
@@ -184,7 +184,7 @@ def test_reset_uses_environment_fallback_or_safe_stub(client, monkeypatch):
     with _Session() as db:
         status = service.ai_status(db, settings)
         assert status["source"] == "environment"
-        assert isinstance(get_assistant(db), AnthropicAssistant)
+        assert isinstance(get_assistant(db), MiniMaxAssistant)
 
 
 def test_unconfigured_page_explains_faq_fallback(client):

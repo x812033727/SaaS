@@ -4,11 +4,11 @@
 reservation_id),mutation 永遠走既有 postback 確認 → 服務層確定性路徑
 (含擁有者驗證);LLM 幻覺不可能直接改資料。
 
-* ``AnthropicAgent``(D2):MiniMax Direct API 最多 3 輪，提供 4 個唯讀
+* ``MiniMaxAgent``(D2):MiniMax Direct API 最多 3 輪，提供 4 個唯讀
   function tools，最後以 propose_action 工具收斂。內部 loop 不加計額度
   (每則用戶訊息仍只扣 1)。
 * ``StubAgent``:關鍵字/正則規則,離線決定性,測試與未設 API key 時用。
-* 歷史(D3):converse 接受 history=[(role, text)],只有 AnthropicAgent 用。
+* 歷史(D3):converse 接受 history=[(role, text)],只有 MiniMaxAgent 用。
 """
 
 from __future__ import annotations
@@ -178,7 +178,7 @@ def _turn_from(data: dict) -> AgentTurn:
     )
 
 
-class AnthropicAgent(AIAgent):
+class MiniMaxAgent(AIAgent):
     """Direct MiniMax API agent with read-only tools and typed output."""
 
     def __init__(
@@ -205,9 +205,7 @@ class AnthropicAgent(AIAgent):
     def _client(self):
         if self._client_factory is not None:
             return self._client_factory()
-        import anthropic
-
-        return anthropic.Anthropic(api_key=self._api_key)
+        raise AIError("legacy converse path requires an injected client_factory")
 
     def converse(
         self, text: str, slots: dict, context: str, *,
@@ -341,7 +339,7 @@ def get_agent(db=None) -> AIAgent:
 
     config = effective_ai_config(db, settings)
     if config is not None:
-        return AnthropicAgent(
+        return MiniMaxAgent(
             api_key=config.api_key, base_url=config.base_url, model=config.model
         )
     return StubAgent()
