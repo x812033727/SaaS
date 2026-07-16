@@ -46,6 +46,9 @@
 # 每 10 分鐘（從 :06 起）:webhook 健康檢查(pending 超時/失敗率;異常 capture_alert + exit 1)
 6-59/10 * * * * python -m saas_mvp.ops.check_webhook_health
 
+# 每 6 小時 :18：重驗超過 24h 的有效 LINE 憑證（每租戶預算 + circuit breaker）
+18 */6 * * * python -m saas_mvp.ops.reverify_line_credentials
+
 # 每小時 20 分:重試開立失敗的電子發票
 20 * * * * python -m saas_mvp.ops.retry_failed_invoices --apply
 

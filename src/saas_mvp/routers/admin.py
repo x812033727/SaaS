@@ -16,6 +16,7 @@ from saas_mvp.deps import get_db, get_current_actor, require_admin
 from saas_mvp.auth.dependencies import Actor
 from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
 from saas_mvp.models.tenant import Tenant
+from saas_mvp.models.line_channel_config import CredentialStatus
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import line_config as line_config_svc
@@ -48,7 +49,7 @@ class AdminLineBotRow(BaseModel):
     has_line_config: bool
     has_channel_secret: bool
     has_access_token: bool
-    credential_status: str | None = None
+    credential_status: CredentialStatus | None = None
     line_bot_user_id: str | None = None
     default_target_lang: str | None = None
     today_count: int
@@ -138,7 +139,7 @@ class AdminLineConfigResponse(BaseModel):
     has_access_token: bool
     default_target_lang: str
     bot_mode: str = "translation"
-    credential_status: str = "unchecked"
+    credential_status: CredentialStatus = CredentialStatus.UNCHECKED
     credential_last_error: str | None = None
     credential_checked_at: str | None = None
     created_at: str | None = None

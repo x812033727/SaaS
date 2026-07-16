@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from saas_mvp.config import settings
 from saas_mvp.line_client import (
     LineBotInfoClient,
     LineBotInfoCredentialError,
@@ -28,6 +29,7 @@ from saas_mvp.line_client import (
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.line_channel_config import (
     DEFAULT_BOT_MODE,
+    CredentialStatus,
     InvalidBotModeError,
     InvalidTargetLangError,
     LineChannelConfig,
@@ -38,11 +40,6 @@ from saas_mvp.models.line_channel_config import (
 
 logger = logging.getLogger(__name__)
 
-_STATUS_UNCHECKED = "unchecked"
-_STATUS_VALID = "valid"
-_STATUS_INVALID = "invalid"
-_STATUS_ERROR = "error"
-_STATUS_CONFLICT = "conflict"
 _ERROR_MAX_LEN = 255
 
 
@@ -55,7 +52,7 @@ def _clip_error(message: str) -> str:
 
 
 def _normalize_credential_status(value: str | None) -> str:
-    return value or _STATUS_UNCHECKED
+    return CredentialStatus(value or CredentialStatus.UNCHECKED.value).value
 
 
 def _to_response(cfg: LineChannelConfig) -> dict:
@@ -88,23 +85,48 @@ def _access_token_changed(cfg: LineChannelConfig, access_token: str) -> bool:
 
 def _set_unchecked_for_token_change(cfg: LineChannelConfig) -> None:
     cfg.line_bot_user_id = None
-    cfg.credential_status = _STATUS_UNCHECKED
+    cfg.credential_status = CredentialStatus.UNCHECKED.value
     cfg.credential_last_error = None
     cfg.credential_checked_at = None
+    cfg.verify_attempt_count = 0
+    cfg.verify_attempt_window_start = None
 
 
 def _mark_credential_status(
     db: Session,
     cfg: LineChannelConfig,
     *,
-    status_value: str,
+    status_value: CredentialStatus,
     error: str | None,
 ) -> None:
-    cfg.credential_status = status_value
+    cfg.credential_status = status_value.value
     cfg.credential_last_error = _clip_error(error) if error else None
     cfg.credential_checked_at = _utcnow()
     db.commit()
     db.refresh(cfg)
+
+
+def _reserve_verify_attempt(db: Session, cfg: LineChannelConfig) -> bool:
+    """原子保留每租戶每小時的 bot/info 驗證預算。"""
+    db.refresh(cfg, with_for_update=True)
+    now = _utcnow()
+    start = cfg.verify_attempt_window_start
+    if start is not None and start.tzinfo is None:
+        start = start.replace(tzinfo=datetime.timezone.utc)
+    if start is None or now - start >= datetime.timedelta(hours=1):
+        cfg.verify_attempt_window_start = now
+        cfg.verify_attempt_count = 0
+    if cfg.verify_attempt_count >= settings.line_verify_max_attempts_per_hour:
+        retry_at = (start or now) + datetime.timedelta(hours=1)
+        minutes = max(1, int((retry_at - now).total_seconds() // 60) + 1)
+        cfg.credential_last_error = f"rate_limited: retry after {minutes}m"
+        db.commit()
+        logger.warning("bot/info verify rate limited for tenant %s", cfg.tenant_id)
+        return False
+    cfg.verify_attempt_count += 1
+    db.commit()
+    db.refresh(cfg)
+    return True
 
 
 def _verify_and_mark_bot_info(
@@ -113,24 +135,27 @@ def _verify_and_mark_bot_info(
     *,
     tenant_id: int,
     bot_info_client: LineBotInfoClient,
-) -> None:
+) -> str:
+    if not _reserve_verify_attempt(db, cfg):
+        return "rate_limited"
     try:
         uid = bot_info_client.get_user_id(cfg.access_token)
         if not uid:
             _mark_credential_status(
                 db,
                 cfg,
-                status_value=_STATUS_INVALID,
+                status_value=CredentialStatus.INVALID,
                 error="LINE bot/info did not return a valid userId",
             )
-            return
+            return CredentialStatus.INVALID.value
 
         cfg.line_bot_user_id = uid
-        cfg.credential_status = _STATUS_VALID
+        cfg.credential_status = CredentialStatus.VALID.value
         cfg.credential_last_error = None
         cfg.credential_checked_at = _utcnow()
         db.commit()
         db.refresh(cfg)
+        return CredentialStatus.VALID.value
     except IntegrityError:
         logger.warning(
             "bot/info uid conflict for tenant %s, marking credential conflict",
@@ -142,9 +167,10 @@ def _verify_and_mark_bot_info(
         _mark_credential_status(
             db,
             cfg,
-            status_value=_STATUS_CONFLICT,
+            status_value=CredentialStatus.CONFLICT,
             error="LINE bot userId is already connected to another tenant",
         )
+        return CredentialStatus.CONFLICT.value
     except (LineBotInfoCredentialError, LineBotInfoParseError) as exc:
         logger.warning(
             "bot/info credential invalid for tenant %s: %s",
@@ -156,9 +182,14 @@ def _verify_and_mark_bot_info(
         _mark_credential_status(
             db,
             cfg,
-            status_value=_STATUS_INVALID,
-            error=f"{type(exc).__name__}: {exc}",
+            status_value=CredentialStatus.INVALID,
+            error=(
+                f"LineBotInfoCredentialError: LINE_401:{exc.kind.value}"
+                if isinstance(exc, LineBotInfoCredentialError)
+                else f"{type(exc).__name__}: {exc}"
+            ),
         )
+        return CredentialStatus.INVALID.value
     except (LineBotInfoNetworkError, LineBotInfoError) as exc:
         logger.warning(
             "bot/info check failed for tenant %s: %s",
@@ -170,9 +201,10 @@ def _verify_and_mark_bot_info(
         _mark_credential_status(
             db,
             cfg,
-            status_value=_STATUS_ERROR,
+            status_value=CredentialStatus.ERROR,
             error=f"{type(exc).__name__}: {exc}",
         )
+        return CredentialStatus.ERROR.value
     except Exception as exc:  # noqa: BLE001 - legacy/fake clients may raise arbitrary errors
         logger.warning(
             "bot/info uid fetch failed for tenant %s, marking credential error",
@@ -184,9 +216,25 @@ def _verify_and_mark_bot_info(
         _mark_credential_status(
             db,
             cfg,
-            status_value=_STATUS_ERROR,
+            status_value=CredentialStatus.ERROR,
             error=f"{type(exc).__name__}: {exc}",
         )
+        return CredentialStatus.ERROR.value
+
+
+def verify_config_row(
+    db: Session,
+    cfg: LineChannelConfig,
+    *,
+    bot_info_client: LineBotInfoClient,
+) -> str:
+    """統一的憑證入口，供 request 與 scheduler 共用重試預算與狀態語意。"""
+    return _verify_and_mark_bot_info(
+        db,
+        cfg,
+        tenant_id=cfg.tenant_id,
+        bot_info_client=bot_info_client,
+    )
 
 
 def get_line_config(db: Session, tenant_id: int) -> dict:
@@ -262,7 +310,7 @@ def upsert_line_config(
     if token_changed:
         _set_unchecked_for_token_change(cfg)
     elif cfg.credential_status is None:
-        cfg.credential_status = _STATUS_UNCHECKED
+        cfg.credential_status = CredentialStatus.UNCHECKED.value
 
     db.commit()
     db.refresh(cfg)

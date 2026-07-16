@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.line_client import LineBotInfoClient, get_bot_info_client
 from saas_mvp.models.tenant import Tenant, normalize_store_type
+from saas_mvp.models.line_channel_config import CredentialStatus
 from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.routers.line_webhook import webhook_url_for
@@ -61,7 +62,7 @@ class TenantLineConfigResponse(BaseModel):
     has_access_token: bool
     default_target_lang: str
     bot_mode: str = "translation"
-    credential_status: str = "unchecked"
+    credential_status: CredentialStatus = CredentialStatus.UNCHECKED
     credential_last_error: str | None = None
     credential_checked_at: str | None = None
     # service 層已 .isoformat() 序列化，宣告為 str | None 避免重複序列化
