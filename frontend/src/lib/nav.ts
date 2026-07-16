@@ -23,9 +23,9 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "預約營運",
     items: [
-      { label: "預約管理", href: "/reservations", migrated: false },
-      { label: "行事曆", href: "/calendar", migrated: false },
-      { label: "顧客", href: "/customers", migrated: false },
+      { label: "預約管理", href: "/reservations", migrated: true },
+      { label: "行事曆", href: "/calendar", migrated: true },
+      { label: "顧客", href: "/customers", migrated: true },
       { label: "諮詢表／同意書", href: "/ui/client-forms", migrated: false },
       { label: "房間／設備", href: "/ui/resources", migrated: false },
       { label: "備註", href: "/ui/notes", migrated: false },
