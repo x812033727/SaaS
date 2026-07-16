@@ -35,16 +35,16 @@ _UID = "U" + "b" * 32
 
 @contextmanager
 def _fake_resp(body: dict):
-    """模擬 urlopen context manager，回傳指定 JSON body，並捕捉發出的 Request。"""
+    """httpx MockTransport 回指定 JSON body,並捕捉發出的 request。"""
+    from tests._line_http import json_response, mock_line_http
+
     captured = {}
 
-    @contextmanager
-    def _cm(req, timeout=None):
+    def handler(req):
         captured["req"] = req
-        captured["timeout"] = timeout
-        yield io.BytesIO(json.dumps(body).encode())
+        return json_response(200, body)
 
-    with mock.patch("urllib.request.urlopen", _cm):
+    with mock_line_http(handler):
         yield captured
 
 
@@ -55,10 +55,9 @@ def test_get_user_id_parses_and_sends_correct_request():
 
     assert uid == _UID
     req = cap["req"]
-    assert req.full_url == "https://api.line.me/v2/bot/info"
-    assert req.get_method() == "GET"
-    # header key 在 urllib 內被 capitalize 成 "Authorization"
-    assert req.get_header("Authorization") == "Bearer my-token"
+    assert str(req.url) == "https://api.line.me/v2/bot/info"
+    assert req.method == "GET"
+    assert req.headers["Authorization"] == "Bearer my-token"
 
 
 def test_get_user_id_missing_field_returns_none():
@@ -76,10 +75,9 @@ def test_get_user_id_empty_string_returns_none():
 def test_get_user_id_network_error_raises():
     client = HttpLineBotInfoClient()
 
-    def _boom(req, timeout=None):
-        raise OSError("connection refused")
+    from tests._line_http import mock_line_http, network_error
 
-    with mock.patch("urllib.request.urlopen", _boom):
+    with mock_line_http(network_error):
         with pytest.raises(LineBotInfoNetworkError):
             client.get_user_id("tok")
 
@@ -87,12 +85,9 @@ def test_get_user_id_network_error_raises():
 def test_get_user_id_http_error_raises():
     client = HttpLineBotInfoClient()
 
-    def _boom(req, timeout=None):
-        raise urllib.error.HTTPError(
-            "https://api.line.me/v2/bot/info", 401, "Unauthorized", {}, None
-        )
+    from tests._line_http import mock_line_http, text_response
 
-    with mock.patch("urllib.request.urlopen", _boom):
+    with mock_line_http(lambda req: text_response(401, "Unauthorized")):
         with pytest.raises(LineBotInfoCredentialError):
             client.get_user_id("tok")
 
@@ -108,13 +103,9 @@ def test_get_user_id_http_error_raises():
 def test_get_user_id_classifies_401_details(details, expected):
     client = HttpLineBotInfoClient()
 
-    def _boom(req, timeout=None):
-        body = io.BytesIO(json.dumps({"details": details}).encode())
-        raise urllib.error.HTTPError(
-            "https://api.line.me/v2/bot/info", 401, "Unauthorized", {}, body
-        )
+    from tests._line_http import json_response, mock_line_http
 
-    with mock.patch("urllib.request.urlopen", _boom):
+    with mock_line_http(lambda req: json_response(401, {"details": details})):
         with pytest.raises(LineBotInfoCredentialError) as caught:
             client.get_user_id("never-store-this-token")
     assert caught.value.kind is expected

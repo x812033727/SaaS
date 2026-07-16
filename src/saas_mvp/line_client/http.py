@@ -1,15 +1,18 @@
-"""真實 LINE Messaging API reply client。
+"""真實 LINE Messaging API 各 client。
 
-僅用 stdlib urllib（無額外 runtime deps）。
-任何失敗一律包成 LineReplyError，呼叫端不需處理底層例外。
+R4-P3:改用**模組級連線池化的 httpx.Client**(取代 per-request urllib 每次
+重開 TLS)。錯誤語意不變 —— 每個 client 仍把失敗轉成 line_client.base 的
+型別化例外。push 帶 LINE 官方冪等 header ``X-Line-Retry-Key`` 後可對
+429/5xx/網路錯誤 bounded retry;reply(replyToken 一次性)**不重試**。
 """
 
 from __future__ import annotations
 
 import json
 import re
-import urllib.error
-import urllib.request
+import uuid
+
+import httpx
 
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
@@ -42,6 +45,68 @@ _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 _LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
 _LINE_API_BASE = "https://api.line.me"
 _LINE_DATA_API_BASE = "https://api-data.line.me"
+
+# ── 連線池化 httpx client(R4-P3)────────────────────────────────────────────
+# 模組級單例:跨呼叫重用 keep-alive 連線,免每次重開 TLS。lazy init 讓測試在
+# import 期不建連線。測試以 httpx MockTransport / monkeypatch _client 注入,
+# 不打真實網路。
+_pooled_client: httpx.Client | None = None
+
+
+def _client() -> httpx.Client:
+    global _pooled_client
+    if _pooled_client is None:
+        _pooled_client = httpx.Client(
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=10.0, pool=3.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+            trust_env=False,  # 忽略環境 proxy 設定,行為可預期
+        )
+    return _pooled_client
+
+
+def _send(
+    method: str,
+    url: str,
+    *,
+    access_token: str,
+    json_body: dict | None = None,
+    timeout: float | None = None,
+    content: bytes | None = None,
+    content_type: str = "application/json",
+    retries: int = 0,
+    retry_key: str | None = None,
+) -> httpx.Response:
+    """發一次 LINE API 請求,回 httpx.Response(任何狀態碼都回,不 raise_for_status)。
+
+    網路層失敗(連線/逾時)在重試耗盡後 raise httpx.RequestError,由呼叫端映射為
+    型別化例外。retries>0 時對 429/5xx 與網路錯誤 bounded retry(指數退避以
+    attempt 計);**只可用於帶 retry_key 的冪等操作**(如 push)。
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    body = content
+    if json_body is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(json_body).encode()
+    elif content is not None:
+        headers["Content-Type"] = content_type
+    if retry_key:
+        headers["X-Line-Retry-Key"] = retry_key
+    attempt = 0
+    while True:
+        try:
+            resp = _client().request(
+                method, url, headers=headers, content=body, timeout=timeout
+            )
+        except httpx.RequestError:
+            if attempt < retries:
+                attempt += 1
+                continue
+            raise
+        if resp.status_code == 429 or resp.status_code >= 500:
+            if attempt < retries:
+                attempt += 1
+                continue
+        return resp
 
 # LINE userId 規格：U 後接 32 個 hex 字元。防禦性驗證，非法值當 None 處理。
 _LINE_USER_ID_RE = re.compile(r"^U[0-9a-f]{32}$")
@@ -115,36 +180,20 @@ class HttpLineReplyClient(LineReplyClient):
         message: dict = {"type": "text", "text": text}
         if quick_reply:
             message["quickReply"] = {"items": _quick_reply_items(quick_reply)}
-        payload = json.dumps(
-            {
-                "replyToken": reply_token,
-                "messages": [message],
-            }
-        ).encode()
-
-        req = urllib.request.Request(
-            self._api_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {access_token}",
-            },
-            method="POST",
-        )
-
+        # reply 用 replyToken(一次性)→ **不重試**,重送會 400 Invalid reply token。
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                # LINE API 成功時回 200，body 為 `{}`
-                resp.read()
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace") if exc.fp else ""
-            raise LineReplyError(
-                f"LINE reply API HTTP {exc.code}: {exc.reason} — {body[:200]}"
-            ) from exc
-        except OSError as exc:
+            resp = _send(
+                "POST", self._api_url, access_token=access_token,
+                json_body={"replyToken": reply_token, "messages": [message]},
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as exc:
             raise LineReplyError(f"LINE reply request failed: {exc}") from exc
-        except Exception as exc:
-            raise LineReplyError(f"Unexpected LINE reply error: {exc}") from exc
+        if resp.status_code >= 400:
+            raise LineReplyError(
+                f"LINE reply API HTTP {resp.status_code}: {resp.reason_phrase} "
+                f"— {resp.text[:200]}"
+            )
 
     def reply_flex(
         self,
@@ -160,38 +209,25 @@ class HttpLineReplyClient(LineReplyClient):
             LineReplyError: 任何網路或 API 錯誤。
         """
         message = {"type": "flex", "altText": alt_text[:400], "contents": contents}
-        payload = json.dumps(
-            {"replyToken": reply_token, "messages": [message]}
-        ).encode()
-
-        req = urllib.request.Request(
-            self._api_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {access_token}",
-            },
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                resp.read()
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace") if exc.fp else ""
-            raise LineReplyError(
-                f"LINE reply API HTTP {exc.code}: {exc.reason} — {body[:200]}"
-            ) from exc
-        except OSError as exc:
+            resp = _send(
+                "POST", self._api_url, access_token=access_token,
+                json_body={"replyToken": reply_token, "messages": [message]},
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as exc:
             raise LineReplyError(f"LINE reply request failed: {exc}") from exc
-        except Exception as exc:
-            raise LineReplyError(f"Unexpected LINE reply error: {exc}") from exc
+        if resp.status_code >= 400:
+            raise LineReplyError(
+                f"LINE reply API HTTP {resp.status_code}: {resp.reason_phrase} "
+                f"— {resp.text[:200]}"
+            )
 
 
 class HttpLinePushClient(LinePushClient):
     """呼叫真實 LINE Messaging API 的 push client。
 
-    僅用 stdlib urllib。任何失敗一律包成 LinePushError。
+    透過連線池化 httpx.Client(R4-P3);push 帶 X-Line-Retry-Key 冪等重試。
 
     Args:
         api_url: push endpoint（預設官方 URL，測試時可替換）。
@@ -265,35 +301,27 @@ class HttpLinePushClient(LinePushClient):
     def _push_messages(
         self, to_user_id: str, messages: list[dict], access_token: str
     ) -> None:
-        payload = json.dumps({"to": to_user_id, "messages": messages}).encode()
-
-        req = urllib.request.Request(
-            self._api_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {access_token}",
-            },
-            method="POST",
-        )
-
+        # push 帶 LINE 官方冪等 header X-Line-Retry-Key(整個重試序列同一把 key,
+        # LINE 以此去重),故可對 429/5xx/網路錯誤 bounded retry×2。
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                # LINE API 成功時回 200，body 為 `{}`
-                resp.read()
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace") if exc.fp else ""
-            raise LinePushError(
-                f"LINE push API HTTP {exc.code}: {exc.reason} — {body[:200]}"
-            ) from exc
-        except OSError as exc:
+            resp = _send(
+                "POST", self._api_url, access_token=access_token,
+                json_body={"to": to_user_id, "messages": messages},
+                timeout=self._timeout,
+                retries=2,
+                retry_key=str(uuid.uuid4()),
+            )
+        except httpx.RequestError as exc:
             raise LinePushError(f"LINE push request failed: {exc}") from exc
-        except Exception as exc:
-            raise LinePushError(f"Unexpected LINE push error: {exc}") from exc
+        if resp.status_code >= 400:
+            raise LinePushError(
+                f"LINE push API HTTP {resp.status_code}: {resp.reason_phrase} "
+                f"— {resp.text[:200]}"
+            )
 
 
 class HttpLineRichMenuClient(LineRichMenuClient):
-    """呼叫真實 LINE Rich Menu API 的 client（僅用 stdlib urllib）。
+    """呼叫真實 LINE Rich Menu API 的 client(連線池化 httpx)。
 
     Args:
         api_base: 一般 API base（建立/設預設/刪除）。
@@ -323,22 +351,21 @@ class HttpLineRichMenuClient(LineRichMenuClient):
         data: bytes | None = None,
         content_type: str | None = None,
     ) -> bytes:
-        headers = {"Authorization": f"Bearer {access_token}"}
-        if content_type:
-            headers["Content-Type"] = content_type
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                return resp.read()
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace") if exc.fp else ""
-            raise LineRichMenuError(
-                f"LINE Rich Menu API HTTP {exc.code}: {exc.reason} — {body[:200]}"
-            ) from exc
-        except OSError as exc:
+            resp = _send(
+                method, url, access_token=access_token,
+                content=data,
+                content_type=content_type or "application/json",
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as exc:
             raise LineRichMenuError(f"LINE Rich Menu request failed: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise LineRichMenuError(f"Unexpected LINE Rich Menu error: {exc}") from exc
+        if resp.status_code >= 400:
+            raise LineRichMenuError(
+                f"LINE Rich Menu API HTTP {resp.status_code}: {resp.reason_phrase} "
+                f"— {resp.text[:200]}"
+            )
+        return resp.content
 
     def create(self, rich_menu: dict, *, access_token: str) -> str:
         raw = self._request(
@@ -384,7 +411,7 @@ class HttpLineRichMenuClient(LineRichMenuClient):
 class HttpLineBotInfoClient(LineBotInfoClient):
     """呼叫真實 LINE `GET /v2/bot/info` 取得 bot userId 的 client。
 
-    僅用 stdlib urllib。HTTP/網路/解析失敗會轉成 line_client.base 的
+    透過連線池化 httpx;HTTP/網路/解析失敗轉成 line_client.base 的
     型別化例外，由呼叫端決定狀態落 DB，不阻擋設定儲存。
 
     Args:
@@ -402,21 +429,20 @@ class HttpLineBotInfoClient(LineBotInfoClient):
 
     def get_user_id(self, access_token: str) -> str | None:
         """呼叫 bot/info，回傳 ``userId``；回應缺欄位時回 None。"""
-        req = urllib.request.Request(
-            self._api_url,
-            headers={"Authorization": f"Bearer {access_token}"},
-            method="GET",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read().decode()
-        except urllib.error.HTTPError as exc:
-            if exc.code in {400, 401, 403}:
+            resp = _send(
+                "GET", self._api_url, access_token=access_token, timeout=self._timeout
+            )
+        except httpx.RequestError as exc:
+            raise LineBotInfoNetworkError("LINE bot/info network error") from exc
+        if resp.status_code >= 400:
+            code = resp.status_code
+            if code in {400, 401, 403}:
                 from saas_mvp.line_client.base import LineAuthErrorKind
 
                 kind = LineAuthErrorKind.UNKNOWN_AUTH
-                body = exc.read().decode(errors="replace") if exc.fp else ""
-                if exc.code == 401 and body:
+                body = resp.text
+                if code == 401 and body:
                     try:
                         details = json.loads(body).get("details", [])
                     except (json.JSONDecodeError, AttributeError):
@@ -433,12 +459,11 @@ class HttpLineBotInfoClient(LineBotInfoClient):
                     elif "channel secret" in joined:
                         kind = LineAuthErrorKind.CHANNEL_SECRET_INVALID
                 raise LineBotInfoCredentialError(
-                    f"LINE bot/info credential rejected: HTTP {exc.code}",
+                    f"LINE bot/info credential rejected: HTTP {code}",
                     kind=kind,
-                ) from exc
-            raise LineBotInfoError(f"LINE bot/info HTTP {exc.code}") from exc
-        except OSError as exc:
-            raise LineBotInfoNetworkError("LINE bot/info network error") from exc
+                )
+            raise LineBotInfoError(f"LINE bot/info HTTP {code}")
+        raw = resp.text
 
         try:
             data = json.loads(raw)
@@ -469,32 +494,26 @@ class HttpLineWebhookAdminClient(LineWebhookAdminClient):
         access_token: str,
         payload: dict | None = None,
     ) -> dict:
-        data = json.dumps(payload).encode() if payload is not None else None
-        req = urllib.request.Request(
-            f"{self._api_base}{path}",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-            method=method,
-        )
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read().decode() or "{}"
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace") if exc.fp else ""
-            if exc.code in {401, 403}:
-                raise LineWebhookAdminCredentialError(
-                    f"LINE 拒絕 Channel access token（HTTP {exc.code}）"
-                ) from exc
-            raise LineWebhookAdminError(
-                f"LINE Webhook API HTTP {exc.code}: {body[:200] or exc.reason}"
-            ) from exc
-        except OSError as exc:
+            resp = _send(
+                method, f"{self._api_base}{path}", access_token=access_token,
+                json_body=payload if payload is not None else None,
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as exc:
             raise LineWebhookAdminNetworkError(
                 "無法連線到 LINE Webhook API，請稍後重試"
             ) from exc
+        if resp.status_code >= 400:
+            if resp.status_code in {401, 403}:
+                raise LineWebhookAdminCredentialError(
+                    f"LINE 拒絕 Channel access token（HTTP {resp.status_code}）"
+                )
+            raise LineWebhookAdminError(
+                f"LINE Webhook API HTTP {resp.status_code}: "
+                f"{resp.text[:200] or resp.reason_phrase}"
+            )
+        raw = resp.text or "{}"
 
         try:
             parsed = json.loads(raw)
@@ -552,7 +571,7 @@ class HttpLineWebhookAdminClient(LineWebhookAdminClient):
 class HttpLineProfileClient(LineProfileClient):
     """呼叫真實 LINE `GET /v2/bot/profile/{userId}` 取得使用者 profile 的 client。
 
-    僅用 stdlib urllib。HTTP/網路/解析失敗轉成 line_client.base 的型別化例外，
+    透過連線池化 httpx;HTTP/網路/解析失敗轉成 line_client.base 的型別化例外,
     由呼叫端決定是否降級（預約流程降級為 display_name=None，不阻擋建單）。
 
     Args:
@@ -570,22 +589,20 @@ class HttpLineProfileClient(LineProfileClient):
 
     def get_profile(self, user_id: str, *, access_token: str) -> LineUserProfile | None:
         """呼叫 profile API，回傳 :class:`LineUserProfile`；回應非物件時回 None。"""
-        req = urllib.request.Request(
-            f"{self._api_base}/v2/bot/profile/{user_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            method="GET",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read().decode()
-        except urllib.error.HTTPError as exc:
-            if exc.code in {400, 401, 403}:
-                raise LineProfileCredentialError(
-                    f"LINE profile credential rejected: HTTP {exc.code}"
-                ) from exc
-            raise LineProfileError(f"LINE profile HTTP {exc.code}") from exc
-        except OSError as exc:
+            resp = _send(
+                "GET", f"{self._api_base}/v2/bot/profile/{user_id}",
+                access_token=access_token, timeout=self._timeout,
+            )
+        except httpx.RequestError as exc:
             raise LineProfileNetworkError("LINE profile network error") from exc
+        if resp.status_code >= 400:
+            if resp.status_code in {400, 401, 403}:
+                raise LineProfileCredentialError(
+                    f"LINE profile credential rejected: HTTP {resp.status_code}"
+                )
+            raise LineProfileError(f"LINE profile HTTP {resp.status_code}")
+        raw = resp.text
 
         try:
             data = json.loads(raw)

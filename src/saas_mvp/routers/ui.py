@@ -194,6 +194,46 @@ async def _enforce_csrf(request: Request) -> None:
 
 _log = logging.getLogger(__name__)
 
+
+def maybe_renew_ui_cookie(request: Request, response: Response) -> None:
+    """滑動續期(R4-C1):有效 token 剩餘 < 門檻時靜默換新並重設 cookie。
+
+    由 app 層 middleware 對 /ui 回應呼叫(handler 都直接回 TemplateResponse,
+    dependency 注入的 Response 上 set_cookie 不會合併進最終回應,故不能走
+    dependency)。best-effort:任何失敗(壞票/過期)一律吞掉,絕不影響原請求
+    —— 過期自然由既有登入守門處理。``imp`` 代管票不續(30 分硬上限);超過
+    session_renew_max_hours 總視窗不續(強制重登)。csrf 沿用舊值不輪替。
+    """
+    import datetime as _dt
+
+    token = request.cookies.get(_UI_COOKIE_NAME)
+    if not token:
+        return
+    try:
+        from saas_mvp.auth.security import create_access_token, decode_access_token
+
+        payload = decode_access_token(token)
+        if payload.get("imp") is not None:
+            return
+        now_ts = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+        if payload["exp"] - now_ts > settings.session_renew_threshold_minutes * 60:
+            return
+        oa = int(payload.get("oa") or now_ts)
+        if now_ts - oa > settings.session_renew_max_hours * 3600:
+            return
+        new_token = create_access_token(
+            user_id=int(payload["sub"]),
+            tenant_id=payload["tenant_id"],
+            original_auth_ts=oa,
+        )
+        _set_auth_cookie(
+            response, new_token,
+            csrf_value=request.cookies.get(_CSRF_COOKIE_NAME) or None,
+        )
+    except Exception:  # noqa: BLE001 — 續期永不影響原請求
+        pass
+
+
 router = APIRouter(
     prefix="/ui",
     tags=["ui"],
@@ -208,12 +248,17 @@ _AI_QUESTION_MAX_LEN = 2000
 # ── 共用工具 ────────────────────────────────────────────────────────────────
 
 
-def _set_auth_cookie(response: Response, token: str) -> None:
+def _set_auth_cookie(
+    response: Response, token: str, *, csrf_value: str | None = None
+) -> None:
     """把 JWT 寫入 httpOnly cookie；prod 加 Secure，dev/test 不加（方便本機/測試）。
 
     一併發放 double-submit CSRF cookie（非 httpOnly——前端模板/HTMX 需可讀
     回傳；token 本身不含任何機密，防護力來自「攻擊者跨站無法讀取」）。
     所有登入路徑（/ui/login、/ui/register、OAuth callback）皆經此函式。
+
+    csrf_value(R4-C1 滑動續期用):續期時**沿用舊 csrf 值只延長壽命** —
+    輪替會讓已渲染頁面的 hidden field 與新 cookie 不符,壞掉 in-flight 表單。
     """
     response.set_cookie(
         key=_UI_COOKIE_NAME,
@@ -226,7 +271,7 @@ def _set_auth_cookie(response: Response, token: str) -> None:
     )
     response.set_cookie(
         key=_CSRF_COOKIE_NAME,
-        value=secrets.token_urlsafe(32),
+        value=csrf_value or secrets.token_urlsafe(32),
         httponly=False,
         samesite="lax",
         secure=settings.env not in ("dev", "test"),
@@ -1568,6 +1613,24 @@ def admin_overview(
             actor,
             overview=admin_svc.platform_overview(db),
             readiness=readiness,
+        ),
+    )
+
+
+@router.get("/admin/ops", response_class=HTMLResponse)
+def admin_ops(
+    request: Request,
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """營運總覽(R4-P2):MRR/扣款成功率/即將續扣 + 租戶健康表。"""
+    return templates.TemplateResponse(
+        "admin/ops.html",
+        _ctx(
+            request,
+            actor,
+            revenue=admin_svc.revenue_overview(db),
+            health_rows=admin_svc.tenant_health_rows(db),
         ),
     )
 

@@ -231,6 +231,35 @@ def run_checks(
     except Exception as exc:  # noqa: BLE001
         add(Check("gcal_oauth", "WARN", f"無法讀取 Google OAuth 設定:{type(exc).__name__}"))
 
+    # ── Redis 後端(多 worker 部署):backend=redis 時 runtime 若 fallback
+    # memory,限流視窗會被放大 worker 數倍、SSE 只達單 worker — 必須 FAIL。
+    import os as _os
+
+    workers = int(_os.environ.get("GUNICORN_WORKERS", "1") or "1")
+    redis_backends = [
+        name for name, backend in (
+            ("rate_limit", settings.rate_limit_backend),
+            ("events", settings.events_backend),
+        ) if backend == "redis"
+    ]
+    if redis_backends:
+        try:
+            import redis as _redis
+
+            _redis.from_url(settings.redis_url).ping()
+            add(Check("redis", "PASS",
+                      f"{'+'.join(redis_backends)} 後端連線正常({settings.redis_url})"))
+        except Exception as exc:  # noqa: BLE001
+            add(Check("redis", "FAIL",
+                      f"backend=redis 但連線失敗({type(exc).__name__});"
+                      "runtime 會 fallback memory:多 worker 下限流被放大、SSE 只達單 worker"))
+    elif workers > 1:
+        add(Check("redis", "WARN",
+                  f"GUNICORN_WORKERS={workers} 但 rate_limit/events 後端為 memory"
+                  "(限流視窗放大 N 倍、SSE 只達單 worker);建議設 redis"))
+    else:
+        add(Check("redis", "PASS", "單 worker + memory 後端(開發預設)"))
+
     # 簡訊供應商三態:mitake 憑證齊=PASS;選了 mitake 但缺憑證=FAIL(設定矛盾);
     # stub=旗標開著才 WARN(避免營運者誤以為有真補送)。
     if settings.sms_provider == "mitake":

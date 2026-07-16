@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}營運總覽 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>營運總覽</h1>
+
+<div class="card">
+  <h2>收入</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">月經常性收入(MRR)</div><div class="value">NT${{ revenue.mrr_total_cents // 100 }}</div></div>
+    <div class="stat"><div class="label">30 天扣款成功率</div>
+      <div class="value">{% if revenue.charge_success_rate_30d is none %}—{% else %}{{ (revenue.charge_success_rate_30d * 100) | round(1) }}%{% endif %}</div></div>
+    <div class="stat"><div class="label">30 天扣款筆數</div><div class="value">{{ revenue.charges_30d }}</div></div>
+    <div class="stat"><div class="label">14 天內續扣</div><div class="value">{{ revenue.upcoming_renewals | length }}</div></div>
+  </div>
+
+  {% if revenue.mrr_by_plan %}
+  <h3>MRR 組成</h3>
+  <table>
+    <thead><tr><th>方案／功能</th><th>訂閱數</th><th>MRR</th></tr></thead>
+    <tbody>
+      {% for row in revenue.mrr_by_plan %}
+      <tr><td>{{ row.label }}</td><td>{{ row.subscriptions }}</td><td>NT${{ row.mrr_cents // 100 }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無 active 訂閱(stub 一鍵開通不計入 MRR)。</p>{% endif %}
+
+  {% if revenue.upcoming_renewals %}
+  <h3>14 天內即將續扣</h3>
+  <table>
+    <thead><tr><th>租戶</th><th>功能</th><th>金額</th><th>預計扣款</th></tr></thead>
+    <tbody>
+      {% for u in revenue.upcoming_renewals %}
+      <tr><td>#{{ u.tenant_id }}</td><td>{{ u.feature }}</td><td>NT${{ u.amount_cents // 100 }}</td><td>{{ u.next_charge_at[:10] }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>租戶健康({{ health_rows | length }} 個租戶)</h2>
+  <p class="muted">點欄位標題可排序。預約數為近 30 天(每日預聚合)。</p>
+  <table id="health-table">
+    <thead>
+      <tr>
+        <th onclick="sortHealth(0,false)">租戶</th>
+        <th onclick="sortHealth(1,false)">方案</th>
+        <th onclick="sortHealth(2,false)">LINE 憑證</th>
+        <th onclick="sortHealth(3,false)">最後 webhook</th>
+        <th onclick="sortHealth(4,true)">30天預約</th>
+        <th onclick="sortHealth(5,true)">AI 用量</th>
+        <th onclick="sortHealth(6,true)">推播用量</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in health_rows %}
+      <tr>
+        <td>#{{ r.tenant_id }} {{ r.name }}{% if not r.is_active %} <span class="badge off">停用</span>{% endif %}</td>
+        <td>{{ r.plan }}</td>
+        <td>
+          {% if r.line_credential == 'valid' %}<span class="badge on">已驗證</span>
+          {% elif r.line_credential == 'invalid' %}<span class="badge off">失敗</span>
+          {% elif r.line_credential == 'none' %}<span class="muted">未設定</span>
+          {% else %}<span class="badge">{{ r.line_credential }}</span>{% endif %}
+        </td>
+        <td>{% if r.last_webhook_at %}{{ r.last_webhook_at[:16] | replace('T', ' ') }}{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td data-sort="{{ r.bookings_30d }}">{{ r.bookings_30d }}</td>
+        <td data-sort="{{ r.ai_used }}">{{ r.ai_used }}</td>
+        <td data-sort="{{ r.push_used }}">{{ r.push_used }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+// 純前端排序(此頁無框架);numeric 欄讀 data-sort。
+let _healthAsc = {};
+function sortHealth(col, numeric) {
+  const tbody = document.querySelector('#health-table tbody');
+  const rows = Array.from(tbody.rows);
+  const asc = !_healthAsc[col];
+  _healthAsc = { [col]: asc };
+  rows.sort((a, b) => {
+    let x, y;
+    if (numeric) {
+      x = Number(a.cells[col].dataset.sort || 0);
+      y = Number(b.cells[col].dataset.sort || 0);
+    } else {
+      x = a.cells[col].textContent.trim();
+      y = b.cells[col].textContent.trim();
+      return asc ? x.localeCompare(y) : y.localeCompare(x);
+    }
+    return asc ? x - y : y - x;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+</script>
+{% endblock %}

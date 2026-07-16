@@ -133,6 +133,10 @@ def retry_stuck_events(
 
 def main(argv: list[str] | None = None, out: TextIO = sys.stdout) -> int:
     import_all_models()
+    # scheduler 行程無 app lifespan:主動接上 redis 發佈端,否則本行程的
+    # publish_event 只 deliver_local(無訂閱者)⇒ SSE 通知靜默丟失。
+    from saas_mvp.services.events import enable_redis_publisher
+    enable_redis_publisher()
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--dry-run", action="store_true", default=True)
