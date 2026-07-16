@@ -42,6 +42,9 @@
       <div class="side-brand">LINE Bot 管理</div>
       <nav class="side-nav">
         <a class="side-link{% if path in ('/ui', '/ui/') %} active{% endif %}" href="/ui/">儀表板</a>
+        {# 新版 Next.js 主控台入口(R3-C2);需 nginx 加 /console 反代,未套用時此連結 404,
+           故僅加一個入口、不改動任何既有連結。 #}
+        <a class="side-link" href="/console/dashboard">新版主控台 <span class="muted">Beta</span></a>
         <details class="side-group"{% if path.startswith(('/ui/booking', '/ui/calendar', '/ui/customers', '/ui/client-forms', '/ui/resources', '/ui/notes')) %} open{% endif %}>
           <summary>預約營運</summary>
           {{ item('/ui/booking', '預約管理') }}

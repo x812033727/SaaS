@@ -124,3 +124,28 @@ cd /opt/saas && docker-compose exec web python -m saas_mvp.ops.check_readiness
 - [ ] 以瀏覽器開發工具確認公開表單回應含 `Cache-Control: no-store`、`Referrer-Policy: no-referrer` 與 `X-Robots-Tag: noindex`，且管理稽核可看到範本建立、問題新增及啟停操作。
 
 表單連結是高強度隨機能力連結，收到連結者可填寫或查看該次表單；請勿貼到公開群組。系統保存的是簽署人姓名、同意時間、範本快照與稽核資訊，並非政府核發的數位憑證。涉及醫療行為或特殊個資時，正式同意文字、保存年限與存取規則仍應由業者依適用法規及專業顧問確認。
+
+## 12. 新版主控台(saas-console,/console)上線
+
+console 是掛在 `/console` 底下的 Next.js 前端(compose 服務 `frontend`,綁 `127.0.0.1:3100`)。
+**nginx 為主機手動設定(不在 repo),部署 console 相關 PR 後需做一次:**
+
+- [ ] 在 `saas.aibubu.cloud` 的 server block 加入(放在既有 `location /` 之前):
+
+```nginx
+location ^~ /console {
+    proxy_pass http://127.0.0.1:3100;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+- [ ] `nginx -t && systemctl reload nginx`
+- [ ] 驗收:`curl -sI https://saas.aibubu.cloud/console/login` 回 200
+- [ ] 登入 console → 側欄「舊版後台」跳 /ui 免二次登入;/ui 登出後 console 也登出(三 cookie 全清)
+- [ ] `location /` 維持指向 FastAPI(8099)不動;`/api /auth /booking /payments /line` 皆仍由 FastAPI 服務
+
+尚未套用 nginx 前,console 在正式環境不可達;/ui 側欄的「新版主控台 Beta」連結會 404(僅此一個入口,其餘連結不受影響)。
