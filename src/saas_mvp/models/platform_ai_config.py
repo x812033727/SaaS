@@ -18,7 +18,7 @@ class PlatformAIConfig(Base):
     __tablename__ = "platform_ai_configs"
 
     id = Column(Integer, primary_key=True)
-    provider = Column(String(32), nullable=False, unique=True, default="anthropic")
+    provider = Column(String(32), nullable=False, unique=True, default="minimax")
     api_key_enc = Column(LargeBinary, nullable=False)
     model = Column(String(128), nullable=False)
     updated_by_user_id = Column(Integer, nullable=True)

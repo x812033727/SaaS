@@ -16,17 +16,19 @@ _SYSTEM_PROMPT = (
 class AnthropicAssistant(AIAssistant):
     """AI assistant backed by Anthropic's Claude (Messages API).
 
-    Configured from settings (``SAAS_ANTHROPIC_API_KEY`` / ``SAAS_AI_MODEL``).
+    Configured from settings (``SAAS_MINIMAX_API_KEY`` / ``SAAS_AI_MODEL``).
     The ``anthropic`` package is imported lazily; if absent, instantiation still
     succeeds but ``answer()`` raises :class:`AIError` on use.
     """
 
     def __init__(
-        self, *, api_key: str | None = None, model: str | None = None, runner=None
+        self, *, api_key: str | None = None, base_url: str | None = None,
+        model: str | None = None, runner=None
     ) -> None:
         from saas_mvp.config import settings  # lazy — avoid circular import
 
-        self._api_key = api_key if api_key is not None else settings.anthropic_api_key
+        self._api_key = api_key if api_key is not None else settings.minimax_api_key
+        self._base_url = base_url if base_url is not None else settings.minimax_base_url
         self._model = model if model is not None else settings.ai_model
         self._runner = runner
 
@@ -43,6 +45,7 @@ class AnthropicAssistant(AIAssistant):
                 prompt=question[:4000],
                 system_prompt=system_prompt,
                 api_key=self._api_key,
+                base_url=self._base_url,
                 model=self._model,
                 max_turns=1,
             )

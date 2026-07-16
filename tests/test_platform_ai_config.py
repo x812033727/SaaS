@@ -30,8 +30,8 @@ _Session = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.setattr(settings, "anthropic_api_key", "")
-    monkeypatch.setattr(settings, "ai_model", "claude-sonnet-4-6")
+    monkeypatch.setattr(settings, "minimax_api_key", "")
+    monkeypatch.setattr(settings, "ai_model", "MiniMax-M2.7")
     Base.metadata.drop_all(bind=_engine)
     Base.metadata.create_all(bind=_engine)
     app = create_app()
@@ -73,16 +73,16 @@ def test_regular_user_cannot_manage_platform_ai(client):
     assert client.get("/ui/admin/ai-settings").status_code == 403
     assert client.post(
         "/ui/admin/ai-settings",
-        data={"api_key": "sk-ant-" + "x" * 32, "model": "claude-sonnet-4-6"},
+        data={"api_key": "minimax-" + "x" * 32, "model": "MiniMax-M2.7"},
     ).status_code == 403
 
 
 def test_admin_saves_encrypted_key_and_all_ai_paths_change_immediately(client):
     email = _login(client, admin=True)
-    key = "sk-ant-api03-" + "a" * 40
+    key = "minimax-" + "a" * 40
     response = client.post(
         "/ui/admin/ai-settings",
-        data={"api_key": key, "model": "claude-sonnet-4-6"},
+        data={"api_key": key, "model": "MiniMax-M2.7"},
     )
     assert response.status_code == 303
     assert response.headers["location"].endswith("?saved=1")
@@ -107,32 +107,32 @@ def test_admin_saves_encrypted_key_and_all_ai_paths_change_immediately(client):
 
 def test_blank_key_preserves_existing_key_but_updates_model(client):
     _login(client, admin=True)
-    original = "sk-ant-api03-" + "b" * 40
+    original = "minimax-" + "b" * 40
     with _Session() as db:
         service.save_ai_config(
             db,
             api_key=original,
-            model="claude-sonnet-4-6",
+            model="MiniMax-M2.7",
             actor_user_id=1,
         )
         db.commit()
 
     response = client.post(
         "/ui/admin/ai-settings",
-        data={"api_key": "", "model": "claude-opus-4-6"},
+        data={"api_key": "", "model": "MiniMax-M2.7-highspeed"},
     )
     assert response.status_code == 303
     with _Session() as db:
         row = db.query(PlatformAIConfig).one()
         assert row.api_key == original
-        assert row.model == "claude-opus-4-6"
+        assert row.model == "MiniMax-M2.7-highspeed"
 
 
 def test_invalid_model_does_not_replace_configuration(client):
     _login(client, admin=True)
     response = client.post(
         "/ui/admin/ai-settings",
-        data={"api_key": "sk-ant-api03-" + "c" * 40, "model": "not-a-model"},
+        data={"api_key": "minimax-" + "c" * 40, "model": "not-a-model"},
     )
     assert response.status_code == 400
     assert "模型 ID" in response.text
@@ -142,12 +142,12 @@ def test_invalid_model_does_not_replace_configuration(client):
 
 def test_test_connection_success_is_audited_without_key(client, monkeypatch):
     _login(client, admin=True)
-    key = "sk-ant-api03-" + "d" * 40
+    key = "minimax-" + "d" * 40
     with _Session() as db:
         service.save_ai_config(
             db,
             api_key=key,
-            model="claude-sonnet-4-6",
+            model="MiniMax-M2.7",
             actor_user_id=1,
         )
         db.commit()
@@ -167,8 +167,8 @@ def test_reset_uses_environment_fallback_or_safe_stub(client, monkeypatch):
     with _Session() as db:
         service.save_ai_config(
             db,
-            api_key="sk-ant-api03-" + "e" * 40,
-            model="claude-sonnet-4-6",
+            api_key="minimax-" + "e" * 40,
+            model="MiniMax-M2.7",
             actor_user_id=1,
         )
         db.commit()
@@ -180,7 +180,7 @@ def test_reset_uses_environment_fallback_or_safe_stub(client, monkeypatch):
         assert isinstance(get_assistant(db), StubAIAssistant)
         assert isinstance(get_agent(db), StubAgent)
 
-    monkeypatch.setattr(settings, "anthropic_api_key", "sk-ant-env-" + "z" * 32)
+    monkeypatch.setattr(settings, "minimax_api_key", "minimax-env-" + "z" * 32)
     with _Session() as db:
         status = service.ai_status(db, settings)
         assert status["source"] == "environment"
@@ -192,4 +192,4 @@ def test_unconfigured_page_explains_faq_fallback(client):
     response = client.get("/ui/admin/ai-settings")
     assert response.status_code == 200
     assert "FAQ 規則模式" in response.text
-    assert "Anthropic Console" in response.text
+    assert "MiniMax Developer Platform" in response.text

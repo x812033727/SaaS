@@ -26,7 +26,7 @@ def get_assistant(db=None) -> AIAssistant:
 
     Selection logic (first match wins):
 
-    1. 後台資料庫或 ``SAAS_ANTHROPIC_API_KEY`` 有設定 → 真 Claude
+    1. 後台資料庫或 ``SAAS_MINIMAX_API_KEY`` 有設定 → MiniMax-backed SDK
     2. 否則 → :class:`StubAIAssistant`（離線、安全退化）
 
     Mirrors :func:`saas_mvp.translation.get_translator`. Callers never need to
@@ -37,7 +37,9 @@ def get_assistant(db=None) -> AIAssistant:
 
     config = effective_ai_config(db, settings)
     if config is not None:
-        return AnthropicAssistant(api_key=config.api_key, model=config.model)
+        return AnthropicAssistant(
+            api_key=config.api_key, base_url=config.base_url, model=config.model
+        )
     return StubAIAssistant()
 
 
