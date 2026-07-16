@@ -17,6 +17,17 @@
 - webhook async 化後，既有簽章、destination、redelivery 冪等、timing、event model 測試全綠。
 - 不再把 `asyncio.to_thread` 包裝列為待辦。
 
+**狀態(R4-P3,2026-07-16):BLOCKED — 不再作為獨立債項。** 誠實評估:事件鏈是
+DB→翻譯→HTTP→DB 序列,async 化後 DB 段照樣佔一條 threadpool 執行緒,實質容量
+不變(現 40 threads/worker × 4 workers = 160 併發 in-flight 事件,遠超 M1/M2
+流量);唯一改善的 HTTP 等待期不佔 thread,代價卻是 ~60 個 handler helper 改
+async 或包 to_thread、fake/spy 全改、cron 重放路徑(replay_stored_event)得
+`asyncio.run` 橋接。真正的價值是連線層 —— **已由 R4-P3 交付**:六個 client 改用
+連線池化 httpx.Client(取代 per-request urllib 重開 TLS)+ push 帶
+`X-Line-Retry-Key` 冪等重試。完整 AsyncSession 遷移屬全 codebase async-ORM
+專案,待 webhook p95 惡化或 threadpool 飽和(既有 Prometheus gauges 監控)再
+一次到位,不做半套。
+
 ## M2-LINE-WEBHOOK-QUEUE
 
 Issue: https://github.com/x812033727/SaaS/issues/79
