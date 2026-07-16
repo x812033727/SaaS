@@ -32,6 +32,8 @@ class TenantGcalCredential(Base):
     google_email = Column(String(256), nullable=True)
     status = Column(String(16), nullable=False, default=GCAL_CONNECTED)
     last_error = Column(String(255), nullable=True)
+    # 漂移偵測游標(R4-B3):上次 events.list 的 updatedMin;增量掃描用。rev 0046。
+    last_drift_check_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow

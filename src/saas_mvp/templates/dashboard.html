@@ -19,6 +19,13 @@
 </div>
 {% endif %}
 
+{% if gcal_drift_count %}
+<div class="card notice-warn">
+  <p>📅 有 <strong>{{ gcal_drift_count }}</strong> 筆預約的 Google 日曆事件被改動或刪除。
+     系統採單向同步、不會自動改動本系統預約;請至<a href="/ui/booking">預約管理</a>逐筆確認(有異動者標示「⚠ 日曆異動」)。</p>
+</div>
+{% endif %}
+
 {% if onboarding and not onboarding_done %}
 <div class="card">
   <h2>開店設定進度</h2>

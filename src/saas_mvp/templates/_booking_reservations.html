@@ -22,7 +22,7 @@
     {% set c = customer_by_id.get(r.customer_id) if customer_by_id else None %}
     <tr>
       <td data-label="#">{{ r.id }}</td>
-      <td data-label="時段">#{{ r.slot_id }}</td>
+      <td data-label="時段">#{{ r.slot_id }}{% if r.gcal_drift_detected_at %}<br><span class="badge invalid" title="{{ r.gcal_drift_note }}">⚠ 日曆異動</span>{% endif %}</td>
       <td data-label="資源">
         {% for allocation in resource_allocations.get(r.id, []) %}
           <span class="badge valid">{{ allocation.resource_type_name_snapshot }}：{{ allocation.resource_name_snapshot }}{% if allocation.quantity > 1 %} ×{{ allocation.quantity }}{% endif %}</span>{% if not loop.last %}<br>{% endif %}

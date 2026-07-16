@@ -114,6 +114,10 @@ class Reservation(Base):
 
     # E1:Google Calendar 事件 id(未連結/同步失敗為 NULL)。
     gcal_event_id = Column(String(128), nullable=True)
+    # GCal 漂移偵測(R4-B3):輪詢發現店家在 Google 端改/刪同步事件時設此欄+備註,
+    # 於預約列與儀表板揭露;**絕不自動改預約**。re-sync 一致後清空。rev 0046。
+    gcal_drift_detected_at = Column(DateTime(timezone=True), nullable=True)
+    gcal_drift_note = Column(String(255), nullable=True)
     # A0.2 冪等:此預約由哪筆 LINE webhook 事件建立(非 LINE 來源=NULL)。webhook
     # 重放時 book_slot 以 (tenant_id, source_webhook_event_id) 查得既有預約即回傳,
     # 不重複建單。NULL 不受唯一約束限制(多筆 NULL 合法)。
