@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 os.environ.setdefault("SAAS_RATE_LIMIT_ENABLED", "false")
 
 from saas_mvp.ai.agent import (  # noqa: E402
-    AnthropicAgent,
+    MiniMaxAgent,
     StubAgent,
     ToolBelt,
 )
@@ -134,7 +134,7 @@ class TestManageIntents:
         assert "沒有可以取消" in reply
 
 
-# ── D2 tool loop(fake anthropic client)──────────────────────────────────────
+# ── D2 tool loop(fake legacy client)──────────────────────────────────────
 
 def _block(type_, **kw):
     return types.SimpleNamespace(type=type_, **kw)
@@ -163,7 +163,7 @@ class TestToolLoop:
         from saas_mvp.config import settings
 
         monkeypatch.setattr(settings, "minimax_api_key", "test-key")
-        return AnthropicAgent(client_factory=lambda: _FakeClient(script) if isinstance(script, list) else script)
+        return MiniMaxAgent(client_factory=lambda: _FakeClient(script) if isinstance(script, list) else script)
 
     def test_query_tool_then_propose(self, monkeypatch):
         fake = _FakeClient([
@@ -178,7 +178,7 @@ class TestToolLoop:
         from saas_mvp.config import settings
 
         monkeypatch.setattr(settings, "minimax_api_key", "test-key")
-        agent = AnthropicAgent(client_factory=lambda: fake)
+        agent = MiniMaxAgent(client_factory=lambda: fake)
         belt = ToolBelt(list_services=lambda: "id=3 剪髮")
         turn = agent.converse("有什麼服務", {}, "ctx", tools=belt)
         assert turn.intent == "book" and turn.service_id == 3
@@ -205,7 +205,7 @@ class TestToolLoop:
         from saas_mvp.config import settings
 
         monkeypatch.setattr(settings, "minimax_api_key", "test-key")
-        agent = AnthropicAgent(client_factory=lambda: fake)
+        agent = MiniMaxAgent(client_factory=lambda: fake)
         turn = agent.converse("hmm", {}, "ctx", tools=ToolBelt(
             available_dates=lambda: "2030-06-01"
         ))
@@ -222,7 +222,7 @@ class TestToolLoop:
         from saas_mvp.config import settings
 
         monkeypatch.setattr(settings, "minimax_api_key", "test-key")
-        agent = AnthropicAgent(client_factory=lambda: fake)
+        agent = MiniMaxAgent(client_factory=lambda: fake)
         history = [
             ("user", "你好"),
             ("user", "想約時間"),      # 連續 user → 合併
@@ -254,7 +254,7 @@ def test_agent_sdk_runner_receives_only_bound_read_tools(monkeypatch):
             "reservation_id": None,
         }
 
-    agent = AnthropicAgent(runner=runner)
+    agent = MiniMaxAgent(runner=runner)
     turn = agent.converse(
         "我要剪髮", {}, "ctx", tools=ToolBelt(list_services=lambda: "id=3 剪髮")
     )

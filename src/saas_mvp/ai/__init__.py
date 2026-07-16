@@ -1,8 +1,8 @@
-"""AI customer-service package (PHASE 4-1, Anthropic Claude).
+"""AI customer-service package (PHASE 4-1, MiniMax M3).
 
 Mirrors the ``translation`` package shape: an ABC (:class:`AIAssistant`), a
 deterministic offline :class:`StubAIAssistant`, a lazy-import real backend
-(:class:`AnthropicAssistant`), and a :func:`get_assistant` factory.
+(:class:`MiniMaxAssistant`), and a :func:`get_assistant` factory.
 
 Public API::
 
@@ -11,12 +11,12 @@ Public API::
         AIError,             # raised when the backend fails
         AIResult,            # answer + source
         StubAIAssistant,     # deterministic offline stub
-        AnthropicAssistant,  # real Claude backend (lazy anthropic import)
+        MiniMaxAssistant,  # real MiniMax backend (lazy openai import)
         get_assistant,       # factory: returns configured backend or stub
     )
 """
 
-from saas_mvp.ai.anthropic_client import AnthropicAssistant
+from saas_mvp.ai.minimax_client import MiniMaxAssistant
 from saas_mvp.ai.base import AIAssistant, AIError, AIResult
 from saas_mvp.ai.stub import StubAIAssistant
 
@@ -37,7 +37,7 @@ def get_assistant(db=None) -> AIAssistant:
 
     config = effective_ai_config(db, settings)
     if config is not None:
-        return AnthropicAssistant(
+        return MiniMaxAssistant(
             api_key=config.api_key, base_url=config.base_url, model=config.model
         )
     return StubAIAssistant()
@@ -48,6 +48,6 @@ __all__ = [
     "AIError",
     "AIResult",
     "StubAIAssistant",
-    "AnthropicAssistant",
+    "MiniMaxAssistant",
     "get_assistant",
 ]

@@ -748,6 +748,107 @@ def count_reservations(
     ).count()
 
 
+def _reservations_enriched_query(
+    db: Session,
+    *,
+    tenant_id: int,
+    date_from: datetime.datetime | None = None,
+    date_to: datetime.datetime | None = None,
+    status: str | None = None,
+    customer_id: int | None = None,
+    staff_id: int | None = None,
+):
+    """console API 用的 enriched 查詢:join slot(必)+ customer/staff/service
+    (outer),支援日期範圍過濾(join 寫法仿 calendar_view._reservations_in_range)。"""
+    from saas_mvp.models.service import Service
+    from saas_mvp.models.staff import Staff
+
+    q = (
+        tenant_query(db, Reservation, tenant_id)
+        .join(BookingSlot, Reservation.slot_id == BookingSlot.id)
+        .outerjoin(Customer, Reservation.customer_id == Customer.id)
+        .outerjoin(Staff, Reservation.staff_id == Staff.id)
+        .outerjoin(Service, Reservation.service_id == Service.id)
+    )
+    if date_from is not None:
+        q = q.filter(BookingSlot.slot_start >= date_from)
+    if date_to is not None:
+        q = q.filter(BookingSlot.slot_start < date_to)
+    if status is not None:
+        q = q.filter(Reservation.status == status)
+    if customer_id is not None:
+        q = q.filter(Reservation.customer_id == customer_id)
+    if staff_id is not None:
+        q = q.filter(Reservation.staff_id == staff_id)
+    return q
+
+
+def list_reservations_enriched(
+    db: Session,
+    *,
+    tenant_id: int,
+    date_from: datetime.datetime | None = None,
+    date_to: datetime.datetime | None = None,
+    status: str | None = None,
+    customer_id: int | None = None,
+    staff_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """console 列表/行事曆用:一次 join 出時段/顧客/員工/服務,回輕量 dict 列
+    (依 slot_start 新→舊)。"""
+    from saas_mvp.models.service import Service
+    from saas_mvp.models.staff import Staff
+
+    rows = (
+        _reservations_enriched_query(
+            db, tenant_id=tenant_id, date_from=date_from, date_to=date_to,
+            status=status, customer_id=customer_id, staff_id=staff_id,
+        )
+        .with_entities(
+            Reservation.id,
+            Reservation.status,
+            Reservation.party_size,
+            Reservation.attended,
+            Reservation.line_user_id,
+            Reservation.deposit_status,
+            Reservation.deposit_cents,
+            Reservation.slot_id,
+            BookingSlot.slot_start,
+            BookingSlot.slot_end,
+            Reservation.customer_id,
+            Customer.display_name.label("customer_name"),
+            Customer.phone.label("customer_phone"),
+            Reservation.staff_id,
+            Staff.name.label("staff_name"),
+            Reservation.service_id,
+            Service.name.label("service_name"),
+        )
+        .order_by(BookingSlot.slot_start.desc(), Reservation.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [dict(r._mapping) for r in rows]
+
+
+def count_reservations_enriched(
+    db: Session,
+    *,
+    tenant_id: int,
+    date_from: datetime.datetime | None = None,
+    date_to: datetime.datetime | None = None,
+    status: str | None = None,
+    customer_id: int | None = None,
+    staff_id: int | None = None,
+) -> int:
+    """同 list_reservations_enriched 篩選條件的總筆數(供 X-Total-Count)。"""
+    return _reservations_enriched_query(
+        db, tenant_id=tenant_id, date_from=date_from, date_to=date_to,
+        status=status, customer_id=customer_id, staff_id=staff_id,
+    ).count()
+
+
 def list_my_reservations(
     db: Session, *, tenant_id: int, line_user_id: str
 ) -> list[Reservation]:

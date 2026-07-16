@@ -22,7 +22,7 @@ from saas_mvp.models import feature_change_history as _fch  # noqa: F401
 import saas_mvp.models.line_channel_config as _lcm  # noqa: F401
 import saas_mvp.models.customer as _cust  # noqa: F401
 
-from saas_mvp.ai import AnthropicAssistant, StubAIAssistant, get_assistant
+from saas_mvp.ai import MiniMaxAssistant, StubAIAssistant, get_assistant
 from saas_mvp.app import create_app
 from saas_mvp.db import Base, get_db
 from saas_mvp.line_client import FakeLineReplyClient, get_line_client
@@ -59,11 +59,11 @@ def test_factory_returns_stub_when_no_key(monkeypatch):
     assert isinstance(get_assistant(), StubAIAssistant)
 
 
-def test_factory_returns_anthropic_when_key_set(monkeypatch):
+def test_factory_returns_minimax_when_key_set(monkeypatch):
     from saas_mvp import config as cfg
     monkeypatch.setattr(cfg.settings, "minimax_api_key", "minimax-test")
     assistant = get_assistant()
-    assert isinstance(assistant, AnthropicAssistant)
+    assert isinstance(assistant, MiniMaxAssistant)
     assert assistant.is_available() is True
 
 
@@ -83,7 +83,7 @@ def test_stub_deterministic():
 def test_context_budget_per_backend():
     # stub 只回最相關 1 筆（否則會「問一個列一堆」）；真 LLM 可吃多筆綜合。
     assert StubAIAssistant().context_max_entries == 1
-    assert AnthropicAssistant().context_max_entries > 1
+    assert MiniMaxAssistant().context_max_entries > 1
 
 
 def test_real_assistant_uses_minimax_api_runner_without_exposing_key():
@@ -93,7 +93,7 @@ def test_real_assistant_uses_minimax_api_runner_without_exposing_key():
         calls.append(kwargs)
         return "SDK 回覆"
 
-    assistant = AnthropicAssistant(
+    assistant = MiniMaxAssistant(
         api_key="minimax-secret-value", model="MiniMax-M3", runner=runner
     )
     result = assistant.answer("營業時間？", "平日十點開門")

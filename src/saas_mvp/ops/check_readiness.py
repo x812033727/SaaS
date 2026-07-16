@@ -231,8 +231,16 @@ def run_checks(
     except Exception as exc:  # noqa: BLE001
         add(Check("gcal_oauth", "WARN", f"無法讀取 Google OAuth 設定:{type(exc).__name__}"))
 
-    # 簡訊 fallback:旗標開了但目前恆為 Stub(只進 log 不真發),避免營運者誤以為有補送。
-    if settings.sms_fallback_enabled:
+    # 簡訊供應商三態:mitake 憑證齊=PASS;選了 mitake 但缺憑證=FAIL(設定矛盾);
+    # stub=旗標開著才 WARN(避免營運者誤以為有真補送)。
+    if settings.sms_provider == "mitake":
+        if settings.mitake_username and settings.mitake_password:
+            add(Check("sms", "PASS", "簡訊供應商:三竹 Mitake(憑證已設定)"))
+        else:
+            add(Check("sms", "FAIL",
+                      "SAAS_SMS_PROVIDER=mitake 但 SAAS_MITAKE_USERNAME/PASSWORD 未填"
+                      "(實際仍走 Stub,不真送簡訊)"))
+    elif settings.sms_fallback_enabled:
         add(Check("sms", "WARN",
                   "SAAS_SMS_FALLBACK_ENABLED=true 但簡訊供應商僅 Stub(推播失敗只記 log,不真送簡訊)"))
     else:

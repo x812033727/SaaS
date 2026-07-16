@@ -1,6 +1,6 @@
 """Deterministic offline stub AI assistant.
 
-This is the default when no Anthropic API key is configured, and the canonical
+This is the default when no MiniMax API key is configured, and the canonical
 implementation to use in tests (never calls the real API).
 """
 

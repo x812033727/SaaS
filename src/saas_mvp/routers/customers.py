@@ -104,15 +104,16 @@ def list_all(
     response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    q: str | None = Query(default=None, description="姓名/電話模糊搜尋"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[CustomerResponse]:
     rows = list_customers(
-        db, tenant_id=current_user.tenant_id, limit=limit, offset=offset
+        db, tenant_id=current_user.tenant_id, q=q, limit=limit, offset=offset
     )
     # 分頁截斷偵測：呼叫端可由總數判斷是否需要翻頁。
     response.headers["X-Total-Count"] = str(
-        count_customers(db, tenant_id=current_user.tenant_id)
+        count_customers(db, tenant_id=current_user.tenant_id, q=q)
     )
     return [CustomerResponse.model_validate(c) for c in rows]
 
