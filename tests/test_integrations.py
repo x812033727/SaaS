@@ -130,17 +130,21 @@ class TestLinePayEndpoints:
         with TestClient(app) as c:
             yield c
 
-    def _order(self, status=ORDER_PENDING, total=80000) -> int:
+    def _order(self, status=ORDER_PENDING, total=80000, txn_id="42") -> tuple[int, str]:
+        """建單並回 (order_id, trade_no)。confirm URL 以不可猜 trade_no 為鍵
+        (PEA-3);payment_txn_id 模擬 create_checkout 時已落庫的 txid 綁定。"""
         db = _Session()
         try:
             t = Tenant(name=f"lp_{uuid.uuid4().hex[:6]}", plan="pro")
             db.add(t)
             db.flush()
+            trade_no = f"ODLP{uuid.uuid4().hex[:14].upper()}"
             o = Order(tenant_id=t.id, line_user_id="U1",
-                      status=status, total_cents=total)
+                      status=status, total_cents=total,
+                      merchant_trade_no=trade_no, payment_txn_id=txn_id)
             db.add(o)
             db.commit()
-            return o.id
+            return o.id, trade_no
         finally:
             db.close()
 
@@ -153,21 +157,44 @@ class TestLinePayEndpoints:
             lp, "_urllib_post",
             lambda url, body, headers: json.dumps({"returnCode": "0000", "info": {}}),
         )
-        oid = self._order()
-        r = client.get(f"/payments/linepay/confirm?transactionId=42&orderId={oid}")
+        oid, trade_no = self._order()
+        r = client.get(f"/payments/linepay/confirm?transactionId=42&orderId={trade_no}")
         assert "付款完成" in r.text
         db = _Session()
         try:
             o = db.get(Order, oid)
             assert o.status == ORDER_PAID
-            assert o.merchant_trade_no == "LP42"
+            # 結帳鍵不再被 LP{txid} 覆寫;txid 綁定保留於 payment_txn_id
+            assert o.merchant_trade_no == trade_no
+            assert o.payment_txn_id == "42"
         finally:
             db.close()
 
     def test_confirm_already_paid_short_circuit(self, client):
-        oid = self._order(status=ORDER_PAID)
-        r = client.get(f"/payments/linepay/confirm?transactionId=42&orderId={oid}")
+        _, trade_no = self._order(status=ORDER_PAID)
+        r = client.get(f"/payments/linepay/confirm?transactionId=42&orderId={trade_no}")
         assert "付款完成" in r.text  # 不打 API 直接成功頁
+
+    def test_confirm_txid_mismatch_rejected(self, client):
+        """txid↔order 綁定:transactionId 與落庫值不符 → 400 且不 confirm。"""
+        oid, trade_no = self._order(txn_id="42")
+        r = client.get(f"/payments/linepay/confirm?transactionId=999&orderId={trade_no}")
+        assert r.status_code == 400
+        db = _Session()
+        try:
+            assert db.get(Order, oid).status == ORDER_PENDING
+        finally:
+            db.close()
+
+    def test_confirm_enumeration_404(self, client):
+        """整數 order id / 未知 trade_no 一律 404(PEA-3 防枚舉)。"""
+        oid, _ = self._order()
+        assert client.get(
+            f"/payments/linepay/confirm?transactionId=42&orderId={oid}"
+        ).status_code == 404
+        assert client.get(
+            "/payments/linepay/confirm?transactionId=42&orderId=ODUNKNOWN"
+        ).status_code == 404
 
     def test_confirm_api_reject_no_paid(self, client, monkeypatch):
         import saas_mvp.services.payment_linepay as lp
@@ -178,8 +205,8 @@ class TestLinePayEndpoints:
             lp, "_urllib_post",
             lambda url, body, headers: json.dumps({"returnCode": "1104"}),
         )
-        oid = self._order()
-        r = client.get(f"/payments/linepay/confirm?transactionId=42&orderId={oid}")
+        oid, trade_no = self._order()
+        r = client.get(f"/payments/linepay/confirm?transactionId=42&orderId={trade_no}")
         assert r.status_code == 502
         db = _Session()
         try:

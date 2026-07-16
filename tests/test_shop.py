@@ -115,9 +115,24 @@ class TestOrder:
             shop_svc.get_order(db, tenant_id=other, order_id=order.id)
 
 
+class TestOrderTradeNo:
+    def test_create_order_assigns_unguessable_trade_no(self, db):
+        """建單即產生不可猜 trade_no(PEA-3):OD 前綴、20 字、含隨機段。"""
+        tid = _tenant(db)
+        pid = _product(db, tid, stock=10)
+        o1 = shop_svc.create_order(db, tenant_id=tid, items=[(pid, 1)], line_user_id="U1")
+        o2 = shop_svc.create_order(db, tenant_id=tid, items=[(pid, 1)], line_user_id="U1")
+        assert o1.merchant_trade_no and o1.merchant_trade_no.startswith("OD")
+        assert len(o1.merchant_trade_no) == 20
+        assert o1.merchant_trade_no != o2.merchant_trade_no
+
+
 class TestPaymentStub:
     def test_stub_checkout_url(self):
+        from types import SimpleNamespace
+
         provider = get_payment_provider()
         assert isinstance(provider, StubPaymentProvider)
-        url = provider.create_checkout(order_id=5, amount_cents=150, currency="TWD")
+        order = SimpleNamespace(id=5, total_cents=150, currency="TWD")
+        url = provider.create_checkout(None, order=order)
         assert "order=5" in url and "amount=150" in url
