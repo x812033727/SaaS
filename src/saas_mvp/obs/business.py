@@ -25,6 +25,8 @@ _log = logging.getLogger(__name__)
 SUBSCRIPTIONS_CANCEL_FAILED = "saas_subscriptions_cancel_failed"
 SUBSCRIPTIONS_PENDING_STALE = "saas_subscriptions_pending_stale"
 WEBHOOK_EVENTS_STUCK_PENDING = "saas_webhook_events_stuck_pending"
+WEBHOOK_EVENTS_RETRY_ATTEMPTS = "saas_webhook_events_retry_attempts"
+WEBHOOK_EVENTS_DEAD_LETTER = "saas_webhook_events_dead_letter"
 
 # pending 訂閱視為過期的小時數 / webhook pending 視為卡住的分鐘數
 _PENDING_STALE_HOURS = 48
@@ -84,8 +86,10 @@ def collect_business_gauges(db: Session) -> None:
             WEBHOOK_EVENTS_STUCK_PENDING,
             db.execute(
                 select(func.count()).where(
-                    LineWebhookEvent.status
-                    == LineWebhookEventStatus.PENDING.value,
+                    LineWebhookEvent.status.in_([
+                        LineWebhookEventStatus.PENDING.value,
+                        LineWebhookEventStatus.PROCESSING.value,
+                    ]),
                     LineWebhookEvent.updated_at
                     < now - datetime.timedelta(minutes=_WEBHOOK_STUCK_MINUTES),
                 )
@@ -94,3 +98,24 @@ def collect_business_gauges(db: Session) -> None:
         )
     except Exception:  # noqa: BLE001
         _log.warning("collect gauge failed: %s", WEBHOOK_EVENTS_STUCK_PENDING)
+
+    try:
+        REGISTRY.set_gauge(
+            WEBHOOK_EVENTS_RETRY_ATTEMPTS,
+            db.execute(
+                select(func.coalesce(func.sum(LineWebhookEvent.attempt_count), 0))
+            ).scalar_one(),
+            help_text="Cumulative persisted LINE webhook retry attempts",
+        )
+        REGISTRY.set_gauge(
+            WEBHOOK_EVENTS_DEAD_LETTER,
+            db.execute(
+                select(func.count()).where(
+                    LineWebhookEvent.status == LineWebhookEventStatus.FAILED.value,
+                    LineWebhookEvent.attempt_count >= settings.webhook_max_attempts,
+                )
+            ).scalar_one(),
+            help_text="LINE webhook events exhausted retry attempts",
+        )
+    except Exception:  # noqa: BLE001
+        _log.warning("collect webhook retry/dead-letter gauges failed")

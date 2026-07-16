@@ -29,7 +29,8 @@
 背景任務語意（Task #1 切片）
 ---------------------
 * handler 在「驗章 / 解密 / JSON parse / destination 二次驗證」**全部通過**
-  後，把「處理 events 鏈」丟進 FastAPI ``BackgroundTasks``，自身立即回
+  後，先把 event payload 持久化進 DB outbox，再把「處理 events 鏈」丟進
+  FastAPI ``BackgroundTasks``，自身立即回
   ``{"status": "ok"}`` 200，**不再同步執行 translate / reply / increment**。
   符合 LINE 官方「We recommend processing events asynchronously」建議
   （LINE 暫停推送條件是「fail to receive」= 沒回 2xx；只要回 200 就不會被
@@ -57,10 +58,9 @@
   各自 ``try/except Exception``，失敗時先 ``db.rollback()`` 重置 session、
   再 ``log.exception`` 記錄含 ``event_idx`` 的錯誤並繼續下一筆。單一 event
   失敗不得中斷同批其他 events；不保留外層 ``except`` 吃掉整批。
-* in-process 假設：BackgroundTasks 是 Starlette 內建、in-process 機制，
-  跨 worker process **不**傳遞任務。``uvicorn --workers N`` 部署時，
-  handler 收到的 task 只在接收當下的 worker 跑；該 worker crash / restart
-  時任務丟失，由 LINE redelivery 補救。M1 單 worker 部署無此問題。
+* 持久交付：BackgroundTasks 仍負責低延遲處理，但 event 已在回 200 前落盤。
+  該 worker crash / restart 時，scheduler 會跨 process 以 CAS 認領 pending/processing row
+  重放；重試用盡後保留 failed dead-letter 供監控與人工排查。
 * M2 技術債（不修 — 詳見下方錨點）：
   - async 化（真方向）：``HttpLineReplyClient`` 改用 ``httpx.AsyncClient``
     （lifespan 管理單一 instance）或 LINE Bot SDK v3 ``AsyncMessagingApi``；
@@ -69,9 +69,8 @@
     ``async with async_engine.begin()`` 整套重寫；fake / spy mock 全要動。
     **1 個獨立 PR 的工作量**。M1 流量下 Starlette 預設 40 thread 的
     threadpool 不是瓶頸，提早開工 ROI 為負。
-  - task queue 化：換 ARQ / Celery 支援跨 worker process、加入重試與
-    dead-letter queue、補背景任務監控指標——與 async 化**無因果**的
-    獨立子任務，可分開排程。
+  - task queue 已以現有 PostgreSQL outbox + scheduler recovery 完成，
+    不另引入 ARQ/Celery broker 與重複的部署面。
   - ``asyncio.to_thread`` 包裝**不再列入技術債**——理由見步驟 6c 註解
     （canonical 說明位置）：「sync 函式已在 threadpool」再包一層屬冗餘
     雙重包裝（anyio 反模式，淨效果為零、反而多佔一條 thread）。
@@ -318,18 +317,33 @@ async def line_webhook(
     # 配額用 effective_plan（含試用）；純字串，request session 活著時算出。
     from saas_mvp.services.plans import effective_plan
 
+    # 交付保證邊界：在回 200 前將每筆 webhookEventId + payload commit
+    # 進 DB。即使 worker 在 Starlette 開始 BackgroundTasks 前 crash，
+    # scheduler 仍能從 pending row 重放，事件不會靜默遺失。
+    # 無 webhookEventId 的舊格式 event 無法建立冪等 key，維持原本
+    # background 直接處理的相容行為（LINE 正式 event 會帶 ID）。
+    claimed_row_ids: list[int | None] = []
+    queued_events: list[dict] = []
+    for event in events:
+        event_row, should_process = _claim_webhook_event(db, tenant_id, event)
+        if not should_process:
+            continue
+        queued_events.append(event)
+        claimed_row_ids.append(event_row.id if event_row is not None else None)
+
     background_tasks.add_task(
         _process_events,
         tenant_id,
         effective_plan(tenant),
         cfg.default_target_lang,
         access_token,
-        events,
+        queued_events,
         translator,
         line_client,
         bind,
         bot_mode,
         profile_client,
+        claimed_row_ids,
     )
 
     return {"status": "ok"}
@@ -347,6 +361,7 @@ def _process_events(
     bind,
     bot_mode: str = "translation",
     profile_client: LineProfileClient | None = None,
+    claimed_row_ids: list[int | None] | None = None,
 ) -> None:
     """在 background 內依序處理每個 event，並以 webhookEventId 做冪等去重。
 
@@ -378,10 +393,14 @@ def _process_events(
             stage = LineWebhookEventStage.CLAIMED.value
             stage_holder = [stage]
             try:
-                event_row, should_process = _claim_webhook_event(db, tenant_id, event)
-                if not should_process:
-                    continue
-                event_row_id = event_row.id if event_row is not None else None
+                if claimed_row_ids is None:
+                    # 向後相容：直接呼叫的測試／內部工具仍可在此 claim。
+                    event_row, should_process = _claim_webhook_event(db, tenant_id, event)
+                    if not should_process:
+                        continue
+                    event_row_id = event_row.id if event_row is not None else None
+                else:
+                    event_row_id = claimed_row_ids[event_idx]
 
                 stage = _handle_line_event(
                     db,
