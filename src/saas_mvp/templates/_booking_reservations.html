@@ -44,6 +44,7 @@
           <span class="badge valid">已付 NT${{ (r.deposit_cents or 0) // 100 }}</span>
           {% if r.deposit_refund_status == 'processing' %}<br><span class="muted">退款處理中</span>
           {% elif r.deposit_refund_status == 'failed' %}<br><span class="badge invalid">自動退款失敗</span>
+          {% elif r.deposit_refund_status == 'partially_refunded' %}<br><span class="badge unchecked">已退 NT${{ (r.deposit_refunded_cents or 0) // 100 }}(剩 NT${{ ((r.deposit_cents or 0) - (r.deposit_refunded_cents or 0)) // 100 }})</span>
           {% elif r.deposit_refund_status == 'manual_required' %}<br><span class="badge unchecked">需人工核對</span>{% endif %}
           {% if r.deposit_refund_error %}<br><span class="muted">{{ r.deposit_refund_error }}</span>{% endif %}
         {% elif r.deposit_status == 'refunded' %}
@@ -97,13 +98,13 @@
                 hx-target="#reservations-card" hx-swap="innerHTML">未到</button>
         {% elif can_manage_deposits and r.deposit_status == 'paid' %}
           {% if r.deposit_refund_status not in ('processing', 'manual_required') %}
+          {% set _remain = ((r.deposit_cents or 0) - (r.deposit_refunded_cents or 0)) // 100 %}
           <form hx-post="/ui/booking/reservations/{{ r.id }}/deposit-refund"
                 hx-target="#reservations-card" hx-swap="innerHTML"
-                hx-confirm="確定退還預約 #{{ r.id }} 定金(共 NT${{ (r.deposit_cents or 0) // 100 }})中所填金額？退款送出後不可復原,一次退款即終態。">
+                hx-confirm="確定退還預約 #{{ r.id }} 定金所填金額(剩餘可退 NT${{ _remain }})？可分次退款,累計不可超過定金;退款送出後不可復原。">
             <input name="amount_twd" type="number" min="1"
-                   max="{{ (r.deposit_cents or 0) // 100 }}"
-                   value="{{ (r.deposit_cents or 0) // 100 }}"
-                   required style="width:5.5em" title="退款金額(元),預設全額">
+                   max="{{ _remain }}" value="{{ _remain }}"
+                   required style="width:5.5em" title="退款金額(元),預設剩餘全額">
             <button class="danger" type="submit">退款</button>
           </form>
           {% endif %}
@@ -112,8 +113,8 @@
                 hx-target="#reservations-card" hx-swap="innerHTML"
                 hx-confirm="請先確認已在原金流後台完成退款。確定要標記人工退款完成？">
             <input name="amount_twd" type="number" min="1"
-                   max="{{ (r.deposit_cents or 0) // 100 }}"
-                   value="{{ (r.deposit_cents or 0) // 100 }}"
+                   max="{{ ((r.deposit_cents or 0) - (r.deposit_refunded_cents or 0)) // 100 }}"
+                   value="{{ ((r.deposit_cents or 0) - (r.deposit_refunded_cents or 0)) // 100 }}"
                    required style="width:5.5em" title="實際退款金額(元)">
             <input name="note" required minlength="2" maxlength="200" placeholder="金流後台退款單號／核對備註">
             <button type="submit">確認人工退款</button>
