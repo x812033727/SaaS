@@ -96,7 +96,7 @@ LOCKED_MARKER = "尚未開通"
 
 class TestS1PaywallBypass:
     def test_faq_ask_locked_when_ai_disabled(self, client):
-        """最重要：faq_ask 會呼叫付費 Anthropic API，未開通必須擋下。"""
+        """最重要：faq_ask 會呼叫付費 MiniMax API，未開通必須擋下。"""
         _login(client)
         _disable(client, "AI_ASSISTANT")
         r = client.post("/ui/faq/ask", data={"question": "營業時間？"})

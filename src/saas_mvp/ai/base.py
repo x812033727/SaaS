@@ -19,7 +19,7 @@ class AIResult:
 class AIAssistant(ABC):
     """Abstract AI customer-service assistant interface.
 
-    All backends (stub, Anthropic, …) must implement this. Callers depend only
+    All backends (stub, MiniMax, …) must implement this. Callers depend only
     on this interface, not on any concrete class.
     """
 

@@ -1881,7 +1881,7 @@ def admin_ai_settings_save(
         db,
         actor,
         action="platform.ai.update",
-        target="ai:anthropic",
+        target="ai:minimax",
         detail={"model": model.strip(), "key_changed": bool(api_key.strip())},
         request=request,
     )
@@ -1910,7 +1910,7 @@ def admin_ai_settings_test(
         db,
         actor,
         action="platform.ai.test",
-        target="ai:anthropic",
+        target="ai:minimax",
         request=request,
     )
     db.commit()
@@ -1932,7 +1932,7 @@ def admin_ai_settings_reset(
             db,
             actor,
             action="platform.ai.reset",
-            target="ai:anthropic",
+            target="ai:minimax",
             request=request,
         )
     db.commit()
