@@ -61,11 +61,16 @@ def create_access_token(
     *,
     expires_delta: timedelta | None = None,
     impersonator_id: int | None = None,
+    original_auth_ts: int | None = None,
 ) -> str:
     """Sign a JWT with sub=<user_id>, tenant_id, exp claims.
 
     impersonator_id（F2 代管）:有值時 payload 加 ``imp`` claim,且 exp
     **強制縮短為 30 分鐘**(代管票短命,降低外洩風險)。
+
+    original_auth_ts(R4-C1 滑動續期):首次登入的 unix 秒,續期時原樣帶入
+    ``oa`` claim — /auth/renew 以此限制滑動視窗總長(勿無限續命)。
+    向後相容:未帶則不加 claim,舊 token 照常驗。
     """
     delta = expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
     if impersonator_id is not None:
@@ -78,6 +83,8 @@ def create_access_token(
     }
     if impersonator_id is not None:
         payload["imp"] = impersonator_id
+    if original_auth_ts is not None:
+        payload["oa"] = int(original_auth_ts)
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 

@@ -96,6 +96,16 @@ def create_app() -> FastAPI:
     # 可觀測性：request-id 串接 + 結構化存取日誌 + Prometheus HTTP 指標。
     app.add_middleware(ObservabilityMiddleware, metrics_enabled=settings.metrics_enabled)
 
+    # 滑動續期(R4-C1):/ui 回應快過期時靜默換新 auth cookie。middleware 而非
+    # dependency —— /ui handler 都直接回 TemplateResponse,dependency 注入的
+    # Response 上的 set_cookie 不會進最終回應。純 JWT 運算無 DB,失敗吞掉。
+    @app.middleware("http")
+    async def _ui_sliding_renew(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/ui"):
+            ui.maybe_renew_ui_cookie(request, response)
+        return response
+
     # 集中式未捕捉例外 → 一致 JSON envelope + 錯誤追蹤（不外洩內部訊息）。
     install_error_handlers(app)
 
