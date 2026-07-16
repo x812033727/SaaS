@@ -14,6 +14,7 @@ Public API::
 
 from saas_mvp.line_client.base import (
     LineBotInfoClient,
+    LineAuthErrorKind,  # noqa: F401 - public package export
     LineBotInfoCredentialError,
     LineBotInfoError,
     LineBotInfoNetworkError,

@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     #                               舊事件的預設保留天數。
     webhook_max_attempts: int = 5
     webhook_event_ttl_days: int = 30
+    line_verify_max_attempts_per_hour: int = 3
+    line_credential_reverify_hours: int = 24
+    line_credential_reverify_batch_size: int = 100
 
     # 管理 UI CSRF 防護（double-submit cookie token）。
     # SAAS_UI_CSRF_ENABLED=false 可關閉（測試環境用；正式環境勿關）。

@@ -25,6 +25,7 @@ os.environ.setdefault(
 
 from saas_mvp.line_client.http import HttpLineBotInfoClient
 from saas_mvp.line_client import (
+    LineAuthErrorKind,
     LineBotInfoCredentialError,
     LineBotInfoNetworkError,
 )
@@ -94,3 +95,27 @@ def test_get_user_id_http_error_raises():
     with mock.patch("urllib.request.urlopen", _boom):
         with pytest.raises(LineBotInfoCredentialError):
             client.get_user_id("tok")
+
+
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        ([{"message": "channel access token is invalid"}], LineAuthErrorKind.ACCESS_TOKEN_INVALID),
+        (["channel secret is invalid"], LineAuthErrorKind.CHANNEL_SECRET_INVALID),
+        ([], LineAuthErrorKind.UNKNOWN_AUTH),
+    ],
+)
+def test_get_user_id_classifies_401_details(details, expected):
+    client = HttpLineBotInfoClient()
+
+    def _boom(req, timeout=None):
+        body = io.BytesIO(json.dumps({"details": details}).encode())
+        raise urllib.error.HTTPError(
+            "https://api.line.me/v2/bot/info", 401, "Unauthorized", {}, body
+        )
+
+    with mock.patch("urllib.request.urlopen", _boom):
+        with pytest.raises(LineBotInfoCredentialError) as caught:
+            client.get_user_id("never-store-this-token")
+    assert caught.value.kind is expected
+    assert "never-store-this-token" not in str(caught.value)

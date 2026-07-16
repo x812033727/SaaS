@@ -412,8 +412,29 @@ class HttpLineBotInfoClient(LineBotInfoClient):
                 raw = resp.read().decode()
         except urllib.error.HTTPError as exc:
             if exc.code in {400, 401, 403}:
+                from saas_mvp.line_client.base import LineAuthErrorKind
+
+                kind = LineAuthErrorKind.UNKNOWN_AUTH
+                body = exc.read().decode(errors="replace") if exc.fp else ""
+                if exc.code == 401 and body:
+                    try:
+                        details = json.loads(body).get("details", [])
+                    except (json.JSONDecodeError, AttributeError):
+                        details = []
+                    messages = []
+                    for detail in details if isinstance(details, list) else []:
+                        if isinstance(detail, str):
+                            messages.append(detail.lower())
+                        elif isinstance(detail, dict):
+                            messages.append(str(detail.get("message", "")).lower())
+                    joined = " ".join(messages)
+                    if "channel access token" in joined:
+                        kind = LineAuthErrorKind.ACCESS_TOKEN_INVALID
+                    elif "channel secret" in joined:
+                        kind = LineAuthErrorKind.CHANNEL_SECRET_INVALID
                 raise LineBotInfoCredentialError(
-                    f"LINE bot/info credential rejected: HTTP {exc.code}"
+                    f"LINE bot/info credential rejected: HTTP {exc.code}",
+                    kind=kind,
                 ) from exc
             raise LineBotInfoError(f"LINE bot/info HTTP {exc.code}") from exc
         except OSError as exc:

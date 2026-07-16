@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 
 
 class LineReplyError(Exception):
@@ -22,8 +23,23 @@ class LineBotInfoError(Exception):
     """LINE bot/info 呼叫失敗的基底例外。"""
 
 
+class LineAuthErrorKind(str, Enum):
+    ACCESS_TOKEN_INVALID = "ACCESS_TOKEN_INVALID"
+    CHANNEL_SECRET_INVALID = "CHANNEL_SECRET_INVALID"
+    UNKNOWN_AUTH = "UNKNOWN_AUTH"
+
+
 class LineBotInfoCredentialError(LineBotInfoError):
-    """access token 無效或未授權。"""
+    """LINE 應用層憑證被拒絕，附安全分類代碼。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: LineAuthErrorKind = LineAuthErrorKind.UNKNOWN_AUTH,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class LineBotInfoNetworkError(LineBotInfoError):

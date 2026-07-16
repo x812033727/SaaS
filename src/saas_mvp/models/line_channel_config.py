@@ -10,6 +10,7 @@ channel_secret 與 access_token 以 Fernet 對稱加密存 DB（可逆還原，
 from __future__ import annotations
 
 import datetime
+import enum
 import re
 from functools import lru_cache
 
@@ -18,6 +19,14 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, LargeBinary, Strin
 from sqlalchemy.orm import relationship, validates
 
 from saas_mvp.db import Base
+
+
+class CredentialStatus(str, enum.Enum):
+    UNCHECKED = "unchecked"
+    VALID = "valid"
+    INVALID = "invalid"
+    ERROR = "error"
+    CONFLICT = "conflict"
 
 # BCP-47 tag 基本格式（language[-script][-region][-variant...]），
 # 僅允許合法字元，防止下游 API 注入。
@@ -124,9 +133,13 @@ class LineChannelConfig(Base):
 
     # LINE channel access token 的 bot/info 驗證狀態。
     # 舊資料可能為 NULL；API 邊界層統一正規化為 "unchecked"。
-    credential_status = Column(String(16), nullable=True, default="unchecked")
+    credential_status = Column(
+        String(16), nullable=True, default=CredentialStatus.UNCHECKED.value
+    )
     credential_last_error = Column(String(255), nullable=True)
     credential_checked_at = Column(DateTime(timezone=True), nullable=True)
+    verify_attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+    verify_attempt_window_start = Column(DateTime(timezone=True), nullable=True)
 
     # 預設翻譯目標語言（BCP-47 tag，如 "zh-TW", "en", "ja"）
     default_target_lang = Column(String(16), nullable=False, default="zh-TW")
@@ -181,6 +194,13 @@ class LineChannelConfig(Base):
     def _validate_bot_mode(self, key: str, value: str) -> str:
         """bot_mode 白名單強制——setter/constructor 賦值皆觸發。"""
         return validate_bot_mode(value)
+
+    @validates("credential_status")
+    def _validate_credential_status(self, key: str, value: str | CredentialStatus | None):
+        """DB 維持 VARCHAR，ORM 邊界拒絕非法狀態。"""
+        if value is None:
+            return None
+        return CredentialStatus(value).value
 
     # ── 便利屬性：透明加解密 ────────────────────────────────────────────────
 
