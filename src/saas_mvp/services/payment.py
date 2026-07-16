@@ -15,8 +15,13 @@ class PaymentError(Exception):
 
 class PaymentProvider(ABC):
     @abstractmethod
-    def create_checkout(self, *, order_id: int, amount_cents: int, currency: str) -> str:
-        """建立結帳並回傳付款連結 URL。"""
+    def create_checkout(self, db, *, order) -> str:
+        """建立結帳並回傳付款連結 URL。
+
+        收整個 ``Order``(而非裸 order_id):結帳 URL 以不可猜的
+        ``merchant_trade_no`` 為鍵(PEA-3),且 LINE Pay 需把 transactionId
+        寫回 order(txid↔order 綁定),兩者都需要 db + order。
+        """
 
     @abstractmethod
     def name(self) -> str:
@@ -26,8 +31,11 @@ class PaymentProvider(ABC):
 class StubPaymentProvider(PaymentProvider):
     """離線假 provider：回傳可預期的假付款連結，不呼叫外部服務。"""
 
-    def create_checkout(self, *, order_id: int, amount_cents: int, currency: str) -> str:
-        return f"https://pay.example/stub/checkout?order={order_id}&amount={amount_cents}&cur={currency}"
+    def create_checkout(self, db, *, order) -> str:
+        return (
+            f"https://pay.example/stub/checkout?order={order.id}"
+            f"&amount={order.total_cents}&cur={order.currency}"
+        )
 
     def name(self) -> str:
         return "stub"

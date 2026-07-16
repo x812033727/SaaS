@@ -13,7 +13,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-class AnthropicAssistant(AIAssistant):
+class MiniMaxAssistant(AIAssistant):
     """AI assistant backed by the direct MiniMax API.
 
     Configured from settings (``SAAS_MINIMAX_API_KEY`` / ``SAAS_AI_MODEL``).

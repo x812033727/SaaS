@@ -131,16 +131,23 @@ class LinePayPaymentProvider(PaymentProvider):
     def __init__(self, *, client: LinePayClient | None = None) -> None:
         self._client = client or LinePayClient()
 
-    def create_checkout(self, *, order_id: int, amount_cents: int, currency: str) -> str:
+    def create_checkout(self, db, *, order) -> str:
+        from saas_mvp.services import shop as shop_svc
+
+        trade_no = shop_svc.ensure_order_trade_no(db, order)
         base = settings.public_base_url.rstrip("/")
         result = self._client.request_payment(
-            order_id=order_id,
-            amount_twd=amount_cents // 100,
-            currency=currency or "TWD",
-            confirm_url=f"{base}/payments/linepay/confirm?orderId={order_id}",
-            cancel_url=f"{base}/payments/linepay/cancel?orderId={order_id}",
-            item_name=f"訂單 {order_id}",
+            order_id=trade_no,
+            amount_twd=order.total_cents // 100,
+            currency=(order.currency or "TWD"),
+            confirm_url=f"{base}/payments/linepay/confirm?orderId={trade_no}",
+            cancel_url=f"{base}/payments/linepay/cancel?orderId={trade_no}",
+            item_name=f"訂單 {order.id}",
         )
+        # txid↔order 綁定:confirm 時必須與 query string 比對(不可信任外部值)。
+        # 重新產生付款連結會覆寫為最新 txid —— 舊連結的 confirm 自然失效。
+        order.payment_txn_id = result["transaction_id"] or None
+        db.commit()
         return result["payment_url"]
 
     def name(self) -> str:
