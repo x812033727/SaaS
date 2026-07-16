@@ -35,7 +35,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "LINE",
     items: [
-      { label: "LINE 設定", href: "/ui/line-config", migrated: false },
+      { label: "LINE 設定", href: "/line-settings", migrated: true },
       { label: "客服訊息", href: "/ui/line-chat", migrated: false },
       { label: "自動回覆", href: "/ui/auto-reply", migrated: false },
       { label: "圖文選單", href: "/ui/rich-menu", migrated: false },
