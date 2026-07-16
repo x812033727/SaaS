@@ -12,7 +12,7 @@ from saas_mvp.auth.dependencies import UIForbidden, UILoginRequired, UITenantDis
 from saas_mvp.config import settings
 from saas_mvp.db import init_db
 from saas_mvp.obs import ObservabilityMiddleware, configure_logging, install_error_handlers
-from saas_mvp.routers import auth, notes, tenants, ui, v1
+from saas_mvp.routers import auth, notes, tenants, ui, v1, v1_console
 from saas_mvp.routers import quota as quota_router
 from saas_mvp.routers import api_keys as api_keys_router
 from saas_mvp.routers import usage as usage_router
@@ -101,6 +101,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(v1.router)
+    app.include_router(v1_console.router)
     app.include_router(tenants.router)
     app.include_router(notes.router)
     app.include_router(quota_router.router)
