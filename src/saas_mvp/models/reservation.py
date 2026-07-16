@@ -106,6 +106,9 @@ class Reservation(Base):
     deposit_refund_requested_at = Column(DateTime(timezone=True), nullable=True)
     deposit_refunded_at = Column(DateTime(timezone=True), nullable=True)
     deposit_refund_error = Column(String(255), nullable=True)
+    # 實際退款金額(cents;NULL=未退)。一次退款即終態:可全額或部分,
+    # 部分退款後餘額不可再自動退(需人工)。rev 0042。
+    deposit_refunded_cents = Column(Integer, nullable=True)
     deposit_refund_provider_code = Column(String(32), nullable=True)
     deposit_refund_requested_by_user_id = Column(Integer, nullable=True)
 
