@@ -49,7 +49,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "服務項目", href: "/services", migrated: true },
       { label: "服務套票", href: "/ui/packages", migrated: false },
       { label: "電子禮物卡", href: "/ui/gift-cards", migrated: false },
-      { label: "POS 結帳", href: "/ui/pos", migrated: false },
+      { label: "POS 結帳", href: "/pos", migrated: true },
       { label: "商品", href: "/ui/shop", migrated: false },
       { label: "優惠券", href: "/ui/coupons", migrated: false },
       { label: "分店", href: "/ui/locations", migrated: false },
@@ -68,7 +68,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: "報表",
-    items: [{ label: "營運報表", href: "/ui/reports", migrated: false }],
+    items: [
+      { label: "營運報表", href: "/reports", migrated: true },
+      { label: "進階報表/匯出", href: "/ui/reports", migrated: false },
+    ],
   },
   {
     label: "帳務設定",

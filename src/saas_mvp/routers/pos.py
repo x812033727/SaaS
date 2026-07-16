@@ -58,6 +58,12 @@ class CheckoutRequest(BaseModel):
     points_to_redeem: int = Field(default=0, ge=0)
     reservation_id: int | None = None
     gift_card_code: str | None = Field(default=None, max_length=32)
+    # R4-C3:service 層本就支援(/ui 在用),REST 補暴露。全部 optional,
+    # 未帶時行為與舊版完全一致。
+    staff_id: int | None = None
+    payment_method: str | None = Field(default=None, max_length=16)
+    tip_cents: int = Field(default=0, ge=0)
+    mark_paid: bool = False
 
 
 class CheckoutResponse(BaseModel):
@@ -115,9 +121,18 @@ def checkout(
             points_to_redeem=body.points_to_redeem,
             reservation_id=body.reservation_id,
             gift_card_code=body.gift_card_code,
+            staff_id=body.staff_id,
+            payment_method=body.payment_method,
+            tip_cents=body.tip_cents,
+            mark_paid=body.mark_paid,
         )
     except pos_svc.CustomerNotFound:
         raise HTTPException(status_code=404, detail="Customer not found")
+    except pos_svc.StaffNotFound:
+        # R4-C3:原本未接,會冒泡成 500。
+        raise HTTPException(status_code=404, detail="Staff not found")
+    except pos_svc.StaffRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc) or "此操作需指定員工歸屬")
     except shop_svc.ProductNotFound:
         raise HTTPException(status_code=404, detail="Product not found")
     except shop_svc.ProductInactive:
