@@ -3491,10 +3491,11 @@ def booking_retry_series_occurrence(
 def booking_refund_deposit(
     request: Request,
     reservation_id: int,
+    amount_twd: int | None = Form(None, ge=1),
     actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
-    """取消後全額退還已付定金；owner 限定、服務層鎖列防重。"""
+    """取消後退還已付定金(可部分,預設全額);owner 限定、服務層鎖列防重。"""
     error = None
     refund_success = None
     try:
@@ -3503,7 +3504,9 @@ def booking_refund_deposit(
             tenant_id=actor.user.tenant_id,
             reservation_id=reservation_id,
             actor_user_id=actor.user.id,
+            amount_cents=amount_twd * 100 if amount_twd is not None else None,
         )
+        refunded_twd = (row.deposit_refunded_cents or row.deposit_cents or 0) // 100
         audit_svc.record_from_actor(
             db,
             actor,
@@ -3511,13 +3514,14 @@ def booking_refund_deposit(
             target=f"reservation:{reservation_id}",
             detail={
                 "result": "refunded",
-                "amount_twd": (row.deposit_cents or 0) // 100,
+                "amount_twd": refunded_twd,
+                "deposit_twd": (row.deposit_cents or 0) // 100,
                 "provider": row.deposit_provider,
             },
             request=request,
         )
         db.commit()
-        refund_success = f"預約 #{reservation_id} 定金已完成全額退款。"
+        refund_success = f"預約 #{reservation_id} 定金已退款 NT${refunded_twd}。"
     except deposit_svc.DepositRefundError as exc:
         db.rollback()
         error = str(exc)
@@ -3544,10 +3548,11 @@ def booking_confirm_manual_deposit_refund(
     request: Request,
     reservation_id: int,
     note: str = Form(..., min_length=2, max_length=200),
+    amount_twd: int | None = Form(None, ge=1),
     actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
-    """外部金流後台已退款後人工對帳；不呼叫金流、不會重複退刷。"""
+    """外部金流後台已退款後人工對帳(可部分,預設全額);不呼叫金流、不會重複退刷。"""
     error = None
     refund_success = None
     try:
@@ -3557,7 +3562,9 @@ def booking_confirm_manual_deposit_refund(
             reservation_id=reservation_id,
             actor_user_id=actor.user.id,
             note=note,
+            amount_cents=amount_twd * 100 if amount_twd is not None else None,
         )
+        refunded_twd = (row.deposit_refunded_cents or row.deposit_cents or 0) // 100
         audit_svc.record_from_actor(
             db,
             actor,
@@ -3565,13 +3572,14 @@ def booking_confirm_manual_deposit_refund(
             target=f"reservation:{reservation_id}",
             detail={
                 "result": "confirmed",
-                "amount_twd": (row.deposit_cents or 0) // 100,
+                "amount_twd": refunded_twd,
+                "deposit_twd": (row.deposit_cents or 0) // 100,
                 "note": note,
             },
             request=request,
         )
         db.commit()
-        refund_success = f"預約 #{reservation_id} 已標記為人工退款完成。"
+        refund_success = f"預約 #{reservation_id} 已標記為人工退款完成(NT${refunded_twd})。"
     except deposit_svc.DepositRefundError as exc:
         db.rollback()
         error = str(exc)

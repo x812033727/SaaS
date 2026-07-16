@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import secrets
 
 from sqlalchemy import select
@@ -19,6 +20,8 @@ from saas_mvp.models.reservation import (
     RESERVATION_CONFIRMED,
     Reservation,
 )
+
+_log = logging.getLogger(__name__)
 
 DEPOSIT_PENDING = "pending"
 DEPOSIT_PAID = "paid"
@@ -159,15 +162,49 @@ def _provider_message(response: dict) -> str:
     return " ".join(raw.split())[:160]
 
 
+def _validate_refund_amount(resv: Reservation, amount_cents: int | None) -> int:
+    """驗證退款金額;None=全額。回傳實際退款 cents。"""
+    amount = amount_cents if amount_cents is not None else (resv.deposit_cents or 0)
+    if amount <= 0 or amount > (resv.deposit_cents or 0):
+        raise DepositRefundError("退款金額需大於 0 且不可超過定金金額。")
+    if amount % 100 != 0:
+        raise DepositRefundError("退款金額需為整數元。")
+    return amount
+
+
+def _notify_refunded(db: Session, resv: Reservation, amount_cents: int) -> None:
+    """退款成功後 best-effort 入列 LINE 通知(獨立小交易)。
+
+    金錢狀態已先 commit —— 不與退款同交易,是因為 provider 退刷屬外部不可逆
+    操作,成功後「記錄退款」優先於「發通知」;通知失敗只記 log 不影響退款。
+    """
+    try:
+        from saas_mvp.services import booking_notify as notify_svc
+        from saas_mvp.services import features as features_svc
+
+        enabled = features_svc.is_enabled(
+            db, resv.tenant_id, features_svc.BOOKING_NOTIFY
+        )
+        if notify_svc.enqueue_refund(
+            db, reservation=resv, amount_cents=amount_cents, enabled=enabled
+        ):
+            db.commit()
+    except Exception:  # noqa: BLE001 — 通知永不影響退款結果
+        _log.warning("deposit refund notify enqueue failed resv=%s", resv.id,
+                     exc_info=True)
+
+
 def request_full_refund(
     db: Session,
     *,
     tenant_id: int,
     reservation_id: int,
     actor_user_id: int,
+    amount_cents: int | None = None,
     ecpay_client=None,
 ) -> Reservation:
-    """取消後的已付定金全額退款；鎖列防雙擊／多 worker 重複退刷。
+    """取消後的已付定金退款(``amount_cents`` None=全額,可部分);鎖列防雙擊／
+    多 worker 重複退刷。一次退款即終態:部分退款後餘額不可再自動退(需人工)。
 
     明確拒絕可修正後重試；網路或回應解析失敗屬結果不確定，轉
     ``manual_required``，禁止自動重試，必須先到金流後台核對。
@@ -189,6 +226,7 @@ def request_full_refund(
         raise DepositRefundError("退款正在處理，請勿重複送出。")
     if resv.deposit_refund_status == REFUND_MANUAL_REQUIRED:
         raise DepositRefundError("此筆退款需要先到金流後台核對，不能自動重送。")
+    amount = _validate_refund_amount(resv, amount_cents)
 
     resv.deposit_refund_status = REFUND_PROCESSING
     resv.deposit_refund_attempts = (resv.deposit_refund_attempts or 0) + 1
@@ -203,7 +241,9 @@ def request_full_refund(
         resv.deposit_refund_status = REFUND_REFUNDED
         resv.deposit_refunded_at = _utcnow()
         resv.deposit_refund_provider_code = "STUB"
+        resv.deposit_refunded_cents = amount
         db.commit()
+        _notify_refunded(db, resv, amount)
         return resv
     if provider != "ecpay":
         _manual_required(db, resv, "缺少原付款交易資料，請在金流後台核對並人工退款。")
@@ -232,7 +272,7 @@ def request_full_refund(
         response = ecpay_client.refund_credit(
             merchant_trade_no=resv.deposit_merchant_trade_no,
             trade_no=resv.deposit_provider_trade_no,
-            amount_twd=(resv.deposit_cents or 0) // 100,
+            amount_twd=amount // 100,
         )
     except Exception as exc:  # noqa: BLE001 — timeout 後結果可能已成功，不得自動重送
         _manual_required(
@@ -248,7 +288,9 @@ def request_full_refund(
         resv.deposit_refund_status = REFUND_REFUNDED
         resv.deposit_refunded_at = _utcnow()
         resv.deposit_refund_error = None
+        resv.deposit_refunded_cents = amount
         db.commit()
+        _notify_refunded(db, resv, amount)
         return resv
 
     message = _provider_message(response)
@@ -265,8 +307,10 @@ def confirm_manual_refund(
     reservation_id: int,
     actor_user_id: int,
     note: str,
+    amount_cents: int | None = None,
 ) -> Reservation:
-    """owner 在外部金流後台完成退款後，將本系統安全對帳為已退款。"""
+    """owner 在外部金流後台完成退款後，將本系統安全對帳為已退款
+    (``amount_cents`` None=全額,可部分)。"""
     note = " ".join(note.strip().split())
     if not 2 <= len(note) <= 200:
         raise DepositRefundError("人工退款備註需為 2–200 字。")
@@ -281,6 +325,7 @@ def confirm_manual_refund(
         raise DepositRefundError("此預約沒有可確認的人工定金退款。")
     if resv.deposit_refund_status == REFUND_PROCESSING:
         raise DepositRefundError("退款仍在處理中，請先確認金流結果。")
+    amount = _validate_refund_amount(resv, amount_cents)
     resv.deposit_status = DEPOSIT_REFUNDED
     resv.deposit_refund_status = REFUND_REFUNDED
     resv.deposit_refunded_at = _utcnow()
@@ -288,7 +333,9 @@ def confirm_manual_refund(
     resv.deposit_refund_requested_by_user_id = actor_user_id
     resv.deposit_refund_error = f"人工確認：{note}"[:255]
     resv.deposit_refund_provider_code = "MANUAL"
+    resv.deposit_refunded_cents = amount
     db.commit()
+    _notify_refunded(db, resv, amount)
     return resv
 
 

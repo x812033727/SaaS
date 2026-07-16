@@ -23,6 +23,7 @@ from saas_mvp.models.booking_notification import (
     NOTIFY_CHANGE,
     NOTIFY_FAILED,
     NOTIFY_PENDING,
+    NOTIFY_REFUND,
     NOTIFY_SENT,
     BookingNotification,
 )
@@ -133,6 +134,45 @@ def enqueue_cancel(
         db,
         reservation=reservation,
         kind=NOTIFY_CANCEL,
+        payload_text=text,
+        enabled=enabled,
+        send_after=send_after,
+    )
+
+
+def build_refund_text(reservation: Reservation, amount_cents: int) -> str:
+    """組裝「定金已退款」通知文字。"""
+    amount = (amount_cents or 0) // 100
+    total = (reservation.deposit_cents or 0) // 100
+    if amount_cents == reservation.deposit_cents:
+        line = f"您預約(編號 {reservation.id})的定金 NT${total} 已全額退款。"
+    else:
+        line = f"您預約(編號 {reservation.id})的定金 NT${total} 已部分退款 NT${amount}。"
+    return (
+        "【定金退款通知】\n"
+        f"{line}\n"
+        "退款入帳時間依發卡行/金流業者作業為準。如有疑問,歡迎與我們聯繫,謝謝您!"
+    )
+
+
+def enqueue_refund(
+    db: Session,
+    *,
+    reservation: Reservation,
+    amount_cents: int,
+    enabled: bool = True,
+    send_after: datetime.datetime | None = None,
+) -> int:
+    """為一筆定金退款入列通知(不 commit)。
+
+    冪等同 change/cancel:UniqueConstraint(reservation_id, kind);退款本身
+    一次即終態,重複入列不可能成功第二次。
+    """
+    text = build_refund_text(reservation, amount_cents)
+    return _enqueue(
+        db,
+        reservation=reservation,
+        kind=NOTIFY_REFUND,
         payload_text=text,
         enabled=enabled,
         send_after=send_after,
