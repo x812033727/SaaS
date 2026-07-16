@@ -13,7 +13,8 @@ export default function LoginPage() {
     setPending(true);
     setError("");
     const form = new FormData(event.currentTarget);
-    const response = await fetch("/api/session/login", {
+    // 注意:client fetch 不會自動吃 next.config 的 basePath,要寫全路徑。
+    const response = await fetch("/console/api/session/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),

@@ -230,6 +230,18 @@ def _set_auth_cookie(response: Response, token: str) -> None:
         max_age=settings.access_token_expire_minutes * 60,
         path="/",
     )
+    # SSO 橋(R3-C2):console(saas-console)以 `saas_access_token` cookie 裝
+    # **同一顆 JWT**(同 secret_key 簽);/ui 登入時一併種下,console 免二次登入。
+    # console 端登入亦會回種 /ui 的兩個 cookie(見 frontend session/login route)。
+    response.set_cookie(
+        key="saas_access_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.env not in ("dev", "test"),
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+    )
 
 
 def _ctx(request: Request, actor: Actor | None = None, **extra) -> dict:
@@ -464,6 +476,8 @@ def logout():
     resp = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
     resp.delete_cookie(_UI_COOKIE_NAME, path="/")
     resp.delete_cookie(_CSRF_COOKIE_NAME, path="/")
+    # 一併登出 console(雙 cookie 漂移防範:任一邊登出都清三個)。
+    resp.delete_cookie("saas_access_token", path="/")
     return resp
 
 

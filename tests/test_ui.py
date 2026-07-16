@@ -128,6 +128,8 @@ def test_login_sets_cookie_and_redirects(client):
     assert r.headers["location"] == "/ui/"
     sc = r.headers.get("set-cookie", "")
     assert "access_token=" in sc and "httponly" in sc.lower()
+    # SSO 橋(R3-C2):/ui 登入一併種 console 的 saas_access_token(同一顆 JWT)
+    assert "saas_access_token=" in sc
 
 
 def test_login_bad_password_rerenders(client):
@@ -153,6 +155,8 @@ def test_logout_clears_cookie(client):
     assert r.headers["location"] == "/ui/login"
     assert 'access_token=""' in r.headers.get("set-cookie", "") or \
            "access_token=;" in r.headers.get("set-cookie", "")
+    # console cookie 也一併清(雙 cookie 漂移防範)
+    assert "saas_access_token=" in r.headers.get("set-cookie", "")
 
 
 # ── 店家自助 ────────────────────────────────────────────────────────────────

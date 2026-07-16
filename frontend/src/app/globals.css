@@ -1,22 +1,57 @@
 @import "tailwindcss";
 
-:root {
-  --canvas: #f7f5ef;
-  --surface: #ffffff;
-  --ink: #20241f;
-  --muted: #6d746c;
-  --line: #dedfd8;
-  --brand: #185848;
-  --brand-strong: #0e4236;
-  --accent: #c8915d;
+/* 溫暖精品風 design tokens — 與 /ui 的 static/app.css 完全對齊
+   (暖白 #FAF9F6 / 深墨綠 #1A5C4A / 琥珀金 #C4956A),讓兩套 UI 讀起來是同一個產品。 */
+@theme {
+  --color-canvas: #faf9f6;
+  --color-surface: #ffffff;
+  --color-ink: #2b2b28;
+  --color-muted: #8a867c;
+  --color-line: #e9e5dd;
+  --color-brand: #1a5c4a;
+  --color-brand-deep: #124436;
+  --color-brand-soft: #edf3f0;
+  --color-gold: #c4956a;
+  --color-gold-soft: #f6eee3;
+  --color-danger: #b3564d;
+  --color-danger-soft: #f9ecea;
+  --color-ok: #3e7d5f;
+  --color-ok-soft: #e9f2ed;
+  --color-warn: #b7791f;
+  --color-warn-soft: #fbf3e4;
+  --radius-card: 12px;
+  --radius-field: 8px;
+  --font-sans: "Noto Sans TC", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --shadow-1: 0 1px 2px rgba(43, 43, 40, 0.05), 0 2px 8px rgba(43, 43, 40, 0.04);
 }
 
-* { box-sizing: border-box; }
+/* 舊頁面(login 等初版)使用的 var 別名,值同上;新元件請用 Tailwind token。 */
+:root {
+  --canvas: var(--color-canvas);
+  --surface: var(--color-surface);
+  --ink: var(--color-ink);
+  --muted: var(--color-muted);
+  --line: var(--color-line);
+  --brand: var(--color-brand);
+  --brand-strong: var(--color-brand-deep);
+  --accent: var(--color-gold);
+}
+
+* {
+  box-sizing: border-box;
+}
 body {
   margin: 0;
-  background: var(--canvas);
-  color: var(--ink);
-  font-family: Arial, "Noto Sans TC", sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
 }
-button, input { font: inherit; }
-:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 35%, transparent); outline-offset: 2px; }
+button,
+input,
+select {
+  font: inherit;
+}
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-brand) 35%, transparent);
+  outline-offset: 2px;
+}
