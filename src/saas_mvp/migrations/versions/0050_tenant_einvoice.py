@@ -44,7 +44,9 @@ def upgrade() -> None:
             ),
             sa.Column(
                 "enabled", sa.Boolean(), nullable=False,
-                server_default=sa.text("0"),
+                # sa.false():PG 的 boolean 不接受 DEFAULT 0(型別不匹配,
+                # SQLite 才容忍)——此 bug 曾讓 prod 起不來,勿再用 sa.text("0")。
+                server_default=sa.false(),
             ),
             sa.Column("updated_by_user_id", sa.Integer(), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
