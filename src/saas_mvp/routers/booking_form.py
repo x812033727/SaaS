@@ -135,6 +135,7 @@ def booking_form_submit(
     service_id: int | None = Form(default=None),
     staff_id: int | None = Form(default=None),
     use_package: bool = Form(default=False),
+    email: str = Form(default=""),
 ):
     if party_size < 1:
         party_size = 1
@@ -226,13 +227,19 @@ def booking_form_submit(
         ) if row.status == "pending"
     ]
     # R5-B2:顧客 portal 連結(建單交易已補發 token;read-only)。
+    # R5-B3:選填 email 順帶寫入顧客檔(輕驗證,無效即忽略、絕不擋預約)。
     portal_url = None
     if resv.customer_id is not None:
         from saas_mvp.models.customer import Customer
         from saas_mvp.services import customer_portal as portal_svc
+        from saas_mvp.services.customer_portal import valid_email
 
         customer = db.get(Customer, resv.customer_id)
         if customer is not None:
+            cleaned = valid_email(email)
+            if cleaned and customer.email != cleaned:
+                customer.email = cleaned
+                db.commit()
             portal_url = portal_svc.portal_url(customer)
     return templates.TemplateResponse(
         "booking_form/done.html",

@@ -130,6 +130,8 @@
         <select id="party_size" name="party_size">
           {% for n in range(1, 7) %}<option value="{{ n }}">{{ n }} 位</option>{% endfor %}
         </select>
+        <label for="email">Email（選填，用於預約提醒）</label>
+        <input id="email" name="email" type="email" maxlength="255" placeholder="you@example.com" autocomplete="email">
         {% if package_credits %}
           <label class="package-option">
             <input type="checkbox" name="use_package" value="true">

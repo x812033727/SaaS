@@ -13,6 +13,7 @@ token 即能力:`Customer.portal_token`(migration 0048)為**長效**憑證——
 from __future__ import annotations
 
 import datetime
+import re
 import secrets
 
 from sqlalchemy import select
@@ -36,6 +37,20 @@ class PortalTokenNotFound(Exception):
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def valid_email(raw: str | None) -> str | None:
+    """輕量 email 驗證(R5-B3):清洗後合法回小寫值,否則 None。
+
+    來源是顧客自填選填欄位——無效值一律靜默忽略,絕不擋預約主流程。
+    """
+    cleaned = (raw or "").strip().lower()
+    if not cleaned or len(cleaned) > 255 or not _EMAIL_RE.match(cleaned):
+        return None
+    return cleaned
 
 
 def assign_portal_token_if_missing(customer: Customer) -> None:

@@ -67,6 +67,9 @@ class Customer(Base):
     # 顧客自助入口網憑證(R5-B1「我的預約」);token 即能力、長效可輪替,
     # NULL = 尚未產生(惰性簽發,比照 ics_token)。migration 0048。
     portal_token = Column(String(64), nullable=True, unique=True)
+    # 顧客 email(R5-B3,選填):提醒三段 fallback(LINE→SMS→email)第三管道;
+    # booking_form 選填欄位與 portal 頁自助填寫。migration 0049。
+    email = Column(String(255), nullable=True)
     # 生日（PHASE 4 行銷自動化：生日活動 targeting）；nullable = 未填。
     # 既有 DB 由 _migrate_add_customer_birthday() 補欄。
     birthday = Column(Date, nullable=True)
