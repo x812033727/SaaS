@@ -184,6 +184,11 @@ def plan_unsubscribe(
 
 def _billing_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
     """帳單頁共用資料；儲存發票資料失敗時可原頁顯示錯誤。"""
+    from saas_mvp.services import tenant_einvoice as einvoice_svc
+
+    extra.setdefault(
+        "einvoice_config", einvoice_svc.get_config(db, actor.user.tenant_id)
+    )
     from saas_mvp.models.feature_subscription import FeatureSubscription
     from saas_mvp.models.subscription_charge import SubscriptionCharge
     from sqlalchemy import select as _select
@@ -254,6 +259,7 @@ def _billing_ctx(request: Request, actor: Actor, db: Session, **extra) -> dict:
 def billing_page(
     request: Request,
     invoice_profile_saved: bool = Query(False),
+    einvoice_saved: bool = Query(False),
     actor: Actor = Depends(require_ui_owner),
     db: Session = Depends(get_db),
 ):
@@ -265,7 +271,55 @@ def billing_page(
             actor,
             db,
             invoice_profile_saved=invoice_profile_saved,
+            einvoice_saved=einvoice_saved,
         ),
+    )
+
+
+@router.post("/billing/einvoice-config", response_class=HTMLResponse)
+def billing_einvoice_config_save(
+    request: Request,
+    merchant_id: str = Form("", max_length=20),
+    hash_key: str = Form("", max_length=64),
+    hash_iv: str = Form("", max_length=64),
+    environment: str = Form("stage", max_length=8),
+    enabled: bool = Form(False),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """店家自有電子發票憑證(R5-C2,opt-in);HashKey/IV 留空=沿用既有值。"""
+    from saas_mvp.services import tenant_einvoice as einvoice_svc
+
+    try:
+        einvoice_svc.save_config(
+            db,
+            tenant_id=actor.user.tenant_id,
+            merchant_id=merchant_id,
+            hash_key=hash_key,
+            hash_iv=hash_iv,
+            environment=environment,
+            enabled=enabled,
+            updated_by_user_id=actor.user.id,
+        )
+    except einvoice_svc.EinvoiceConfigError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            "billing.html",
+            _billing_ctx(request, actor, db, einvoice_error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.einvoice_config.update",
+        target="einvoice:config",
+        detail={"enabled": enabled, "environment": environment},
+        request=request,
+    )
+    db.commit()
+    return RedirectResponse(
+        "/ui/billing?einvoice_saved=1",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

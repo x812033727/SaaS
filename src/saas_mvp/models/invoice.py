@@ -38,6 +38,8 @@ class Invoice(Base):
         unique=True,
     )
     order_id = Column(Integer, nullable=True)
+    # 定金發票回鏈(R5-C2;與 order_id/subscription_charge_id 三擇一)。
+    reservation_id = Column(Integer, nullable=True, index=True)
     # 綠界 RelateNumber(自訂單號,≤30 英數,唯一)。
     relate_number = Column(String(30), unique=True, nullable=False)
     invoice_no = Column(String(16), nullable=True)       # 開立成功才有

@@ -98,6 +98,36 @@
 </div>
 <script src="/static/invoice-profile.js" defer></script>
 
+<div class="card">
+  <h2>店家電子發票(對顧客開立)</h2>
+  <p class="muted">用<strong>您自己的</strong>綠界電子發票商店憑證,對顧客的訂單與預約定金自動開立發票。
+     與上方「電子發票資料」(平台開給您的月費發票)無關。開立發票屬店家稅務責任,請確認已完成綠界電子發票申請。</p>
+  {% if einvoice_saved %}<div class="success">店家發票憑證已安全儲存。</div>{% endif %}
+  {% if einvoice_error %}<div class="error">{{ einvoice_error }}</div>{% endif %}
+  <form method="post" action="/ui/billing/einvoice-config">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="einv-mid">MerchantID(發票商店代號)</label>
+    <input id="einv-mid" name="merchant_id" maxlength="20"
+           value="{{ einvoice_config.merchant_id if einvoice_config else '' }}">
+    <label for="einv-key">HashKey{% if einvoice_config and einvoice_config.hash_key_enc %}(已設定,留空=不變){% endif %}</label>
+    <input id="einv-key" name="hash_key" maxlength="64" autocomplete="off" placeholder="{{ '••••••••' if einvoice_config and einvoice_config.hash_key_enc else '' }}">
+    <label for="einv-iv">HashIV{% if einvoice_config and einvoice_config.hash_iv_enc %}(已設定,留空=不變){% endif %}</label>
+    <input id="einv-iv" name="hash_iv" maxlength="64" autocomplete="off" placeholder="{{ '••••••••' if einvoice_config and einvoice_config.hash_iv_enc else '' }}">
+    <label for="einv-env">環境</label>
+    <select id="einv-env" name="environment">
+      <option value="stage" {% if not einvoice_config or einvoice_config.environment == 'stage' %}selected{% endif %}>測試(stage)</option>
+      <option value="prod" {% if einvoice_config and einvoice_config.environment == 'prod' %}selected{% endif %}>正式(prod)</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:.4rem">
+      <input type="checkbox" name="enabled" value="true"
+             {% if einvoice_config and einvoice_config.enabled %}checked{% endif %}
+             style="width:auto">
+      啟用自動開立(訂單付款/定金入帳時)
+    </label>
+    <button type="submit">儲存店家發票憑證</button>
+  </form>
+</div>
+
 {% if charges %}
 <div class="card">
   <h2>扣款明細（近 24 期）</h2>

@@ -103,15 +103,45 @@ def issue_for_charge(db: Session, charge, *, issuer=None) -> Invoice | None:
         return None
 
 
+def _item_name_for(row: Invoice) -> str:
+    """依發票類型取品名:訂閱月費 / 店家訂單 / 預約定金(R5-C2)。"""
+    if row.order_id is not None:
+        return "商品/服務消費"
+    if row.reservation_id is not None:
+        return "預約定金"
+    return "LINE 預約平台月費"
+
+
+def _issuer_for(db: Session, row: Invoice, issuer=None):
+    """依發票類型選 issuer(R5-C2):
+
+    * 訂單/定金(店家對顧客)→ 店家自有憑證(tenant_einvoice);未啟用回 None。
+    * 訂閱月費(平台對店家)→ 平台憑證(get_invoice_issuer)。
+    """
+    if issuer is not None:
+        return issuer
+    if row.order_id is not None or row.reservation_id is not None:
+        from saas_mvp.services.tenant_einvoice import issuer_for_tenant
+
+        return issuer_for_tenant(db, row.tenant_id)
+    return get_invoice_issuer(db)
+
+
 def _attempt_issue(db: Session, row: Invoice, *, issuer=None) -> None:
     """對一筆 pending/failed 發票列嘗試開立(供首開與 ops 重試共用)。"""
-    effective = issuer or get_invoice_issuer(db)
+    effective = _issuer_for(db, row, issuer)
+    if effective is None:
+        # 店家發票在入列後被停用:標 failed 留訊息,重試窗過後自然放棄。
+        row.status = INVOICE_FAILED
+        row.error_msg = "店家電子發票未啟用或憑證不齊"
+        db.commit()
+        return
     try:
         result = effective.issue(
             relate_number=row.relate_number,
             amount_twd=row.amount_cents // 100,
             buyer_email=row.buyer_email or "",
-            item_name="LINE 預約平台月費",
+            item_name=_item_name_for(row),
             buyer_name=row.buyer_name or "",
             buyer_identifier=row.buyer_identifier or "",
             carrier_type=row.carrier_type or "ecpay",
@@ -129,6 +159,112 @@ def _attempt_issue(db: Session, row: Invoice, *, issuer=None) -> None:
         row.error_msg = str(exc)[:255]
         _log.warning("invoice issue failed relate=%s: %s", row.relate_number, exc)
     db.commit()
+
+
+def _customer_buyer(db: Session, tenant_id: int, customer_id: int | None):
+    """訂單/定金發票買受人=顧客(R5-C2):email(B3 欄位)+顯示名;查無回空。"""
+    if customer_id is None:
+        return "", ""
+    from saas_mvp.models.customer import Customer
+
+    customer = db.get(Customer, customer_id)
+    if customer is None or customer.tenant_id != tenant_id:
+        return "", ""
+    return (customer.email or ""), (customer.display_name or "")
+
+
+def issue_for_order(db: Session, order, *, issuer=None) -> Invoice | None:
+    """店家對顧客的訂單發票(R5-C2,opt-in)。冪等;永不拋錯不擋金流。
+
+    店家未啟用電子發票 → 直接 None(完全不落列,現狀行為)。
+    """
+    try:
+        from saas_mvp.services.tenant_einvoice import einvoice_enabled
+
+        if issuer is None and not einvoice_enabled(db, order.tenant_id):
+            return None
+        existing = db.execute(
+            select(Invoice).where(Invoice.order_id == order.id)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        buyer_email, buyer_name = _customer_buyer(
+            db, order.tenant_id, getattr(order, "customer_id", None)
+        )
+        row = Invoice(
+            tenant_id=order.tenant_id,
+            order_id=order.id,
+            relate_number=f"OD{order.id}T{int(_utcnow().timestamp())}"[:30],
+            amount_cents=order.total_cents,
+            buyer_email=buyer_email,
+            invoice_mode="personal",
+            buyer_name=buyer_name,
+            carrier_type="ecpay",
+            status=INVOICE_PENDING,
+            provider="ecpay",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        _attempt_issue(db, row, issuer=issuer)
+        return row
+    except Exception:  # noqa: BLE001 — 發票絕不影響金流
+        _log.warning(
+            "issue_for_order unexpected failure order=%s",
+            getattr(order, "id", "?"), exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def issue_for_deposit(db: Session, reservation, *, issuer=None) -> Invoice | None:
+    """店家對顧客的預約定金發票(R5-C2,opt-in)。冪等;永不拋錯。"""
+    try:
+        from saas_mvp.services.tenant_einvoice import einvoice_enabled
+
+        if issuer is None and not einvoice_enabled(db, reservation.tenant_id):
+            return None
+        amount = int(reservation.deposit_cents or 0)
+        if amount <= 0:
+            return None
+        existing = db.execute(
+            select(Invoice).where(Invoice.reservation_id == reservation.id)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        buyer_email, buyer_name = _customer_buyer(
+            db, reservation.tenant_id, reservation.customer_id
+        )
+        row = Invoice(
+            tenant_id=reservation.tenant_id,
+            reservation_id=reservation.id,
+            relate_number=f"DP{reservation.id}T{int(_utcnow().timestamp())}"[:30],
+            amount_cents=amount,
+            buyer_email=buyer_email,
+            invoice_mode="personal",
+            buyer_name=buyer_name,
+            carrier_type="ecpay",
+            status=INVOICE_PENDING,
+            provider="ecpay",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        _attempt_issue(db, row, issuer=issuer)
+        return row
+    except Exception:  # noqa: BLE001 — 發票絕不影響金流
+        _log.warning(
+            "issue_for_deposit unexpected failure resv=%s",
+            getattr(reservation, "id", "?"), exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 def void_invoice(
