@@ -19,7 +19,6 @@ from saas_mvp.models.customer import Customer
 from saas_mvp.models.reservation import Reservation
 from saas_mvp.models.service import Service
 from saas_mvp.models.staff import Staff
-from saas_mvp.models.user import User
 
 _DAY1 = datetime.datetime(2031, 3, 10, 10, 0)
 _DAY2 = datetime.datetime(2031, 3, 12, 14, 0)
@@ -338,3 +337,96 @@ class TestNotificationsEndpoints:
     def test_requires_auth(self, v1_client):
         client, _ = v1_client
         assert client.get("/api/v1/notifications/bookings").status_code == 401
+
+
+# ── R5-A4:LINE 客服端點 ──────────────────────────────────────────────────────
+
+
+class TestLineChatEndpoints:
+    def _seed_chat(self, session_factory, tenant_id: int):
+        from saas_mvp.models.line_channel_config import LineChannelConfig
+        from saas_mvp.services import line_chat as line_chat_svc
+
+        db = session_factory()
+        try:
+            cfg = LineChannelConfig(tenant_id=tenant_id)
+            cfg.channel_secret = "sec"
+            cfg.access_token = "tok-line-chat"
+            db.add(cfg)
+            db.add(Customer(
+                tenant_id=tenant_id, line_user_id="Uchat1", display_name="聊天客"
+            ))
+            db.commit()
+            line_chat_svc.record_inbound(
+                db, tenant_id=tenant_id, line_user_id="Uchat1", text="請問營業時間?"
+            )
+        finally:
+            db.close()
+
+    def test_conversations_and_messages(self, v1_client):
+        client, sf = v1_client
+        tid, headers = _register(client, "chat")
+        self._seed_chat(sf, tid)
+        convs = client.get("/api/v1/line-chat/conversations", headers=headers)
+        assert convs.status_code == 200 and len(convs.json()) == 1
+        assert convs.json()[0]["display_name"] == "聊天客"
+        msgs = client.get(
+            "/api/v1/line-chat/Uchat1/messages", headers=headers
+        )
+        assert msgs.status_code == 200 and len(msgs.json()) == 1
+        assert msgs.json()[0]["direction"] == "in"
+
+    def test_reply_pushes_and_records(self, v1_client):
+        from saas_mvp.line_client import FakeLinePushClient, get_push_client
+
+        client, sf = v1_client
+        tid, headers = _register(client, "chat")
+        self._seed_chat(sf, tid)
+        fake = FakeLinePushClient()
+        client.app.dependency_overrides[get_push_client] = lambda: fake
+        try:
+            r = client.post(
+                "/api/v1/line-chat/Uchat1/reply",
+                json={"text": "早上十點開門!"},
+                headers=headers,
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()["direction"] == "out"
+            assert len(fake.sent) == 1
+            msgs = client.get(
+                "/api/v1/line-chat/Uchat1/messages", headers=headers
+            ).json()
+            assert [m["direction"] for m in msgs] == ["in", "out"]
+        finally:
+            client.app.dependency_overrides.pop(get_push_client, None)
+
+    def test_reply_without_token_409(self, v1_client):
+        from saas_mvp.line_client import FakeLinePushClient, get_push_client
+
+        client, sf = v1_client
+        tid, headers = _register(client, "chat")  # 無 LineChannelConfig
+        fake = FakeLinePushClient()
+        client.app.dependency_overrides[get_push_client] = lambda: fake
+        try:
+            r = client.post(
+                "/api/v1/line-chat/Uany/reply",
+                json={"text": "hello"},
+                headers=headers,
+            )
+            assert r.status_code == 409
+            assert "access token" in r.json()["detail"]
+            assert len(fake.sent) == 0
+        finally:
+            client.app.dependency_overrides.pop(get_push_client, None)
+
+    def test_tenant_isolation(self, v1_client):
+        client, sf = v1_client
+        tid, headers = _register(client, "chat")
+        self._seed_chat(sf, tid)
+        _tid2, headers2 = _register(client, "chat2")
+        assert client.get(
+            "/api/v1/line-chat/conversations", headers=headers2
+        ).json() == []
+        assert client.get(
+            "/api/v1/line-chat/Uchat1/messages", headers=headers2
+        ).json() == []

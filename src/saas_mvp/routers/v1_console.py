@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
+from saas_mvp.line_client import LinePushClient, get_push_client
 from saas_mvp.models.booking_waitlist import WAITLIST_WAITING, WaitlistEntry
 from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
 from saas_mvp.models.user import User
@@ -288,3 +289,88 @@ def push_usage(
     return notif_history_svc.push_usage_history(
         db, tenant_id=current_user.tenant_id, months=months
     )
+
+
+# ── R5-A4:LINE 客服(console /line-chat 頁) ──────────────────────────────────
+
+
+class ConversationRow(BaseModel):
+    line_user_id: str
+    display_name: str
+    last_text: str
+    last_direction: str
+    last_at: datetime.datetime
+
+
+class LineMessageRow(BaseModel):
+    id: int
+    line_user_id: str
+    direction: str
+    text: str
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ReplyBody(BaseModel):
+    text: str
+
+
+@router.get("/line-chat/conversations", response_model=list[ConversationRow])
+def line_chat_conversations(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """對話列表(每位 line_user 最後一則+顧客顯示名,新→舊)。"""
+    from saas_mvp.services import line_chat as line_chat_svc
+
+    return line_chat_svc.list_conversations(
+        db, tenant_id=current_user.tenant_id
+    )
+
+
+@router.get(
+    "/line-chat/{line_user_id}/messages", response_model=list[LineMessageRow]
+)
+def line_chat_messages(
+    line_user_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """單一對話訊息序列(時間升序)。"""
+    from saas_mvp.services import line_chat as line_chat_svc
+
+    return line_chat_svc.list_messages(
+        db,
+        tenant_id=current_user.tenant_id,
+        line_user_id=line_user_id,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/line-chat/{line_user_id}/reply",
+    response_model=LineMessageRow,
+    status_code=201,
+)
+def line_chat_reply(
+    line_user_id: str,
+    body: ReplyBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    push_client: LinePushClient = Depends(get_push_client),
+):
+    """店家回覆顧客(push+存檔+SSE);與 /ui/line-chat 共用 send_reply。"""
+    from saas_mvp.services import line_chat as line_chat_svc
+
+    try:
+        return line_chat_svc.send_reply(
+            db,
+            tenant_id=current_user.tenant_id,
+            line_user_id=line_user_id,
+            text=body.text,
+            push_client=push_client,
+        )
+    except line_chat_svc.LineChatError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))

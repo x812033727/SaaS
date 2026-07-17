@@ -341,44 +341,22 @@ def line_chat_reply(
     db: Session = Depends(get_db),
     push_client: LinePushClient = Depends(get_push_client),
 ):
-    """店家從後台回覆顧客：LINE push → 存檔 outbound → SSE 廣播。"""
-    from saas_mvp.line_client import LinePushError
-    from saas_mvp.models.line_channel_config import LineChannelConfig
-    from saas_mvp.services.events import publish_event
+    """店家從後台回覆顧客：LINE push → 存檔 outbound → SSE 廣播。
 
+    實作抽至 line_chat_svc.send_reply(R5-A4,與 console JSON API 共用)。
+    """
     tid = actor.user.tenant_id
-    text = (text or "").strip()
     error = None
-    if not text:
-        error = "回覆內容不可為空。"
-    else:
-        cfg = (
-            db.query(LineChannelConfig)
-            .filter(LineChannelConfig.tenant_id == tid)
-            .first()
+    try:
+        line_chat_svc.send_reply(
+            db,
+            tenant_id=tid,
+            line_user_id=line_user_id,
+            text=text,
+            push_client=push_client,
         )
-        token = None
-        try:
-            token = cfg.access_token if cfg else None
-        except Exception:  # noqa: BLE001 — 解密失敗視同未設定
-            token = None
-        if not token:
-            error = "尚未設定 LINE channel access token，無法回覆。"
-        else:
-            try:
-                push_client.push(line_user_id, text, access_token=token)
-                line_chat_svc.record_outbound(
-                    db, tenant_id=tid, line_user_id=line_user_id, text=text
-                )
-                publish_event(
-                    tid,
-                    "line_message",
-                    line_user_id=line_user_id,
-                    text=text,
-                    direction="out",
-                )
-            except LinePushError as exc:
-                error = f"LINE 推播失敗：{exc}"
+    except line_chat_svc.LineChatError as exc:
+        error = str(exc)
 
     messages = line_chat_svc.list_messages(db, tenant_id=tid, line_user_id=line_user_id)
     return templates.TemplateResponse(
