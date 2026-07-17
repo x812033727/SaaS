@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}月結對帳 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>月結對帳 — {{ statement.year }}-{{ '%02d' % statement.month }}</h1>
+
+<div class="card">
+  <form method="get" action="/ui/admin/statement" style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap">
+    <div><label>年</label><input type="number" name="year" value="{{ statement.year }}" min="2020" max="2100" style="width:6rem"></div>
+    <div><label>月</label><input type="number" name="month" value="{{ statement.month }}" min="1" max="12" style="width:4rem"></div>
+    <button type="submit" class="btn">查看</button>
+    <a class="btn" href="/ui/admin/statement.csv?year={{ statement.year }}&month={{ statement.month }}">匯出明細 CSV</a>
+    <a class="btn" href="/ui/admin/ops">← 營運總覽</a>
+  </form>
+</div>
+
+<div class="card">
+  <h2>當月摘要</h2>
+  <div class="grid">
+    <div class="stat"><div class="label">收入(成功扣款)</div><div class="value">NT${{ statement.revenue_cents // 100 }}</div></div>
+    <div class="stat"><div class="label">成功 / 失敗筆數</div><div class="value">{{ statement.charge_success }} / {{ statement.charge_failures }}</div></div>
+    <div class="stat"><div class="label">付費租戶</div><div class="value">{{ statement.paying_tenants }}</div></div>
+    <div class="stat"><div class="label">ARPU</div><div class="value">NT${{ statement.arpu_cents // 100 }}</div></div>
+    <div class="stat"><div class="label">新增訂閱(+MRR)</div><div class="value">{{ statement.activated_count }}(NT${{ statement.activated_mrr_cents // 100 }})</div></div>
+    <div class="stat"><div class="label">流失訂閱(−MRR)</div><div class="value">{{ statement.churned_count }}(NT${{ statement.churned_mrr_cents // 100 }})</div></div>
+  </div>
+
+  {% if statement.by_feature %}
+  <h3>收入組成</h3>
+  <table>
+    <thead><tr><th>方案／功能</th><th>筆數</th><th>金額</th></tr></thead>
+    <tbody>
+      {% for row in statement.by_feature %}
+      <tr><td>{{ row.label }}</td><td>{{ row.count }}</td><td>NT${{ row.amount_cents // 100 }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>開票對帳</h2>
+  {% if statement.missing_invoices %}
+  <p class="notice-warn">⚠ 有 {{ statement.missing_invoices | length }} 筆成功扣款缺有效發票(缺票或開立失敗),請至發票設定檢查或等待自動重試。</p>
+  <table>
+    <thead><tr><th>charge</th><th>租戶</th><th>方案／功能</th><th>金額</th><th>扣款時間</th></tr></thead>
+    <tbody>
+      {% for r in statement.missing_invoices %}
+      <tr><td>#{{ r.charge_id }}</td><td>#{{ r.tenant_id }}</td><td>{{ r.feature }}</td><td>NT${{ r.amount_cents // 100 }}</td><td>{{ r.charged_at[:16] }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">✓ 當月所有成功扣款皆已開立有效發票。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>近 12 月收入趨勢</h2>
+  {% set maxv = series | map(attribute='revenue_cents') | max %}
+  <table>
+    <thead><tr><th>月份</th><th style="width:55%">收入</th><th>失敗筆數</th></tr></thead>
+    <tbody>
+      {% for p in series %}
+      <tr>
+        <td>{{ p.year }}-{{ '%02d' % p.month }}</td>
+        <td>
+          <div style="background:var(--brand,#1A5C4A);height:.9rem;border-radius:3px;width:{{ (p.revenue_cents / maxv * 100) | round(1) if maxv else 0 }}%;min-width:2px"></div>
+          NT${{ p.revenue_cents // 100 }}
+        </td>
+        <td>{{ p.failures or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
