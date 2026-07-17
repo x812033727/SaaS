@@ -7,7 +7,7 @@
   <form hx-get="/ui/admin/audit" hx-target="#audit-table" hx-swap="innerHTML" class="row">
     <label>租戶 ID<input name="tenant_id" type="number" min="1"
            value="{{ filters.tenant_id if filters.tenant_id is not none else '' }}"></label>
-    <label>動作前綴<input name="action" placeholder="admin. / billing. / impersonation."
+    <label>動作前綴<input name="action" placeholder="admin. / billing. / auth. / impersonation."
            value="{{ filters.action }}"></label>
     <button type="submit">篩選</button>
   </form>

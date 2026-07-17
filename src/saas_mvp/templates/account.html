@@ -4,6 +4,12 @@
 <h1>帳號設定</h1>
 
 <div class="card">
+  <h2>登入活動</h2>
+  <p>上次登入：{{ last_login_display or '—' }}{% if last_login_ip %}（IP {{ last_login_ip }}）{% endif %}</p>
+  <p class="muted">從新的 IP 位置登入時，系統會寄送安全通知信到您的帳號信箱。若發現非本人的登入紀錄，請立即變更密碼。</p>
+</div>
+
+<div class="card">
   <h2>變更密碼</h2>
   <p class="muted">登入帳號：{{ current_user.email }}</p>
   <div id="pw-status">{% include "_account_password.html" %}</div>

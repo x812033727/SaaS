@@ -20,6 +20,7 @@ from saas_mvp.auth.security import create_access_token, hash_password, verify_pa
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import account_email as account_email_svc
+from saas_mvp.services import login_audit
 from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, get_mailer
@@ -60,15 +61,18 @@ def login_submit(
     email: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
 ):
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.hashed_password):
+        login_audit.on_login_failure(db, email=email, request=request)
         # 統一錯誤訊息，避免帳號列舉
         return templates.TemplateResponse(
             "login.html",
             _ctx(request, error="電子郵件或密碼錯誤"),
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    login_audit.on_login_success(db, user, request, mailer=mailer)
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)

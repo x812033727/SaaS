@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, Form, Query, Request, status
 from fastapi.responses import (
@@ -708,11 +709,22 @@ def account_page(
     # 綁定結果（由 /auth/oauth/.../callback 導回時帶 query 參數）轉成可顯示文案。
     linked_label = _OAUTH_PROVIDER_LABELS.get(linked or "")
     provider_label = _OAUTH_PROVIDER_LABELS.get(actor.user.oauth_provider or "")
+    # 上次登入（R5-D1）：DB 存 UTC（SQLite 取出為 naive），顯示轉台北時間。
+    last_login_display = None
+    if actor.user.last_login_at is not None:
+        _dt = actor.user.last_login_at
+        if _dt.tzinfo is None:
+            _dt = _dt.replace(tzinfo=datetime.timezone.utc)
+        last_login_display = _dt.astimezone(ZoneInfo("Asia/Taipei")).strftime(
+            "%Y-%m-%d %H:%M"
+        )
     return templates.TemplateResponse(
         "account.html",
         _ctx(
             request,
             actor,
+            last_login_display=last_login_display,
+            last_login_ip=actor.user.last_login_ip,
             linked_label=linked_label,
             oauth_error=oauth_error,
             provider_label=provider_label,

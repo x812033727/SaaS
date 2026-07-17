@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { POST as loginPost } from "@/app/api/session/login/route";
 
-function loginRequest(body: unknown): Request {
+function loginRequest(body: unknown, extraHeaders: Record<string, string> = {}): Request {
   return new Request("http://console.local/console/api/session/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...extraHeaders },
     body: JSON.stringify(body),
   });
 }
@@ -42,5 +42,29 @@ describe("session login route", () => {
   it("缺欄位回 400", async () => {
     const response = await loginPost(loginRequest({ email: "" }));
     expect(response.status).toBe(400);
+  });
+
+  it("轉發 X-Forwarded-For 給後端(登入稽核要真實客戶端 IP)", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ access_token: "jwt-abc" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await loginPost(
+      loginRequest({ email: "o@x.tw", password: "pw" }, { "x-forwarded-for": "203.0.113.9" }),
+    );
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>;
+    expect(headers["x-forwarded-for"]).toBe("203.0.113.9");
+  });
+
+  it("無 X-Forwarded-For 時不憑空加 header", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ access_token: "jwt-abc" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await loginPost(loginRequest({ email: "o@x.tw", password: "pw" }));
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>;
+    expect(headers["x-forwarded-for"]).toBeUndefined();
   });
 });

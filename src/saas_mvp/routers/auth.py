@@ -9,7 +9,7 @@ Security hardening:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
@@ -26,7 +26,9 @@ from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
+from saas_mvp.services import login_audit
 from saas_mvp.services import organizations as organizations_svc
+from saas_mvp.services.mailer import Mailer, get_mailer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -124,20 +126,24 @@ def register(
     dependencies=[Depends(token_limiter)],
 )
 def login(
+    request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
 ) -> TokenResponse:
     """OAuth2-compatible form login (username = email). Returns a JWT."""
     user = db.query(User).filter(User.email == form.username).first()
     # Unified 401 regardless of whether the user exists or the password is wrong
     # (prevents user-enumeration via timing / error messages)
     if not user or not verify_password(form.password, user.hashed_password):
+        login_audit.on_login_failure(db, email=form.username, request=request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    login_audit.on_login_success(db, user, request, mailer=mailer)
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     return TokenResponse(access_token=token)
 

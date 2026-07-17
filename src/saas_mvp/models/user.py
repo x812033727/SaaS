@@ -27,6 +27,11 @@ class User(Base):
     oauth_provider = Column(String(16), nullable=True)
     oauth_subject = Column(String(128), nullable=True)
 
+    # 登入稽核（R5-D1）：上次成功登入時間 / IP。IP 供「新位置登入」啟發式
+    # 比對用（本次 ≠ 上次 → email 通知）。Alembic rev 0051 補欄。
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+    last_login_ip = Column(String(64), nullable=True)
+
     tenant = relationship("Tenant", back_populates="users")
     organization_memberships = relationship(
         "OrganizationMember", back_populates="user", cascade="all, delete-orphan"

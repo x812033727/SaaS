@@ -19,9 +19,15 @@ export async function POST(request: Request) {
   const body = (await request.json()) as { email?: string; password?: string };
   if (!body.email || !body.password) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const form = new URLSearchParams({ username: body.email, password: body.password });
+  // 轉發真實客戶端 IP(nginx 種的 X-Forwarded-For),否則後端登入稽核
+  // (R5-D1)看到的 console 登入 IP 全是 127.0.0.1,會誤觸「新位置登入」通知。
+  const forwardedFor = request.headers.get("x-forwarded-for");
   const upstream = await fetch(`${apiOrigin}/auth/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
+    },
     body: form,
     cache: "no-store",
   });
