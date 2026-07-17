@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import uuid
@@ -98,6 +99,13 @@ def _tenant_id_for(email: str) -> int:
 def _disable(client, feature: str) -> None:
     r = client.post(f"/ui/features/{feature}/unsubscribe")
     assert r.status_code == 200
+
+
+def _utc_today_iso() -> str:
+    """app 端(commissions/POS)以 UTC 日期記帳;測試日期必須對齊,
+    否則本地時區超前 UTC 的清晨時段(台北 00:00-08:00)date.today() 會多一天,
+    抽成規則 effective_from 落在未來 → 抽成不生效 → flake。"""
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -794,7 +802,9 @@ class TestCommissionsUI:
         assert "員工抽成與薪資結算" in page.text
         assert "Amy" in page.text
 
-        today = __import__("datetime").date.today().isoformat()
+        # 用 UTC 日期:app 端(commissions/POS)一律以 UTC 記帳,本地日期在
+        # 台北 00:00-08:00 會超前一天,規則 effective_from 落在「明天」→ flake。
+        today = _utc_today_iso()
         saved = client.post(
             "/ui/commissions/rules",
             data={
@@ -851,7 +861,7 @@ class TestCommissionsUI:
     def test_tiered_rule_goal_progress_and_activity_export(self, client):
         email = _login(client)
         staff_id, product_id = self._seed(email)
-        today = __import__("datetime").date.today().isoformat()
+        today = _utc_today_iso()  # 同上:對齊 app 端 UTC 記帳日,避免清晨 flake
 
         saved = client.post(
             "/ui/commissions/tiered-rules",
