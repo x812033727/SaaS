@@ -29,7 +29,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "顧客", href: "/customers", migrated: true },
       { label: "諮詢表／同意書", href: "/ui/client-forms", migrated: false },
       { label: "房間／設備", href: "/ui/resources", migrated: false },
-      { label: "備註", href: "/ui/notes", migrated: false },
+      { label: "備註", href: "/notes", migrated: true },
     ],
   },
   {
@@ -79,7 +79,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "方案", href: "/ui/plan", migrated: false },
       { label: "帳單", href: "/ui/billing", migrated: false },
       { label: "進階功能", href: "/ui/features", migrated: false },
-      { label: "API 金鑰", href: "/ui/api-keys", migrated: false },
+      { label: "API 金鑰", href: "/api-keys", migrated: true },
       { label: "成員", href: "/ui/members", migrated: false },
       { label: "帳號", href: "/ui/account", migrated: false },
     ],
