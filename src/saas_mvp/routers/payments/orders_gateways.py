@@ -80,7 +80,10 @@ def linepay_confirm(
 
     # merchant_trade_no 即結帳鍵,不再以 LP{txid} 覆寫(txid 已落 payment_txn_id)。
     # 統一走訂單付款服務，補 paid_at 並在有 POS 員工歸屬時冪等建立抽成快照。
-    shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
+    # R6-A3:記 provider=linepay(退款以既有 payment_txn_id 為 transactionId)。
+    shop_svc.mark_order_paid(
+        db, tenant_id=order.tenant_id, order_id=order.id, provider="linepay",
+    )
     return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
 
 
@@ -189,7 +192,12 @@ def _handle_newebpay_notify(db: Session, params: dict) -> PlainTextResponse:
             )
             capture_alert("payment: callback amount mismatch")
             return PlainTextResponse("0|amount mismatch")
-        shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
+        shop_svc.mark_order_paid(
+            db, tenant_id=order.tenant_id, order_id=order.id,
+            provider="newebpay",
+            provider_merchant_id=client.merchant_id,
+            provider_trade_no=(result.get("TradeNo") or None),
+        )
         return PlainTextResponse("1|OK")
 
     # Status != SUCCESS：付款未成功，仍回收下通知（不改訂單）
