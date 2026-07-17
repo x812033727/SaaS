@@ -64,6 +64,9 @@ class Customer(Base):
     # 行事曆 ICS 訂閱憑證（顧客個人 feed）；token 即能力，NULL = 尚未產生。
     # 既有 DB 由 _migrate_add_customer_ics_token() 補欄 + unique index。
     ics_token = Column(String(64), nullable=True, unique=True)
+    # 顧客自助入口網憑證(R5-B1「我的預約」);token 即能力、長效可輪替,
+    # NULL = 尚未產生(惰性簽發,比照 ics_token)。migration 0048。
+    portal_token = Column(String(64), nullable=True, unique=True)
     # 生日（PHASE 4 行銷自動化：生日活動 targeting）；nullable = 未填。
     # 既有 DB 由 _migrate_add_customer_birthday() 補欄。
     birthday = Column(Date, nullable=True)

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>我的預約</title>
+  <meta name="robots" content="noindex">
+  <style>
+    :root {
+      --bg: #FAF9F6; --card: #fff; --ink: #2B2B28; --muted: #8A867C;
+      --line: #E9E5DD; --brand: #1A5C4A; --brand-deep: #124436;
+      --brand-soft: #EDF3F0; --gold: #C4956A;
+      --danger: #B3564D; --danger-soft: #F9ECEA;
+    }
+    body { font-family: "Noto Sans TC", -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 460px; margin: 2rem auto; padding: 0 1.1rem;
+           background: var(--bg); color: var(--ink); line-height: 1.6; }
+    h1 { font-size: 1.25rem; letter-spacing: .02em; margin-bottom: .4rem; }
+    h1::after { content: ""; display: block; width: 36px; height: 3px;
+                background: var(--gold); border-radius: 2px; margin-top: .6rem; }
+    h2 { font-size: 1rem; color: var(--muted); margin: 1.6rem 0 .6rem; }
+    .card { padding: 1rem 1.1rem; background: var(--card); border: 1px solid var(--line);
+            border-radius: 12px; margin: .7rem 0; box-shadow: 0 1px 2px rgba(43,43,40,.05); }
+    .card .when { font-weight: 700; }
+    .card .meta { color: var(--muted); font-size: .88rem; }
+    .card .status-cancelled { color: var(--danger); font-size: .85rem; }
+    .card .confirmed-badge { color: var(--brand); font-size: .85rem; }
+    .actions { display: flex; gap: .5rem; margin-top: .7rem; flex-wrap: wrap; }
+    .actions form { flex: 1; margin: 0; }
+    button, .btn { width: 100%; padding: .6rem .5rem; font-size: .9rem;
+             background: var(--brand); color: #fff; border: none; border-radius: 8px;
+             font-family: inherit; cursor: pointer; text-align: center;
+             display: inline-block; text-decoration: none; box-sizing: border-box; }
+    button:active { background: var(--brand-deep); }
+    .btn-ghost { background: var(--card); color: var(--brand); border: 1px solid var(--brand); }
+    .btn-danger { background: var(--card); color: var(--danger); border: 1px solid var(--danger); }
+    .notice { padding: .8rem 1rem; background: var(--brand-soft); border-radius: 8px;
+              border-left: 3px solid var(--brand); margin-bottom: 1rem; }
+    .empty { padding: 1.2rem; background: var(--card); border: 1px dashed var(--line);
+             border-radius: 12px; text-align: center; color: var(--muted); }
+    .choice { display: block; margin: 0.6rem 0; padding: 0.85rem 1rem;
+              background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+              box-shadow: 0 1px 2px rgba(43,43,40,.05); text-decoration: none;
+              color: var(--ink); font-weight: 600; }
+    .choice:active, .choice:hover { border-color: var(--brand); }
+    .choice small { color: var(--muted); display: block; font-weight: 400; }
+    .slot-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0;
+                padding: 0.7rem 0.9rem; background: var(--card);
+                border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+    .slot-row:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+    .slot-row input[type="radio"] { width: auto; accent-color: var(--brand); }
+    .slot-row small { color: var(--muted); }
+    .back { display: inline-block; margin-top: 1rem; color: var(--brand); }
+  </style>
+</head>
+<body>
+  {% if state == "list" %}
+    <h1>我的預約</h1>
+    {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+
+    <h2>即將到來</h2>
+    {% if upcoming %}
+      {% for row in upcoming %}
+      <div class="card">
+        <div class="when">{{ row.slot_start.strftime('%Y-%m-%d %H:%M') }}
+          {%- if row.slot_end %} – {{ row.slot_end.strftime('%H:%M') }}{% endif %}</div>
+        <div class="meta">
+          {% if row.service_name %}{{ row.service_name }}{% endif %}
+          {% if row.staff_name %}｜{{ row.staff_name }}{% endif %}
+          ｜{{ row.reservation.party_size }} 位
+        </div>
+        {% if row.reservation.customer_confirmed_at %}
+          <div class="confirmed-badge">✓ 已確認出席</div>
+        {% endif %}
+        <div class="actions">
+          {% if not row.reservation.customer_confirmed_at %}
+          <form method="post" action="/booking/my/{{ token }}/reservations/{{ row.reservation.id }}/confirm">
+            <button type="submit">確認出席</button>
+          </form>
+          {% endif %}
+          <a class="btn btn-ghost" href="/booking/my/{{ token }}/reservations/{{ row.reservation.id }}/reschedule">改期</a>
+          <form method="post" action="/booking/my/{{ token }}/reservations/{{ row.reservation.id }}/cancel"
+                onsubmit="return confirm('確定取消這筆預約?');">
+            <button type="submit" class="btn-danger">取消</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">目前沒有即將到來的預約。</div>
+    {% endif %}
+
+    {% if waitlist %}
+      <h2>候補中</h2>
+      {% for row in waitlist %}
+      <div class="card">
+        <div class="when">{% if row.slot %}{{ row.slot.slot_start.strftime('%Y-%m-%d %H:%M') }}{% else %}時段 #{{ row.entry.slot_id }}{% endif %}</div>
+        <div class="meta">{{ row.entry.party_size }} 位｜{{ '已通知,限時保留中' if row.entry.status == 'notified' else '等待釋出' }}</div>
+        <div class="actions">
+          <form method="post" action="/booking/my/{{ token }}/waitlist/{{ row.entry.id }}/cancel">
+            <button type="submit" class="btn-danger">取消候補</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+    {% if history %}
+      <h2>歷史紀錄</h2>
+      {% for row in history %}
+      <div class="card">
+        <div class="when">{{ row.slot_start.strftime('%Y-%m-%d %H:%M') }}</div>
+        <div class="meta">
+          {% if row.service_name %}{{ row.service_name }}｜{% endif %}{{ row.reservation.party_size }} 位
+          {% if row.reservation.status == 'cancelled' %}<span class="status-cancelled">（已取消）</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+  {% elif state == "pick_date" %}
+    <h1>改期 — 選擇新日期</h1>
+    <p class="meta" style="color:var(--muted)">原時段:{{ target.slot_start.strftime('%Y-%m-%d %H:%M') }}</p>
+    {% if dates %}
+      {% for d in dates %}
+        <a class="choice" href="/booking/my/{{ token }}/reservations/{{ target.reservation.id }}/reschedule?date={{ d }}">{{ d }}</a>
+      {% endfor %}
+    {% else %}
+      <div class="empty">目前沒有可改期的日期,請聯絡店家。</div>
+    {% endif %}
+    <a class="back" href="/booking/my/{{ token }}">← 回我的預約</a>
+
+  {% elif state == "pick_slot" %}
+    <h1>改期 — 選擇時段({{ date }})</h1>
+    {% if slots %}
+      <form method="post" action="/booking/my/{{ token }}/reservations/{{ target.reservation.id }}/reschedule">
+        {% for s in slots %}
+          <label class="slot-row">
+            <input type="radio" name="slot_id" value="{{ s.id }}" {% if loop.first %}checked{% endif %}>
+            {{ s.slot_start.strftime('%H:%M') }}
+            {%- if s.slot_end %} – {{ s.slot_end.strftime('%H:%M') }}{% endif %}
+            <small>（尚餘 {{ s.online_available }} 位）</small>
+          </label>
+        {% endfor %}
+        <button type="submit" style="margin-top:1.2rem">確認改期</button>
+      </form>
+    {% else %}
+      <div class="empty">該日期沒有可容納 {{ target.reservation.party_size }} 位的時段。</div>
+    {% endif %}
+    <a class="back" href="/booking/my/{{ token }}/reservations/{{ target.reservation.id }}/reschedule">← 重選日期</a>
+  {% endif %}
+</body>
+</html>
