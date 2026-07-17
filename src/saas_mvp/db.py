@@ -69,6 +69,7 @@ def import_all_models() -> None:
     from saas_mvp.models import tenant_einvoice_config  # noqa: F401
     from saas_mvp.models import totp_recovery_code  # noqa: F401
     from saas_mvp.models import tenant_loyalty_config  # noqa: F401
+    from saas_mvp.models import job_run  # noqa: F401
     from saas_mvp.models import email_delivery  # noqa: F401
     from saas_mvp.models import daily_tenant_stat  # noqa: F401
     from saas_mvp.models import api_key, api_key_usage, usage  # noqa: F401
