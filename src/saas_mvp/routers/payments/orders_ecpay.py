@@ -106,7 +106,12 @@ def _handle_ecpay_callback(db: Session, params: dict) -> PlainTextResponse:
             )
             capture_alert("payment: callback amount mismatch")
             return PlainTextResponse("0|amount mismatch")
-        shop_svc.mark_order_paid(db, tenant_id=order.tenant_id, order_id=order.id)
+        shop_svc.mark_order_paid(
+            db, tenant_id=order.tenant_id, order_id=order.id,
+            provider="ecpay",
+            provider_merchant_id=client.merchant_id,
+            provider_trade_no=(params.get("TradeNo") or None),
+        )
         return PlainTextResponse("1|OK")
 
     # RtnCode != 1：付款未成功，仍回 1|OK 收下通知（不改訂單）

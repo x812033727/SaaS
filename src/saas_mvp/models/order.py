@@ -84,6 +84,21 @@ class Order(Base):
     # 分店綁定（多分店，nullable = 不限分店）；歷史上由 _migrate_add_location_id()
     # 對舊 DB 補欄，model 現已宣告使 metadata 成為 schema 唯一真相（Alembic baseline）。
     location_id = Column(Integer, nullable=True)
+    # 付款 provider 快照(R6-A3 退款用;退款需原交易的 provider/TradeNo/MerchantID。
+    # linepay 另以既有 payment_txn_id 退款)。migration 0056。
+    payment_provider = Column(String(16), nullable=True)
+    provider_trade_no = Column(String(20), nullable=True)
+    provider_merchant_id = Column(String(64), nullable=True)
+    # 訂單退款狀態機(R6-A3,比照定金):NULL=未申請 | processing | refunded |
+    # partially_refunded | failed | manual_required。refunded_cents 累計已退。
+    refund_status = Column(String(24), nullable=True)
+    refunded_cents = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    refund_provider_code = Column(String(32), nullable=True)
+    refund_error = Column(String(255), nullable=True)
+    refund_attempts = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    refund_requested_at = Column(DateTime(timezone=True), nullable=True)
+    refund_requested_by_user_id = Column(Integer, nullable=True)
+    refunded_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(
         DateTime(timezone=True),
