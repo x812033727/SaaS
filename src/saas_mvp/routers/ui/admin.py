@@ -1,11 +1,15 @@
 """UI 子模組(P4 純搬移自 routers/ui.py):平台管理。"""
 from __future__ import annotations
 
+import csv
+import datetime
+import io
 
 from fastapi import Depends, Form, Query, Request, status
 from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
+    Response,
 )
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -85,6 +89,61 @@ def admin_ops(
             revenue=admin_svc.revenue_overview(db),
             health_rows=admin_svc.tenant_health_rows(db),
         ),
+    )
+
+
+@router.get("/admin/statement", response_class=HTMLResponse)
+def admin_statement(
+    request: Request,
+    year: int | None = Query(None, ge=2020, le=2100),
+    month: int | None = Query(None, ge=1, le=12),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """月結對帳(R5-C1):單月方案月費收入/開票對帳/churn + 12 月時序。"""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    y = year or now.year
+    m = month or now.month
+    return templates.TemplateResponse(
+        "admin/statement.html",
+        _ctx(
+            request,
+            actor,
+            statement=admin_svc.monthly_statement(db, year=y, month=m),
+            series=admin_svc.revenue_series(db, months=12),
+        ),
+    )
+
+
+@router.get("/admin/statement.csv")
+def admin_statement_csv(
+    year: int = Query(..., ge=2020, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    actor: Actor = Depends(require_ui_admin),
+    db: Session = Depends(get_db),
+):
+    """單月扣款明細 CSV(R5-C1);utf-8-sig 供 Excel 直開。"""
+    rows = admin_svc.statement_charge_rows(db, year=year, month=month)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "charge_id", "charged_at", "tenant_id", "feature", "period_no",
+        "amount_twd", "success", "gwsr", "invoice",
+    ])
+    for r in rows:
+        writer.writerow([
+            r["charge_id"], r["charged_at"], r["tenant_id"], r["feature"],
+            r["period_no"], r["amount_cents"] // 100,
+            "Y" if r["success"] else "N", r["gwsr"], r["invoice"],
+        ])
+    return Response(
+        content=output.getvalue().encode("utf-8-sig"),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=statement-{year}-{month:02d}.csv"
+            )
+        },
     )
 
 
