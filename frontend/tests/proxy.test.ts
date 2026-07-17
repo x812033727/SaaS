@@ -203,3 +203,22 @@ describe("proxy ai/faq whitelist", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── R6-D3:notes/ 與 api-keys/ 窄前綴 ─────────────────────────────────────────
+
+describe("proxy notes + api-keys whitelist", () => {
+  it("notes/ 與 api-keys/ 放行並帶 Bearer", async () => {
+    const fetchSpy = vi.fn(async () => new Response("[]", {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+    for (const path of [["notes"], ["api-keys"]]) {
+      const { request, ctx } = req(path);
+      const response = await proxyGet(request, ctx);
+      expect(response.status).toBe(200);
+    }
+    const [url, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toContain("/notes");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-abc");
+  });
+});

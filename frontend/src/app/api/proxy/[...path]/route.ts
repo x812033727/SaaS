@@ -5,7 +5,8 @@ const apiOrigin = process.env.SAAS_API_INTERNAL_URL ?? "http://127.0.0.1:8000";
 // 只轉發 console 需要的 API 前綴;JWT 永遠留在 httpOnly cookie,瀏覽器不接觸。
 // tenants/me 是**窄前綴**(自助 LINE 設定),不開整個 tenants/(避免暴露列表/管理端點)。
 // ai/faq 同為窄前綴(R5-A4 FAQ 頁):刻意不開 ai/ask(付費 LLM,成本敏感,留 /ui)。
-const ALLOWED_PREFIXES = ["api/v1/", "booking/", "tenants/me", "ai/faq"];
+// notes/ 與 api-keys/ 為 console 頁窄前綴(R6-D3);ai/ask 仍刻意不開(付費 LLM)。
+const ALLOWED_PREFIXES = ["api/v1/", "booking/", "tenants/me", "ai/faq", "notes/", "api-keys/"];
 
 const MUTATING = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 

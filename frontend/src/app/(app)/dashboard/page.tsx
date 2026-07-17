@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { apiFetch } from "@/lib/api";
+import DashboardTrend from "./DashboardTrend";
 
 type ReservationRow = {
   id: number;
@@ -76,6 +77,8 @@ export default async function DashboardPage() {
           </article>
         ))}
       </section>
+
+      <DashboardTrend />
 
       <section className="mt-6 rounded-xl border border-line bg-surface p-6">
         <div className="flex items-center justify-between">
