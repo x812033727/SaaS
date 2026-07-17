@@ -49,6 +49,9 @@ os.environ["SAAS_LINE_PAY_CHANNEL_SECRET"] = ""
 os.environ["SAAS_GOOGLE_OAUTH_CLIENT_ID"] = ""
 os.environ["SAAS_GOOGLE_OAUTH_CLIENT_SECRET"] = ""
 os.environ["SAAS_SMS_FALLBACK_ENABLED"] = "false"
+# R6-C1:測試停用 admin 儀表板快取,既有 admin 測試看即時資料(快取邏輯由
+# test_cache.py 以 TTLCache 直測 + 專屬 router 整合測試 monkeypatch TTL)。
+os.environ["SAAS_ADMIN_DASHBOARD_CACHE_TTL_SECONDS"] = "0"
 
 # DB URL 設 in-memory：必須在任何 saas_mvp 模組 import 之前設定，
 # 因為 db.py 在模組層級就建立 engine（settings.database_url）。
