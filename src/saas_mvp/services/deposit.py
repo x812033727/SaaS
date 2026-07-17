@@ -149,6 +149,10 @@ def mark_paid(
     resv.deposit_provider_trade_no = provider_trade_no
     resv.deposit_payment_type = payment_type
     db.commit()
+    # R5-C2:定金電子發票(opt-in;冪等+永不拋錯,不影響金流回調)。
+    from saas_mvp.services import invoices as invoices_svc
+
+    invoices_svc.issue_for_deposit(db, resv)
     return True
 
 

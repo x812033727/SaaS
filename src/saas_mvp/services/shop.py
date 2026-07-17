@@ -343,6 +343,11 @@ def mark_order_paid(db: Session, *, tenant_id: int, order_id: int) -> Order:
         commissions_svc.record_paid_order(db, order=order)
         db.commit()
         db.refresh(order)
+        # R5-C2:店家電子發票(opt-in)。付款 commit 後 best-effort,
+        # issue_for_order 內建冪等+永不拋錯,不影響金流回調。
+        from saas_mvp.services import invoices as invoices_svc
+
+        invoices_svc.issue_for_order(db, order)
     return order
 
 
