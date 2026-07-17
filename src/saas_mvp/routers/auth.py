@@ -117,7 +117,10 @@ def register(
     db.commit()
     db.refresh(user)
 
-    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     return TokenResponse(access_token=token)
 
 
@@ -151,6 +154,14 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if user.disabled_at is not None:
+        login_audit.on_login_failure(
+            db, email=form.username, request=request, method="disabled"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="account disabled"
+        )
+
     if user.totp_enabled:
         if not otp.strip():
             raise HTTPException(
@@ -169,7 +180,10 @@ def login(
             )
 
     login_audit.on_login_success(db, user, request, mailer=mailer)
-    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     return TokenResponse(access_token=token)
 
 
@@ -215,8 +229,16 @@ def renew_token(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="User not found")
+    # R5-D3:撤銷/停用的票不可續命;續出的新票攜帶當前 token_version。
+    if int(payload.get("tv", 0)) != int(user.token_version or 0):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Token revoked; please log in again")
+    if user.disabled_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="account disabled")
     new_token = create_access_token(
-        user_id=user.id, tenant_id=payload["tenant_id"], original_auth_ts=oa
+        user_id=user.id, tenant_id=payload["tenant_id"], original_auth_ts=oa,
+        token_version=user.token_version,
     )
     return TokenResponse(access_token=new_token)
 
@@ -245,8 +267,9 @@ def change_password(
 ) -> Response:
     """變更登入密碼：須通過目前密碼驗證；新密碼至少 8 字元且不得與目前相同。
 
-    成功回 204。current_user 由請求 session 解析，與此處注入的 db 為同一 session，
-    故直接更新並 commit 即生效（既有 JWT/cookie 不會被動失效——屬已知行為）。
+    成功回 204。current_user 由請求 session 解析，與此處注入的 db 為同一 session。
+    R5-D3:改密碼 = token_version+1，**主動撤銷所有既有 JWT/cookie**（含本呼叫
+    當下用的票）;API 客戶端改密碼後須重新登入取新票（正確的撤銷語意）。
     """
     if not verify_password(body.current_password, current_user.hashed_password):
         raise HTTPException(
@@ -259,6 +282,7 @@ def change_password(
             detail="New password must differ from the current one",
         )
     current_user.hashed_password = hash_password(body.new_password)
+    current_user.token_version = (current_user.token_version or 0) + 1
     db.add(current_user)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

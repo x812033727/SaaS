@@ -38,6 +38,13 @@ class User(Base):
     totp_secret_enc = Column(LargeBinary, nullable=True)
     totp_enabled_at = Column(DateTime(timezone=True), nullable=True)
 
+    # 工作階段撤銷（R5-D3）：JWT 帶 `tv` claim，decode 時與此比對，不符即失效。
+    # 改密碼/停用成員/「登出所有裝置」= token_version+1。舊票（無 tv）視為 0，
+    # 部署當下既有票在 token_version 仍為 0 的 user 上繼續有效（零中斷）。rev 0053。
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
+    # 成員停用（R5-D3）：非 NULL = 已停用，登入擋 + decode 每請求重載即刻失效。
+    disabled_at = Column(DateTime(timezone=True), nullable=True)
+
     tenant = relationship("Tenant", back_populates="users")
     organization_memberships = relationship(
         "OrganizationMember", back_populates="user", cascade="all, delete-orphan"

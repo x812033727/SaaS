@@ -116,6 +116,10 @@ def get_current_actor(
         ).scalar_one_or_none()
         if user is None:
             raise _401
+        # R5-D3 撤銷:token_version 不符（改密碼/停用/登出全部後的舊票）→ 401。
+        # 舊票無 tv → 視為 0；user 每請求重載,故撤銷即時生效。
+        if int(payload.get("tv", 0)) != int(user.token_version or 0):
+            raise _401
         return _check_tenant_active(Actor(user=user, api_key_id=None))
 
     # Path 4: 無憑證
@@ -123,11 +127,20 @@ def get_current_actor(
 
 
 def _check_tenant_active(actor: Actor) -> Actor:
-    """租戶停用攔截：is_active=False → 403（不豁免 admin）。"""
+    """憑證有效性後置攔截:租戶停用 or 使用者被停用 → 403（不豁免 admin）。
+
+    三路認證（API key / Bearer key / JWT）皆經此;user.disabled_at 每請求重載
+    即時生效（R5-D3 成員停用 = 立刻切斷既有票 + API key）。
+    """
     if actor.user.tenant and not actor.user.tenant.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="tenant disabled",
+        )
+    if actor.user.disabled_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="account disabled",
         )
     return actor
 
@@ -189,6 +202,12 @@ def get_ui_actor_optional(
     ).scalar_one_or_none()
     if user is None:
         return None
+    # R5-D3 撤銷:token_version 不符 → 視同登出（None → 導回登入）。
+    if int(payload.get("tv", 0)) != int(user.token_version or 0):
+        return None
+    # R5-D3 停用:disabled_at 非 NULL → 視同登出（既有 cookie 立即失效）。
+    if user.disabled_at is not None:
+        return None
     if user.tenant and not user.tenant.is_active:
         raise UITenantDisabled()
 
@@ -202,7 +221,9 @@ def get_ui_actor_optional(
         except (TypeError, ValueError):
             return None
         imp_user = db.get(User, imp_id)
-        if imp_user is None or not imp_user.is_admin:
+        # fail-closed:代管者失效(不存在/已非 admin/已停用)→ 整張代管票作廢。
+        # R5-D3:admin 被停用即刻切斷其所有在外代管票(30 分上限外再收緊)。
+        if imp_user is None or not imp_user.is_admin or imp_user.disabled_at is not None:
             return None
         impersonator_user_id = imp_id
     return Actor(

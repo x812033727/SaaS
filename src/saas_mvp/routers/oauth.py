@@ -205,6 +205,14 @@ def oauth_callback(
         user.oauth_subject = subject
         db.commit()
 
+    if user.disabled_at is not None:
+        login_audit.on_login_failure(
+            db, email=email or subject, request=request,
+            method=f"oauth:{provider}:disabled",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="account disabled"
+        )
     if user.totp_enabled:
         # 2FA(R5-D2):OAuth 過了也要走第二步 —— 使用者決策:2FA 含 OAuth 登入。
         pending = create_access_token(
@@ -219,7 +227,10 @@ def oauth_callback(
     login_audit.on_login_success(
         db, user, request, method=f"oauth:{provider}", mailer=mailer
     )
-    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
     resp.delete_cookie(_STATE_COOKIE_NAME, path="/")

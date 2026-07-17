@@ -30,6 +30,16 @@
 </div>
 
 <div class="card">
+  <h2>工作階段</h2>
+  {% if logged_out_all %}<div class="success">已登出所有其他裝置。</div>{% endif %}
+  <p class="muted">若懷疑帳號在其他裝置仍登入，可一鍵登出所有裝置（本裝置會保持登入）。</p>
+  <form method="post" action="/ui/account/logout-all">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">登出所有其他裝置</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>連結 LINE 帳戶</h2>
   <p class="muted">連結 LINE 帳戶後，即可直接用 LINE 一鍵登入後台管理，免再輸入密碼。</p>
   {% if linked_label %}<div class="success">已成功連結 {{ linked_label }} 帳戶。</div>{% endif %}

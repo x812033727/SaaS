@@ -79,6 +79,13 @@ def login_submit(
             _ctx(request, error="電子郵件或密碼錯誤"),
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    if user.disabled_at is not None:
+        login_audit.on_login_failure(db, email=email, request=request, method="disabled")
+        return templates.TemplateResponse(
+            "login.html",
+            _ctx(request, error="此帳號已被停用，請洽店家管理者。"),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
     if user.totp_enabled:
         # 2FA(R5-D2):密碼過了還不算登入 —— 發 5 分鐘 pending 票進第二步。
         pending = create_access_token(
@@ -89,7 +96,10 @@ def login_submit(
         _set_mfa_pending_cookie(resp, pending)
         return resp
     login_audit.on_login_success(db, user, request, mailer=mailer)
-    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
     return resp
@@ -163,7 +173,10 @@ def mfa_submit(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
     login_audit.on_login_success(db, user, request, method=method, mailer=mailer)
-    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
     _clear_mfa_pending_cookie(resp)
@@ -222,7 +235,10 @@ def register_submit(
     # 驗證信 best-effort：寄失敗不阻擋註冊（dashboard banner 可重寄）。
     account_email_svc.send_verification_email(db, user, mailer)
 
-    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
     return resp
