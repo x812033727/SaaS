@@ -36,13 +36,20 @@ def apply_order_discounts(
     ``line_user_id``：券核銷身分；customer 有 line_user_id 時優先用之。
     """
     from saas_mvp.services import coupons as coupons_svc
+    from saas_mvp.services import loyalty_config
     from saas_mvp.services import membership as membership_svc
 
     running = subtotal_cents
 
     tier_discount = 0
     if customer is not None:
-        tier_discount = membership_svc.tier_discount_for(customer.tier, subtotal_cents)
+        # R6-B3:per-tenant 折扣設定(無設定 → 全域預設)。
+        discounts = loyalty_config.discounts_for(
+            loyalty_config.get_config(db, tenant_id)
+        )
+        tier_discount = membership_svc.tier_discount_for(
+            customer.tier, subtotal_cents, discounts=discounts
+        )
         running -= tier_discount
 
     coupon_discount = 0

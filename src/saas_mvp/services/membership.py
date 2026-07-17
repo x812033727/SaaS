@@ -22,6 +22,13 @@ TIER_THRESHOLDS: list[tuple[int, str]] = [
 ]
 
 
+def _tenant_thresholds(db: Session, tenant_id: int) -> list[tuple[int, str]]:
+    """R6-B3:取租戶自訂分級門檻(無設定 → 全域預設)。lazy import 避免循環。"""
+    from saas_mvp.services import loyalty_config
+
+    return loyalty_config.thresholds_for(loyalty_config.get_config(db, tenant_id))
+
+
 class MembershipError(Exception):
     """會員點數相關錯誤基底。"""
 
@@ -30,31 +37,40 @@ class InsufficientPoints(MembershipError):
     """扣點時餘額不足。"""
 
 
-def recompute_tier(points_balance: int) -> str:
-    """依點數餘額算等級（純函式）。"""
-    for threshold, tier in TIER_THRESHOLDS:
+def recompute_tier(
+    points_balance: int, *, thresholds: list[tuple[int, str]] | None = None
+) -> str:
+    """依點數餘額算等級（純函式）。thresholds(R6-B3)可傳 per-tenant 門檻,
+    (門檻,等級)由高到低;None → 全域預設 TIER_THRESHOLDS。"""
+    for threshold, tier in (thresholds or TIER_THRESHOLDS):
         if points_balance >= threshold:
             return tier
     return "regular"
 
 
-def tier_discount_percent(tier: str | None) -> int:
+def tier_discount_percent(
+    tier: str | None, *, discounts: dict[str, int] | None = None
+) -> int:
     """會員等級對應的結帳折扣百分比（對標 vibeaico「不同等級不同折扣」）。
 
-    取自 settings（可由環境覆寫）；未知等級回 0。
+    discounts(R6-B3)可傳 per-tenant {tier: pct};None → 全域 settings。未知等級回 0。
     """
-    from saas_mvp.config import settings
+    if discounts is None:
+        from saas_mvp.config import settings
 
-    return {
-        "gold": settings.tier_discount_gold_percent,
-        "silver": settings.tier_discount_silver_percent,
-        "regular": settings.tier_discount_regular_percent,
-    }.get(tier or "regular", 0)
+        discounts = {
+            "gold": settings.tier_discount_gold_percent,
+            "silver": settings.tier_discount_silver_percent,
+            "regular": settings.tier_discount_regular_percent,
+        }
+    return discounts.get(tier or "regular", 0)
 
 
-def tier_discount_for(tier: str | None, subtotal_cents: int) -> int:
+def tier_discount_for(
+    tier: str | None, subtotal_cents: int, *, discounts: dict[str, int] | None = None
+) -> int:
     """等級折扣金額（cents），不超過小計。"""
-    pct = tier_discount_percent(tier)
+    pct = tier_discount_percent(tier, discounts=discounts)
     if pct <= 0 or subtotal_cents <= 0:
         return 0
     return min(subtotal_cents * pct // 100, subtotal_cents)
@@ -76,7 +92,9 @@ def earn_points(
     if delta <= 0:
         return None
     customer.points_balance = (customer.points_balance or 0) + delta
-    customer.tier = recompute_tier(customer.points_balance)
+    customer.tier = recompute_tier(
+        customer.points_balance, thresholds=_tenant_thresholds(db, tenant_id)
+    )
     tx = PointTransaction(
         tenant_id=tenant_id,
         customer_id=customer.id,
@@ -126,7 +144,9 @@ def redeem_points(
     if balance < amount:
         raise InsufficientPoints(f"insufficient points: have {balance}, need {amount}")
     customer.points_balance = balance - amount
-    customer.tier = recompute_tier(customer.points_balance)
+    customer.tier = recompute_tier(
+        customer.points_balance, thresholds=_tenant_thresholds(db, tenant_id)
+    )
     tx = PointTransaction(
         tenant_id=tenant_id,
         customer_id=customer.id,
