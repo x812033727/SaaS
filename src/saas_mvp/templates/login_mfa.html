@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}兩步驟驗證 · LINE Bot 管理{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <span class="auth-brand">LINE Bot 管理</span>
+  <div class="card">
+    <h1>兩步驟驗證</h1>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <p class="muted">請輸入驗證器 App 顯示的 6 位數驗證碼，或一組未使用過的恢復碼。</p>
+    <form method="post" action="/ui/login/mfa">
+      <label for="otp">驗證碼</label>
+      <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="16" required autofocus>
+      <button type="submit">驗證並登入</button>
+    </form>
+    <div class="center-link"><a href="/ui/login">回登入頁</a></div>
+  </div>
+</div>
+{% endblock %}

@@ -1,9 +1,10 @@
 """User model."""
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.orm import relationship
 
 from saas_mvp.db import Base
+from saas_mvp.models.line_channel_config import decrypt_field, encrypt_field
 
 
 class User(Base):
@@ -32,6 +33,11 @@ class User(Base):
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     last_login_ip = Column(String(64), nullable=True)
 
+    # TOTP 2FA（R5-D2）：secret Fernet 加密存放；totp_enabled_at 為 NULL 時
+    # 代表未啟用（secret 可能是註冊到一半的暫存值，不生效）。Alembic rev 0052。
+    totp_secret_enc = Column(LargeBinary, nullable=True)
+    totp_enabled_at = Column(DateTime(timezone=True), nullable=True)
+
     tenant = relationship("Tenant", back_populates="users")
     organization_memberships = relationship(
         "OrganizationMember", back_populates="user", cascade="all, delete-orphan"
@@ -44,3 +50,16 @@ class User(Base):
     )
     notes = relationship("Note", back_populates="owner", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
+
+    @property
+    def totp_secret(self) -> str:
+        return decrypt_field(self.totp_secret_enc) if self.totp_secret_enc else ""
+
+    @totp_secret.setter
+    def totp_secret(self, value: str) -> None:
+        self.totp_secret_enc = encrypt_field(value) if value else None
+
+    @property
+    def totp_enabled(self) -> bool:
+        """2FA 生效 = 已確認啟用且 secret 仍在。"""
+        return self.totp_enabled_at is not None and self.totp_secret_enc is not None

@@ -62,6 +62,8 @@ def create_access_token(
     expires_delta: timedelta | None = None,
     impersonator_id: int | None = None,
     original_auth_ts: int | None = None,
+    mfa_pending: bool = False,
+    login_method: str | None = None,
 ) -> str:
     """Sign a JWT with sub=<user_id>, tenant_id, exp claims.
 
@@ -71,10 +73,18 @@ def create_access_token(
     original_auth_ts(R4-C1 滑動續期):首次登入的 unix 秒,續期時原樣帶入
     ``oa`` claim — /auth/renew 以此限制滑動視窗總長(勿無限續命)。
     向後相容:未帶則不加 claim,舊 token 照常驗。
+
+    mfa_pending(R5-D2 2FA):密碼/OAuth 已過、TOTP 未驗的中繼票 —— 加
+    ``mfa="pending"`` claim 且 exp **強制縮短為 5 分鐘**。此票**不可**當
+    access token 用:``decode_access_token`` 預設拒收(所有驗證路徑共用該
+    入口)。login_method 隨票攜帶(``lm`` claim),供 MFA 完成後稽核正確的
+    登入方式。
     """
     delta = expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
     if impersonator_id is not None:
         delta = min(delta, timedelta(minutes=30))
+    if mfa_pending:
+        delta = min(delta, timedelta(minutes=5))
     expire = datetime.now(timezone.utc) + delta
     payload: dict = {
         "sub": str(user_id),
@@ -85,9 +95,20 @@ def create_access_token(
         payload["imp"] = impersonator_id
     if original_auth_ts is not None:
         payload["oa"] = int(original_auth_ts)
+    if mfa_pending:
+        payload["mfa"] = "pending"
+        if login_method:
+            payload["lm"] = login_method
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 
-def decode_access_token(token: str) -> dict:
-    """Decode & verify JWT. Raises jwt.PyJWTError on invalid/expired token."""
-    return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+def decode_access_token(token: str, *, allow_mfa_pending: bool = False) -> dict:
+    """Decode & verify JWT. Raises jwt.PyJWTError on invalid/expired token.
+
+    MFA pending 中繼票(``mfa="pending"``)預設一律拒收 —— 唯一豁免是
+    2FA 第二步驗證端點(明確帶 allow_mfa_pending=True)。
+    """
+    payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    if not allow_mfa_pending and payload.get("mfa") == "pending":
+        raise jwt.InvalidTokenError("MFA pending token is not an access token")
+    return payload

@@ -38,7 +38,7 @@ from saas_mvp.auth.security import create_access_token
 from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.user import User
-from saas_mvp.routers.ui import _set_auth_cookie
+from saas_mvp.routers.ui import _set_auth_cookie, _set_mfa_pending_cookie
 from saas_mvp.services import login_audit
 from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services.mailer import Mailer, get_mailer
@@ -205,6 +205,17 @@ def oauth_callback(
         user.oauth_subject = subject
         db.commit()
 
+    if user.totp_enabled:
+        # 2FA(R5-D2):OAuth 過了也要走第二步 —— 使用者決策:2FA 含 OAuth 登入。
+        pending = create_access_token(
+            user_id=user.id, tenant_id=user.tenant_id,
+            mfa_pending=True, login_method=f"oauth:{provider}",
+        )
+        resp = RedirectResponse("/ui/login/mfa", status_code=status.HTTP_303_SEE_OTHER)
+        _set_mfa_pending_cookie(resp, pending)
+        resp.delete_cookie(_STATE_COOKIE_NAME, path="/")
+        resp.delete_cookie(_INTENT_COOKIE_NAME, path="/")
+        return resp
     login_audit.on_login_success(
         db, user, request, method=f"oauth:{provider}", mailer=mailer
     )

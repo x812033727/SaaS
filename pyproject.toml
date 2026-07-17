@@ -28,6 +28,9 @@ dependencies = [
     "pillow==11.3.0",
     # Schema 遷移（ops/migrate 啟動時執行 upgrade head；entrypoint 必用故放核心）
     "alembic==1.14.0",
+    # TOTP 2FA（R5-D2）：pyotp 驗證碼、segno 伺服器端 SVG QR（零前端依賴）
+    "pyotp==2.9.0",
+    "segno==1.6.1",
 ]
 
 [project.optional-dependencies]

@@ -9,13 +9,13 @@ Security hardening:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.auth.dependencies import get_current_user, oauth2_scheme
-from saas_mvp.auth.ratelimit import register_limiter, token_limiter
+from saas_mvp.auth.ratelimit import otp_limiter, register_limiter, token_limiter
 from saas_mvp.auth.security import (
     create_access_token,
     decode_access_token,
@@ -28,6 +28,7 @@ from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import login_audit
 from saas_mvp.services import organizations as organizations_svc
+from saas_mvp.services import totp as totp_svc
 from saas_mvp.services.mailer import Mailer, get_mailer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -128,10 +129,17 @@ def register(
 def login(
     request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
+    otp: str = Form(default=""),
     db: Session = Depends(get_db),
     mailer: Mailer = Depends(get_mailer),
 ) -> TokenResponse:
-    """OAuth2-compatible form login (username = email). Returns a JWT."""
+    """OAuth2-compatible form login (username = email). Returns a JWT.
+
+    2FA(R5-D2):使用者啟用 TOTP 後,本端點**也強制**第二因素(否則
+    /auth/token 就是繞過 2FA 的後門;console 登入亦經此端點)。表單多帶
+    ``otp`` 欄位即可;純程式整合請改用 API key(X-API-Key,不受 2FA 影響)。
+    錯誤碼:``otp_required``(憑證正確但缺 OTP)/``otp_invalid``。
+    """
     user = db.query(User).filter(User.email == form.username).first()
     # Unified 401 regardless of whether the user exists or the password is wrong
     # (prevents user-enumeration via timing / error messages)
@@ -142,6 +150,23 @@ def login(
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if user.totp_enabled:
+        if not otp.strip():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="otp_required",
+            )
+        if settings.rate_limit_enabled:
+            otp_limiter._check_rate_limit(f"user:{user.id}")
+        if not totp_svc.verify_code(db, user, otp):
+            login_audit.on_login_failure(
+                db, email=form.username, request=request, method="password+otp"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="otp_invalid",
+            )
 
     login_audit.on_login_success(db, user, request, mailer=mailer)
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)

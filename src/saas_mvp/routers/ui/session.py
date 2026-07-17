@@ -16,24 +16,31 @@ from saas_mvp.deps import (
     require_ui_user,
 )
 from saas_mvp.auth.dependencies import _UI_COOKIE_NAME
-from saas_mvp.auth.security import create_access_token, hash_password, verify_password
+from saas_mvp.auth.security import (
+    create_access_token,
+    decode_access_token as security_decode,
+    hash_password,
+    verify_password,
+)
 from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.services import account_email as account_email_svc
 from saas_mvp.services import login_audit
 from saas_mvp.services import oauth as oauth_svc
+from saas_mvp.services import totp as totp_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services.mailer import Mailer, get_mailer
 from saas_mvp.auth.ratelimit import (
     email_identity_limiter,
     email_ip_limiter,
     email_user_limiter,
+    otp_limiter,
 )
 from fastapi import HTTPException
 
 from saas_mvp.routers.ui._shared import (
-    router, templates, _CSRF_COOKIE_NAME,
-    _ctx, _set_auth_cookie,
+    router, templates, _CSRF_COOKIE_NAME, _MFA_COOKIE_NAME,
+    _ctx, _set_auth_cookie, _set_mfa_pending_cookie, _clear_mfa_pending_cookie,
 )
 
 # ── 公開：登入 / 註冊 / 登出 ───────────────────────────────────────────────────
@@ -72,10 +79,94 @@ def login_submit(
             _ctx(request, error="電子郵件或密碼錯誤"),
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    if user.totp_enabled:
+        # 2FA(R5-D2):密碼過了還不算登入 —— 發 5 分鐘 pending 票進第二步。
+        pending = create_access_token(
+            user_id=user.id, tenant_id=user.tenant_id,
+            mfa_pending=True, login_method="password",
+        )
+        resp = RedirectResponse("/ui/login/mfa", status_code=status.HTTP_303_SEE_OTHER)
+        _set_mfa_pending_cookie(resp, pending)
+        return resp
     login_audit.on_login_success(db, user, request, mailer=mailer)
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
+    return resp
+
+
+# ── TOTP 2FA 第二步(R5-D2)─────────────────────────────────────────────────
+
+
+def _resolve_mfa_pending(request: Request, db: Session) -> User | None:
+    """讀 pending cookie → 驗票 → 載入使用者;任何問題回 None(導回登入)。"""
+    token = request.cookies.get(_MFA_COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        payload = security_decode(token, allow_mfa_pending=True)
+    except Exception:  # noqa: BLE001 — 過期/壞票一律重登
+        return None
+    if payload.get("mfa") != "pending":
+        return None
+    user = db.get(User, int(payload["sub"]))
+    if user is None or not user.totp_enabled:
+        return None
+    return user
+
+
+def _mfa_login_method(request: Request) -> str:
+    token = request.cookies.get(_MFA_COOKIE_NAME) or ""
+    try:
+        payload = security_decode(token, allow_mfa_pending=True)
+        return str(payload.get("lm") or "password")
+    except Exception:  # noqa: BLE001
+        return "password"
+
+
+@router.get("/login/mfa", response_class=HTMLResponse)
+def mfa_form(request: Request, db: Session = Depends(get_db)):
+    if _resolve_mfa_pending(request, db) is None:
+        return RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse("login_mfa.html", _ctx(request))
+
+
+@router.post("/login/mfa", response_class=HTMLResponse)
+def mfa_submit(
+    request: Request,
+    otp: str = Form(...),
+    db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
+):
+    user = _resolve_mfa_pending(request, db)
+    if user is None:
+        return RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+    if settings.rate_limit_enabled:
+        try:
+            otp_limiter._check_rate_limit(f"user:{user.id}")
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+                raise
+            return templates.TemplateResponse(
+                "login_mfa.html",
+                _ctx(request, error="嘗試次數過多，請 5 分鐘後再試。"),
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+    method = _mfa_login_method(request)
+    if not totp_svc.verify_code(db, user, otp):
+        login_audit.on_login_failure(
+            db, email=user.email, request=request, method=f"{method}+otp"
+        )
+        return templates.TemplateResponse(
+            "login_mfa.html",
+            _ctx(request, error="驗證碼錯誤，請重新輸入。"),
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    login_audit.on_login_success(db, user, request, method=method, mailer=mailer)
+    token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
+    _set_auth_cookie(resp, token)
+    _clear_mfa_pending_cookie(resp)
     return resp
 
 

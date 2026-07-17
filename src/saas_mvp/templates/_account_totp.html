@@ -1,0 +1,31 @@
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if recovery_codes %}
+  <div class="success">兩步驟驗證已啟用。</div>
+  <p><strong>恢復碼（僅顯示這一次，請立即抄下保存）：</strong></p>
+  <ul class="totp-recovery-codes">
+    {% for c in recovery_codes %}<li><code>{{ c }}</code></li>{% endfor %}
+  </ul>
+  <p class="muted">遺失驗證器時可用恢復碼登入；每組只能使用一次。</p>
+{% elif totp_on %}
+  <p><span class="badge on">已啟用</span>　剩餘恢復碼：{{ remaining_codes }} 組</p>
+  <p class="muted">登入（含 LINE / Google 社群登入）需輸入驗證器 App 的 6 位數驗證碼。</p>
+  <form hx-post="/ui/account/totp/disable" hx-target="#totp-status" hx-swap="innerHTML">
+    <label for="totp-disable-otp">輸入驗證碼以停用</label>
+    <input id="totp-disable-otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="16" required>
+    <button type="submit">停用兩步驟驗證</button>
+  </form>
+{% elif totp_pending %}
+  <p>用驗證器 App（Google Authenticator、Microsoft Authenticator、1Password 等）掃描 QR code：</p>
+  <div style="background:#fff;display:inline-block;padding:8px;border-radius:8px">{{ qr_svg | safe }}</div>
+  <p class="muted">無法掃描時，手動輸入密鑰：<code>{{ totp_secret_manual }}</code></p>
+  <form hx-post="/ui/account/totp/confirm" hx-target="#totp-status" hx-swap="innerHTML">
+    <label for="totp-confirm-otp">輸入 App 顯示的 6 位數驗證碼以完成啟用</label>
+    <input id="totp-confirm-otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+    <button type="submit">確認啟用</button>
+  </form>
+{% else %}
+  <p class="muted">啟用後，登入除了密碼（或 LINE / Google 社群登入）外，還需輸入驗證器 App 的 6 位數驗證碼，大幅降低密碼外洩風險。</p>
+  <form hx-post="/ui/account/totp/start" hx-target="#totp-status" hx-swap="innerHTML">
+    <button type="submit">啟用兩步驟驗證</button>
+  </form>
+{% endif %}

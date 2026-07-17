@@ -27,6 +27,7 @@ from saas_mvp.routers.ui._shared import (  # noqa: F401 — app.py/oauth.py 引�
     UICSRFInvalid,
     _enforce_csrf,
     _set_auth_cookie,
+    _set_mfa_pending_cookie,
     maybe_renew_ui_cookie,
     router,
     templates,

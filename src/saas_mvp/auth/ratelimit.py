@@ -201,6 +201,12 @@ token_limiter = SlidingWindowRateLimiter(
     max_calls=20, window_seconds=60, backend=_backend, namespace="token"
 )
 
+# TOTP 第二步驗證(R5-D2):**以 user id 為鍵**節流暴力猜碼(6 位數碼空間小,
+# IP 限制可被殭屍網路繞過)。10 次/5 分鐘,配合 ±1 step 視窗綽綽有餘。
+otp_limiter = SlidingWindowRateLimiter(
+    max_calls=10, window_seconds=300, backend=_backend, namespace="otp"
+)
+
 # 公開 / 無認證端點 IP 限制器（/p/{slug}、calendar .ics feeds、/pii/{token}）：
 # 60/min per IP — 防止匿名 slug / token 列舉枚舉，對正常瀏覽足夠寬鬆。
 # 與其他 IP 限制器一樣由 settings.rate_limit_enabled 控制（測試預設關閉）。
