@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>行銷訊息訂閱設定</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif;
+           max-width: 480px; margin: 3rem auto; padding: 0 1.2rem; color: #2b2b2b; }
+    .card { border: 1px solid #e6e2d8; border-radius: 12px; padding: 1.5rem; }
+    button { padding: .6rem 1.2rem; border-radius: 8px; border: 0; font-size: 1rem;
+             cursor: pointer; }
+    .out { background: #b23b3b; color: #fff; }
+    .in { background: #3b7a4b; color: #fff; }
+    .muted { color: #8a8578; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {% if opted_out %}
+      <h1>已退訂行銷訊息</h1>
+      <p>{{ name }},您已不會再收到本店家的行銷推播。</p>
+      <p class="muted">預約確認、提醒等服務通知仍會照常發送。</p>
+      <form method="post" action="/unsubscribe/{{ token }}">
+        <input type="hidden" name="action" value="in">
+        <button type="submit" class="in">重新訂閱行銷訊息</button>
+      </form>
+    {% else %}
+      <h1>退訂行銷訊息</h1>
+      <p>{{ name }},確定不再收到本店家的行銷推播嗎?</p>
+      <p class="muted">退訂後,預約確認、提醒等服務通知仍會照常發送。</p>
+      <form method="post" action="/unsubscribe/{{ token }}">
+        <input type="hidden" name="action" value="out">
+        <button type="submit" class="out">確定退訂</button>
+      </form>
+    {% endif %}
+  </div>
+</body>
+</html>

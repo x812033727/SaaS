@@ -70,6 +70,11 @@ class Customer(Base):
     # 顧客 email(R5-B3,選填):提醒三段 fallback(LINE→SMS→email)第三管道;
     # booking_form 選填欄位與 portal 頁自助填寫。migration 0049。
     email = Column(String(255), nullable=True)
+    # 行銷退訂(R6-B1,PDPA):非 NULL = 已退訂**行銷**推播(交易性通知如
+    # 建單/提醒/取消/退款不受影響、恆送);既有顧客 NULL = 訂閱中(opt-out 模型)。
+    # unsubscribe_token 為退訂連結能力憑證(惰性簽發,比照 portal_token)。migration 0054。
+    marketing_opt_out_at = Column(DateTime(timezone=True), nullable=True)
+    unsubscribe_token = Column(String(64), nullable=True, unique=True)
     # 生日（PHASE 4 行銷自動化：生日活動 targeting）；nullable = 未填。
     # 既有 DB 由 _migrate_add_customer_birthday() 補欄。
     birthday = Column(Date, nullable=True)

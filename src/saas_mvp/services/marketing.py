@@ -46,6 +46,7 @@ from saas_mvp.models.coupon import Coupon
 from saas_mvp.models.customer import Customer
 from saas_mvp.models.campaign_send import CAMPAIGN_SEND_SKIPPED
 from saas_mvp.services import coupons as coupons_svc
+from saas_mvp.services import customer_marketing
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services import push_quota as push_quota_svc
 from saas_mvp.services import segments as segments_svc
@@ -220,27 +221,36 @@ def eligible_customers(
         candidates = segments_svc.segment_customers(
             db, tenant_id=campaign.tenant_id, **kwargs
         )
-        return [
+        return _drop_opted_out([
             c
             for c in candidates
             if c.birthday is not None
             and c.birthday.month == now.month
             and c.birthday.day == now.day
-        ]
+        ])
 
     if campaign.type == CAMPAIGN_REACTIVATION:
         cutoff = now - datetime.timedelta(days=settings.reactivation_dormant_days)
-        return segments_svc.segment_customers(
+        return _drop_opted_out(segments_svc.segment_customers(
             db,
             tenant_id=campaign.tenant_id,
             last_booked_before=cutoff,
             **kwargs,
-        )
+        ))
 
     # spend / welcome / broadcast：純 segment_json 篩選。
-    return segments_svc.segment_customers(
+    candidates = segments_svc.segment_customers(
         db, tenant_id=campaign.tenant_id, **kwargs
     )
+    return _drop_opted_out(candidates)
+
+
+def _drop_opted_out(customers: list[Customer]) -> list[Customer]:
+    """R6-B1(PDPA):行銷派送排除已退訂顧客(交易性通知不經此路徑)。
+
+    放在 marketing 專屬入口而非通用 segment_customers,避免污染分眾預覽等唯讀查詢。
+    """
+    return [c for c in customers if not customer_marketing.is_opted_out(c)]
 
 
 def _render(template: str, customer: Customer) -> str:
@@ -431,6 +441,7 @@ def run_campaign(
                 skipped += 1
                 continue
 
+
             # 2. 月度推播額度閘門：超出本月額度則跳過（不派獎勵、不推播、標
             #    skipped），並中止本活動其餘顧客（額度已罄，後續必同樣超額）。
             #    在派發獎勵前檢查，避免「發了券卻沒送出推播」的白扣。
@@ -452,7 +463,10 @@ def run_campaign(
             row.reward_ref = reward_ref
 
             # 4. 推播訊息（無 line_user_id 不可推，標 failed）。
+            #    R6-B1:惰性簽發退訂 token(隨本筆交易提交)並附退訂連結。
+            customer_marketing.assign_unsubscribe_token_if_missing(customer)
             text = _render(campaign.message_template, customer)
+            text += customer_marketing.unsubscribe_suffix(customer)
             if not customer.line_user_id:
                 row.status = CAMPAIGN_SEND_FAILED
                 row.attempt_count = (row.attempt_count or 0) + 1
