@@ -96,6 +96,21 @@ def list_staff(db: Session, *, tenant_id: int) -> list[Staff]:
     return tenant_query(db, Staff, tenant_id).order_by(Staff.id).all()
 
 
+def active_shifts_by_staff(db: Session, *, tenant_id: int) -> dict[int, list[StaffShift]]:
+    """一次撈租戶所有啟用中班表,依 staff_id 分組(R6-C2:消 build_staff_grid 的
+    逐員工 N+1 查詢)。回 dict[staff_id → [StaffShift]],順序沿 id。"""
+    grouped: dict[int, list[StaffShift]] = {}
+    rows = (
+        tenant_query(db, StaffShift, tenant_id)
+        .filter(StaffShift.is_active.is_(True))
+        .order_by(StaffShift.id)
+        .all()
+    )
+    for sh in rows:
+        grouped.setdefault(sh.staff_id, []).append(sh)
+    return grouped
+
+
 def get_staff(db: Session, *, tenant_id: int, staff_id: int) -> Staff:
     return _get_or_404(db, tenant_id, staff_id)
 

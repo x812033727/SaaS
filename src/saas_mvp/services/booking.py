@@ -745,19 +745,22 @@ def list_reservations(
     slot_id: int | None = None,
     limit: int | None = None,
     offset: int = 0,
+    newest_first: bool = False,
 ) -> list[Reservation]:
     """列出租戶預約，可依 status / line_user_id / slot_id 篩選。
 
     limit=None（預設）回傳全部，內部呼叫端行為不變；REST 端點由 router
-    層帶入分頁預設值。
+    層帶入分頁預設值。newest_first=True 改 id DESC(R6-C2:讓「近 N 筆」由
+    SQL ORDER+LIMIT 完成,取代呼叫端載全部再 Python 切片)。
     """
+    order = Reservation.id.desc() if newest_first else Reservation.id
     q = _reservations_query(
         db,
         tenant_id=tenant_id,
         status=status,
         line_user_id=line_user_id,
         slot_id=slot_id,
-    ).order_by(Reservation.id)
+    ).order_by(order)
     if offset:
         q = q.offset(offset)
     if limit is not None:
