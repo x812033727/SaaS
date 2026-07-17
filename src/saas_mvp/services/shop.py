@@ -325,7 +325,15 @@ def list_order_items(db: Session, *, tenant_id: int, order_id: int) -> list[Orde
     )
 
 
-def mark_order_paid(db: Session, *, tenant_id: int, order_id: int) -> Order:
+def mark_order_paid(
+    db: Session,
+    *,
+    tenant_id: int,
+    order_id: int,
+    provider: str | None = None,
+    provider_merchant_id: str | None = None,
+    provider_trade_no: str | None = None,
+) -> Order:
     # 金流 callback 可能重送／並行；鎖訂單使 paid_at、點數與抽成快照只執行一次。
     order = db.execute(
         select(Order)
@@ -334,9 +342,23 @@ def mark_order_paid(db: Session, *, tenant_id: int, order_id: int) -> Order:
     ).scalar_one_or_none()
     if order is None:
         raise OrderNotFound(f"order {order_id} not found")
+    if order.status == ORDER_PAID:
+        # R6-A3:回調重送時補齊第一次尚未保存的退款所需 provider 快照(冪等)。
+        if provider and not order.payment_provider:
+            order.payment_provider = provider
+        if provider_merchant_id and not order.provider_merchant_id:
+            order.provider_merchant_id = provider_merchant_id
+        if provider_trade_no and not order.provider_trade_no:
+            order.provider_trade_no = provider_trade_no
+        db.commit()
+        return order
     if order.status == ORDER_PENDING:
         order.status = ORDER_PAID
         order.paid_at = _utcnow()
+        # R6-A3:保存退款所需的 provider 交易快照。
+        order.payment_provider = provider
+        order.provider_merchant_id = provider_merchant_id
+        order.provider_trade_no = provider_trade_no
         db.flush()
         from saas_mvp.services import commissions as commissions_svc
 

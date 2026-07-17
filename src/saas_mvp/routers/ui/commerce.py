@@ -28,6 +28,7 @@ from saas_mvp.services import billing as billing_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import audit as audit_svc
+from saas_mvp.services import order_refund as order_refund_svc
 from saas_mvp.services import platform_payment_config as platform_payment_svc
 from saas_mvp.services import rich_menu as rich_menu_svc
 from saas_mvp.services import shop as shop_svc
@@ -226,6 +227,78 @@ def shop_cancel_order(
         error = "訂單不存在"
     return templates.TemplateResponse(
         "_shop.html", _shop_ctx(request, actor, db, error=error)
+    )
+
+
+@router.post("/shop/orders/{order_id}/refund", response_class=HTMLResponse)
+def shop_refund_order(
+    request: Request,
+    order_id: int,
+    amount_twd: int | None = Form(None, ge=1),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """已付訂單閘道退款(可部分,預設全額餘額);owner 限定、服務層鎖列防重(R6-A3)。"""
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
+    error = None
+    saved = None
+    try:
+        order = order_refund_svc.request_order_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            order_id=order_id,
+            actor_user_id=actor.user.id,
+            amount_cents=amount_twd * 100 if amount_twd is not None else None,
+        )
+        refunded = (order.refunded_cents or 0) // 100
+        audit_svc.record_from_actor(
+            db, actor, action="shop.order.refund", target=f"order:{order_id}",
+            detail={"refunded_twd": refunded}, request=request,
+        )
+        db.commit()
+        saved = f"訂單已退款 NT${refunded}。"
+    except order_refund_svc.OrderRefundError as exc:
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_shop.html", _shop_ctx(request, actor, db, error=error, saved=saved)
+    )
+
+
+@router.post("/shop/orders/{order_id}/manual-refund", response_class=HTMLResponse)
+def shop_manual_refund_order(
+    request: Request,
+    order_id: int,
+    note: str = Form(..., min_length=2, max_length=200),
+    amount_twd: int | None = Form(None, ge=1),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    """在外部金流後台退款後,於系統對帳為已退(R6-A3);owner 限定。"""
+    if not _require_ui_feature(db, actor, features_svc.PRODUCT_SALES):
+        return _feature_locked(request, actor, features_svc.PRODUCT_SALES, "商品銷售")
+    error = None
+    saved = None
+    try:
+        order = order_refund_svc.confirm_manual_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            order_id=order_id,
+            actor_user_id=actor.user.id,
+            note=note,
+            amount_cents=amount_twd * 100 if amount_twd is not None else None,
+        )
+        audit_svc.record_from_actor(
+            db, actor, action="shop.order.refund.manual", target=f"order:{order_id}",
+            detail={"refunded_twd": (order.refunded_cents or 0) // 100, "note": note[:200]},
+            request=request,
+        )
+        db.commit()
+        saved = "已對帳為人工退款。"
+    except order_refund_svc.OrderRefundError as exc:
+        error = str(exc)
+    return templates.TemplateResponse(
+        "_shop.html", _shop_ctx(request, actor, db, error=error, saved=saved)
     )
 
 
