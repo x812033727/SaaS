@@ -92,6 +92,21 @@ def _due_reminder_ids(
 _log = logging.getLogger(__name__)
 
 
+def _clamp_sms(text: str, limit: int = 300) -> str:
+    """SMS 300 字截斷,但**絕不砍斷結尾的 portal 連結行**(R5-B2)。
+
+    連結是 SMS 收件者唯一的自助互動手段;超長時犧牲前段內文保住連結。
+    """
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines()
+    if lines and lines[-1].startswith("管理預約:"):
+        tail = "\n" + lines[-1]
+        head = "\n".join(lines[:-1])
+        return head[: max(0, limit - len(tail))] + tail
+    return text[:limit]
+
+
 def _sms_fallback(db, tenant_id: int, line_user_id: str | None, text: str) -> None:
     """LINE 推播失敗時的簡訊補送(E3)。旗標關/查無手機 → no-op;失敗只記 log。"""
     from saas_mvp.config import settings
@@ -110,7 +125,7 @@ def _sms_fallback(db, tenant_id: int, line_user_id: str | None, text: str) -> No
         ).scalar_one_or_none()
         if customer is None or not customer.phone:
             return
-        get_sms_provider().send(to=customer.phone, body=text[:300])
+        get_sms_provider().send(to=customer.phone, body=_clamp_sms(text))
     except Exception:  # noqa: BLE001 — fallback 絕不影響批次
         _log.warning("sms fallback failed", exc_info=True)
 
@@ -162,8 +177,18 @@ def _process_one(
         slot = db.get(BookingSlot, resv.slot_id)
         tenant = db.get(Tenant, rem.tenant_id)
         store_name = tenant.name if tenant is not None else ""
+        # R5-B2:顧客 portal 連結(read-only;book_slot 建單時已補發 token)。
+        portal_url = None
+        if resv.customer_id is not None:
+            from saas_mvp.models.customer import Customer
+            from saas_mvp.services import customer_portal as portal_svc
+
+            customer = db.get(Customer, resv.customer_id)
+            if customer is not None:
+                portal_url = portal_svc.portal_url(customer)
         text = build_reminder_text(
-            slot=slot, reservation=resv, store_name=store_name
+            slot=slot, reservation=resv, store_name=store_name,
+            portal_url=portal_url,
         )
 
         if not apply:

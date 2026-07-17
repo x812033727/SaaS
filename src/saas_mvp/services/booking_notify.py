@@ -67,6 +67,24 @@ def build_cancel_text(reservation: Reservation, slot: BookingSlot) -> str:
     )
 
 
+def portal_line(db: Session, reservation: Reservation) -> str | None:
+    """顧客 portal「管理預約」連結行(R5-B2)。
+
+    **read-only**:token 已存在才附(建單時 book_slot 已同交易補發),
+    絕不在通知入列交易中簽發/commit。無 base URL 或無 token 回 None。
+    """
+    from saas_mvp.models.customer import Customer
+    from saas_mvp.services import customer_portal as portal_svc
+
+    if reservation.customer_id is None:
+        return None
+    customer = db.get(Customer, reservation.customer_id)
+    if customer is None:
+        return None
+    url = portal_svc.portal_url(customer)
+    return f"管理預約:{url}" if url else None
+
+
 # ── 入列（同交易、不 commit、冪等） ──────────────────────────────────────────
 
 def _enqueue(
@@ -116,6 +134,9 @@ def enqueue_change(
 ) -> int:
     """為一筆異動入列 change 通知（不 commit）。"""
     text = build_change_text(reservation, slot, old_slot)
+    link = portal_line(db, reservation)
+    if link:
+        text += "\n" + link
     return _enqueue(
         db,
         reservation=reservation,
@@ -136,6 +157,9 @@ def enqueue_cancel(
 ) -> int:
     """為一筆取消入列 cancel 通知（不 commit）。"""
     text = build_cancel_text(reservation, slot)
+    link = portal_line(db, reservation)
+    if link:
+        text += "\n" + link
     return _enqueue(
         db,
         reservation=reservation,
@@ -177,6 +201,9 @@ def enqueue_refund(
     from sqlalchemy import func, select as _select
 
     text = build_refund_text(reservation, amount_cents)
+    link = portal_line(db, reservation)
+    if link:
+        text += "\n" + link
     existing = db.execute(
         _select(func.count(BookingNotification.id)).where(
             BookingNotification.reservation_id == reservation.id,

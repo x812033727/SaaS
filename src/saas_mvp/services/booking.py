@@ -234,6 +234,15 @@ def book_slot(
         )
         chosen_customer_id = customer.id
 
+    # R5-B2:建單即補發顧客 portal token(同交易、不另 commit)——
+    # 後續提醒/通知/成功回覆附「管理預約」連結時 token 保證已存在。
+    if customer is not None:
+        from saas_mvp.services.customer_portal import (
+            assign_portal_token_if_missing,
+        )
+
+        assign_portal_token_if_missing(customer)
+
     reservation = Reservation(
         tenant_id=tenant_id,
         slot_id=slot_id,

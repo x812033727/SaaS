@@ -38,6 +38,13 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def assign_portal_token_if_missing(customer: Customer) -> None:
+    """同交易內補發 token(**不 commit**)— 供 book_slot 等單一 commit 交易
+    中途安全使用;commit 由呼叫端交易統一收尾。"""
+    if not customer.portal_token:
+        customer.portal_token = secrets.token_urlsafe(32)
+
+
 def ensure_portal_token(db: Session, customer: Customer) -> str:
     """惰性產生並 commit 顧客的 portal_token(已有則直接回傳,比照 ics_token)。"""
     if customer.portal_token:
