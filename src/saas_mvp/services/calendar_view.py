@@ -126,16 +126,19 @@ def build_week(db: Session, *, tenant_id: int, anchor: datetime.date) -> dict:
 
 
 def build_staff_grid(db: Session, *, tenant_id: int) -> dict:
-    """員工排班格：每位啟用中員工的 7 個 weekday 班表（含輪值別）。"""
+    """員工排班格：每位啟用中員工的 7 個 weekday 班表（含輪值別）。
+
+    R6-C2:班表一次批載(active_shifts_by_staff)依 staff_id 分組,取代逐員工
+    list_shifts 的 N+1 查詢(查詢數由 1+N 降為 2)。
+    """
     rows = []
+    shifts_by_staff = staff_svc.active_shifts_by_staff(db, tenant_id=tenant_id)
     for s in staff_svc.list_staff(db, tenant_id=tenant_id):
         if not s.is_active:
             continue
         per_weekday: list[list[dict]] = [[] for _ in range(7)]
         none_day: list[dict] = []
-        for sh in staff_svc.list_shifts(db, tenant_id=tenant_id, staff_id=s.id):
-            if not sh.is_active:
-                continue
+        for sh in shifts_by_staff.get(s.id, []):
             cell = {
                 "start": sh.start_time,
                 "end": sh.end_time,

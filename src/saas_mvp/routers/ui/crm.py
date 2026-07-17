@@ -91,9 +91,11 @@ def _customer_detail_ctx(
             db, tenant_id=tid, customer_id=customer_id
         )
     }
+    # R6-C2:近 20 筆(新→舊)由 SQL ORDER id DESC + LIMIT 完成,不再載全部再切片。
     reservations = booking_svc.list_reservations(
-        db, tenant_id=tid, line_user_id=customer.line_user_id
-    )[-20:][::-1]  # 近 20 筆，新→舊
+        db, tenant_id=tid, line_user_id=customer.line_user_id,
+        limit=20, newest_first=True,
+    )
     slot_ids = [r.slot_id for r in reservations if r.slot_id is not None]
     slots = {}
     if slot_ids:
