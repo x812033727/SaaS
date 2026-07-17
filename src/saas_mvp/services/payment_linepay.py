@@ -124,6 +124,20 @@ class LinePayClient:
             f"confirm rejected: {code} {resp.get('returnMessage')}"
         )
 
+    def refund(self, *, transaction_id: str, refund_amount_twd: int) -> dict:
+        """POST /v3/payments/{txid}/refund。回傳原始 dict,呼叫端判 returnCode。
+
+        LINE Pay v3 原生支援部分退款且可多次(退到原額為止),故不套 ECPay 的
+        「第一次後轉人工」限制;金額由呼叫端以定金餘額驗證後傳入。網路/逾時
+        由 ``_call`` 拋 LinePayError,呼叫端轉 manual_required(結果不確定不自動重送)。
+        """
+        if not transaction_id:
+            raise LinePayError("missing transaction_id for refund")
+        return self._call(
+            f"/v3/payments/{transaction_id}/refund",
+            {"refundAmount": refund_amount_twd},
+        )
+
 
 class LinePayPaymentProvider(PaymentProvider):
     """orders/POS 用 provider:create_checkout 打 Request API 回 LINE Pay 付款頁。"""

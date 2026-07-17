@@ -107,6 +107,20 @@ class TestLinePayClient:
         with pytest.raises(LinePayError):
             c.confirm_payment(transaction_id="1", amount_twd=800, currency="TWD")
 
+    def test_refund_posts_amount_to_txid_uri(self, monkeypatch):
+        c, calls = self._client([{"returnCode": "0000", "returnMessage": "Success"}], monkeypatch)
+        out = c.refund(transaction_id="987654321", refund_amount_twd=200)
+        assert out["returnCode"] == "0000"
+        assert calls[0]["url"].endswith("/v3/payments/987654321/refund")
+        assert calls[0]["body"] == {"refundAmount": 200}
+        # 簽章 header 齊備(沿用 _call 機制)
+        assert calls[0]["headers"]["X-LINE-Authorization"]
+
+    def test_refund_requires_txid(self, monkeypatch):
+        c, _ = self._client([], monkeypatch)
+        with pytest.raises(LinePayError):
+            c.refund(transaction_id="", refund_amount_twd=200)
+
     def test_provider_dispatch(self, monkeypatch):
         monkeypatch.setattr(settings, "payment_provider", "linepay")
         assert get_payment_provider().name() == "linepay"

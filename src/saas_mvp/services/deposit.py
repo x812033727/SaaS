@@ -228,6 +228,44 @@ def _notify_refunded(db: Session, resv: Reservation, amount_cents: int) -> None:
                      exc_info=True)
 
 
+def _linepay_refund(db, resv, amount, *, client=None) -> Reservation:
+    """LINE Pay v3 退款派工(R6-A1)。txid 缺→manual;逾時→manual(結果不確定)。
+
+    LINE Pay 原生支援多次部分退款,故不套 ECPay 的第一次後轉人工限制 ——
+    `_apply_refund_success` 留 REFUND_PARTIAL 時可再退到餘額為止。
+    """
+    from saas_mvp.services.payment_linepay import LinePayClient
+
+    if not resv.deposit_payment_txn_id:
+        _manual_required(
+            db, resv, "缺少 LINE Pay 交易編號，請在 LINE Pay 後台核對並人工退款。"
+        )
+    if client is None:
+        client = LinePayClient()
+    try:
+        response = client.refund(
+            transaction_id=resv.deposit_payment_txn_id,
+            refund_amount_twd=amount // 100,
+        )
+    except Exception as exc:  # noqa: BLE001 — 逾時後結果可能已成功，不得自動重送
+        _manual_required(
+            db, resv,
+            f"退款結果不確定（{type(exc).__name__}），請先到 LINE Pay 後台核對，勿重複送出。",
+        )
+    code = str(response.get("returnCode") or "")[:32]
+    resv.deposit_refund_provider_code = code or None
+    if code == "0000":
+        _apply_refund_success(resv, amount, provider_code=code)
+        db.commit()
+        _notify_refunded(db, resv, amount)
+        return resv
+    message = " ".join(str(response.get("returnMessage") or "LINE Pay 拒絕退款").split())[:160]
+    resv.deposit_refund_status = REFUND_FAILED
+    resv.deposit_refund_error = message
+    db.commit()
+    raise DepositRefundError(f"LINE Pay 拒絕退款：{message}")
+
+
 def request_full_refund(
     db: Session,
     *,
@@ -236,6 +274,7 @@ def request_full_refund(
     actor_user_id: int,
     amount_cents: int | None = None,
     ecpay_client=None,
+    linepay_client=None,
 ) -> Reservation:
     """取消後的已付定金退款(``amount_cents`` None=全額,可部分);鎖列防雙擊／
     多 worker 重複退刷。一次退款即終態:部分退款後餘額不可再自動退(需人工)。
@@ -275,6 +314,8 @@ def request_full_refund(
         db.commit()
         _notify_refunded(db, resv, amount)
         return resv
+    if provider == "linepay":
+        return _linepay_refund(db, resv, amount, client=linepay_client)
     if provider != "ecpay":
         _manual_required(db, resv, "缺少原付款交易資料，請在金流後台核對並人工退款。")
     # R4-B2:綠界同一交易多次部分退刷是否被接受無法從程式碼確證 → 第一次
