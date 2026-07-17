@@ -311,6 +311,178 @@ class _FakeLinePay:
         return {"returnCode": self.return_code, "returnMessage": self.message}
 
 
+class _FakeNewebPay:
+    """注入用假 client:refund 回預設 Status,或依 raises 拋錯。"""
+
+    def __init__(self, *, status="SUCCESS", message="Success", raises=None):
+        self.status = status
+        self.message = message
+        self.raises = raises
+        self.calls = []
+
+    def refund(self, *, merchant_order_no, trade_no, amount_twd):
+        self.calls.append((merchant_order_no, trade_no, amount_twd))
+        if self.raises is not None:
+            raise self.raises
+        return {"Status": self.status, "Message": self.message, "Result": {}}
+
+
+class TestNewebPayRefund:
+    """R6-A2:藍新信用卡退款派工(Close CloseType=2,注入 client 離線)。"""
+
+    def _paid_newebpay(self) -> int:
+        rid, _ = _deposit_reservation()
+        db = _Session()
+        try:
+            resv = db.get(Reservation, rid)
+            resv.status = "cancelled"
+            resv.deposit_status = "paid"
+            resv.deposit_provider = "newebpay"
+            resv.deposit_provider_trade_no = "24010112000012345"
+            db.commit()
+            self._tenant_id = resv.tenant_id
+            return rid
+        finally:
+            db.close()
+
+    def test_full_refund_success(self):
+        rid = self._paid_newebpay()
+        fake = _FakeNewebPay(status="SUCCESS")
+        db = _Session()
+        try:
+            resv = deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, newebpay_client=fake,
+            )
+            assert resv.deposit_refund_status == "refunded"
+            assert resv.deposit_refunded_cents == 20000
+            assert fake.calls[0][2] == 200  # amount_twd
+        finally:
+            db.close()
+
+    def test_partial_then_second_partial_allowed(self):
+        rid = self._paid_newebpay()
+        fake = _FakeNewebPay(status="SUCCESS")
+        db = _Session()
+        try:
+            resv = deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, amount_cents=5000, newebpay_client=fake,
+            )
+            assert resv.deposit_refund_status == "partially_refunded"
+            resv = deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, amount_cents=15000, newebpay_client=fake,
+            )
+            assert resv.deposit_refund_status == "refunded"
+            assert len(fake.calls) == 2
+        finally:
+            db.close()
+
+    def test_timeout_becomes_manual(self):
+        rid = self._paid_newebpay()
+        fake = _FakeNewebPay(raises=RuntimeError("timeout"))
+        db = _Session()
+        try:
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=self._tenant_id, reservation_id=rid,
+                    actor_user_id=1, newebpay_client=fake,
+                )
+        finally:
+            db.close()
+        assert _resv(rid).deposit_refund_status == "manual_required"
+
+    def test_non_success_marks_failed(self):
+        rid = self._paid_newebpay()
+        fake = _FakeNewebPay(status="FAILED", message="尚未請款")
+        db = _Session()
+        try:
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=self._tenant_id, reservation_id=rid,
+                    actor_user_id=1, newebpay_client=fake,
+                )
+        finally:
+            db.close()
+        assert _resv(rid).deposit_refund_status == "failed"
+
+    def test_missing_trade_no_manual(self):
+        rid = self._paid_newebpay()
+        db = _Session()
+        try:
+            resv = db.get(Reservation, rid)
+            resv.deposit_provider_trade_no = None
+            db.commit()
+        finally:
+            db.close()
+        fake = _FakeNewebPay()
+        db = _Session()
+        try:
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=self._tenant_id, reservation_id=rid,
+                    actor_user_id=1, newebpay_client=fake,
+                )
+        finally:
+            db.close()
+        assert _resv(rid).deposit_refund_status == "manual_required"
+        assert fake.calls == []
+
+    def test_processing_persisted_before_external_call(self):
+        """R6-A2 崩潰安全:provider.refund 被呼叫時,row 已 commit 為 PROCESSING
+        (從獨立 session 可見)——崩潰只會卡 PROCESSING,不會回退成可重退。"""
+        rid = self._paid_newebpay()
+        observed = {}
+
+        class _Observing:
+            def refund(self, *, merchant_order_no, trade_no, amount_twd):
+                # 另開 session 讀 —— 只有已 commit 才看得到 PROCESSING
+                s2 = _Session()
+                try:
+                    observed["status"] = s2.get(Reservation, rid).deposit_refund_status
+                finally:
+                    s2.close()
+                return {"Status": "SUCCESS", "Message": "ok", "Result": {}}
+
+        db = _Session()
+        try:
+            deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, newebpay_client=_Observing(),
+            )
+        finally:
+            db.close()
+        assert observed["status"] == "processing"
+
+    def test_client_refund_builds_close_postdata(self):
+        """NewebPayClient.refund:POST 到 Close 端點、body 含 MerchantID_/PostData_,
+        PostData_ 可用同金鑰解回退款參數(CloseType=2)。"""
+        captured = {}
+
+        def fake_post(url, body):
+            captured["url"] = url
+            captured["body"] = body
+            return json.dumps({"Status": "SUCCESS", "Message": "ok", "Result": {}})
+
+        client = NewebPayClient(
+            merchant_id="MS123456", hash_key=_HK, hash_iv=_HIV, env="stage",
+            http_post=fake_post,
+        )
+        out = client.refund(
+            merchant_order_no="DP123", trade_no="24010112000012345", amount_twd=200
+        )
+        assert out["Status"] == "SUCCESS"
+        assert captured["url"].endswith("/API/CreditCard/Close")
+        assert captured["body"]["MerchantID_"] == "MS123456"
+        # PostData_ 解回應含退款參數(同 TradeInfo AES 解密)
+        decoded = client.decrypt_trade_info(captured["body"]["PostData_"])
+        assert decoded["CloseType"] == "2"
+        assert decoded["MerchantOrderNo"] == "DP123"
+        assert decoded["Amt"] == "200"
+        assert "MerchantID" not in decoded  # Close 的 PostData_ 不含 MerchantID
+
+
 class TestLinePayRefund:
     """R6-A1:LINE Pay 定金退款派工(service 級,注入 client 離線)。"""
 
