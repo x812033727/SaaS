@@ -29,7 +29,12 @@
     <p class="pay-note"><strong>{{ deposit_note }}</strong></p>
     <p><a href="{{ deposit_url }}" class="pay-btn">前往付定金</a></p>
     {% endif %}
+    {% if portal_url %}
+    <p><a class="pay-btn" style="background:var(--brand)" href="{{ portal_url }}">管理我的預約</a></p>
+    <p class="muted">收藏這個連結,隨時可查看、改期或取消預約。</p>
+    {% else %}
     <p class="muted">可關閉此頁回到 LINE；輸入「我的預約」隨時查看或改期/取消。</p>
+    {% endif %}
   </div>
 </body>
 </html>

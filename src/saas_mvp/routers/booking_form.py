@@ -225,6 +225,15 @@ def booking_form_submit(
             db, tenant_id=resv.tenant_id, reservation_id=resv.id
         ) if row.status == "pending"
     ]
+    # R5-B2:顧客 portal 連結(建單交易已補發 token;read-only)。
+    portal_url = None
+    if resv.customer_id is not None:
+        from saas_mvp.models.customer import Customer
+        from saas_mvp.services import customer_portal as portal_svc
+
+        customer = db.get(Customer, resv.customer_id)
+        if customer is not None:
+            portal_url = portal_svc.portal_url(customer)
     return templates.TemplateResponse(
         "booking_form/done.html",
         {
@@ -234,6 +243,7 @@ def booking_form_submit(
             "deposit_note": deposit_note,
             "package_redeemed": package_redeemed,
             "client_form_links": client_form_links,
+            "portal_url": portal_url,
         },
     )
 

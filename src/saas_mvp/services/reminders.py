@@ -121,14 +121,25 @@ def list_due_reminders(
 
 
 def build_reminder_text(
-    *, slot: BookingSlot, reservation: Reservation, store_name: str
+    *,
+    slot: BookingSlot,
+    reservation: Reservation,
+    store_name: str,
+    portal_url: str | None = None,
 ) -> str:
-    """組裝提醒訊息（含時間、人數、店名、取消方式）。"""
+    """組裝提醒訊息（含時間、人數、店名、取消方式）。
+
+    portal_url(R5-B2):顧客自助入口連結——LINE 版是 quick-reply 之外的輔助;
+    SMS fallback 版是**唯一**互動手段(確認/取消/改期)。
+    """
     when = slot.slot_start.strftime("%Y-%m-%d %H:%M")
-    return (
+    text = (
         f"【預約提醒】{store_name}\n"
         f"時間：{when}\n"
         f"人數：{reservation.party_size} 位\n"
         f"預約編號：{reservation.id}\n"
         f"如需取消請回覆：/cancel {reservation.id}"
     )
+    if portal_url:
+        text += f"\n管理預約:{portal_url}"
+    return text

@@ -1482,6 +1482,16 @@ def _confirm_text(db: Session, tenant_id: int, resv, slot_id: int) -> str:
         f"預約成功！\n預約編號：{resv.id}\n人數：{resv.party_size} 位\n"
         f"如需取消請輸入：取消 {resv.id}"
     )
+    # R5-B2:顧客 portal「管理預約」連結(建單交易已補發 token;read-only)。
+    if resv.customer_id is not None:
+        from saas_mvp.models.customer import Customer as _Customer
+        from saas_mvp.services import customer_portal as _portal_svc
+
+        _cust = db.get(_Customer, resv.customer_id)
+        if _cust is not None:
+            _purl = _portal_svc.portal_url(_cust)
+            if _purl:
+                base += f"\n管理預約:{_purl}"
     # 定金（C4）:需付定金時置頂提示 + 付款連結。
     if getattr(resv, "deposit_status", None) == "pending" and settings.public_base_url:
         from saas_mvp.models.tenant import Tenant as _Tenant
