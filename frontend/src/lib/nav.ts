@@ -62,8 +62,8 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "行銷活動", href: "/campaigns", migrated: true },
       { label: "通知歷程", href: "/notifications", migrated: true },
-      { label: "作品集", href: "/ui/portfolio", migrated: false },
-      { label: "店家頁", href: "/ui/profile", migrated: false },
+      { label: "作品集", href: "/portfolio", migrated: true },
+      { label: "店家頁", href: "/profile", migrated: true },
     ],
   },
   {
