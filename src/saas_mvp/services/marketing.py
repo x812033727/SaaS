@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from saas_mvp.config import settings
 from saas_mvp.line_client import LinePushClient
 from saas_mvp.models.campaign import (
+    CAMPAIGN_ANNIVERSARY,
     CAMPAIGN_BIRTHDAY,
     CAMPAIGN_REACTIVATION,
     CAMPAIGN_WELCOME,
@@ -203,7 +204,7 @@ def period_key_for(campaign: Campaign, now: datetime.datetime) -> str:
         return "once"
     if ctype == CAMPAIGN_REACTIVATION:
         return now.strftime("%Y%m%d")
-    if ctype in (CAMPAIGN_BIRTHDAY, "spend"):
+    if ctype in (CAMPAIGN_BIRTHDAY, CAMPAIGN_ANNIVERSARY, "spend"):
         return now.strftime("%Y")
     # broadcast / 其他：每活動一次。
     return f"camp{campaign.id}"
@@ -227,6 +228,20 @@ def eligible_customers(
             if c.birthday is not None
             and c.birthday.month == now.month
             and c.birthday.day == now.day
+        ])
+
+    if campaign.type == CAMPAIGN_ANNIVERSARY:
+        # 建檔週年(R6-B2):created_at 的月/日與今日相符(成為會員滿整年);
+        # 同日建檔者當年即觸發亦可(月/日相符即可,period_key 以年去重)。
+        candidates = segments_svc.segment_customers(
+            db, tenant_id=campaign.tenant_id, **kwargs
+        )
+        return _drop_opted_out([
+            c
+            for c in candidates
+            if c.created_at is not None
+            and c.created_at.month == now.month
+            and c.created_at.day == now.day
         ])
 
     if campaign.type == CAMPAIGN_REACTIVATION:

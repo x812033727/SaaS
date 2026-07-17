@@ -37,6 +37,8 @@ CAMPAIGN_WELCOME = "welcome"
 CAMPAIGN_SPEND = "spend"
 CAMPAIGN_REACTIVATION = "reactivation"
 CAMPAIGN_BROADCAST = "broadcast"
+# R6-B2:建檔週年自動觸發(顧客成為會員的週年月/日,比照生日,取 created_at)。
+CAMPAIGN_ANNIVERSARY = "anniversary"
 VALID_CAMPAIGN_TYPES = frozenset(
     {
         CAMPAIGN_BIRTHDAY,
@@ -44,6 +46,7 @@ VALID_CAMPAIGN_TYPES = frozenset(
         CAMPAIGN_SPEND,
         CAMPAIGN_REACTIVATION,
         CAMPAIGN_BROADCAST,
+        CAMPAIGN_ANNIVERSARY,
     }
 )
 
