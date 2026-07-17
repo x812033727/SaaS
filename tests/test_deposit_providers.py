@@ -293,3 +293,128 @@ class TestLinePayDeposit:
     def test_cancel_page(self, client):
         r = client.get("/payments/linepay/deposit-cancel")
         assert "已取消付款" in r.text
+
+
+class _FakeLinePay:
+    """注入用假 client:refund 回預設 returnCode,或依 raises 拋錯。"""
+
+    def __init__(self, *, return_code="0000", message="Success", raises=None):
+        self.return_code = return_code
+        self.message = message
+        self.raises = raises
+        self.calls = []
+
+    def refund(self, *, transaction_id, refund_amount_twd):
+        self.calls.append((transaction_id, refund_amount_twd))
+        if self.raises is not None:
+            raise self.raises
+        return {"returnCode": self.return_code, "returnMessage": self.message}
+
+
+class TestLinePayRefund:
+    """R6-A1:LINE Pay 定金退款派工(service 級,注入 client 離線)。"""
+
+    def _paid_linepay(self) -> int:
+        """建 cancelled + LINE Pay 已付定金的預約,回 reservation_id。"""
+        rid, _ = _deposit_reservation()
+        db = _Session()
+        try:
+            resv = db.get(Reservation, rid)
+            resv.status = "cancelled"
+            resv.deposit_status = "paid"
+            resv.deposit_provider = "linepay"
+            resv.deposit_payment_txn_id = "LP-TXN-123"
+            db.commit()
+            tenant_id = resv.tenant_id
+        finally:
+            db.close()
+        self._tenant_id = tenant_id
+        return rid
+
+    def test_full_refund_success(self):
+        rid = self._paid_linepay()
+        fake = _FakeLinePay(return_code="0000")
+        db = _Session()
+        try:
+            resv = deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, linepay_client=fake,
+            )
+            assert resv.deposit_refund_status == "refunded"
+            assert resv.deposit_refunded_cents == 20000
+            assert fake.calls == [("LP-TXN-123", 200)]
+        finally:
+            db.close()
+
+    def test_partial_then_second_partial_allowed(self):
+        """LINE Pay 原生多次部分退款:第一次後仍可再退(不轉人工)。"""
+        rid = self._paid_linepay()
+        fake = _FakeLinePay(return_code="0000")
+        db = _Session()
+        try:
+            resv = deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, amount_cents=5000, linepay_client=fake,
+            )
+            assert resv.deposit_refund_status == "partially_refunded"
+            assert resv.deposit_refunded_cents == 5000
+            # 第二次部分退款(餘 15000)——ECPay 會轉人工,LINE Pay 允許
+            resv = deposit_svc.request_full_refund(
+                db, tenant_id=self._tenant_id, reservation_id=rid,
+                actor_user_id=1, amount_cents=15000, linepay_client=fake,
+            )
+            assert resv.deposit_refund_status == "refunded"
+            assert resv.deposit_refunded_cents == 20000
+            assert len(fake.calls) == 2
+        finally:
+            db.close()
+
+    def test_timeout_becomes_manual_required(self):
+        rid = self._paid_linepay()
+        fake = _FakeLinePay(raises=RuntimeError("timeout"))
+        db = _Session()
+        try:
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=self._tenant_id, reservation_id=rid,
+                    actor_user_id=1, linepay_client=fake,
+                )
+        finally:
+            db.close()
+        assert _resv(rid).deposit_refund_status == "manual_required"
+
+    def test_rejected_code_marks_failed(self):
+        rid = self._paid_linepay()
+        fake = _FakeLinePay(return_code="1124", message="amount error")
+        db = _Session()
+        try:
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=self._tenant_id, reservation_id=rid,
+                    actor_user_id=1, linepay_client=fake,
+                )
+        finally:
+            db.close()
+        assert _resv(rid).deposit_refund_status == "failed"
+
+    def test_missing_txid_manual_required(self):
+        rid = self._paid_linepay()
+        db = _Session()
+        try:
+            resv = db.get(Reservation, rid)
+            resv.deposit_payment_txn_id = None
+            db.commit()
+        finally:
+            db.close()
+        fake = _FakeLinePay()
+        db = _Session()
+        try:
+            with pytest.raises(deposit_svc.DepositRefundError):
+                deposit_svc.request_full_refund(
+                    db, tenant_id=self._tenant_id, reservation_id=rid,
+                    actor_user_id=1, linepay_client=fake,
+                )
+        finally:
+            db.close()
+        assert _resv(rid).deposit_refund_status == "manual_required"
+        assert fake.calls == []
