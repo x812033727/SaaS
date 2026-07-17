@@ -105,6 +105,19 @@
       {% endfor %}
     {% endif %}
 
+    <h2>提醒設定</h2>
+    <div class="card">
+      <form method="post" action="/booking/my/{{ token }}/email">
+        <label for="email" style="display:block;margin-bottom:.3rem;font-weight:600;font-size:.9rem;color:var(--muted)">Email(預約提醒也會寄到信箱;留空=取消)</label>
+        <div style="display:flex;gap:.5rem">
+          <input id="email" name="email" type="email" maxlength="255" value="{{ customer.email or '' }}"
+                 placeholder="you@example.com" autocomplete="email"
+                 style="flex:1;padding:.6rem .8rem;border:1px solid var(--line);border-radius:8px;font-family:inherit">
+          <button type="submit" style="width:auto;padding:.6rem 1rem">儲存</button>
+        </div>
+      </form>
+    </div>
+
     {% if history %}
       <h2>歷史紀錄</h2>
       {% for row in history %}

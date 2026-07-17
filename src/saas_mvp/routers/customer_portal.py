@@ -53,6 +53,8 @@ _MESSAGES = {
     "waitlist_cancelled": "候補已取消。",
     "slot_full": "該時段已額滿,請改選其他時段。",
     "error": "操作未完成,請重試或聯絡店家。",
+    "email_saved": "Email 已更新,預約提醒也會寄到您的信箱。",
+    "email_invalid": "Email 格式不正確,請重新輸入。",
 }
 
 
@@ -111,6 +113,28 @@ def portal_page(
             "message": _MESSAGES.get(msg or ""),
         },
     )
+
+
+@router.post("/{token}/email", response_class=HTMLResponse)
+def portal_set_email(
+    token: str,
+    db: Session = Depends(get_db),
+    email: str = Form(default=""),
+):
+    """顧客自助填寫/更新 email(R5-B3;提醒第三管道)。空值=清除。"""
+    customer = _resolve(db, token)
+    if customer is None:
+        return _NOT_FOUND
+    raw = (email or "").strip()
+    if raw:
+        cleaned = portal_svc.valid_email(raw)
+        if cleaned is None:
+            return _redirect(token, "email_invalid")
+        customer.email = cleaned
+    else:
+        customer.email = None
+    db.commit()
+    return _redirect(token, "email_saved")
 
 
 @router.post("/{token}/reservations/{rid}/cancel", response_class=HTMLResponse)

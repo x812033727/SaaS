@@ -30,7 +30,7 @@ _MAX_BYTES = 1_000_000  # 1MB
 _MAX_ERRORS_REPORTED = 20
 
 _REQUIRED_COLUMNS = {"display_name"}
-_KNOWN_COLUMNS = {"display_name", "phone", "birthday", "note"}
+_KNOWN_COLUMNS = {"display_name", "phone", "birthday", "note", "email"}
 
 
 class ImportError_(Exception):
@@ -110,11 +110,21 @@ def _validate(rows: list[dict]) -> tuple[list[dict], list[str]]:
                 )
                 continue
         note = (row.get("note") or "").strip()[:2048] or None
+        email = None
+        raw_email = (row.get("email") or "").strip()
+        if raw_email:
+            from saas_mvp.services.customer_portal import valid_email
+
+            email = valid_email(raw_email)
+            if email is None:
+                errors.append(f"第 {idx} 列: email 格式錯誤: {raw_email!r}")
+                continue
         parsed.append({
             "display_name": name,
             "phone": phone,
             "birthday": birthday,
             "note": note,
+            "email": email,
         })
     return parsed, errors
 
@@ -162,6 +172,8 @@ def import_customers(
                     existing.birthday = row["birthday"]
                 if row["note"]:
                     existing.note = row["note"]
+                if row["email"]:
+                    existing.email = row["email"]
                 report.updated += 1
             else:
                 report.skipped += 1
@@ -173,6 +185,7 @@ def import_customers(
             phone=phone,
             birthday=row["birthday"],
             note=row["note"],
+            email=row["email"],
         )
         db.add(customer)
         if phone:

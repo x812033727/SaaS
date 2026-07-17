@@ -107,12 +107,15 @@ def _clamp_sms(text: str, limit: int = 300) -> str:
     return text[:limit]
 
 
-def _sms_fallback(db, tenant_id: int, line_user_id: str | None, text: str) -> None:
-    """LINE 推播失敗時的簡訊補送(E3)。旗標關/查無手機 → no-op;失敗只記 log。"""
+def _sms_fallback(db, tenant_id: int, line_user_id: str | None, text: str) -> bool:
+    """LINE 推播失敗時的簡訊補送(E3)。旗標關/查無手機 → no-op;失敗只記 log。
+
+    回傳是否真的送出(R5-B3:False 時輪到 email 第三段 fallback)。
+    """
     from saas_mvp.config import settings
 
     if not settings.sms_fallback_enabled or not line_user_id:
-        return
+        return False
     try:
         from saas_mvp.models.customer import Customer
         from saas_mvp.services.sms import get_sms_provider
@@ -124,10 +127,42 @@ def _sms_fallback(db, tenant_id: int, line_user_id: str | None, text: str) -> No
             )
         ).scalar_one_or_none()
         if customer is None or not customer.phone:
-            return
+            return False
         get_sms_provider().send(to=customer.phone, body=_clamp_sms(text))
+        return True
     except Exception:  # noqa: BLE001 — fallback 絕不影響批次
         _log.warning("sms fallback failed", exc_info=True)
+        return False
+
+
+def _email_fallback(db, tenant_id: int, customer_id: int | None, text: str) -> None:
+    """第三段 fallback(R5-B3):LINE 失敗且 SMS 未送出時,寄 email 提醒。
+
+    走 email_delivery 可靠佇列(失敗自動重試);顧客無 email → no-op。
+    deliver_or_queue 自帶 commit——僅在推播失敗的收尾階段呼叫,
+    不在任何未完成交易中途。
+    """
+    if customer_id is None:
+        return
+    try:
+        from saas_mvp.models.customer import Customer
+        from saas_mvp.services import email_delivery as email_svc
+        from saas_mvp.services.mailer import get_mailer
+
+        customer = db.get(Customer, customer_id)
+        if customer is None or not customer.email:
+            return
+        email_svc.deliver_or_queue(
+            db,
+            get_mailer(db),
+            user_id=None,
+            category="booking_reminder",
+            recipient=customer.email,
+            subject="【預約提醒】您有即將到來的預約",
+            body=text,
+        )
+    except Exception:  # noqa: BLE001 — fallback 絕不影響批次
+        _log.warning("email fallback failed", exc_info=True)
 
 
 def _process_one(
@@ -197,6 +232,7 @@ def _process_one(
 
         # E3 fallback 用:rollback 會 expire ORM 物件,先抓純值
         fallback_tenant_id, fallback_user_id = rem.tenant_id, rem.line_user_id
+        fallback_customer_id = resv.customer_id
 
         # 月度推播額度閘門：超出本月額度則跳過（不推播、標 skipped），
         # 同租戶超額不影響其他列（per-row isolation）。
@@ -242,8 +278,10 @@ def _process_one(
                 rem2.last_error = type(exc).__name__[:255]
                 rem2.updated_at = now
                 db.commit()
-            # E3:簡訊 fallback(旗標開 + 顧客有手機才送;best-effort 永不拋)
-            _sms_fallback(db, fallback_tenant_id, fallback_user_id, text)
+            # E3:簡訊 fallback(旗標開 + 顧客有手機才送;best-effort 永不拋);
+            # R5-B3:SMS 未送出 → email 第三段(可靠佇列,自動重試)。
+            if not _sms_fallback(db, fallback_tenant_id, fallback_user_id, text):
+                _email_fallback(db, fallback_tenant_id, fallback_customer_id, text)
             return ReminderResult(
                 reminder_id, "failed", "push_error", error_type=type(exc).__name__
             )
