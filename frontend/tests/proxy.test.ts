@@ -173,3 +173,33 @@ describe("proxy tenants/me whitelist", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+// ── R5-A4:ai/faq 窄前綴 ─────────────────────────────────────────────────────
+
+describe("proxy ai/faq whitelist", () => {
+  it("ai/faq 放行並帶 Bearer", async () => {
+    const fetchSpy = vi.fn(async () => new Response("[]", {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const { request, ctx } = req(["ai", "faq"]);
+    const response = await proxyGet(request, ctx);
+    expect(response.status).toBe(200);
+    const [url, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toContain("/ai/faq");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt-abc");
+  });
+
+  it("ai/faq/{id} 放行、ai/ask 擋 404(成本敏感不開放)", async () => {
+    const fetchSpy = vi.fn(async () => new Response("{}", {
+      status: 200, headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const ok = req(["ai", "faq", "12"]);
+    expect((await proxyGet(ok.request, ok.ctx)).status).toBe(200);
+    const blocked = req(["ai", "ask"], { method: "POST", origin: "http://console.local" });
+    const response = await proxyPost(blocked.request, blocked.ctx);
+    expect(response.status).toBe(404);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
