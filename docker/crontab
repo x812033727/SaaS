@@ -22,6 +22,9 @@
 # 每日 09:12 UTC：生日活動
 12 9 * * * python -m saas_mvp.ops.run_birthday_campaigns --apply
 
+# 每日 09:22 UTC：建檔週年活動（R6-B2）
+22 9 * * * python -m saas_mvp.ops.run_anniversary_campaigns --apply
+
 # 每日 14:12 UTC：沉睡客戶喚回
 12 14 * * * python -m saas_mvp.ops.run_reactivation --apply
 
