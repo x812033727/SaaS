@@ -400,10 +400,13 @@ def cancel_reservation(
     tenant_id: int,
     reservation_id: int,
     line_user_id: str | None = None,
+    customer_id: int | None = None,
 ) -> Reservation:
     """取消預約：鎖時段 → booked_count 回補 → 狀態改 cancelled → 待發提醒標 skipped。
 
     line_user_id 非 None 時（LINE 來源取消）額外驗證與建單者相符，防他人取消。
+    customer_id 非 None 時（R5-B1 顧客入口網來源）驗證預約歸屬該顧客。
+    兩者皆 None = 店家路徑（UI/REST），跳過擁有者驗證。
     重複取消為 no-op（不重複回補）。
     """
     # 先鎖預約本身：兩個 worker 同時取消時，後取得鎖者會看到最新 cancelled
@@ -421,6 +424,8 @@ def cancel_reservation(
 
     if line_user_id is not None and reservation.line_user_id != line_user_id:
         raise ReservationPermissionError("reservation belongs to another LINE user")
+    if customer_id is not None and reservation.customer_id != customer_id:
+        raise ReservationPermissionError("reservation belongs to another customer")
 
     if reservation.status == RESERVATION_CANCELLED:
         return reservation  # 冪等：已取消不重複回補
@@ -513,6 +518,7 @@ def reschedule_reservation(
     reservation_id: int,
     new_slot_id: int,
     line_user_id: str | None = None,
+    customer_id: int | None = None,
 ) -> Reservation:
     """原子改期：把 confirmed 預約移到新時段。
 
@@ -537,6 +543,8 @@ def reschedule_reservation(
         raise ReservationNotFoundError(f"reservation {reservation_id} not found")
     if line_user_id is not None and reservation.line_user_id != line_user_id:
         raise ReservationPermissionError("reservation belongs to another LINE user")
+    if customer_id is not None and reservation.customer_id != customer_id:
+        raise ReservationPermissionError("reservation belongs to another customer")
     if reservation.status != RESERVATION_CONFIRMED:
         raise ReservationNotFoundError(
             f"reservation {reservation_id} is not active"
@@ -634,13 +642,20 @@ def confirm_reservation(
     *,
     tenant_id: int,
     reservation_id: int,
-    line_user_id: str,
+    line_user_id: str | None = None,
+    customer_id: int | None = None,
 ) -> Reservation:
-    """顧客自助確認出席（提醒訊息「確認出席」按鈕）。
+    """顧客自助確認出席（提醒訊息「確認出席」按鈕 / R5-B1 入口網）。
 
-    擁有者驗證比照 cancel_reservation；重複確認為冪等 no-op
+    擁有者驗證比照 cancel_reservation，但本函式**純顧客路徑**：
+    line_user_id 與 customer_id 至少須提供其一（皆 None 拋 PermissionError，
+    店家標到場走 mark_attendance）。重複確認為冪等 no-op
     （保留首次確認時間）。已取消的預約不可確認。
     """
+    if line_user_id is None and customer_id is None:
+        raise ReservationPermissionError(
+            "confirm_reservation requires a customer identity"
+        )
     reservation = (
         tenant_query(db, Reservation, tenant_id)
         .filter(Reservation.id == reservation_id)
@@ -648,8 +663,10 @@ def confirm_reservation(
     )
     if reservation is None:
         raise ReservationNotFoundError(f"reservation {reservation_id} not found")
-    if reservation.line_user_id != line_user_id:
+    if line_user_id is not None and reservation.line_user_id != line_user_id:
         raise ReservationPermissionError("reservation belongs to another LINE user")
+    if customer_id is not None and reservation.customer_id != customer_id:
+        raise ReservationPermissionError("reservation belongs to another customer")
     if reservation.status != RESERVATION_CONFIRMED:
         raise ReservationNotFoundError(
             f"reservation {reservation_id} is not active"
