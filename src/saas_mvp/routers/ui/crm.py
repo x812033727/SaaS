@@ -24,6 +24,7 @@ from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import shop as shop_svc
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import membership as membership_svc
+from saas_mvp.services import loyalty_config as loyalty_config_svc
 from saas_mvp.services import service_packages as packages_svc
 from saas_mvp.services import gift_cards as gift_cards_svc
 from saas_mvp.services import client_forms as client_forms_svc
@@ -779,6 +780,76 @@ def customer_issue_package(
     return templates.TemplateResponse(
         "_customer_detail.html",
         _customer_detail_ctx(request, actor, db, customer_id, error=error, saved=saved),
+    )
+
+
+# ── 會員分級設定（R6-B3，owner 限定）──────────────────────────────────────────
+
+
+def _loyalty_ctx(request, actor, db, **extra):
+    cfg = loyalty_config_svc.get_config(db, actor.user.tenant_id)
+    return _ctx(
+        request, actor,
+        loyalty=cfg,
+        # 無設定時顯示全域預設(讓表單有合理初值)。
+        defaults={
+            "silver_threshold": cfg.silver_threshold if cfg else 100,
+            "gold_threshold": cfg.gold_threshold if cfg else 500,
+            "regular_discount_pct": cfg.regular_discount_pct if cfg else 0,
+            "silver_discount_pct": cfg.silver_discount_pct if cfg else 5,
+            "gold_discount_pct": cfg.gold_discount_pct if cfg else 10,
+            "points_per_booking": cfg.points_per_booking if cfg else 10,
+        },
+        **extra,
+    )
+
+
+@router.get("/loyalty", response_class=HTMLResponse)
+def loyalty_settings(
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    return templates.TemplateResponse("loyalty.html", _loyalty_ctx(request, actor, db))
+
+
+@router.post("/loyalty", response_class=HTMLResponse)
+def loyalty_settings_save(
+    request: Request,
+    silver_threshold: int = Form(...),
+    gold_threshold: int = Form(...),
+    regular_discount_pct: int = Form(...),
+    silver_discount_pct: int = Form(...),
+    gold_discount_pct: int = Form(...),
+    points_per_booking: int = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        loyalty_config_svc.save_config(
+            db,
+            tenant_id=actor.user.tenant_id,
+            silver_threshold=silver_threshold,
+            gold_threshold=gold_threshold,
+            regular_discount_pct=regular_discount_pct,
+            silver_discount_pct=silver_discount_pct,
+            gold_discount_pct=gold_discount_pct,
+            points_per_booking=points_per_booking,
+            updated_by_user_id=actor.user.id,
+        )
+    except loyalty_config_svc.LoyaltyConfigError as exc:
+        return templates.TemplateResponse(
+            "loyalty.html",
+            _loyalty_ctx(request, actor, db, error=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    audit_svc.record_from_actor(
+        db, actor, action="loyalty.config.update",
+        target=f"tenant:{actor.user.tenant_id}", request=request,
+    )
+    db.commit()
+    return templates.TemplateResponse(
+        "loyalty.html", _loyalty_ctx(request, actor, db, saved=True)
     )
 
 

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}會員分級設定 · LINE Bot 管理{% endblock %}
+{% block content %}
+<h1>會員分級設定</h1>
+
+<div class="card">
+  <p class="muted">設定顧客會員分級的點數門檻、各級結帳折扣,以及每完成一筆預約回贈的點數。
+     未設定時沿用系統預設。變更後,顧客的等級會在下次集點／扣點時依新門檻重算。</p>
+  {% if saved %}<div class="success">會員分級設定已儲存。</div>{% endif %}
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <form method="post" action="/ui/loyalty">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <h2>分級門檻(點數)</h2>
+    <label>白銀門檻
+      <input name="silver_threshold" type="number" min="0" required
+             value="{{ defaults.silver_threshold }}">
+    </label>
+    <label>黃金門檻(需大於白銀)
+      <input name="gold_threshold" type="number" min="1" required
+             value="{{ defaults.gold_threshold }}">
+    </label>
+
+    <h2>各級結帳折扣(%)</h2>
+    <label>一般會員
+      <input name="regular_discount_pct" type="number" min="0" max="100" required
+             value="{{ defaults.regular_discount_pct }}">
+    </label>
+    <label>白銀會員
+      <input name="silver_discount_pct" type="number" min="0" max="100" required
+             value="{{ defaults.silver_discount_pct }}">
+    </label>
+    <label>黃金會員
+      <input name="gold_discount_pct" type="number" min="0" max="100" required
+             value="{{ defaults.gold_discount_pct }}">
+    </label>
+
+    <h2>集點</h2>
+    <label>每完成一筆預約回贈點數
+      <input name="points_per_booking" type="number" min="0" required
+             value="{{ defaults.points_per_booking }}">
+    </label>
+
+    <button type="submit">儲存設定</button>
+  </form>
+</div>
+{% endblock %}

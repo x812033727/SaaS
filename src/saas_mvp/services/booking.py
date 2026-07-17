@@ -363,12 +363,17 @@ def book_slot(
     )
 
     # 會員集點（同一交易；customer 為 None（店家手動建單無 line_user_id）時略過）
-    if customer is not None and settings.points_per_booking > 0:
+    # R6-B3:每筆預約集點數 per-tenant 可設(無設定 → 全域 settings)。
+    from saas_mvp.services import loyalty_config as _loyalty_svc
+    _ppb = _loyalty_svc.points_per_booking_for(
+        _loyalty_svc.get_config(db, tenant_id)
+    )
+    if customer is not None and _ppb > 0:
         membership_svc.earn_points(
             db,
             tenant_id=tenant_id,
             customer=customer,
-            delta=settings.points_per_booking,
+            delta=_ppb,
             reason="booking",
             reservation_id=reservation.id,
         )

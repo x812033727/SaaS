@@ -30,6 +30,7 @@ from saas_mvp.models.product import Product
 from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
 from saas_mvp.models.service import Service
 from saas_mvp.models.staff import Staff
+from saas_mvp.services import loyalty_config as _loyalty_svc
 from saas_mvp.services import membership as membership_svc
 from saas_mvp.services.tenants import tenant_query
 
@@ -105,7 +106,12 @@ def lookup_by_phone(db: Session, *, tenant_id: int, phone: str) -> dict | None:
         "customer": customer,
         "points_balance": customer.points_balance or 0,
         "tier": customer.tier or "regular",
-        "tier_discount_percent": membership_svc.tier_discount_percent(customer.tier),
+        "tier_discount_percent": membership_svc.tier_discount_percent(
+            customer.tier,
+            discounts=_loyalty_svc.discounts_for(
+                _loyalty_svc.get_config(db, tenant_id)
+            ),
+        ),
         "active_coupons": _active_coupons(db, tenant_id),
         "gift_card_balance_cents": sum(x.balance_cents for x in gift_wallet),
     }
