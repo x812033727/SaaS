@@ -1,0 +1,182 @@
+"use client";
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
+import { ApiError, fetchJson, postJson } from "@/lib/client-api";
+
+type LocationRow = {
+  id: number;
+  name: string;
+  address: string | null;
+  phone: string | null;
+  timezone: string | null;
+  is_active: boolean;
+};
+
+function errText(error: unknown): string {
+  if (error instanceof ApiError) return error.detail || `錯誤(${error.status})`;
+  return "操作失敗,請重試。";
+}
+
+function FeatureLockedCard() {
+  return (
+    <div className="rounded-xl border border-line bg-warn-soft p-6 text-sm">
+      <p className="font-semibold text-warn">此功能未啟用</p>
+      <p className="mt-2 text-ink">
+        多分店屬進階功能,請至
+        <a href="/ui/plan" className="mx-1 text-brand underline">方案頁</a>
+        升級或啟用後再試。
+      </p>
+    </div>
+  );
+}
+
+export default function LocationsPage() {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState<LocationRow | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  const locations = useQuery({
+    queryKey: ["locations-admin"],
+    queryFn: () => fetchJson<LocationRow[]>("/booking/locations/"),
+    retry: false,
+  });
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["locations-admin"] });
+
+  const saveMut = useMutation({
+    mutationFn: async (input: { id: number | null; body: Record<string, unknown> }) =>
+      input.id === null
+        ? postJson("/booking/locations/", input.body)
+        : fetchJson(`/booking/locations/${input.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input.body),
+          }),
+    onSuccess: () => { invalidate(); setEditing(null); setMessage({ kind: "ok", text: "已儲存。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
+
+  if (locations.error instanceof ApiError && locations.error.status === 403) {
+    return (
+      <div className="mx-auto max-w-4xl">
+        <h1 className="text-2xl font-semibold">分店</h1>
+        <div className="mt-6"><FeatureLockedCard /></div>
+      </div>
+    );
+  }
+
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    saveMut.mutate({
+      id: editing?.id ?? null,
+      body: {
+        name: String(form.get("name") || "").trim(),
+        address: String(form.get("address") || "").trim() || null,
+        phone: String(form.get("phone") || "").trim() || null,
+        ...(editing ? { is_active: form.get("is_active") === "on" } : {}),
+      },
+    });
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">分店</h1>
+        <button
+          onClick={() => { setEditing(null); setMessage(null); document.getElementById("loc-form")?.scrollIntoView(); }}
+          className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand-deep"
+        >
+          新增分店
+        </button>
+      </header>
+
+      {message && (
+        <p className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+          message.kind === "ok" ? "bg-ok-soft text-ok" : "bg-danger-soft text-danger"
+        }`}>{message.text}</p>
+      )}
+
+      <div className="mt-4 overflow-x-auto rounded-xl border border-line bg-surface">
+        <table className="w-full min-w-[520px] text-sm">
+          <thead>
+            <tr className="border-b border-line text-left text-muted">
+              <th className="px-4 py-2.5 font-medium">名稱</th>
+              <th className="px-4 py-2.5 font-medium">地址</th>
+              <th className="px-4 py-2.5 font-medium">電話</th>
+              <th className="px-4 py-2.5 font-medium">狀態</th>
+              <th className="px-4 py-2.5 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {locations.isLoading && (
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">載入中…</td></tr>
+            )}
+            {locations.data?.length === 0 && (
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">尚無分店。</td></tr>
+            )}
+            {locations.data?.map((l) => (
+              <tr key={l.id} className="border-b border-line/60">
+                <td className="px-4 py-2.5 font-medium">{l.name}</td>
+                <td className="px-4 py-2.5">{l.address || "—"}</td>
+                <td className="px-4 py-2.5">{l.phone || "—"}</td>
+                <td className="px-4 py-2.5">
+                  <span className={`rounded-full px-2 py-0.5 text-xs ${
+                    l.is_active ? "bg-ok-soft text-ok" : "bg-line text-muted"
+                  }`}>{l.is_active ? "營業中" : "停用"}</span>
+                </td>
+                <td className="px-4 py-2.5">
+                  <button onClick={() => { setEditing(l); setMessage(null); }}
+                    className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft">
+                    編輯
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <section id="loc-form" className="mt-6 rounded-xl border border-line bg-surface p-6">
+        <h2 className="font-semibold">{editing ? `編輯:${editing.name}` : "新增分店"}</h2>
+        <form key={editing?.id ?? "new"} className="mt-4 grid gap-3 text-sm sm:grid-cols-2" onSubmit={submit}>
+          <label className="grid gap-1 sm:col-span-2">
+            名稱 *
+            <input name="name" required maxLength={128} defaultValue={editing?.name ?? ""}
+              className="rounded-lg border border-line px-3 py-2" />
+          </label>
+          <label className="grid gap-1">
+            地址
+            <input name="address" maxLength={255} defaultValue={editing?.address ?? ""}
+              className="rounded-lg border border-line px-3 py-2" />
+          </label>
+          <label className="grid gap-1">
+            電話
+            <input name="phone" maxLength={32} defaultValue={editing?.phone ?? ""}
+              className="rounded-lg border border-line px-3 py-2" />
+          </label>
+          {editing && (
+            <label className="flex items-center gap-2 sm:col-span-2">
+              <input name="is_active" type="checkbox" defaultChecked={editing.is_active} />
+              營業中
+            </label>
+          )}
+          <div className="flex gap-2 sm:col-span-2">
+            <button disabled={saveMut.isPending}
+              className="rounded-lg bg-brand px-4 py-2 font-semibold text-white hover:bg-brand-deep disabled:opacity-60">
+              {saveMut.isPending ? "儲存中…" : editing ? "儲存變更" : "建立分店"}
+            </button>
+            {editing && (
+              <button type="button" onClick={() => setEditing(null)}
+                className="rounded-lg border border-line px-4 py-2">
+                取消編輯
+              </button>
+            )}
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}

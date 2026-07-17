@@ -459,3 +459,224 @@ def tenant_health_rows(db: Session) -> list[dict]:
         })
     out.sort(key=lambda r: -r["bookings_30d"])
     return out
+
+
+def _month_bounds(year: int, month: int) -> tuple:
+    """回傳該月 [start, end) 的 naive UTC 邊界(sqlite naive / pg aware 統一比較)。"""
+    import datetime as _dt
+
+    start = _dt.datetime(year, month, 1)
+    end = (
+        _dt.datetime(year + 1, 1, 1)
+        if month == 12
+        else _dt.datetime(year, month + 1, 1)
+    )
+    return start, end
+
+
+def _naive(dt):
+    return dt.replace(tzinfo=None) if dt is not None and dt.tzinfo else dt
+
+
+def monthly_statement(db: Session, *, year: int, month: int) -> dict:
+    """R5-C1:平台月結對帳(單月方案月費收入 + 開票對帳 + churn/新增)。
+
+    口徑:
+      * 收入 = 該月 SubscriptionCharge.success 金額加總(真收款;stub 不產 charge)。
+      * 對帳 = 每筆成功扣款應有一張非 failed 發票(issue_for_charge 以
+        subscription_charge_id 查重);缺票/失敗列入 missing_invoices。
+      * churn = 該月 cancelled_at 落點的訂閱(含 cancel_failed 不計——尚未停扣);
+        新增 = 該月 activated_at 落點的訂閱。
+      * ARPU = 收入 / 當月有成功扣款的租戶數。
+    """
+    import datetime as _dt
+
+    from sqlalchemy import func, select
+
+    from saas_mvp.models.feature_subscription import (
+        SUB_CANCELLED,
+        FeatureSubscription,
+    )
+    from saas_mvp.models.invoice import INVOICE_FAILED, INVOICE_VOID, Invoice
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+    from saas_mvp.services import features as features_svc
+
+    start, end = _month_bounds(year, month)
+
+    rows = db.execute(
+        select(SubscriptionCharge, FeatureSubscription)
+        .join(
+            FeatureSubscription,
+            SubscriptionCharge.subscription_id == FeatureSubscription.id,
+        )
+    ).all()
+    month_rows = [
+        (c, s) for c, s in rows if start <= _naive(c.charged_at) < end
+    ]
+
+    success = [(c, s) for c, s in month_rows if c.success]
+    failures = [(c, s) for c, s in month_rows if not c.success]
+    revenue_cents = sum(c.amount_cents or 0 for c, _ in success)
+    paying_tenants = {s.tenant_id for _, s in success}
+
+    # by-feature 細分(bundle 標籤化)。
+    by_feature: dict[str, dict] = {}
+    for c, s in success:
+        label = features_svc.BUNDLE_LABELS.get(s.feature, s.feature)
+        agg = by_feature.setdefault(
+            label, {"label": label, "count": 0, "amount_cents": 0}
+        )
+        agg["count"] += 1
+        agg["amount_cents"] += c.amount_cents or 0
+
+    # 開票對帳:成功扣款 → 應有一張非 failed/void 發票。
+    charge_ids = [c.id for c, _ in success]
+    invoiced_ok: set[int] = set()
+    if charge_ids:
+        inv_rows = db.execute(
+            select(Invoice.subscription_charge_id, Invoice.status).where(
+                Invoice.subscription_charge_id.in_(charge_ids)
+            )
+        ).all()
+        invoiced_ok = {
+            cid
+            for cid, inv_status in inv_rows
+            if inv_status not in (INVOICE_FAILED, INVOICE_VOID)
+        }
+    missing_invoices = [
+        {
+            "charge_id": c.id,
+            "tenant_id": s.tenant_id,
+            "feature": features_svc.BUNDLE_LABELS.get(s.feature, s.feature),
+            "amount_cents": int(c.amount_cents or 0),
+            "charged_at": _naive(c.charged_at).isoformat() if c.charged_at else "",
+        }
+        for c, s in success
+        if c.id not in invoiced_ok
+    ]
+
+    subs = db.execute(select(FeatureSubscription)).scalars().all()
+    churned = [
+        s
+        for s in subs
+        if s.status == SUB_CANCELLED
+        and s.cancelled_at is not None
+        and start <= _naive(s.cancelled_at) < end
+    ]
+    activated = [
+        s
+        for s in subs
+        if s.activated_at is not None
+        and start <= _naive(s.activated_at) < end
+    ]
+
+    return {
+        "year": year,
+        "month": month,
+        "revenue_cents": int(revenue_cents),
+        "charge_success": len(success),
+        "charge_failures": len(failures),
+        "paying_tenants": len(paying_tenants),
+        "arpu_cents": (
+            int(revenue_cents // len(paying_tenants)) if paying_tenants else 0
+        ),
+        "by_feature": sorted(
+            by_feature.values(), key=lambda r: -r["amount_cents"]
+        ),
+        "missing_invoices": missing_invoices,
+        "churned_count": len(churned),
+        "churned_mrr_cents": sum(s.period_amount_cents or 0 for s in churned),
+        "activated_count": len(activated),
+        "activated_mrr_cents": sum(
+            s.period_amount_cents or 0 for s in activated
+        ),
+    }
+
+
+def revenue_series(db: Session, *, months: int = 12, now=None) -> list[dict]:
+    """R5-C1:近 N 個月方案月費收入時序(成功金額+失敗筆數,月粒度)。
+
+    python 端分桶,避開 sqlite/pg 日期函式方言差(charge 量級小,可承受)。
+    """
+    import datetime as _dt
+
+    from sqlalchemy import select
+
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    now = _naive(now)
+    # 產生 [舊→新] 的 (year, month) 桶。
+    buckets: list[tuple[int, int]] = []
+    y, m = now.year, now.month
+    for _ in range(months):
+        buckets.append((y, m))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    buckets.reverse()
+    start, _ = _month_bounds(*buckets[0])
+
+    agg = {
+        b: {"year": b[0], "month": b[1], "revenue_cents": 0, "failures": 0}
+        for b in buckets
+    }
+    charges = db.execute(select(SubscriptionCharge)).scalars().all()
+    for c in charges:
+        ts = _naive(c.charged_at)
+        if ts is None or ts < start:
+            continue
+        key = (ts.year, ts.month)
+        if key not in agg:
+            continue
+        if c.success:
+            agg[key]["revenue_cents"] += c.amount_cents or 0
+        else:
+            agg[key]["failures"] += 1
+    return [agg[b] for b in buckets]
+
+
+def statement_charge_rows(db: Session, *, year: int, month: int) -> list[dict]:
+    """R5-C1:單月扣款明細(CSV 匯出用),含發票狀態。"""
+    from sqlalchemy import select
+
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+    from saas_mvp.models.invoice import Invoice
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+    from saas_mvp.services import features as features_svc
+
+    start, end = _month_bounds(year, month)
+    rows = db.execute(
+        select(SubscriptionCharge, FeatureSubscription)
+        .join(
+            FeatureSubscription,
+            SubscriptionCharge.subscription_id == FeatureSubscription.id,
+        )
+        .order_by(SubscriptionCharge.id)
+    ).all()
+    month_rows = [
+        (c, s) for c, s in rows if start <= _naive(c.charged_at) < end
+    ]
+    inv_map: dict[int, str] = {}
+    ids = [c.id for c, _ in month_rows]
+    if ids:
+        for cid, inv_status, inv_no in db.execute(
+            select(
+                Invoice.subscription_charge_id, Invoice.status, Invoice.invoice_no
+            ).where(Invoice.subscription_charge_id.in_(ids))
+        ).all():
+            inv_map[cid] = f"{inv_status}:{inv_no or ''}"
+    return [
+        {
+            "charge_id": c.id,
+            "charged_at": _naive(c.charged_at).isoformat() if c.charged_at else "",
+            "tenant_id": s.tenant_id,
+            "feature": features_svc.BUNDLE_LABELS.get(s.feature, s.feature),
+            "period_no": c.period_no,
+            "amount_cents": int(c.amount_cents or 0),
+            "success": bool(c.success),
+            "gwsr": c.gwsr or "",
+            "invoice": inv_map.get(c.id, ""),
+        }
+        for c, s in month_rows
+    ]
