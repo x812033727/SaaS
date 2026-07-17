@@ -31,6 +31,7 @@ from saas_mvp.models.tenant import Tenant
 from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.services import admin as admin_svc
+from saas_mvp.services import cache as cache_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import line_config as line_config_svc
@@ -68,7 +69,11 @@ def admin_overview(
         _ctx(
             request,
             actor,
-            overview=admin_svc.platform_overview(db),
+            overview=cache_svc.admin_dashboard_cache.get_or_compute(
+                "platform_overview",
+                settings.admin_dashboard_cache_ttl_seconds,
+                lambda: admin_svc.platform_overview(db),
+            ),
             readiness=readiness,
         ),
     )
@@ -81,13 +86,18 @@ def admin_ops(
     db: Session = Depends(get_db),
 ):
     """營運總覽(R4-P2):MRR/扣款成功率/即將續扣 + 租戶健康表。"""
+    ttl = settings.admin_dashboard_cache_ttl_seconds
     return templates.TemplateResponse(
         "admin/ops.html",
         _ctx(
             request,
             actor,
-            revenue=admin_svc.revenue_overview(db),
-            health_rows=admin_svc.tenant_health_rows(db),
+            revenue=cache_svc.admin_dashboard_cache.get_or_compute(
+                "revenue_overview", ttl, lambda: admin_svc.revenue_overview(db)
+            ),
+            health_rows=cache_svc.admin_dashboard_cache.get_or_compute(
+                "tenant_health_rows", ttl, lambda: admin_svc.tenant_health_rows(db)
+            ),
         ),
     )
 

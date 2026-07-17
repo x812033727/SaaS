@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     session_renew_threshold_minutes: int = 30
     session_renew_max_hours: int = 12
 
+    # 平台 admin 儀表板聚合快取 TTL 秒數(R6-C1);0 = 停用(一律即時)。
+    # admin-only 全租戶掃描,短 TTL 過期資料可接受;測試預設 0 保即時斷言。
+    admin_dashboard_cache_ttl_seconds: int = 30
+
     # Server — 127.0.0.1 by default; override with SAAS_HOST=0.0.0.0 for containers
     host: str = "127.0.0.1"
     port: int = 8000
