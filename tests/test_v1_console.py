@@ -243,3 +243,98 @@ class TestCustomerSearch:
         assert len(rows) == 1 and rows[0]["display_name"] == "王小美"
         assert r.headers["X-Total-Count"] == "1"
         assert client.get("/booking/customers/?q=不存在", headers=headers).json() == []
+
+
+# ── R5-A3:通知歷程端點 ────────────────────────────────────────────────────────
+
+
+class TestNotificationsEndpoints:
+    def _seed_notifs(self, session_factory, tenant_id: int):
+        from saas_mvp.models.booking_notification import BookingNotification
+        from saas_mvp.models.campaign import Campaign
+        from saas_mvp.models.campaign_send import CampaignSend
+        from saas_mvp.models.push_usage import PushUsage
+
+        db = session_factory()
+        try:
+            slot = BookingSlot(
+                tenant_id=tenant_id, slot_start=_DAY1, max_capacity=4
+            )
+            db.add(slot)
+            db.flush()
+            resv = Reservation(
+                tenant_id=tenant_id, slot_id=slot.id, party_size=1,
+                status="cancelled", line_user_id="Un0",
+            )
+            db.add(resv)
+            db.flush()
+            for i, st in enumerate(["sent", "sent", "failed"]):
+                db.add(BookingNotification(
+                    tenant_id=tenant_id, reservation_id=resv.id,
+                    line_user_id=f"Un{i}", kind="cancel",
+                    status=st, payload_text=f"通知 {i}", occurrence=i + 1,
+                ))
+            cust = Customer(
+                tenant_id=tenant_id, line_user_id="Uc-ntf", display_name="通知客"
+            )
+            cmp = Campaign(
+                tenant_id=tenant_id, name="生日禮", type="birthday",
+                message_template="生日快樂 {name}",
+            )
+            db.add_all([cust, cmp])
+            db.flush()
+            db.add(CampaignSend(
+                tenant_id=tenant_id, campaign_id=cmp.id, customer_id=cust.id,
+                period_key="203103", status="sent",
+            ))
+            db.add(PushUsage(tenant_id=tenant_id, period="203103", count=7))
+            db.commit()
+        finally:
+            db.close()
+
+    def test_bookings_pagination_and_filter(self, v1_client):
+        client, sf = v1_client
+        tid, headers = _register(client, "ntf")
+        self._seed_notifs(sf, tid)
+        r = client.get(
+            "/api/v1/notifications/bookings?limit=2", headers=headers
+        )
+        assert r.status_code == 200
+        assert r.headers["X-Total-Count"] == "3"
+        assert len(r.json()) == 2
+        failed = client.get(
+            "/api/v1/notifications/bookings?status=failed", headers=headers
+        )
+        assert failed.headers["X-Total-Count"] == "1"
+        assert failed.json()[0]["kind"] == "cancel"
+
+    def test_campaign_sends_and_tenant_isolation(self, v1_client):
+        client, sf = v1_client
+        tid, headers = _register(client, "ntf")
+        self._seed_notifs(sf, tid)
+        _tid2, headers2 = _register(client, "ntf2")
+        r = client.get(
+            "/api/v1/notifications/campaign-sends", headers=headers
+        )
+        assert r.status_code == 200 and len(r.json()) == 1
+        assert r.json()[0]["period_key"] == "203103"
+        r2 = client.get(
+            "/api/v1/notifications/campaign-sends", headers=headers2
+        )
+        assert r2.headers["X-Total-Count"] == "0" and r2.json() == []
+
+    def test_push_usage_fills_missing_months(self, v1_client):
+        client, sf = v1_client
+        tid, headers = _register(client, "ntf")
+        self._seed_notifs(sf, tid)
+        r = client.get(
+            "/api/v1/notifications/push-usage?months=3", headers=headers
+        )
+        assert r.status_code == 200
+        rows = r.json()
+        assert len(rows) == 3
+        assert all(set(row) == {"period", "used"} for row in rows)
+
+    def test_requires_auth(self, v1_client):
+        client, _ = v1_client
+        assert client.get("/api/v1/notifications/bookings").status_code == 401

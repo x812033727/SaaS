@@ -190,3 +190,101 @@ def dashboard_today(
             "attendance_unmarked": attendance_unmarked,
         },
     }
+
+
+# ── R5-A3:通知與推播歷程(console /notifications 頁) ─────────────────────────
+
+
+class BookingNotificationRow(BaseModel):
+    id: int
+    reservation_id: int | None
+    kind: str
+    status: str
+    payload_text: str
+    sent_at: datetime.datetime | None
+    attempt_count: int
+    last_error: str | None
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CampaignSendRow(BaseModel):
+    id: int
+    campaign_id: int
+    customer_id: int | None
+    status: str
+    period_key: str
+    sent_at: datetime.datetime | None
+    attempt_count: int
+    last_error: str | None
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PushUsageRow(BaseModel):
+    period: str
+    used: int
+
+
+@router.get("/notifications/bookings", response_model=list[BookingNotificationRow])
+def list_booking_notifications(
+    response: Response,
+    status: str | None = Query(default=None, max_length=16),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """預約異動通知歷程(新→舊);X-Total-Count 供前端分頁。"""
+    from saas_mvp.services import notifications_history as notif_history_svc
+
+    rows, total = notif_history_svc.list_booking_notifications(
+        db,
+        tenant_id=current_user.tenant_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return rows
+
+
+@router.get(
+    "/notifications/campaign-sends", response_model=list[CampaignSendRow]
+)
+def list_campaign_sends(
+    response: Response,
+    status: str | None = Query(default=None, max_length=16),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """行銷發送紀錄(新→舊);X-Total-Count 供前端分頁。"""
+    from saas_mvp.services import notifications_history as notif_history_svc
+
+    rows, total = notif_history_svc.list_campaign_sends(
+        db,
+        tenant_id=current_user.tenant_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return rows
+
+
+@router.get("/notifications/push-usage", response_model=list[PushUsageRow])
+def push_usage(
+    months: int = Query(default=6, ge=1, le=24),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """近 N 個月推播用量(新→舊,缺月補 0)。"""
+    from saas_mvp.services import notifications_history as notif_history_svc
+
+    return notif_history_svc.push_usage_history(
+        db, tenant_id=current_user.tenant_id, months=months
+    )
