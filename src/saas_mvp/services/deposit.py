@@ -266,6 +266,45 @@ def _linepay_refund(db, resv, amount, *, client=None) -> Reservation:
     raise DepositRefundError(f"LINE Pay 拒絕退款：{message}")
 
 
+def _newebpay_refund(db, resv, amount, *, client=None) -> Reservation:
+    """藍新信用卡退款派工(R6-A2)。缺交易編號→manual;逾時→manual(結果不確定)。
+
+    藍新支援部分退款(多次至原額),故不套 ECPay 第一次後轉人工限制;
+    未請款/逾額由 Status 非 SUCCESS 表達 → REFUND_FAILED(owner 可稍後重試)。
+    """
+    from saas_mvp.services.payment_newebpay import NewebPayClient
+
+    if not (resv.deposit_merchant_trade_no and resv.deposit_provider_trade_no):
+        _manual_required(
+            db, resv, "缺少藍新交易編號，請在藍新後台核對並人工退款。"
+        )
+    if client is None:
+        client = NewebPayClient()
+    try:
+        response = client.refund(
+            merchant_order_no=resv.deposit_merchant_trade_no,
+            trade_no=resv.deposit_provider_trade_no,
+            amount_twd=amount // 100,
+        )
+    except Exception as exc:  # noqa: BLE001 — 逾時後結果可能已成功，不得自動重送
+        _manual_required(
+            db, resv,
+            f"退款結果不確定（{type(exc).__name__}），請先到藍新後台核對，勿重複送出。",
+        )
+    status_code = str(response.get("Status") or "")[:32]
+    resv.deposit_refund_provider_code = status_code or None
+    if status_code == "SUCCESS":
+        _apply_refund_success(resv, amount, provider_code=status_code)
+        db.commit()
+        _notify_refunded(db, resv, amount)
+        return resv
+    message = " ".join(str(response.get("Message") or "藍新拒絕退款").split())[:160]
+    resv.deposit_refund_status = REFUND_FAILED
+    resv.deposit_refund_error = message
+    db.commit()
+    raise DepositRefundError(f"藍新拒絕退款：{message}")
+
+
 def request_full_refund(
     db: Session,
     *,
@@ -275,6 +314,7 @@ def request_full_refund(
     amount_cents: int | None = None,
     ecpay_client=None,
     linepay_client=None,
+    newebpay_client=None,
 ) -> Reservation:
     """取消後的已付定金退款(``amount_cents`` None=全額,可部分);鎖列防雙擊／
     多 worker 重複退刷。一次退款即終態:部分退款後餘額不可再自動退(需人工)。
@@ -307,6 +347,14 @@ def request_full_refund(
     resv.deposit_refund_requested_by_user_id = actor_user_id
     resv.deposit_refund_error = None
     resv.deposit_refund_provider_code = None
+    # R6-A2 崩潰安全:**在外呼退款 API 前先持久化 PROCESSING**。否則整段
+    # (FOR UPDATE→HTTP→commit)為單一交易,若程序在「provider 已退款、commit
+    # 尚未落地」之間崩潰(部署/OOM/DB failover),交易 rollback → PROCESSING 消失
+    # → 下次重試視為可退 → 對支援多次退款的 provider(NewebPay/LINE Pay)造成
+    # 重複退款/超額退。先 commit 後,崩潰只會卡在 PROCESSING(:338 擋重試,需人工
+    # 對帳),不會靜默重退。PROCESSING 本身即並發互斥(FOR UPDATE 釋放後,他工
+    # 讀到 PROCESSING 於 :338 早退)。
+    db.commit()
 
     provider = (resv.deposit_provider or "").lower()
     if provider == "stub":
@@ -316,6 +364,8 @@ def request_full_refund(
         return resv
     if provider == "linepay":
         return _linepay_refund(db, resv, amount, client=linepay_client)
+    if provider == "newebpay":
+        return _newebpay_refund(db, resv, amount, client=newebpay_client)
     if provider != "ecpay":
         _manual_required(db, resv, "缺少原付款交易資料，請在金流後台核對並人工退款。")
     # R4-B2:綠界同一交易多次部分退刷是否被接受無法從程式碼確證 → 第一次
