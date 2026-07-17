@@ -39,7 +39,9 @@ from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.user import User
 from saas_mvp.routers.ui import _set_auth_cookie
+from saas_mvp.services import login_audit
 from saas_mvp.services import oauth as oauth_svc
+from saas_mvp.services.mailer import Mailer, get_mailer
 
 router = APIRouter(prefix="/auth/oauth", tags=["oauth"], include_in_schema=False)
 
@@ -122,6 +124,7 @@ def oauth_callback(
     code: str | None = None,
     state: str | None = None,
     db: Session = Depends(get_db),
+    mailer: Mailer = Depends(get_mailer),
 ):
     _validate_provider(provider)
 
@@ -184,6 +187,9 @@ def oauth_callback(
     # 帳號連結規則（見模組 docstring）：找不到使用者時，**絕不**自動建立租戶，
     # 否則任何 OAuth 帳號都能憑空開新店家、繞過 routers/auth.py 的租戶名專屬保護。
     if user is None:
+        login_audit.on_login_failure(
+            db, email=email or subject, request=request, method=f"oauth:{provider}"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -199,6 +205,9 @@ def oauth_callback(
         user.oauth_subject = subject
         db.commit()
 
+    login_audit.on_login_success(
+        db, user, request, method=f"oauth:{provider}", mailer=mailer
+    )
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
