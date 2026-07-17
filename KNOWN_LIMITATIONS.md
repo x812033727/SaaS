@@ -2,6 +2,7 @@
 
 本次以「核心可用、帶已知限制」版本交付；以下項目尚未滿足,已留待後續改良:
 
+- [x] 工作階段撤銷(R5-D3):JWT 帶 `tv`(token_version)claim,`get_current_actor` / `get_ui_actor_optional` 每請求重載 user 並比對,不符即 401/登出。改密碼(API/UI)、重設密碼、停用成員、「登出所有裝置」皆 `token_version+1` **主動撤銷所有既有票**——修掉舊有「改密碼不失效既有 JWT/cookie」行為。舊票(無 tv)視為 0,部署當下既有票在 `token_version` 仍為 0 者零中斷。成員停用另設 `users.disabled_at`,decode 端即時封鎖(含 API key 路徑)。
 - [ ] TOTP 2FA(R5-D2)兩個刻意取捨:①**API key 認證不受 2FA 影響**（`X-API-Key` / Bearer `myapp_*` 為程式整合正道,啟用 2FA 的帳號請以 API key 供程式使用,`/auth/token` 對 2FA 帳號一律要求 `otp` 欄位）;②驗證視窗 ±30 秒內**同一組 TOTP 碼可重複使用**（未追蹤 last-used timecode;有 per-user 10 次/5 分鐘節流兜底,風險=肩窺者 30 秒內重放,接受）。
 
 - [x] `base.py` 含 `TranslationResult`，為 `@dataclass(frozen=True, slots=True)`，欄位含 `text: str`、`detected_lang: str | None`、`skipped: bool`；`Translator.translate` 型別標註回傳 `TranslationResult`（見 `translation/base.py`，早已實作，此清單先前未同步更新）。

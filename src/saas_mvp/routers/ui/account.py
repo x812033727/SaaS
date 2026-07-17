@@ -39,13 +39,14 @@ from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.services import members as members_svc
 from saas_mvp.services import totp as totp_svc
 from saas_mvp.auth.ratelimit import otp_limiter
 from fastapi import HTTPException
 
 from saas_mvp.routers.ui._shared import (
     router, templates, _ctx, _line_config_or_none, _line_webhook_url_for, _log,
-    _set_auth_cookie,
+    _set_auth_cookie, _CSRF_COOKIE_NAME,
 )
 from saas_mvp.routers.ui.billing import _plan_info, _line_insights
 
@@ -106,6 +107,97 @@ def members_invite(
     return templates.TemplateResponse(
         "members.html", _ctx(request, actor, members=users, invite_url=invite_url)
     )
+
+
+def _render_members(request, actor, db, *, notice=None, error=None, status_code=200):
+    return templates.TemplateResponse(
+        "members.html",
+        _ctx(
+            request, actor,
+            members=members_svc.list_members(db, actor.user.tenant_id),
+            invite_url=None,
+            member_notice=notice,
+            member_error=error,
+        ),
+        status_code=status_code,
+    )
+
+
+@router.post("/members/{user_id}/role", response_class=HTMLResponse)
+def members_set_role(
+    user_id: int,
+    request: Request,
+    role: str = Form(...),
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        target = members_svc.set_role(db, actor.user, user_id, role)
+    except members_svc.MemberActionError as exc:
+        return _render_members(request, actor, db, error=str(exc), status_code=400)
+    audit_svc.record_from_actor(
+        db, actor, action="member.role", target=f"user:{user_id}",
+        detail={"role": role}, request=request,
+    )
+    db.commit()
+    return _render_members(
+        request, actor, db, notice=f"已將 {target.email} 設為{'負責人' if role == 'owner' else '員工'}。"
+    )
+
+
+@router.post("/members/{user_id}/disable", response_class=HTMLResponse)
+def members_disable(
+    user_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        target = members_svc.disable_member(db, actor.user, user_id)
+    except members_svc.MemberActionError as exc:
+        return _render_members(request, actor, db, error=str(exc), status_code=400)
+    audit_svc.record_from_actor(
+        db, actor, action="member.disable", target=f"user:{user_id}", request=request,
+    )
+    db.commit()
+    return _render_members(request, actor, db, notice=f"已停用 {target.email},該成員已被登出。")
+
+
+@router.post("/members/{user_id}/enable", response_class=HTMLResponse)
+def members_enable(
+    user_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    try:
+        target = members_svc.enable_member(db, actor.user, user_id)
+    except members_svc.MemberActionError as exc:
+        return _render_members(request, actor, db, error=str(exc), status_code=400)
+    audit_svc.record_from_actor(
+        db, actor, action="member.enable", target=f"user:{user_id}", request=request,
+    )
+    db.commit()
+    return _render_members(request, actor, db, notice=f"已啟用 {target.email}。")
+
+
+@router.post("/members/{user_id}/remove", response_class=HTMLResponse)
+def members_remove(
+    user_id: int,
+    request: Request,
+    actor: Actor = Depends(require_ui_owner),
+    db: Session = Depends(get_db),
+):
+    # audit 先記(target 刪除後就查不到 email);移除成功才 commit audit。
+    try:
+        members_svc.remove_member(db, actor.user, user_id)
+    except members_svc.MemberActionError as exc:
+        return _render_members(request, actor, db, error=str(exc), status_code=400)
+    audit_svc.record_from_actor(
+        db, actor, action="member.remove", target=f"user:{user_id}", request=request,
+    )
+    db.commit()
+    return _render_members(request, actor, db, notice="已移除該成員。")
 
 
 @router.get("/join/{token}", response_class=HTMLResponse)
@@ -169,7 +261,10 @@ def join_submit(
     )
     db.commit()
 
-    jwt_token = create_access_token(user_id=user.id, tenant_id=user.tenant_id)
+    jwt_token = create_access_token(
+        user_id=user.id, tenant_id=user.tenant_id,
+        token_version=user.token_version,
+    )
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, jwt_token)
     return resp
@@ -707,6 +802,7 @@ def account_page(
     db: Session = Depends(get_db),
     linked: str | None = Query(default=None),
     oauth_error: str | None = Query(default=None),
+    logged_out_all: str | None = Query(default=None),
 ):
     # 綁定結果（由 /auth/oauth/.../callback 導回時帶 query 參數）轉成可顯示文案。
     linked_label = _OAUTH_PROVIDER_LABELS.get(linked or "")
@@ -732,6 +828,7 @@ def account_page(
                 totp_svc.remaining_recovery_codes(db, actor.user)
                 if actor.user.totp_enabled else 0
             ),
+            logged_out_all=logged_out_all,
             linked_label=linked_label,
             oauth_error=oauth_error,
             provider_label=provider_label,
@@ -919,11 +1016,49 @@ def account_change_password(
         )
 
     user.hashed_password = hash_password(new_password)
+    # R5-D3:改密碼 = token_version+1 撤銷所有既有票。本裝置例外——重簽新 cookie
+    # 讓操作者留在登入態(否則自己剛改完密碼下一個請求就被踢登出)。
+    user.token_version = (user.token_version or 0) + 1
     db.add(user)
     db.commit()
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         "_account_password.html",
         _ctx(request, actor, saved=True),
     )
+    # csrf_value 沿用舊值不輪替:本回應是 HTMX partial,不會重繪頁面既有表單的
+    # csrf hidden field / hx-headers;輪替會讓同頁下個動作 CSRF 不符被 403。
+    _set_auth_cookie(
+        resp,
+        create_access_token(
+            user_id=user.id, tenant_id=user.tenant_id,
+            token_version=user.token_version,
+        ),
+        csrf_value=request.cookies.get(_CSRF_COOKIE_NAME) or None,
+    )
+    return resp
+
+
+@router.post("/account/logout-all", response_class=HTMLResponse)
+def account_logout_all(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    """登出所有裝置:token_version+1 撤銷所有既有票;本裝置重簽新 cookie 續留。"""
+    user = db.get(User, actor.user.id)
+    members_svc.logout_all_devices(db, user)
+    audit_svc.record_from_actor(
+        db, actor, action="auth.logout_all", request=request,
+    )
+    db.commit()
+    resp = RedirectResponse("/ui/account?logged_out_all=1", status_code=status.HTTP_303_SEE_OTHER)
+    _set_auth_cookie(
+        resp,
+        create_access_token(
+            user_id=user.id, tenant_id=user.tenant_id,
+            token_version=user.token_version,
+        ),
+    )
+    return resp
 
 

@@ -64,6 +64,7 @@ def create_access_token(
     original_auth_ts: int | None = None,
     mfa_pending: bool = False,
     login_method: str | None = None,
+    token_version: int = 0,
 ) -> str:
     """Sign a JWT with sub=<user_id>, tenant_id, exp claims.
 
@@ -73,6 +74,11 @@ def create_access_token(
     original_auth_ts(R4-C1 滑動續期):首次登入的 unix 秒,續期時原樣帶入
     ``oa`` claim — /auth/renew 以此限制滑動視窗總長(勿無限續命)。
     向後相容:未帶則不加 claim,舊 token 照常驗。
+
+    token_version(R5-D3 撤銷):簽發時的 ``user.token_version``,永遠寫入
+    ``tv`` claim。decode 端(get_current_actor/get_ui_actor_optional)與 DB
+    現值比對,不符即失效 —— 改密碼/停用/登出全部只需 +1 即撤銷所有在外票。
+    舊票(無 tv)decode 端視為 0,故 token_version 仍為 0 者零中斷。
 
     mfa_pending(R5-D2 2FA):密碼/OAuth 已過、TOTP 未驗的中繼票 —— 加
     ``mfa="pending"`` claim 且 exp **強制縮短為 5 分鐘**。此票**不可**當
@@ -90,6 +96,7 @@ def create_access_token(
         "sub": str(user_id),
         "tenant_id": tenant_id,
         "exp": expire,
+        "tv": int(token_version or 0),
     }
     if impersonator_id is not None:
         payload["imp"] = impersonator_id

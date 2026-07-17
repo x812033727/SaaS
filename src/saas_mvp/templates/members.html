@@ -3,19 +3,53 @@
 {% block content %}
 <h1>成員管理</h1>
 
+{% if member_notice %}<div class="success">{{ member_notice }}</div>{% endif %}
+{% if member_error %}<div class="error">{{ member_error }}</div>{% endif %}
+
 <div class="card">
   <h2>店內成員</h2>
   <table>
-    <thead><tr><th>Email</th><th>角色</th></tr></thead>
+    <thead><tr><th>Email</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead>
     <tbody>
       {% for m in members %}
       <tr>
-        <td>{{ m.email }}</td>
+        <td>{{ m.email }}{% if m.id == current_user.id %}（您）{% endif %}</td>
         <td>{{ '負責人' if (m.role or 'owner') == 'owner' else '員工' }}</td>
+        <td>{{ '已停用' if m.disabled_at else '啟用中' }}</td>
+        <td>
+          {% if m.id == current_user.id %}
+            <span class="muted">—</span>
+          {% else %}
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <form method="post" action="/ui/members/{{ m.id }}/role">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="role" value="{{ 'staff' if (m.role or 'owner') == 'owner' else 'owner' }}">
+              <button type="submit">{{ '改為員工' if (m.role or 'owner') == 'owner' else '設為負責人' }}</button>
+            </form>
+            {% if m.disabled_at %}
+            <form method="post" action="/ui/members/{{ m.id }}/enable">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit">啟用</button>
+            </form>
+            {% else %}
+            <form method="post" action="/ui/members/{{ m.id }}/disable">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit">停用</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/ui/members/{{ m.id }}/remove"
+                  onsubmit="return confirm('確定要移除成員 {{ m.email }}？此動作無法復原。')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="danger">移除</button>
+            </form>
+          </div>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <p class="muted">停用會立即使該成員登出並封鎖登入；變更角色即時生效。系統至少保留一位啟用中的負責人。</p>
 </div>
 
 <div class="card">
@@ -23,6 +57,7 @@
   <p class="muted">產生一次性邀請連結（7 天內有效），傳給員工自行設定帳號；
      員工帳號可管理預約/顧客/POS，但無法動帳務、方案與 LINE 設定。</p>
   <form method="post" action="/ui/members/invite">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit">產生邀請連結</button>
   </form>
   {% if invite_url %}

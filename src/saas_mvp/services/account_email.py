@@ -150,5 +150,7 @@ def reset_password(db: Session, token: str, new_password: str) -> User:
     if user is None:  # pragma: no cover
         raise TokenInvalid("user gone")
     user.hashed_password = hash_password(new_password)
+    # R5-D3:重設密碼 = 撤銷所有既有工作階段（帳號可能已被盜,踢掉攻擊者的票）。
+    user.token_version = (user.token_version or 0) + 1
     db.commit()
     return user

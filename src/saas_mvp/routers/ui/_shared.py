@@ -117,10 +117,14 @@ def maybe_renew_ui_cookie(request: Request, response: Response) -> None:
         oa = int(payload.get("oa") or now_ts)
         if now_ts - oa > settings.session_renew_max_hours * 3600:
             return
+        # R5-D3:沿用舊票的 tv(續期不查 DB,不改變撤銷狀態);若期間 token_version
+        # 已 +1,續出的票 tv 仍為舊值 → 下次真實請求經 get_ui_actor_optional 的
+        # live 比對即被拒(續期是延壽,撤銷判定留給每請求重載的守門)。
         new_token = create_access_token(
             user_id=int(payload["sub"]),
             tenant_id=payload["tenant_id"],
             original_auth_ts=oa,
+            token_version=int(payload.get("tv", 0)),
         )
         _set_auth_cookie(
             response, new_token,

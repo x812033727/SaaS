@@ -1255,6 +1255,7 @@ def admin_impersonate(
         user_id=target_owner.id,
         tenant_id=tenant_id,
         impersonator_id=actor.user.id,
+        token_version=target_owner.token_version,
     )
     resp = RedirectResponse("/ui/", status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookie(resp, token)
@@ -1283,7 +1284,10 @@ def impersonation_stop(
         tenant_id=actor.user.tenant_id,
     )
     db.commit()
-    token = create_access_token(user_id=admin_user.id, tenant_id=admin_user.tenant_id)
+    token = create_access_token(
+        user_id=admin_user.id, tenant_id=admin_user.tenant_id,
+        token_version=admin_user.token_version,
+    )
     resp = RedirectResponse(
         f"/ui/admin/tenants/{actor.user.tenant_id}",
         status_code=status.HTTP_303_SEE_OTHER,
