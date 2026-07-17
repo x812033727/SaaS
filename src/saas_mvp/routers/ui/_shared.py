@@ -37,7 +37,7 @@ _CSRF_COOKIE_NAME = "csrf_token"
 _CSRF_HEADER_NAME = "x-csrf-token"
 _CSRF_FORM_FIELD = "csrf_token"
 # 尚無 session 的端點（登入/註冊表單提交）豁免；其 GET 頁本就放行。
-_CSRF_EXEMPT_PATHS = {"/ui/login", "/ui/register"}
+_CSRF_EXEMPT_PATHS = {"/ui/login", "/ui/register", "/ui/login/mfa"}
 
 
 class UICSRFInvalid(Exception):
@@ -186,6 +186,28 @@ def _set_auth_cookie(
         max_age=settings.access_token_expire_minutes * 60,
         path="/",
     )
+
+
+# ── TOTP 2FA 中繼票 cookie(R5-D2)────────────────────────────────────────────
+# 密碼/OAuth 已過、TOTP 未驗:pending JWT(mfa="pending",5 分)裝在獨立
+# cookie,**不是** access cookie —— decode_access_token 預設拒收 pending 票。
+_MFA_COOKIE_NAME = "mfa_pending"
+
+
+def _set_mfa_pending_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=_MFA_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.env not in ("dev", "test"),
+        max_age=300,
+        path="/",
+    )
+
+
+def _clear_mfa_pending_cookie(response: Response) -> None:
+    response.delete_cookie(_MFA_COOKIE_NAME, path="/")
 
 
 def _ctx(request: Request, actor: Actor | None = None, **extra) -> dict:

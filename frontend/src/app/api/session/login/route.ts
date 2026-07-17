@@ -16,9 +16,11 @@ function randomToken(): string {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as { email?: string; password?: string };
+  const body = (await request.json()) as { email?: string; password?: string; otp?: string };
   if (!body.email || !body.password) return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   const form = new URLSearchParams({ username: body.email, password: body.password });
+  // TOTP 2FA(R5-D2):後端 /auth/token 對啟用 2FA 的帳號要求 otp 欄位。
+  if (body.otp) form.set("otp", body.otp);
   // 轉發真實客戶端 IP(nginx 種的 X-Forwarded-For),否則後端登入稽核
   // (R5-D1)看到的 console 登入 IP 全是 127.0.0.1,會誤觸「新位置登入」通知。
   const forwardedFor = request.headers.get("x-forwarded-for");
@@ -31,7 +33,19 @@ export async function POST(request: Request) {
     body: form,
     cache: "no-store",
   });
-  if (!upstream.ok) return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
+  if (!upstream.ok) {
+    // 區分 2FA 挑戰與憑證錯誤:otp_required = 密碼正確但需第二步,前端切到 OTP 畫面。
+    let detail = "";
+    try {
+      detail = ((await upstream.json()) as { detail?: string }).detail ?? "";
+    } catch {
+      // 非 JSON 回應照舊視為憑證錯誤
+    }
+    if (detail === "otp_required" || detail === "otp_invalid") {
+      return NextResponse.json({ error: detail }, { status: 401 });
+    }
+    return NextResponse.json({ error: "invalid_credentials" }, { status: 401 });
+  }
   const token = (await upstream.json()) as { access_token: string };
   const response = NextResponse.json({ ok: true });
   const common = { secure, sameSite: "lax" as const, path: "/", maxAge: tokenMaxAgeSeconds };

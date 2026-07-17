@@ -39,6 +39,8 @@ from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services import platform_oauth_config as platform_oauth_svc
 from saas_mvp.services import plans as plans_svc
 from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.services import totp as totp_svc
+from saas_mvp.auth.ratelimit import otp_limiter
 from fastapi import HTTPException
 
 from saas_mvp.routers.ui._shared import (
@@ -725,6 +727,11 @@ def account_page(
             actor,
             last_login_display=last_login_display,
             last_login_ip=actor.user.last_login_ip,
+            totp_on=actor.user.totp_enabled,
+            remaining_codes=(
+                totp_svc.remaining_recovery_codes(db, actor.user)
+                if actor.user.totp_enabled else 0
+            ),
             linked_label=linked_label,
             oauth_error=oauth_error,
             provider_label=provider_label,
@@ -735,6 +742,96 @@ def account_page(
             deploy_available=bool(settings.deploy_trigger_path),
         ),
     )
+
+
+# ── TOTP 2FA 註冊/停用(R5-D2;HTMX partial 比照密碼卡)──────────────────────
+
+
+def _totp_partial(request: Request, actor: Actor, db: Session, **extra):
+    base = {
+        "totp_on": actor.user.totp_enabled,
+        "remaining_codes": (
+            totp_svc.remaining_recovery_codes(db, actor.user)
+            if actor.user.totp_enabled else 0
+        ),
+    }
+    base.update(extra)
+    return templates.TemplateResponse(
+        "_account_totp.html", _ctx(request, actor, **base)
+    )
+
+
+@router.post("/account/totp/start", response_class=HTMLResponse)
+def account_totp_start(
+    request: Request,
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if actor.user.totp_enabled:
+        return _totp_partial(request, actor, db)
+    secret = totp_svc.start_enrollment(db, actor.user)
+    uri = totp_svc.provisioning_uri(actor.user, secret)
+    return _totp_partial(
+        request, actor, db,
+        totp_pending=True,
+        qr_svg=totp_svc.qr_svg(uri),
+        totp_secret_manual=secret,
+    )
+
+
+@router.post("/account/totp/confirm", response_class=HTMLResponse)
+def account_totp_confirm(
+    request: Request,
+    otp: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if actor.user.totp_enabled:
+        return _totp_partial(request, actor, db)
+    if not actor.user.totp_secret_enc:
+        return _totp_partial(request, actor, db, error="請先點「啟用兩步驟驗證」。")
+    codes = totp_svc.confirm_enrollment(db, actor.user, otp)
+    if codes is None:
+        uri = totp_svc.provisioning_uri(actor.user)
+        return _totp_partial(
+            request, actor, db,
+            totp_pending=True,
+            qr_svg=totp_svc.qr_svg(uri),
+            totp_secret_manual=actor.user.totp_secret,
+            error="驗證碼錯誤，請確認 App 時間同步後重試。",
+        )
+    audit_svc.record_from_actor(
+        db, actor, action="auth.mfa.enable", request=request
+    )
+    db.commit()
+    return _totp_partial(request, actor, db, recovery_codes=codes)
+
+
+@router.post("/account/totp/disable", response_class=HTMLResponse)
+def account_totp_disable(
+    request: Request,
+    otp: str = Form(...),
+    actor: Actor = Depends(require_ui_user),
+    db: Session = Depends(get_db),
+):
+    if not actor.user.totp_enabled:
+        return _totp_partial(request, actor, db)
+    if settings.rate_limit_enabled:
+        try:
+            otp_limiter._check_rate_limit(f"user:{actor.user.id}")
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+                raise
+            return _totp_partial(
+                request, actor, db, error="嘗試次數過多，請 5 分鐘後再試。"
+            )
+    if not totp_svc.disable(db, actor.user, otp):
+        return _totp_partial(request, actor, db, error="驗證碼錯誤，未停用。")
+    audit_svc.record_from_actor(
+        db, actor, action="auth.mfa.disable", request=request
+    )
+    db.commit()
+    return _totp_partial(request, actor, db)
 
 
 @router.post("/admin/deploy", response_class=HTMLResponse)

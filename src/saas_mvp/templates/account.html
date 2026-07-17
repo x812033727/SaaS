@@ -25,6 +25,11 @@
 </div>
 
 <div class="card">
+  <h2>兩步驟驗證（2FA）</h2>
+  <div id="totp-status">{% include "_account_totp.html" %}</div>
+</div>
+
+<div class="card">
   <h2>連結 LINE 帳戶</h2>
   <p class="muted">連結 LINE 帳戶後，即可直接用 LINE 一鍵登入後台管理，免再輸入密碼。</p>
   {% if linked_label %}<div class="success">已成功連結 {{ linked_label }} 帳戶。</div>{% endif %}

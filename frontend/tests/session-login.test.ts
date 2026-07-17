@@ -57,6 +57,28 @@ describe("session login route", () => {
     expect(headers["x-forwarded-for"]).toBe("203.0.113.9");
   });
 
+  it("後端回 otp_required 時透傳 401 + error 碼且不種 cookie(2FA 挑戰)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "otp_required" }), { status: 401 })),
+    );
+    const response = await loginPost(loginRequest({ email: "o@x.tw", password: "pw" }));
+    expect(response.status).toBe(401);
+    expect(((await response.json()) as { error: string }).error).toBe("otp_required");
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
+
+  it("帶 otp 時轉發給後端 /auth/token", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ access_token: "jwt-abc" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await loginPost(loginRequest({ email: "o@x.tw", password: "pw", otp: "123456" }));
+    const body = fetchMock.mock.calls[0][1]?.body as URLSearchParams;
+    expect(body.get("otp")).toBe("123456");
+  });
+
   it("無 X-Forwarded-For 時不憑空加 header", async () => {
     const fetchMock = vi.fn(
       async (_url: string, _init?: RequestInit) =>
