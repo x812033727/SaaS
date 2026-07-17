@@ -32,6 +32,7 @@ from saas_mvp.models.user import User
 from saas_mvp.quota import get_quota_status
 from saas_mvp.services import admin as admin_svc
 from saas_mvp.services import cache as cache_svc
+from saas_mvp.services import job_runs as job_runs_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import line_config as line_config_svc
@@ -98,6 +99,7 @@ def admin_ops(
             health_rows=cache_svc.admin_dashboard_cache.get_or_compute(
                 "tenant_health_rows", ttl, lambda: admin_svc.tenant_health_rows(db)
             ),
+            job_runs=job_runs_svc.latest_runs(db),  # R6-C3:批次作業最後狀態
         ),
     )
 

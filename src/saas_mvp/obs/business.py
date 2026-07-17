@@ -27,6 +27,11 @@ SUBSCRIPTIONS_PENDING_STALE = "saas_subscriptions_pending_stale"
 WEBHOOK_EVENTS_STUCK_PENDING = "saas_webhook_events_stuck_pending"
 WEBHOOK_EVENTS_RETRY_ATTEMPTS = "saas_webhook_events_retry_attempts"
 WEBHOOK_EVENTS_DEAD_LETTER = "saas_webhook_events_dead_letter"
+# R6-C3:批次作業最後一次成功距今秒數(per job_name label);cron 停擺即持續攀升。
+JOB_LAST_SUCCESS_AGE = "saas_job_last_success_age_seconds"
+
+# 監看的關鍵作業(scrape 時各查最後成功時間)。
+_MONITORED_JOBS = ("aggregate_daily_stats", "send_due_reminders")
 
 # pending 訂閱視為過期的小時數 / webhook pending 視為卡住的分鐘數
 _PENDING_STALE_HOURS = 48
@@ -119,3 +124,17 @@ def collect_business_gauges(db: Session) -> None:
         )
     except Exception:  # noqa: BLE001
         _log.warning("collect webhook retry/dead-letter gauges failed")
+
+    # R6-C3:批次作業最後成功距今秒數(per job);cron 停擺會持續攀升,可告警。
+    try:
+        from saas_mvp.services import job_runs
+
+        for job in _MONITORED_JOBS:
+            age = job_runs.last_success_age_seconds(db, job, now=now)
+            if age is not None:
+                REGISTRY.set_gauge(
+                    JOB_LAST_SUCCESS_AGE, age, labels={"job": job},
+                    help_text="Seconds since a batch job last completed successfully",
+                )
+    except Exception:  # noqa: BLE001
+        _log.warning("collect job last-success gauges failed")

@@ -377,12 +377,25 @@ def main(
     # 確保 SQLAlchemy registry 完整：standalone（python -m / cron）執行時
     # 各 model 未必都被 import，relationship 字串（如 'Tenant'）會解析失敗。
     import_all_models()
-    results = send_due_reminders(
-        session_factory=session_factory,
-        push_client=push_client,
-        apply=args.apply,
-        limit=args.limit,
-    )
+    # R6-C3:apply 執行記作業心跳(心跳不擋作業)。
+    if args.apply:
+        from saas_mvp.services import job_runs
+
+        with job_runs.record(session_factory, "send_due_reminders") as _run:
+            results = send_due_reminders(
+                session_factory=session_factory,
+                push_client=push_client,
+                apply=args.apply,
+                limit=args.limit,
+            )
+            _run.detail = f"processed={len(results)}"
+    else:
+        results = send_due_reminders(
+            session_factory=session_factory,
+            push_client=push_client,
+            apply=args.apply,
+            limit=args.limit,
+        )
     write_report(results, apply=args.apply, out=stdout)
     return 0
 

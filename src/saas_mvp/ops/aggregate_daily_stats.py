@@ -52,7 +52,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--days", type=int, default=3, help="回填天數(不含今天)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    summary = aggregate_daily_stats(days=args.days, apply=args.apply)
+    # R6-C3:apply 執行記作業心跳(last-success metric + admin 顯示);心跳不擋作業。
+    if args.apply:
+        from saas_mvp.db import SessionLocal
+        from saas_mvp.services import job_runs
+
+        with job_runs.record(SessionLocal, "aggregate_daily_stats") as _run:
+            summary = aggregate_daily_stats(days=args.days, apply=args.apply)
+            _run.detail = (
+                f"tenants={summary['tenants']} days={summary['days']} "
+                f"errors={summary['errors']}"
+            )
+    else:
+        summary = aggregate_daily_stats(days=args.days, apply=args.apply)
     print(
         f"daily-stats {'APPLY' if args.apply else 'DRY-RUN'}: "
         f"tenants={summary['tenants']} days={summary['days']} errors={summary['errors']}"

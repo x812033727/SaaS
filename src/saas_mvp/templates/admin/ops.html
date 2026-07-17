@@ -98,4 +98,25 @@ function sortHealth(col, numeric) {
   rows.forEach(r => tbody.appendChild(r));
 }
 </script>
+
+<div class="card">
+  <h2>批次作業狀態</h2>
+  <p class="muted">cron／排程作業最近一次執行結果。「成功」但長時間未再執行,或「失敗」,代表排程可能停擺或出錯。</p>
+  {% if job_runs %}
+  <table>
+    <thead><tr><th>作業</th><th>狀態</th><th>最近執行</th><th>耗時</th><th>摘要</th></tr></thead>
+    <tbody>
+      {% for j in job_runs %}
+      <tr>
+        <td>{{ j.job_name }}</td>
+        <td>{{ {'success':'✅ 成功','failed':'❌ 失敗','running':'⏳ 執行中'}.get(j.status, j.status) }}</td>
+        <td>{{ (j.finished_at or j.started_at).strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ (j.duration_ms // 1000) ~ ' 秒' if j.duration_ms else '—' }}</td>
+        <td class="muted">{{ j.detail or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">尚無作業執行紀錄。</p>{% endif %}
+</div>
 {% endblock %}
