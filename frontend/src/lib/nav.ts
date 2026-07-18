@@ -54,7 +54,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "優惠券", href: "/coupons", migrated: true },
       { label: "分店", href: "/locations", migrated: true },
       { label: "員工", href: "/staff", migrated: true },
-      { label: "抽成／薪資", href: "/ui/commissions", migrated: false },
+      { label: "抽成／薪資", href: "/commissions", migrated: true },
     ],
   },
   {

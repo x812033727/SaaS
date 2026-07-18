@@ -1554,3 +1554,677 @@ def add_resource_block(
         ),
     )
     return _resources_overview(db, actor.user.tenant_id)
+
+
+# ──────────────────── 員工抽成／薪資結算(R7-C4)────────────────────
+# 與 /ui/commissions 共用 services/commissions;金錢面全部限 owner
+# (含唯讀,比照 /ui 頁本身就掛 require_ui_owner)。狀態機
+# draft→finalized→paid 由 service 把關;金額輸入沿 /ui 慣例收字串
+# (percent → 基點整數,金額 → cents),Decimal 轉換錯誤=422。
+
+_COMMISSIONS_FEATURE = [
+    Depends(features_svc.require_feature(features_svc.STAFF_COMMISSIONS))
+]
+
+
+class CommissionTierRow(BaseModel):
+    threshold_cents: int
+    value: int
+
+
+class CommissionRuleRow(BaseModel):
+    id: int
+    staff_id: int
+    item_type: str
+    method: str
+    structure: str
+    value: int | None
+    calculation_basis: str
+    sales_period: str | None
+    effective_from: datetime.date
+    tiers: list[CommissionTierRow]
+
+
+class GoalProgressRow(BaseModel):
+    goal_id: int
+    staff_id: int
+    item_type: str
+    target_cents: int
+    sales_period: str
+    actual_cents: int
+    percent: float
+    period_start: datetime.date
+    period_end: datetime.date
+
+
+class PayRunRow(BaseModel):
+    id: int
+    period_start: datetime.date
+    period_end: datetime.date
+    status: str
+    total_cents: int
+    created_at: datetime.datetime
+    finalized_at: datetime.datetime | None
+    paid_at: datetime.datetime | None
+
+
+class PayRunItemRow(BaseModel):
+    staff_id: int
+    staff_name: str
+    commission_cents: int
+    tip_cents: int
+    adjustment_cents: int
+    adjustment_note: str | None
+    total_cents: int
+
+
+class PayRunDetail(BaseModel):
+    run: PayRunRow
+    items: list[PayRunItemRow]
+
+
+class EarningRow(BaseModel):
+    id: int
+    staff_id: int
+    item_type: str
+    item_name_snapshot: str
+    gross_cents: int
+    net_cents: int
+    commission_cents: int
+    earned_at: datetime.datetime
+    pay_run_id: int | None
+    reversed: bool
+
+
+class CommissionsOverview(BaseModel):
+    staff: list[NameRow]
+    rules: list[CommissionRuleRow]
+    goals: list[GoalProgressRow]
+    pay_runs: list[PayRunRow]
+    recent_earnings: list[EarningRow]
+
+
+class RuleBody(BaseModel):
+    staff_id: int
+    item_type: str
+    method: str
+    value: str
+    calculation_basis: str = "net"
+    effective_from: datetime.date
+
+
+class TierBody(BaseModel):
+    threshold_twd: str
+    value: str
+
+
+class TieredRuleBody(BaseModel):
+    staff_id: int
+    item_type: str
+    method: str
+    tiers: list[TierBody]
+    calculation_basis: str = "net"
+    sales_period: str = "monthly"
+    effective_from: datetime.date
+
+
+class GoalBody(BaseModel):
+    staff_id: int
+    item_type: str = "all"
+    target_twd: str
+    sales_period: str = "monthly"
+    effective_from: datetime.date
+
+
+class PayRunCreateBody(BaseModel):
+    period_start: datetime.date
+    period_end: datetime.date
+
+
+class PayRunAdjustBody(BaseModel):
+    staff_id: int
+    adjustment_twd: str = "0"
+    note: str = ""
+
+
+def _money_cents(raw: str, *, allow_negative: bool = False) -> int:
+    """沿 /ui 慣例:字串金額 → cents;格式錯誤丟 CommissionError。"""
+    from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
+    from saas_mvp.services import commissions as commissions_svc
+
+    try:
+        value = Decimal(raw.strip())
+    except (InvalidOperation, AttributeError):
+        raise commissions_svc.CommissionError("金額格式不正確。") from None
+    if not value.is_finite():
+        raise commissions_svc.CommissionError("金額格式不正確。")
+    if not allow_negative and value < 0:
+        raise commissions_svc.CommissionError("金額不可為負數。")
+    return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _rule_value_units(method: str, raw: str) -> int:
+    """percent → 基點整數(3.5% = 350);fixed → cents。"""
+    from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
+    from saas_mvp.services import commissions as commissions_svc
+
+    if method == "percent":
+        try:
+            value = Decimal(raw.strip())
+        except (InvalidOperation, AttributeError):
+            raise commissions_svc.CommissionError("抽成數值格式不正確。") from None
+        if not value.is_finite():
+            raise commissions_svc.CommissionError("抽成數值格式不正確。")
+        return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return _money_cents(raw)
+
+
+def _pay_run_row(run) -> PayRunRow:
+    return PayRunRow(
+        id=run.id,
+        period_start=run.period_start,
+        period_end=run.period_end,
+        status=run.status,
+        total_cents=run.total_cents,
+        created_at=run.created_at,
+        finalized_at=run.finalized_at,
+        paid_at=run.paid_at,
+    )
+
+
+def _commission_mutation(db, actor, request, action: str, target, fn, *, conflict=False):
+    """owner 檢查 → service → audit → commit;CommissionError → 422/409。"""
+    from saas_mvp.services import commissions as commissions_svc
+
+    _require_owner(actor)
+    try:
+        result = fn()
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action=action,
+            target=target(result) if callable(target) else target,
+            request=request,
+        )
+        db.commit()
+        return result
+    except commissions_svc.CommissionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409 if conflict else 422, detail=str(exc))
+
+
+@router.get(
+    "/commissions/overview",
+    response_model=CommissionsOverview,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def commissions_overview(
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """抽成總覽:員工/現行規則(含級距)/目標進度/結算單/近期抽成明細。"""
+    from saas_mvp.services import commissions as commissions_svc
+    from saas_mvp.services import staff as staff_svc
+
+    _require_owner(actor)
+    tid = actor.user.tenant_id
+    staff = staff_svc.list_staff(db, tenant_id=tid)
+    rules = commissions_svc.latest_rules(db, tenant_id=tid)
+    today = datetime.date.today()
+    return CommissionsOverview(
+        staff=[NameRow(id=s.id, name=s.name) for s in staff],
+        rules=[
+            CommissionRuleRow(
+                id=rule.id,
+                staff_id=rule.staff_id,
+                item_type=rule.item_type,
+                method=rule.method,
+                structure=rule.structure,
+                value=rule.value,
+                calculation_basis=rule.calculation_basis,
+                sales_period=rule.sales_period,
+                effective_from=rule.effective_from,
+                tiers=[
+                    CommissionTierRow(
+                        threshold_cents=t.threshold_cents, value=t.value
+                    )
+                    for t in (
+                        commissions_svc.rule_tiers(
+                            db, tenant_id=tid, rule_id=rule.id
+                        )
+                        if rule.structure == "tiered"
+                        else []
+                    )
+                ],
+            )
+            for rule in rules.values()
+        ],
+        goals=[
+            GoalProgressRow(
+                goal_id=row["goal"].id,
+                staff_id=row["goal"].staff_id,
+                item_type=row["goal"].item_type,
+                target_cents=row["goal"].target_cents,
+                sales_period=row["goal"].sales_period,
+                actual_cents=row["actual_cents"],
+                percent=row["percent"],
+                period_start=row["period_start"],
+                period_end=row["period_end"],
+            )
+            for row in commissions_svc.sales_goal_progress(
+                db, tenant_id=tid, on_date=today
+            )
+        ],
+        pay_runs=[
+            _pay_run_row(r)
+            for r in commissions_svc.list_pay_runs(db, tenant_id=tid)
+        ],
+        recent_earnings=[
+            EarningRow(
+                id=e.id,
+                staff_id=e.staff_id,
+                item_type=e.item_type,
+                item_name_snapshot=e.item_name_snapshot,
+                gross_cents=e.gross_cents,
+                net_cents=e.net_cents,
+                commission_cents=e.commission_cents,
+                earned_at=e.earned_at,
+                pay_run_id=e.pay_run_id,
+                reversed=e.reversed_at is not None,
+            )
+            for e in commissions_svc.recent_earnings(db, tenant_id=tid)
+        ],
+    )
+
+
+@router.post(
+    "/commissions/rules",
+    status_code=201,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def create_commission_rule(
+    body: RuleBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    row = _commission_mutation(
+        db, actor, request, "commissions.rule.create",
+        lambda r: f"commission_rule:{r.id}",
+        lambda: commissions_svc.save_rule(
+            db,
+            tenant_id=actor.user.tenant_id,
+            staff_id=body.staff_id,
+            item_type=body.item_type,
+            method=body.method,
+            value=_rule_value_units(body.method, body.value),
+            calculation_basis=body.calculation_basis,
+            effective_from=body.effective_from,
+            actor_user_id=actor.user.id,
+        ),
+    )
+    return {"id": row.id}
+
+
+@router.post(
+    "/commissions/tiered-rules",
+    status_code=201,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def create_commission_tiered_rule(
+    body: TieredRuleBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    def _build():
+        tiers = [
+            (
+                _money_cents(t.threshold_twd),
+                _rule_value_units(body.method, t.value),
+            )
+            for t in body.tiers
+        ]
+        return commissions_svc.save_tiered_rule(
+            db,
+            tenant_id=actor.user.tenant_id,
+            staff_id=body.staff_id,
+            item_type=body.item_type,
+            method=body.method,
+            tiers=tiers,
+            calculation_basis=body.calculation_basis,
+            sales_period=body.sales_period,
+            effective_from=body.effective_from,
+            actor_user_id=actor.user.id,
+        )
+
+    row = _commission_mutation(
+        db, actor, request, "commissions.tiered_rule.create",
+        lambda r: f"commission_rule:{r.id}", _build,
+    )
+    return {"id": row.id}
+
+
+@router.post(
+    "/commissions/goals",
+    status_code=201,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def create_commission_goal(
+    body: GoalBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    row = _commission_mutation(
+        db, actor, request, "commissions.goal.create",
+        lambda r: f"staff_sales_goal:{r.id}",
+        lambda: commissions_svc.save_sales_goal(
+            db,
+            tenant_id=actor.user.tenant_id,
+            staff_id=body.staff_id,
+            item_type=body.item_type,
+            target_cents=_money_cents(body.target_twd),
+            sales_period=body.sales_period,
+            effective_from=body.effective_from,
+            actor_user_id=actor.user.id,
+        ),
+    )
+    return {"id": row.id}
+
+
+def _pay_run_detail(db, tenant_id: int, pay_run_id: int) -> PayRunDetail:
+    from saas_mvp.services import commissions as commissions_svc
+
+    run, items = commissions_svc.pay_run_export_data(
+        db, tenant_id=tenant_id, pay_run_id=pay_run_id
+    )
+    return PayRunDetail(
+        run=_pay_run_row(run),
+        items=[
+            PayRunItemRow(
+                staff_id=item.staff_id,
+                staff_name=staff.name if staff else f"員工 #{item.staff_id}",
+                commission_cents=item.commission_cents,
+                tip_cents=item.tip_cents,
+                adjustment_cents=item.adjustment_cents,
+                adjustment_note=item.adjustment_note,
+                total_cents=item.total_cents,
+            )
+            for item, staff in items
+        ],
+    )
+
+
+@router.get(
+    "/commissions/pay-runs/{pay_run_id}",
+    response_model=PayRunDetail,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def get_commission_pay_run(
+    pay_run_id: int,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    _require_owner(actor)
+    try:
+        return _pay_run_detail(db, actor.user.tenant_id, pay_run_id)
+    except commissions_svc.CommissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post(
+    "/commissions/pay-runs",
+    response_model=PayRunDetail,
+    status_code=201,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def create_commission_pay_run(
+    body: PayRunCreateBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    run = _commission_mutation(
+        db, actor, request, "commissions.pay_run.create",
+        lambda r: f"pay_run:{r.id}",
+        lambda: commissions_svc.create_pay_run(
+            db,
+            tenant_id=actor.user.tenant_id,
+            period_start=body.period_start,
+            period_end=body.period_end,
+            actor_user_id=actor.user.id,
+        ),
+    )
+    return _pay_run_detail(db, actor.user.tenant_id, run.id)
+
+
+@router.post(
+    "/commissions/pay-runs/{pay_run_id}/adjust",
+    response_model=PayRunDetail,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def adjust_commission_pay_run(
+    pay_run_id: int,
+    body: PayRunAdjustBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    _commission_mutation(
+        db, actor, request, "commissions.pay_run.adjust",
+        f"pay_run:{pay_run_id}",
+        lambda: commissions_svc.update_adjustment(
+            db,
+            tenant_id=actor.user.tenant_id,
+            pay_run_id=pay_run_id,
+            staff_id=body.staff_id,
+            adjustment_cents=_money_cents(body.adjustment_twd, allow_negative=True),
+            note=body.note,
+        ),
+    )
+    return _pay_run_detail(db, actor.user.tenant_id, pay_run_id)
+
+
+def _pay_run_transition_api(db, actor, request, pay_run_id: int, action: str):
+    """finalize/paid/delete 三轉移;非法轉移 → 409(比照 /ui)。"""
+    from saas_mvp.services import commissions as commissions_svc
+
+    def _run():
+        if action == "finalize":
+            return commissions_svc.finalize_pay_run(
+                db,
+                tenant_id=actor.user.tenant_id,
+                pay_run_id=pay_run_id,
+                actor_user_id=actor.user.id,
+            )
+        if action == "paid":
+            return commissions_svc.mark_pay_run_paid(
+                db,
+                tenant_id=actor.user.tenant_id,
+                pay_run_id=pay_run_id,
+                actor_user_id=actor.user.id,
+            )
+        return commissions_svc.delete_draft(
+            db, tenant_id=actor.user.tenant_id, pay_run_id=pay_run_id
+        )
+
+    _commission_mutation(
+        db, actor, request, f"commissions.pay_run.{action}",
+        f"pay_run:{pay_run_id}", _run, conflict=True,
+    )
+
+
+@router.post(
+    "/commissions/pay-runs/{pay_run_id}/finalize",
+    response_model=PayRunDetail,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def finalize_commission_pay_run(
+    pay_run_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _pay_run_transition_api(db, actor, request, pay_run_id, "finalize")
+    return _pay_run_detail(db, actor.user.tenant_id, pay_run_id)
+
+
+@router.post(
+    "/commissions/pay-runs/{pay_run_id}/paid",
+    response_model=PayRunDetail,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def pay_commission_pay_run(
+    pay_run_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _pay_run_transition_api(db, actor, request, pay_run_id, "paid")
+    return _pay_run_detail(db, actor.user.tenant_id, pay_run_id)
+
+
+@router.post(
+    "/commissions/pay-runs/{pay_run_id}/delete",
+    status_code=204,
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def delete_commission_pay_run(
+    pay_run_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """僅 draft 可刪(service 把關);釋放明細回未結算池。"""
+    _pay_run_transition_api(db, actor, request, pay_run_id, "delete")
+    return Response(status_code=204)
+
+
+def _commission_csv(rows: list[list], filename: str) -> Response:
+    import csv as _csv
+    import io as _io
+
+    def safe_cell(value):
+        # 避免員工名稱/商品名稱被 Excel 當成公式執行。
+        if isinstance(value, str) and value.startswith(
+            ("=", "+", "-", "@", "\t", "\r")
+        ):
+            return "'" + value
+        return value
+
+    output = _io.StringIO(newline="")
+    writer = _csv.writer(output)
+    writer.writerows([[safe_cell(cell) for cell in row] for row in rows])
+    return Response(
+        content=output.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
+    "/commissions/pay-runs/{pay_run_id}/export.csv",
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def export_commission_pay_run(
+    pay_run_id: int,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+
+    _require_owner(actor)
+    try:
+        run, data = commissions_svc.pay_run_export_data(
+            db, tenant_id=actor.user.tenant_id, pay_run_id=pay_run_id
+        )
+    except commissions_svc.CommissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    rows: list[list] = [[
+        "結算單", "期間開始", "期間結束", "狀態", "員工",
+        "抽成", "小費", "加減項", "應付", "說明",
+    ]]
+    status_labels = {"draft": "草稿", "finalized": "已確認", "paid": "已付款"}
+    for item, staff in data:
+        rows.append([
+            run.id,
+            run.period_start.isoformat(),
+            run.period_end.isoformat(),
+            status_labels.get(run.status, run.status),
+            staff.name if staff else f"員工 #{item.staff_id}",
+            f"{item.commission_cents / 100:.2f}",
+            f"{item.tip_cents / 100:.2f}",
+            f"{item.adjustment_cents / 100:.2f}",
+            f"{item.total_cents / 100:.2f}",
+            item.adjustment_note or "",
+        ])
+    return _commission_csv(rows, f"pay-run-{run.id}.csv")
+
+
+@router.get(
+    "/commissions/activity.csv",
+    dependencies=_COMMISSIONS_FEATURE,
+)
+def export_commission_activity(
+    period_start: datetime.date = Query(...),
+    period_end: datetime.date = Query(...),
+    staff_id: int | None = Query(None),
+    item_type: str | None = Query(None),
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import commissions as commissions_svc
+    from saas_mvp.services import staff as staff_svc
+
+    _require_owner(actor)
+    try:
+        earnings = commissions_svc.activity_export_data(
+            db,
+            tenant_id=actor.user.tenant_id,
+            period_start=period_start,
+            period_end=period_end,
+            staff_id=staff_id,
+            item_type=item_type,
+        )
+    except commissions_svc.CommissionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    staff_by_id = {
+        row.id: row.name
+        for row in staff_svc.list_staff(db, tenant_id=actor.user.tenant_id)
+    }
+    rows: list[list] = [[
+        "成交時間", "員工", "類型", "項目", "原價",
+        "淨額", "抽成／小費", "結算單", "沖銷狀態",
+    ]]
+    for earning in earnings:
+        rows.append([
+            earning.earned_at.isoformat(),
+            staff_by_id.get(earning.staff_id, f"員工 #{earning.staff_id}"),
+            earning.item_type,
+            earning.item_name_snapshot,
+            f"{earning.gross_cents / 100:.2f}",
+            f"{earning.net_cents / 100:.2f}",
+            f"{earning.commission_cents / 100:.2f}",
+            earning.pay_run_id or "",
+            "已沖銷" if earning.reversed_at else "",
+        ])
+    return _commission_csv(
+        rows,
+        f"commission-activity-{period_start.isoformat()}-{period_end.isoformat()}.csv",
+    )
