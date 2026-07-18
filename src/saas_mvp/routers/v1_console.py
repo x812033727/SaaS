@@ -1014,3 +1014,543 @@ def set_service_package_active(
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc))
     return _package_row(db, actor.user.tenant_id, row)
+
+
+# ────────────────────── 房間／設備資源(R7-C3)──────────────────────
+# 與 /ui/resources 共用 services/bookable_resources;五子實體
+# (類型/資源/服務需求/每週可用/停用區間),mutation 限 owner。
+# 分配引擎(allocate/reallocate)由預約流程觸發,不在本 API 範圍。
+
+_RESOURCES_FEATURE = [
+    Depends(features_svc.require_feature(features_svc.BOOKABLE_RESOURCES))
+]
+
+
+class ResourceTypeRow(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    is_active: bool
+
+
+class ResourceWindowRow(BaseModel):
+    id: int
+    weekday: int
+    start_time: datetime.time
+    end_time: datetime.time
+
+
+class ResourceBlockRow(BaseModel):
+    id: int
+    starts_at: datetime.datetime
+    ends_at: datetime.datetime
+    reason: str | None
+
+
+class BookableResourceRow(BaseModel):
+    id: int
+    resource_type_id: int
+    location_id: int | None
+    name: str
+    description: str | None
+    internal_code: str | None
+    capacity: int
+    is_active: bool
+    available_from: datetime.date | None
+    available_until: datetime.date | None
+    windows: list[ResourceWindowRow]
+    blocks: list[ResourceBlockRow]
+
+
+class ResourceRequirementRow(BaseModel):
+    id: int
+    service_id: int
+    service_name: str
+    resource_type_id: int
+    type_name: str
+    quantity: int
+
+
+class NameRow(BaseModel):
+    id: int
+    name: str
+
+
+class ResourcesOverview(BaseModel):
+    types: list[ResourceTypeRow]
+    resources: list[BookableResourceRow]
+    requirements: list[ResourceRequirementRow]
+    services: list[NameRow]
+    locations: list[NameRow]
+
+
+class ResourceTypeBody(BaseModel):
+    name: str
+    description: str = ""
+
+
+class ResourceBody(BaseModel):
+    resource_type_id: int
+    name: str
+    description: str = ""
+    internal_code: str = ""
+    capacity: int = 1
+    location_id: int | None = None
+    available_from: datetime.date | None = None
+    available_until: datetime.date | None = None
+
+
+class ResourceUpdateBody(BaseModel):
+    name: str
+    description: str = ""
+    internal_code: str = ""
+    capacity: int = 1
+    location_id: int | None = None
+    available_from: datetime.date | None = None
+    available_until: datetime.date | None = None
+
+
+class ActiveBody(BaseModel):
+    active: bool
+
+
+class RequirementBody(BaseModel):
+    service_id: int
+    resource_type_id: int
+    quantity: int = 1
+
+
+class AvailabilityBody(BaseModel):
+    weekday: int
+    start_time: datetime.time
+    end_time: datetime.time
+
+
+class BlockBody(BaseModel):
+    starts_at: datetime.datetime
+    ends_at: datetime.datetime
+    reason: str = ""
+
+
+def _resources_overview(db, tenant_id: int) -> ResourcesOverview:
+    from saas_mvp.models.location import Location
+    from saas_mvp.models.service import Service
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    types = resources_svc.list_types(db, tenant_id=tenant_id)
+    resources = resources_svc.list_resources(db, tenant_id=tenant_id)
+    windows_by_resource: dict[int, list] = {}
+    for w in resources_svc.list_availability(db, tenant_id=tenant_id):
+        windows_by_resource.setdefault(w.resource_id, []).append(w)
+    blocks_by_resource: dict[int, list] = {}
+    for b in resources_svc.list_blocks(db, tenant_id=tenant_id):
+        blocks_by_resource.setdefault(b.resource_id, []).append(b)
+    services = (
+        db.query(Service)
+        .filter(Service.tenant_id == tenant_id)
+        .order_by(Service.id)
+        .all()
+    )
+    locations = (
+        db.query(Location)
+        .filter(Location.tenant_id == tenant_id)
+        .order_by(Location.id)
+        .all()
+    )
+    service_names = {s.id: s.name for s in services}
+    type_names = {t.id: t.name for t in types}
+    return ResourcesOverview(
+        types=[
+            ResourceTypeRow(
+                id=t.id,
+                name=t.name,
+                description=t.description,
+                is_active=bool(t.is_active),
+            )
+            for t in types
+        ],
+        resources=[
+            BookableResourceRow(
+                id=r.id,
+                resource_type_id=r.resource_type_id,
+                location_id=r.location_id,
+                name=r.name,
+                description=r.description,
+                internal_code=r.internal_code,
+                capacity=r.capacity,
+                is_active=bool(r.is_active),
+                available_from=r.available_from,
+                available_until=r.available_until,
+                windows=[
+                    ResourceWindowRow(
+                        id=w.id,
+                        weekday=w.weekday,
+                        start_time=w.start_time,
+                        end_time=w.end_time,
+                    )
+                    for w in windows_by_resource.get(r.id, [])
+                ],
+                blocks=[
+                    ResourceBlockRow(
+                        id=b.id,
+                        starts_at=b.starts_at,
+                        ends_at=b.ends_at,
+                        reason=b.reason,
+                    )
+                    for b in blocks_by_resource.get(r.id, [])
+                ],
+            )
+            for r in resources
+        ],
+        requirements=[
+            ResourceRequirementRow(
+                id=req.id,
+                service_id=req.service_id,
+                service_name=service_names.get(req.service_id, f"#{req.service_id}"),
+                resource_type_id=req.resource_type_id,
+                type_name=type_names.get(
+                    req.resource_type_id, f"#{req.resource_type_id}"
+                ),
+                quantity=req.quantity,
+            )
+            for req in resources_svc.list_requirements(db, tenant_id=tenant_id)
+        ],
+        services=[NameRow(id=s.id, name=s.name) for s in services],
+        locations=[NameRow(id=loc.id, name=loc.name) for loc in locations],
+    )
+
+
+def _resources_mutation(db, actor, request, action: str, target: str, fn):
+    """共用外殼:owner 檢查 → service 呼叫 → audit → commit → 404/422 映射。"""
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _require_owner(actor)
+    try:
+        result = fn()
+        audit_svc.record_from_actor(
+            db, actor, action=action, target=target, request=request
+        )
+        db.commit()
+        return result
+    except resources_svc.ResourceNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except resources_svc.BookableResourceError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get(
+    "/resources/overview",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def resources_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """單次聚合:類型+資源(含每週可用/停用區間)+服務需求+表單選項。"""
+    return _resources_overview(db, current_user.tenant_id)
+
+
+@router.post(
+    "/resources/types",
+    response_model=ResourceTypeRow,
+    status_code=201,
+    dependencies=_RESOURCES_FEATURE,
+)
+def create_resource_type(
+    body: ResourceTypeBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    row = _resources_mutation(
+        db, actor, request, "resources.type.create", "resource_type:new",
+        lambda: resources_svc.create_type(
+            db,
+            tenant_id=actor.user.tenant_id,
+            name=body.name,
+            description=body.description,
+        ),
+    )
+    return ResourceTypeRow(
+        id=row.id, name=row.name, description=row.description,
+        is_active=bool(row.is_active),
+    )
+
+
+@router.post(
+    "/resources/types/{resource_type_id}/active",
+    response_model=ResourceTypeRow,
+    dependencies=_RESOURCES_FEATURE,
+)
+def set_resource_type_active(
+    resource_type_id: int,
+    body: ActiveBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    row = _resources_mutation(
+        db, actor, request,
+        "resources.type.active", f"resource_type:{resource_type_id}",
+        lambda: resources_svc.set_type_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_type_id=resource_type_id,
+            active=body.active,
+        ),
+    )
+    return ResourceTypeRow(
+        id=row.id, name=row.name, description=row.description,
+        is_active=bool(row.is_active),
+    )
+
+
+@router.post(
+    "/resources/requirements",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def set_resource_requirement(
+    body: RequirementBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """設定某服務對某資源類型的需求(upsert)。"""
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request, "resources.requirement.set", "requirement:set",
+        lambda: resources_svc.set_requirement(
+            db,
+            tenant_id=actor.user.tenant_id,
+            service_id=body.service_id,
+            resource_type_id=body.resource_type_id,
+            quantity=body.quantity,
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.delete(
+    "/resources/requirements/{requirement_id}",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def delete_resource_requirement(
+    requirement_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request,
+        "resources.requirement.delete", f"requirement:{requirement_id}",
+        lambda: resources_svc.remove_requirement(
+            db, tenant_id=actor.user.tenant_id, requirement_id=requirement_id
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.delete(
+    "/resources/availability/{availability_id}",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def delete_resource_availability(
+    availability_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request,
+        "resources.availability.delete", f"availability:{availability_id}",
+        lambda: resources_svc.remove_availability(
+            db, tenant_id=actor.user.tenant_id, availability_id=availability_id
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.delete(
+    "/resources/blocks/{block_id}",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def delete_resource_block(
+    block_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request, "resources.block.delete", f"block:{block_id}",
+        lambda: resources_svc.remove_block(
+            db, tenant_id=actor.user.tenant_id, block_id=block_id
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.post(
+    "/resources",
+    response_model=ResourcesOverview,
+    status_code=201,
+    dependencies=_RESOURCES_FEATURE,
+)
+def create_bookable_resource(
+    body: ResourceBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request, "resources.create", "resource:new",
+        lambda: resources_svc.create_resource(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_type_id=body.resource_type_id,
+            name=body.name,
+            description=body.description,
+            internal_code=body.internal_code,
+            capacity=body.capacity,
+            location_id=body.location_id,
+            available_from=body.available_from,
+            available_until=body.available_until,
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.patch(
+    "/resources/{resource_id}",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def update_bookable_resource(
+    resource_id: int,
+    body: ResourceUpdateBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request, "resources.update", f"resource:{resource_id}",
+        lambda: resources_svc.update_resource(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            name=body.name,
+            description=body.description,
+            internal_code=body.internal_code,
+            capacity=body.capacity,
+            location_id=body.location_id,
+            available_from=body.available_from,
+            available_until=body.available_until,
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.post(
+    "/resources/{resource_id}/active",
+    response_model=ResourcesOverview,
+    dependencies=_RESOURCES_FEATURE,
+)
+def set_bookable_resource_active(
+    resource_id: int,
+    body: ActiveBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request, "resources.active", f"resource:{resource_id}",
+        lambda: resources_svc.set_resource_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            active=body.active,
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.post(
+    "/resources/{resource_id}/availability",
+    response_model=ResourcesOverview,
+    status_code=201,
+    dependencies=_RESOURCES_FEATURE,
+)
+def add_resource_availability(
+    resource_id: int,
+    body: AvailabilityBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request,
+        "resources.availability.add", f"resource:{resource_id}",
+        lambda: resources_svc.add_availability(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            weekday=body.weekday,
+            start_time=body.start_time,
+            end_time=body.end_time,
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)
+
+
+@router.post(
+    "/resources/{resource_id}/blocks",
+    response_model=ResourcesOverview,
+    status_code=201,
+    dependencies=_RESOURCES_FEATURE,
+)
+def add_resource_block(
+    resource_id: int,
+    body: BlockBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import bookable_resources as resources_svc
+
+    _resources_mutation(
+        db, actor, request, "resources.block.add", f"resource:{resource_id}",
+        lambda: resources_svc.add_block(
+            db,
+            tenant_id=actor.user.tenant_id,
+            resource_id=resource_id,
+            starts_at=body.starts_at,
+            ends_at=body.ends_at,
+            reason=body.reason,
+        ),
+    )
+    return _resources_overview(db, actor.user.tenant_id)

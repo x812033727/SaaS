@@ -28,7 +28,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "時段管理", href: "/slots", migrated: true },
       { label: "顧客", href: "/customers", migrated: true },
       { label: "諮詢表／同意書", href: "/client-forms", migrated: true },
-      { label: "房間／設備", href: "/ui/resources", migrated: false },
+      { label: "房間／設備", href: "/resources", migrated: true },
       { label: "備註", href: "/notes", migrated: true },
     ],
   },
