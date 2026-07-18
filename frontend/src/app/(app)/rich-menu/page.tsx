@@ -37,6 +37,26 @@ export default function RichMenuPage() {
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [template, setTemplate] = useState("booking4");
   const [theme, setTheme] = useState("brand");
+  // custom_image 模式:店家自備背景圖(base64 上傳;按鈕分區仍取決於版型)
+  const [mode, setMode] = useState<"template" | "custom_image">("template");
+  const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+
+  function onImageFile(file: File | null) {
+    if (!file) { setImageBase64(null); setImagePreview(null); return; }
+    if (file.size > 1024 * 1024) {
+      setMsg({ kind: "error", text: "背景圖請小於 1MB(LINE 上限;建議 2500×1686 PNG/JPEG)。" });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      setImagePreview(dataUrl);
+      setImageBase64(dataUrl.split(",", 2)[1] ?? null);
+      setMsg(null);
+    };
+    reader.readAsDataURL(file);
+  }
 
   const options = useQuery({
     queryKey: ["rich-menu-options"],
@@ -50,7 +70,13 @@ export default function RichMenuPage() {
   });
 
   const apply = useMutation({
-    mutationFn: () => postJson<Status>("/booking/rich-menu/apply", { template, theme }),
+    mutationFn: () =>
+      postJson<Status>("/booking/rich-menu/apply", {
+        template,
+        theme,
+        mode,
+        ...(mode === "custom_image" ? { image_base64: imageBase64 } : {}),
+      }),
     onSuccess: () => {
       setMsg({ kind: "ok", text: "圖文選單已套用到 LINE 官方帳號。" });
       qc.invalidateQueries({ queryKey: ["rich-menu-status"] });
@@ -129,12 +155,36 @@ export default function RichMenuPage() {
               </select>
             </label>
           </div>
+          <div className="mt-3 flex flex-wrap items-end gap-3 text-sm">
+            <label>背景模式
+              <select value={mode}
+                onChange={(e) => setMode(e.target.value as "template" | "custom_image")}
+                className={inputCls}>
+                <option value="template">主題模板(純色背景)</option>
+                <option value="custom_image">自訂背景圖</option>
+              </select>
+            </label>
+            {mode === "custom_image" && (
+              <label>背景圖(PNG/JPEG,建議 2500×1686,&lt;1MB)
+                <input type="file" accept="image/png,image/jpeg"
+                  onChange={(e) => onImageFile(e.target.files?.[0] ?? null)}
+                  className="mt-1 block text-sm" />
+              </label>
+            )}
+          </div>
           <div className="mt-4 overflow-hidden rounded-lg border border-line/60">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={previewSrc} alt="選單預覽" className="w-full" />
+            <img
+              src={mode === "custom_image" && imagePreview ? imagePreview : previewSrc}
+              alt="選單預覽" className="w-full" />
           </div>
+          {mode === "custom_image" && !imagePreview && (
+            <p className="mt-1 text-xs text-muted">尚未選擇背景圖;上方顯示的是模板預覽,按鈕分區依所選版型。</p>
+          )}
           <div className="mt-4 flex gap-2">
-            <button disabled={apply.isPending} className={btnCls} onClick={() => apply.mutate()}>
+            <button
+              disabled={apply.isPending || (mode === "custom_image" && !imageBase64)}
+              className={btnCls} onClick={() => apply.mutate()}>
               {apply.isPending ? "套用中…" : "套用到 LINE"}
             </button>
             {st?.applied && (

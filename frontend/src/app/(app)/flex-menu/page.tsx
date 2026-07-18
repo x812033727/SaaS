@@ -14,6 +14,8 @@ type Card = {
   subtitle: string | null;
   image_url: string | null;
   bg_color: string | null;
+  icon: string | null;
+  sort_order: number;
 };
 
 const ACTION_LABELS: Record<string, string> = { uri: "開啟網址", message: "送出訊息", postback: "回傳資料" };
@@ -59,6 +61,8 @@ function CardForm({
       subtitle: String(f.get("subtitle") ?? ""),
       image_url: String(f.get("image_url") ?? ""),
       bg_color: String(f.get("bg_color") ?? ""),
+      icon: String(f.get("icon") ?? ""),
+      sort_order: Number(f.get("sort_order") ?? 0),
       action_type: String(f.get("action_type")),
       action_data: String(f.get("action_data") ?? ""),
     });
@@ -79,6 +83,12 @@ function CardForm({
         </label>
         <label>背景色(選填,如 #10b981)
           <input name="bg_color" maxLength={16} defaultValue={initial?.bg_color ?? ""} className={inputCls} />
+        </label>
+        <label>圖示 emoji(選填)
+          <input name="icon" maxLength={32} defaultValue={initial?.icon ?? ""} className={inputCls} />
+        </label>
+        <label>排序(小者在前)
+          <input name="sort_order" type="number" defaultValue={initial?.sort_order ?? 0} className={inputCls} />
         </label>
         <label>按鈕動作
           <select name="action_type" defaultValue={initial?.action_type ?? "message"} className={inputCls}>
@@ -231,7 +241,7 @@ export default function FlexMenuPage() {
                           <div className="h-12 w-12 rounded-lg" style={{ background: c.bg_color || "#e5e7eb" }} />
                         )}
                         <div>
-                          <p className="font-medium">{c.title}</p>
+                          <p className="font-medium">{c.icon ? `${c.icon} ` : ""}{c.title}</p>
                           <p className="text-xs text-muted">
                             {c.subtitle ? `${c.subtitle}・` : ""}
                             {ACTION_LABELS[c.action_type] ?? c.action_type}:{c.action_data}
