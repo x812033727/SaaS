@@ -25,6 +25,9 @@
 # 每日 09:22 UTC：建檔週年活動（R6-B2）
 22 9 * * * python -m saas_mvp.ops.run_anniversary_campaigns --apply
 
+# 每小時 :32：到訪後感謝（R7-B；24h 視窗內送達,日粒度冪等）
+32 * * * * python -m saas_mvp.ops.run_post_visit_campaigns --apply
+
 # 每日 14:12 UTC：沉睡客戶喚回
 12 14 * * * python -m saas_mvp.ops.run_reactivation --apply
 

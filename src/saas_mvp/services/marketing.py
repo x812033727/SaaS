@@ -31,6 +31,7 @@ from saas_mvp.line_client import LinePushClient
 from saas_mvp.models.campaign import (
     CAMPAIGN_ANNIVERSARY,
     CAMPAIGN_BIRTHDAY,
+    CAMPAIGN_POST_VISIT,
     CAMPAIGN_REACTIVATION,
     CAMPAIGN_WELCOME,
     REWARD_COUPON,
@@ -202,7 +203,8 @@ def period_key_for(campaign: Campaign, now: datetime.datetime) -> str:
     ctype = campaign.type
     if ctype == CAMPAIGN_WELCOME:
         return "once"
-    if ctype == CAMPAIGN_REACTIVATION:
+    if ctype in (CAMPAIGN_REACTIVATION, CAMPAIGN_POST_VISIT):
+        # 日粒度冪等:同顧客同日多次到訪只謝一次(R7-B 決策)。
         return now.strftime("%Y%m%d")
     if ctype in (CAMPAIGN_BIRTHDAY, CAMPAIGN_ANNIVERSARY, "spend"):
         return now.strftime("%Y")
@@ -229,6 +231,39 @@ def eligible_customers(
             and c.birthday.month == now.month
             and c.birthday.day == now.day
         ])
+
+    if campaign.type == CAMPAIGN_POST_VISIT:
+        # 到訪後感謝(R7-B):過去 post_visit_hours 內 attended=True 的 confirmed
+        # 預約 → 其顧客。slot_start 用 naive UTC 邊界查詢(repo 既有慣例,
+        # 同 calendar_view._reservations_in_range 對同一欄位的查法)。
+        from saas_mvp.models.booking_slot import BookingSlot
+        from saas_mvp.models.reservation import (
+            RESERVATION_CONFIRMED,
+            Reservation,
+        )
+
+        now_naive = _naive(now)
+        cutoff = now_naive - datetime.timedelta(hours=settings.post_visit_hours)
+        visited_ids = set(
+            db.execute(
+                select(Reservation.customer_id)
+                .join(BookingSlot, Reservation.slot_id == BookingSlot.id)
+                .where(
+                    Reservation.tenant_id == campaign.tenant_id,
+                    Reservation.status == RESERVATION_CONFIRMED,
+                    Reservation.attended.is_(True),
+                    Reservation.customer_id.is_not(None),
+                    BookingSlot.slot_start >= cutoff,
+                    BookingSlot.slot_start <= now_naive,
+                )
+            ).scalars()
+        )
+        if not visited_ids:
+            return []
+        candidates = segments_svc.segment_customers(
+            db, tenant_id=campaign.tenant_id, **kwargs
+        )
+        return _drop_opted_out([c for c in candidates if c.id in visited_ids])
 
     if campaign.type == CAMPAIGN_ANNIVERSARY:
         # 建檔週年(R6-B2):created_at 的月/日與今日相符(成為會員滿整年);
