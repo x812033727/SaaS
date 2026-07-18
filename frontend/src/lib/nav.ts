@@ -79,8 +79,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "帳單", href: "/ui/billing", migrated: false },
       { label: "進階功能", href: "/ui/features", migrated: false },
       { label: "API 金鑰", href: "/api-keys", migrated: true },
-      { label: "成員", href: "/ui/members", migrated: false },
-      { label: "帳號", href: "/ui/account", migrated: false },
+      { label: "成員", href: "/members", migrated: true },
+      { label: "帳號", href: "/account", migrated: true },
     ],
   },
   // 平台管理(admin)頁本輪不搬:context.permissions 是組織角色權限、不含
