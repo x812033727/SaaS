@@ -363,6 +363,11 @@ def mark_order_paid(
         from saas_mvp.services import commissions as commissions_svc
 
         commissions_svc.record_paid_order(db, order=order)
+        # R11-A:購卡訂單於同一交易發卡(crash 於 commit 前=order 仍
+        # PENDING,gateway 重送自然重跑;非購卡訂單 no-op)。
+        from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+
+        gift_card_sales_svc.on_order_paid(db, order)
         db.commit()
         db.refresh(order)
         # R5-C2:店家電子發票(opt-in)。付款 commit 後 best-effort,
@@ -370,6 +375,8 @@ def mark_order_paid(
         from saas_mvp.services import invoices as invoices_svc
 
         invoices_svc.issue_for_order(db, order)
+        # R11-A:購卡交付信入 outbox(commit 後 best-effort,永不拋錯)。
+        gift_card_sales_svc.queue_delivery_email(db, order)
     return order
 
 

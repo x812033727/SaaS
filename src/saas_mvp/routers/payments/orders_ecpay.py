@@ -42,15 +42,19 @@ def ecpay_checkout(
     if order.total_cents % 100 != 0:
         return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
 
+    from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+
     base = settings.public_base_url.rstrip("/")
+    # R11-A:購卡訂單付款後導回狀態頁(顯示卡號)
+    gc_url = gift_card_sales_svc.status_url_for_order(db, order)
     client = get_ecpay_client(db)
     form = client.build_order_form(
         merchant_trade_no=order.merchant_trade_no,
         amount_twd=order.total_cents // 100,
-        item_name=f"訂單{order.id}",
-        trade_desc="LINE 商城訂單",
+        item_name="電子禮物卡" if gc_url else f"訂單{order.id}",
+        trade_desc="電子禮物卡" if gc_url else "LINE 商城訂單",
         return_url=f"{base}/payments/ecpay/callback",
-        client_back_url=f"{base}/payments/ecpay/done",
+        client_back_url=gc_url or f"{base}/payments/ecpay/done",
     )
     inputs = "\n".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">'

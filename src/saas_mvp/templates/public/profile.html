@@ -60,6 +60,7 @@
     <a href="#products" id="products">商品</a>
     <a href="#portfolio" id="portfolio">作品集</a>
     <a href="#coupons" id="coupons">優惠券</a>
+    {% if gift_card_sale %}<a href="/p/{{ profile.slug }}/gift-cards">🎁 禮物卡</a>{% endif %}
     {% if staff_schedule %}<a href="#team" id="team">團隊排班</a>{% endif %}
     <a href="#contact" id="contact">聯絡</a>
   </nav>

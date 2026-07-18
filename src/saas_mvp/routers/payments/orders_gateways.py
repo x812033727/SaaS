@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 
 from fastapi import Depends, Request, status
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -47,10 +47,16 @@ def linepay_confirm(
     from saas_mvp.obs.alerts import capture_alert
     from saas_mvp.services.payment_linepay import LinePayClient, LinePayError
 
+    from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+
     order = shop_svc.get_order_by_trade_no(db, orderId) if orderId else None
     if order is None:
         return HTMLResponse("<h1>找不到訂單</h1>", status_code=404)
     if order.status == "paid":
+        # R11-A:購卡訂單導回狀態頁(顯示卡號),一般訂單維持完成頁
+        gc_url = gift_card_sales_svc.status_url_for_order(db, order)
+        if gc_url:
+            return RedirectResponse(gc_url, status_code=303)
         return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
     if not transactionId:
         return HTMLResponse("<h1>缺少交易編號</h1>", status_code=400)
@@ -84,6 +90,9 @@ def linepay_confirm(
     shop_svc.mark_order_paid(
         db, tenant_id=order.tenant_id, order_id=order.id, provider="linepay",
     )
+    gc_url = gift_card_sales_svc.status_url_for_order(db, order)
+    if gc_url:
+        return RedirectResponse(gc_url, status_code=303)
     return HTMLResponse("<h1>✅ 付款完成</h1><p>訂單已付款,可關閉本頁。</p>")
 
 
@@ -119,15 +128,21 @@ def newebpay_checkout(
     if order.total_cents % 100 != 0:
         return HTMLResponse("<h1>金額單位錯誤（需為整數元）。</h1>", status_code=400)
 
+    from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+
     base = settings.public_base_url.rstrip("/")
+    # R11-A:購卡訂單付款後導回狀態頁(顯示卡號)
+    gc_url = gift_card_sales_svc.status_url_for_order(db, order)
+    back_url = gc_url or f"{base}/payments/newebpay/done"
+    item_desc = "電子禮物卡" if gc_url else f"訂單{order.id}"
     client = NewebPayClient()
     form = client.build_order_form(
         merchant_trade_no=order.merchant_trade_no,
         amount_twd=order.total_cents // 100,
-        item_desc=f"訂單{order.id}",
-        return_url=f"{base}/payments/newebpay/done",
+        item_desc=item_desc,
+        return_url=back_url,
         notify_url=f"{base}/payments/newebpay/notify",
-        client_back_url=f"{base}/payments/newebpay/done",
+        client_back_url=back_url,
     )
     inputs = "\n".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">'
