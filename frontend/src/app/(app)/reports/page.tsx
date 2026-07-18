@@ -32,44 +32,62 @@ type StaffPerf = {
 };
 type PopularService = { service_id: number | null; service_name: string; reservation_count: number };
 type ReturnRate = { total_customers: number; repeat_customers: number; return_rate: number };
+type LocationRow = { id: number; name: string };
 
 export default function ReportsPage() {
   const [period, setPeriod] = useState<"week" | "month">("week");
+  // 期間/分店篩選:date_to 補到當日終點使範圍含尾;空值=全期間/全店
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [locationId, setLocationId] = useState("");
+
+  const rangeQs = [
+    dateFrom ? `date_from=${dateFrom}T00:00:00` : "",
+    dateTo ? `date_to=${dateTo}T23:59:59` : "",
+  ].filter(Boolean).join("&");
+  const advQs = [rangeQs, locationId ? `location_id=${locationId}` : ""]
+    .filter(Boolean).join("&");
+  const suffix = (qs: string) => (qs ? `?${qs}` : "");
 
   const trend = useQuery({
     queryKey: ["report-trend", period],
     queryFn: () => fetchJson<TrendPoint[]>(`/booking/analytics/trend?period=${period}&periods=12`),
   });
   const revenue = useQuery({
-    queryKey: ["report-revenue"],
-    queryFn: () => fetchJson<Revenue>("/booking/analytics/revenue"),
+    queryKey: ["report-revenue", rangeQs],
+    queryFn: () => fetchJson<Revenue>(`/booking/analytics/revenue${suffix(rangeQs)}`),
   });
   const summary = useQuery({
-    queryKey: ["report-summary"],
-    queryFn: () => fetchJson<Summary>("/booking/analytics/summary"),
+    queryKey: ["report-summary", rangeQs],
+    queryFn: () => fetchJson<Summary>(`/booking/analytics/summary${suffix(rangeQs)}`),
   });
   const utilization = useQuery({
-    queryKey: ["report-utilization"],
-    queryFn: () => fetchJson<Utilization[]>("/booking/analytics/utilization"),
+    queryKey: ["report-utilization", rangeQs],
+    queryFn: () => fetchJson<Utilization[]>(`/booking/analytics/utilization${suffix(rangeQs)}`),
   });
   const customers = useQuery({
     queryKey: ["report-customers"],
     queryFn: () => fetchJson<TopCustomer[]>("/booking/analytics/customers?limit=10"),
   });
+  const locations = useQuery({
+    queryKey: ["report-locations"],
+    queryFn: () => fetchJson<LocationRow[]>("/booking/locations/"),
+    retry: false,
+  });
   // 進階報表(ADVANCED_REPORTING 閘門;403 → 顯示升級提示)
   const staffPerf = useQuery({
-    queryKey: ["report-staff-perf"],
-    queryFn: () => fetchJson<StaffPerf[]>("/booking/analytics/report/staff-performance"),
+    queryKey: ["report-staff-perf", advQs],
+    queryFn: () => fetchJson<StaffPerf[]>(`/booking/analytics/report/staff-performance${suffix(advQs)}`),
     retry: false,
   });
   const popular = useQuery({
-    queryKey: ["report-popular"],
-    queryFn: () => fetchJson<PopularService[]>("/booking/analytics/report/popular-services"),
+    queryKey: ["report-popular", advQs],
+    queryFn: () => fetchJson<PopularService[]>(`/booking/analytics/report/popular-services${suffix(advQs)}`),
     retry: false,
   });
   const returnRate = useQuery({
-    queryKey: ["report-return-rate"],
-    queryFn: () => fetchJson<ReturnRate>("/booking/analytics/report/return-rate"),
+    queryKey: ["report-return-rate", advQs],
+    queryFn: () => fetchJson<ReturnRate>(`/booking/analytics/report/return-rate${suffix(advQs)}`),
     retry: false,
   });
   const advancedLocked =
@@ -92,17 +110,17 @@ export default function ReportsPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">營運報表</h1>
         <div className="flex items-center gap-2 text-sm">
-          <a href="/console/api/proxy/booking/analytics/export.csv"
+          <a href={`/console/api/proxy/booking/analytics/export.csv${suffix(rangeQs)}`}
             className="rounded-lg border border-line px-3 py-1 text-muted hover:text-ink">
             預約明細 CSV
           </a>
           {!advancedLocked && (
             <>
-              <a href="/console/api/proxy/booking/analytics/report.xlsx"
+              <a href={`/console/api/proxy/booking/analytics/report.xlsx${suffix(advQs)}`}
                 className="rounded-lg border border-line px-3 py-1 text-muted hover:text-ink">
                 Excel
               </a>
-              <a href="/console/api/proxy/booking/analytics/report.pdf"
+              <a href={`/console/api/proxy/booking/analytics/report.pdf${suffix(advQs)}`}
                 className="rounded-lg border border-line px-3 py-1 text-muted hover:text-ink">
                 PDF
               </a>
@@ -118,6 +136,33 @@ export default function ReportsPage() {
           </div>
         </div>
       </header>
+
+      <div className="mt-4 flex flex-wrap items-end gap-3 rounded-xl border border-line bg-surface p-3 text-sm">
+        <label>起日
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+            className="mt-1 block rounded-lg border border-line bg-surface px-3 py-1.5" />
+        </label>
+        <label>迄日
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+            className="mt-1 block rounded-lg border border-line bg-surface px-3 py-1.5" />
+        </label>
+        {(locations.data?.length ?? 0) > 0 && (
+          <label>分店(僅套用進階報表)
+            <select value={locationId} onChange={(e) => setLocationId(e.target.value)}
+              className="mt-1 block rounded-lg border border-line bg-surface px-3 py-1.5">
+              <option value="">全部分店</option>
+              {locations.data!.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </label>
+        )}
+        {(dateFrom || dateTo || locationId) && (
+          <button className="rounded-lg border border-line px-3 py-1.5 text-muted hover:text-ink"
+            onClick={() => { setDateFrom(""); setDateTo(""); setLocationId(""); }}>
+            清除篩選
+          </button>
+        )}
+        <span className="text-xs text-muted">未選=全期間;趨勢圖固定近 12 期不受篩選影響。</span>
+      </div>
 
       <section className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map(([label, value, hint]) => (
