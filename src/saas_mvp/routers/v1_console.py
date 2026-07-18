@@ -3328,3 +3328,91 @@ def features_unsubscribe(
     )
     db.commit()
     return _features_envelope(db, actor)
+
+
+# ──────────────── 禮物卡線上販售設定(R11-A)────────────────
+# owner 專屬;啟用時 service 嚴格驗證(面額+履約保障),
+# 避免「收錢後發卡才炸」。public_url 供店家複製宣傳。
+
+
+class GiftCardOnlineConfigOut(BaseModel):
+    enabled: bool
+    denominations: list[int]
+    fulfillment_guarantee: str
+    public_url: str | None
+
+
+class GiftCardOnlineConfigBody(BaseModel):
+    enabled: bool
+    denominations: list[int]
+    fulfillment_guarantee: str = Field("", max_length=2000)
+
+
+def _gift_card_online_config_out(db, tenant_id: int) -> GiftCardOnlineConfigOut:
+    from saas_mvp.config import settings as app_settings
+    from saas_mvp.services import gift_card_sales as sales_svc
+    from saas_mvp.services import profile as profile_svc
+
+    config = sales_svc.get_config(db, tenant_id)
+    prof = profile_svc.get_by_tenant(db, tenant_id)
+    public_url = None
+    if prof is not None and prof.slug and sales_svc.sale_available(db, tenant_id):
+        base = app_settings.public_base_url.rstrip("/")
+        public_url = f"{base}/p/{prof.slug}/gift-cards"
+    return GiftCardOnlineConfigOut(
+        enabled=bool(config.online_sale_enabled) if config else False,
+        denominations=sales_svc.denominations_of(config),
+        fulfillment_guarantee=(config.fulfillment_guarantee or "") if config else "",
+        public_url=public_url,
+    )
+
+
+@router.get(
+    "/gift-cards/online-config",
+    response_model=GiftCardOnlineConfigOut,
+    dependencies=[Depends(features_svc.require_feature(features_svc.GIFT_CARDS))],
+)
+def get_gift_card_online_config(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _require_owner(actor)
+    return _gift_card_online_config_out(db, actor.user.tenant_id)
+
+
+@router.put(
+    "/gift-cards/online-config",
+    response_model=GiftCardOnlineConfigOut,
+    dependencies=[Depends(features_svc.require_feature(features_svc.GIFT_CARDS))],
+)
+def save_gift_card_online_config(
+    body: GiftCardOnlineConfigBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import gift_card_sales as sales_svc
+
+    _require_owner(actor)
+    try:
+        sales_svc.save_config(
+            db,
+            tenant_id=actor.user.tenant_id,
+            online_sale_enabled=body.enabled,
+            denominations=body.denominations,
+            fulfillment_guarantee=body.fulfillment_guarantee,
+            updated_by_user_id=actor.user.id,
+        )
+    except sales_svc.GiftCardSaleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="gift_cards.online_config.update",
+        target=f"tenant:{actor.user.tenant_id}",
+        detail={"enabled": body.enabled, "denominations": body.denominations},
+        request=request,
+    )
+    db.commit()
+    return _gift_card_online_config_out(db, actor.user.tenant_id)

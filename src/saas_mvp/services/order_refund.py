@@ -70,6 +70,45 @@ def _apply_success(order: Order, amount: int, *, provider_code: str | None) -> N
     )
 
 
+def _gift_card_refund_guard(db: Session, order: Order) -> None:
+    """R11-A 對抗審查:購卡訂單退款守衛。
+
+    卡片已被折抵(balance < 面額)→ 擋退款(否則商家現金退了、
+    已用掉的額度也吞了=雙重損失);未使用 → 放行,退款成功後由
+    _void_purchased_card 於同交易作廢,買家不能退了錢還留著可用的卡。
+    """
+    from saas_mvp.services import gift_card_sales as sales_svc
+    from saas_mvp.services import gift_cards as gift_cards_svc
+
+    purchase = sales_svc.purchase_for_order(db, order.id)
+    if purchase is None or purchase.gift_card_id is None:
+        return
+    balance = gift_cards_svc.balance_cents(
+        db, tenant_id=order.tenant_id, gift_card_id=purchase.gift_card_id
+    )
+    if balance < purchase.amount_cents:
+        raise OrderRefundError(
+            "此禮物卡已被部分或全部使用,無法退款;如需處理請先作廢卡片並與顧客另行結算。"
+        )
+
+
+def _void_purchased_card(db: Session, order: Order, actor_user_id: int | None) -> None:
+    """退款成功後同交易作廢已售出的卡(冪等;非購卡訂單 no-op)。"""
+    from saas_mvp.services import gift_card_sales as sales_svc
+    from saas_mvp.services import gift_cards as gift_cards_svc
+
+    purchase = sales_svc.purchase_for_order(db, order.id)
+    if purchase is None or purchase.gift_card_id is None:
+        return
+    gift_cards_svc.void_card(
+        db,
+        tenant_id=order.tenant_id,
+        gift_card_id=purchase.gift_card_id,
+        note="線上購卡退款作廢",
+        actor_user_id=actor_user_id,
+    )
+
+
 def _linepay_refund(db, order, amount, *, client=None) -> Order:
     from saas_mvp.services.payment_linepay import LinePayClient
 
@@ -89,6 +128,7 @@ def _linepay_refund(db, order, amount, *, client=None) -> Order:
     order.refund_provider_code = code or None
     if code == "0000":
         _apply_success(order, amount, provider_code=code)
+        _void_purchased_card(db, order, order.refund_requested_by_user_id)
         db.commit()
         return order
     msg = " ".join(str(resp.get("returnMessage") or "LINE Pay 拒絕退款").split())[:160]
@@ -119,6 +159,7 @@ def _newebpay_refund(db, order, amount, *, client=None) -> Order:
     order.refund_provider_code = code or None
     if code == "SUCCESS":
         _apply_success(order, amount, provider_code=code)
+        _void_purchased_card(db, order, order.refund_requested_by_user_id)
         db.commit()
         return order
     msg = " ".join(str(resp.get("Message") or "藍新拒絕退款").split())[:160]
@@ -165,6 +206,7 @@ def _ecpay_refund(db, order, amount, *, client=None) -> Order:
     order.refund_provider_code = code or None
     if code == "1":
         _apply_success(order, amount, provider_code=code)
+        _void_purchased_card(db, order, order.refund_requested_by_user_id)
         db.commit()
         return order
     msg = " ".join(str(resp.get("RtnMsg") or "綠界拒絕退款").split())[:160]
@@ -202,6 +244,7 @@ def request_order_refund(
         raise OrderRefundError("此筆退款需要先到金流後台核對，不能自動重送。")
     if (order.total_cents or 0) <= 0:
         raise OrderRefundError("此訂單無閘道實付金額可退(禮物卡/點數請另行處理)。")
+    _gift_card_refund_guard(db, order)
     amount = _validate_amount(order, amount_cents)
 
     order.refund_status = REFUND_PROCESSING
@@ -216,6 +259,7 @@ def request_order_refund(
     provider = (order.payment_provider or "").lower()
     if provider == "stub":
         _apply_success(order, amount, provider_code="STUB")
+        _void_purchased_card(db, order, order.refund_requested_by_user_id)
         db.commit()
         return order
     if provider == "linepay":
@@ -255,9 +299,11 @@ def confirm_manual_refund(
     # auto _apply_success 雙重加總 → 超額退/丟失更新。比照 deposit.confirm_manual_refund。
     if order.refund_status == REFUND_PROCESSING:
         raise OrderRefundError("退款仍在處理中，請先確認金流結果再對帳。")
+    _gift_card_refund_guard(db, order)
     amount = _validate_amount(order, amount_cents)
     _apply_success(order, amount, provider_code="MANUAL")
     order.refund_error = f"人工退款：{note}"[:255]
     order.refund_requested_by_user_id = actor_user_id
+    _void_purchased_card(db, order, actor_user_id)
     db.commit()
     return order

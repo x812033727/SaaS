@@ -191,6 +191,14 @@ def issue_for_order(db: Session, order, *, issuer=None) -> Invoice | None:
         buyer_email, buyer_name = _customer_buyer(
             db, order.tenant_id, getattr(order, "customer_id", None)
         )
+        if not buyer_email:
+            # R11-A:線上購卡訂單無 customer,買受人=購買人(email 必填)
+            from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+
+            purchase = gift_card_sales_svc.purchase_for_order(db, order.id)
+            if purchase is not None:
+                buyer_email = purchase.purchaser_email or ""
+                buyer_name = purchase.purchaser_name or ""
         row = Invoice(
             tenant_id=order.tenant_id,
             order_id=order.id,

@@ -97,7 +97,7 @@ def import_all_models() -> None:
     from saas_mvp.models import staff, staff_shift, staff_leave  # noqa: F401
     from saas_mvp.models import service_category, service, service_staff  # noqa: F401
     from saas_mvp.models import service_package  # noqa: F401
-    from saas_mvp.models import gift_card  # noqa: F401
+    from saas_mvp.models import gift_card, gift_card_sale  # noqa: F401
     from saas_mvp.models import client_form  # noqa: F401
     from saas_mvp.models import bookable_resource  # noqa: F401
     from saas_mvp.models import appointment_series  # noqa: F401

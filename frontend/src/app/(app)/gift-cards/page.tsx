@@ -21,6 +21,13 @@ type GiftCardRow = {
 
 type GiftCardIssued = { card: GiftCardRow; code: string | null; created: boolean };
 
+type OnlineConfig = {
+  enabled: boolean;
+  denominations: number[];
+  fulfillment_guarantee: string;
+  public_url: string | null;
+};
+
 function errText(e: unknown): string {
   return e instanceof ApiError ? e.detail || `錯誤(${e.status})` : "操作失敗,請重試。";
 }
@@ -56,6 +63,25 @@ export default function GiftCardsPage() {
     queryKey: ["gift-cards"],
     queryFn: () => fetchJson<GiftCardRow[]>("/api/v1/gift-cards"),
     retry: false,
+  });
+  const onlineConfig = useQuery({
+    queryKey: ["gift-cards-online-config"],
+    queryFn: () => fetchJson<OnlineConfig>("/api/v1/gift-cards/online-config"),
+    retry: false,
+  });
+
+  const saveOnline = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      fetchJson<OnlineConfig>("/api/v1/gift-cards/online-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (cfg) => {
+      qc.setQueryData(["gift-cards-online-config"], cfg);
+      setMsg({ kind: "ok", text: cfg.enabled ? "線上販售已啟用。" : "線上販售設定已更新。" });
+    },
+    onError: (e) => setMsg({ kind: "error", text: errText(e) }),
   });
 
   const issue = useMutation({
@@ -203,6 +229,65 @@ export default function GiftCardsPage() {
           </button>
         </div>
       </form>
+
+      {onlineConfig.data && (
+        <section className="mt-6 rounded-xl border border-line bg-surface p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">線上販售(顧客自助購買)</h2>
+            <span className={`rounded-full px-2 py-0.5 text-xs ${onlineConfig.data.enabled ? "bg-ok-soft text-ok" : "bg-line/40 text-muted"}`}>
+              {onlineConfig.data.enabled ? "販售中" : "未啟用"}
+            </span>
+          </div>
+          {onlineConfig.data.public_url && (
+            <p className="mt-2 rounded-lg bg-ok-soft px-3 py-2 text-sm">
+              購買頁:
+              <a href={onlineConfig.data.public_url} target="_blank" rel="noopener noreferrer"
+                className="ml-1 break-all text-brand underline">
+                {onlineConfig.data.public_url}
+              </a>
+            </p>
+          )}
+          <form className="mt-3 grid gap-3 text-sm"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              const denoms = String(f.get("denominations") ?? "")
+                .split(/[,\s]+/)
+                .filter(Boolean)
+                .map((v) => Number(v));
+              saveOnline.mutate({
+                enabled: f.get("enabled") === "on",
+                denominations: denoms,
+                fulfillment_guarantee: String(f.get("fulfillment_guarantee") ?? ""),
+              });
+            }}>
+            <label>面額清單(元,逗號分隔,最多 10 個;如 500, 1000, 2000)
+              <input name="denominations"
+                defaultValue={onlineConfig.data.denominations.join(", ")}
+                className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2" />
+            </label>
+            <label>履約保障資訊(啟用時必填 10～2,000 字;購買頁與發卡快照皆使用)
+              <textarea name="fulfillment_guarantee" maxLength={2000} rows={3}
+                defaultValue={onlineConfig.data.fulfillment_guarantee}
+                className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2" />
+            </label>
+            <label className="flex items-center gap-2">
+              <input name="enabled" type="checkbox" defaultChecked={onlineConfig.data.enabled} />
+              啟用線上販售(需先在店家頁發佈公開頁面)
+            </label>
+            <p className="text-xs text-muted">
+              顧客付款成功後系統自動發卡:卡號顯示於購買完成頁並寄送至購買人 Email;
+              發行紀錄會出現在下方列表。
+            </p>
+            <div>
+              <button disabled={saveOnline.isPending}
+                className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand-deep disabled:opacity-60">
+                儲存販售設定
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       <div className="mt-6">
         <DataTable columns={columns} rows={cards.data} rowKey={(c) => c.id}

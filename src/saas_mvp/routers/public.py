@@ -14,8 +14,8 @@ import datetime
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from saas_mvp.auth.ratelimit import public_limiter
 from saas_mvp.db import get_db
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import coupons as coupons_svc
+from saas_mvp.services import gift_card_sales as gift_card_sales_svc
 from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import shop as shop_svc
@@ -212,5 +213,170 @@ def public_profile(
             "announcement": profile.announcement,
             "staff_schedule": staff_schedule,
             "json_ld": json_ld_str,
+            # R11-A:線上禮物卡販售入口(未開賣不渲染)
+            "gift_card_sale": gift_card_sales_svc.sale_available(db, tenant_id)
+            is not None,
+        },
+    )
+
+
+# ── 禮物卡線上購買(R11-A)────────────────────────────────────────────
+# 三頁:購買表單 → 建單導金流 → 狀態/成功頁(capability URL=trade_no,
+# 不可枚舉;付款 callback 發卡後本頁顯示一次性卡號)。
+
+
+def _gift_card_profile_or_404(db: Session, slug: str):
+    from saas_mvp.services import gift_card_sales as sales_svc
+
+    profile = profile_svc.get_by_slug(db, slug)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    config = sales_svc.sale_available(db, profile.tenant_id)
+    if config is None:
+        # 未開賣視同不存在(不洩漏功能狀態)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return profile, config
+
+
+@router.get("/{slug}/gift-cards", response_class=HTMLResponse)
+def gift_card_buy_form(
+    slug: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    from saas_mvp.services import gift_card_sales as sales_svc
+
+    profile, config = _gift_card_profile_or_404(db, slug)
+    display_name = profile.display_name or (
+        profile.tenant.name if profile.tenant else slug
+    )
+    return templates.TemplateResponse(
+        "public/gift_card_buy.html",
+        {
+            "request": request,
+            "slug": slug,
+            "display_name": display_name,
+            "denominations": sales_svc.denominations_of(config),
+            "guarantee": config.fulfillment_guarantee,
+            "error": None,
+            "form": {},
+        },
+    )
+
+
+@router.post("/{slug}/gift-cards", response_class=HTMLResponse)
+def gift_card_buy_submit(
+    slug: str,
+    request: Request,
+    amount_twd: int = Form(...),
+    purchaser_email: str = Form(..., max_length=256),
+    purchaser_name: str = Form("", max_length=128),
+    recipient_name: str = Form("", max_length=128),
+    message: str = Form("", max_length=500),
+    agree: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import gift_card_sales as sales_svc
+    from saas_mvp.services.payment import get_payment_provider
+
+    profile, config = _gift_card_profile_or_404(db, slug)
+    display_name = profile.display_name or (
+        profile.tenant.name if profile.tenant else slug
+    )
+
+    def _err(msg: str):
+        return templates.TemplateResponse(
+            "public/gift_card_buy.html",
+            {
+                "request": request,
+                "slug": slug,
+                "display_name": display_name,
+                "denominations": sales_svc.denominations_of(config),
+                "guarantee": config.fulfillment_guarantee,
+                "error": msg,
+                "form": {
+                    "amount_twd": amount_twd,
+                    "purchaser_email": purchaser_email,
+                    "purchaser_name": purchaser_name,
+                    "recipient_name": recipient_name,
+                    "message": message,
+                },
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if agree != "true":
+        return _err("請先閱讀並同意履約保障說明。")
+    try:
+        purchase = sales_svc.start_purchase(
+            db,
+            tenant_id=profile.tenant_id,
+            amount_twd=amount_twd,
+            purchaser_email=purchaser_email,
+            purchaser_name=purchaser_name,
+            recipient_name=recipient_name,
+            message=message,
+        )
+    except sales_svc.GiftCardSaleError as exc:
+        return _err(str(exc))
+    from saas_mvp.models.order import Order
+
+    order = db.get(Order, purchase.order_id)
+    try:
+        checkout_url = get_payment_provider(db).create_checkout(db, order=order)
+    except Exception:  # noqa: BLE001 — 金流未配置等
+        return _err("金流服務暫時無法使用,請稍後再試。")
+    return RedirectResponse(checkout_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/{slug}/gift-cards/{trade_no}")
+def gift_card_purchase_status_post(slug: str, trade_no: str):
+    """NewebPay ReturnURL 是瀏覽器 form POST(非 GET redirect):
+    PRG 轉向 GET 狀態頁,否則買家付款完落在 405(R11-A 對抗審查)。"""
+    return RedirectResponse(
+        f"/p/{slug}/gift-cards/{trade_no}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.get("/{slug}/gift-cards/{trade_no}", response_class=HTMLResponse)
+def gift_card_purchase_status(
+    slug: str,
+    trade_no: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    from saas_mvp.models.order import ORDER_PENDING
+    from saas_mvp.services import gift_card_sales as sales_svc
+
+    profile = profile_svc.get_by_slug(db, slug)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    purchase = sales_svc.purchase_by_trade_no(
+        db, tenant_id=profile.tenant_id, trade_no=trade_no
+    )
+    if purchase is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    display_name = profile.display_name or (
+        profile.tenant.name if profile.tenant else slug
+    )
+    order = purchase.order
+    issued = purchase.status == sales_svc.PURCHASE_ISSUED
+    pending = (not issued) and order.status == ORDER_PENDING
+    created = purchase.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    age = (_utcnow() - created) if created else datetime.timedelta(hours=99)
+    return templates.TemplateResponse(
+        "public/gift_card_status.html",
+        {
+            "request": request,
+            "slug": slug,
+            "display_name": display_name,
+            "purchase": purchase,
+            "code": purchase.plain_code if issued else None,
+            "pending": pending,
+            # 放棄付款的單會永遠 PENDING:只在購買後 15 分鐘內自動刷新
+            "auto_refresh": pending and age < datetime.timedelta(minutes=15),
+            "amount_twd": purchase.amount_cents // 100,
         },
     )
