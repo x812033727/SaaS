@@ -55,7 +55,12 @@ function applyRenewedCookies(response: NextResponse, request: NextRequest, token
   if (csrf) response.cookies.set("csrf_token", csrf, { ...common, httpOnly: false });
 }
 
+// 回傳 access_token 的端點只准 server 端 reauth route 呼叫:若經此 JS 可讀
+// 的 proxy 轉發,XSS 就能把 httpOnly cookie 升級成可攜 bearer token。
+const DENIED_PATHS = new Set(["api/v1/account/password", "api/v1/account/logout-all"]);
+
 function isAllowed(path: string): boolean {
+  if (DENIED_PATHS.has(path)) return false;
   return ALLOWED_PREFIXES.some((p) => path === p.slice(0, -1) || path.startsWith(p));
 }
 
@@ -92,12 +97,16 @@ async function handle(
 
   const url = new URL(`${apiOrigin}/${path}`);
   url.search = request.nextUrl.search;
+  // 轉發真實客戶端 IP:auth.mfa.* 等稽核事件的 IP 取自 X-Forwarded-For,
+  // 不轉發時後端只看得到 Next server 的 127.0.0.1(比照 session/login route)。
+  const forwardedFor = request.headers.get("x-forwarded-for");
   const upstream = await fetch(url, {
     method: request.method,
     cache: "no-store",
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${token}`,
+      ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
       ...(request.headers.get("content-type")
         ? { "Content-Type": request.headers.get("content-type") as string }
         : {}),

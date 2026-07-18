@@ -30,12 +30,26 @@ async function reauth(action: "password" | "logout-all", body: Record<string, un
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, body }),
   });
+  if (res.status === 401) {
+    // session 已過期:與 client-api 一致,導回登入而非留下無文案錯誤
+    window.location.href = "/console/login";
+    throw new ApiError(401, "unauthenticated");
+  }
   if (!res.ok) {
     let detail = "";
     try { detail = ((await res.json()) as { detail?: string }).detail ?? ""; } catch { /* noop */ }
     throw new ApiError(res.status, detail);
   }
   return res.json();
+}
+
+function svgDataUri(svg: string): string {
+  // segno svg_inline 刻意省略 xmlns(供 HTML inline 用);獨立 image/svg+xml
+  // 文件缺 xmlns 不會渲染,這裡補上再轉 data URI。
+  const withNs = svg.includes("xmlns=")
+    ? svg
+    : svg.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" ');
+  return `data:image/svg+xml;base64,${btoa(withNs)}`;
 }
 
 const inputCls = "mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2";
@@ -199,7 +213,7 @@ export default function AccountPage() {
                   <img
                     alt="TOTP QR code"
                     className="max-w-[200px] rounded-lg border border-line bg-white p-2"
-                    src={`data:image/svg+xml;base64,${btoa(totpStart.qr_svg)}`}
+                    src={svgDataUri(totpStart.qr_svg)}
                   />
                   <p className="mt-1 break-all text-xs text-muted">手動輸入:{totpStart.secret}</p>
                 </div>
