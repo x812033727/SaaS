@@ -118,7 +118,7 @@ export default function CampaignsPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">行銷活動</h1>
         <div className="flex items-center gap-3 text-sm">
-          <a href="/notifications" className="text-muted hover:text-ink">發送紀錄 →</a>
+          <a href="/console/notifications" className="text-muted hover:text-ink">發送紀錄 →</a>
           <button
             onClick={() => { setEditing(null); setMessage(null); document.getElementById("cmp-form")?.scrollIntoView(); }}
             className="rounded-lg bg-brand px-4 py-2 font-semibold text-white hover:bg-brand-deep"
