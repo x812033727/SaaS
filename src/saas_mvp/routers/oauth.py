@@ -39,6 +39,7 @@ from saas_mvp.config import settings
 from saas_mvp.db import get_db
 from saas_mvp.models.user import User
 from saas_mvp.routers.ui import _set_auth_cookie, _set_mfa_pending_cookie
+from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import login_audit
 from saas_mvp.services import oauth as oauth_svc
 from saas_mvp.services.mailer import Mailer, get_mailer
@@ -76,16 +77,19 @@ def _redirect_uri(provider: str) -> str:
 def oauth_login(
     provider: str,
     link: int = 0,
+    next: str = "",
     db: Session = Depends(get_db),
 ):
     _validate_provider(provider)
+    # 綁定完成後導回哪個後台:白名單兩值,intent cookie 一併攜帶目的地。
+    to_console = next == "console"
     state = secrets.token_urlsafe(24)
     redirect_uri = _redirect_uri(provider)
     try:
         p = oauth_svc.get_provider(provider, settings=settings, db=db)
     except oauth_svc.OAuthNotConfigured:
         if link:
-            return _account_redirect(oauth_error="not_configured")
+            return _account_redirect(oauth_error="not_configured", to_console=to_console)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"{provider.upper()} OAuth is not configured",
@@ -107,7 +111,7 @@ def oauth_login(
     if link:
         resp.set_cookie(
             key=_INTENT_COOKIE_NAME,
-            value="link",
+            value="link-console" if to_console else "link",
             httponly=True,
             samesite="lax",
             secure=settings.env not in ("dev", "test"),
@@ -142,8 +146,11 @@ def oauth_callback(
     try:
         p = oauth_svc.get_provider(provider, settings=settings, db=db)
     except oauth_svc.OAuthNotConfigured:
-        if request.cookies.get(_INTENT_COOKIE_NAME) == "link":
-            return _account_redirect(oauth_error="not_configured")
+        if request.cookies.get(_INTENT_COOKIE_NAME) in ("link", "link-console"):
+            return _account_redirect(
+                oauth_error="not_configured",
+                to_console=request.cookies.get(_INTENT_COOKIE_NAME) == "link-console",
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"{provider.upper()} OAuth is not configured",
@@ -160,7 +167,10 @@ def oauth_callback(
 
     # 綁定模式：login 時帶過 ?link=1，且 callback 當下確實已登入 → 綁到目前使用者。
     intent = request.cookies.get(_INTENT_COOKIE_NAME)
-    link_user = _current_ui_user(request, db) if intent == "link" else None
+    to_console = intent == "link-console"
+    link_user = (
+        _current_ui_user(request, db) if intent in ("link", "link-console") else None
+    )
     if link_user is not None:
         # 帳號接管防護：同一外部身分不得綁到多個後台帳號。
         owner = (
@@ -169,11 +179,20 @@ def oauth_callback(
             .first()
         )
         if owner is not None and owner.id != link_user.id:
-            return _account_redirect(oauth_error="in_use")
+            return _account_redirect(oauth_error="in_use", to_console=to_console)
         link_user.oauth_provider = provider
         link_user.oauth_subject = subject
         db.commit()
-        return _account_redirect(linked=provider)
+        audit_svc.record(
+            db,
+            action="auth.oauth.link",
+            actor_user_id=link_user.id,
+            tenant_id=link_user.tenant_id,
+            target=f"user:{link_user.id}",
+            detail={"provider": provider},
+        )
+        db.commit()
+        return _account_redirect(linked=provider, to_console=to_console)
 
     # 登入模式：先以 (provider, subject) 查（支援 LINE 信箱 ≠ 後台信箱者），再以 email 查。
     user = (
@@ -238,12 +257,21 @@ def oauth_callback(
     return resp
 
 
-def _account_redirect(*, linked: str | None = None, oauth_error: str | None = None):
-    """綁定模式結束導回 /ui/account（帶結果參數），並清掉 state/intent cookie。"""
+def _account_redirect(
+    *,
+    linked: str | None = None,
+    oauth_error: str | None = None,
+    to_console: bool = False,
+):
+    """綁定模式結束導回帳號頁（帶結果參數），並清掉 state/intent cookie。
+
+    to_console=True(login 時帶 ?next=console)→ /console/account,否則 /ui/account。
+    """
+    base = "/console/account" if to_console else "/ui/account"
     if oauth_error:
-        target = f"/ui/account?oauth_error={oauth_error}"
+        target = f"{base}?oauth_error={oauth_error}"
     else:
-        target = f"/ui/account?linked={linked}"
+        target = f"{base}?linked={linked}"
     resp = RedirectResponse(target, status_code=status.HTTP_303_SEE_OTHER)
     resp.delete_cookie(_STATE_COOKIE_NAME, path="/")
     resp.delete_cookie(_INTENT_COOKIE_NAME, path="/")
