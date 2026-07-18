@@ -24,7 +24,7 @@ function FeatureLockedCard() {
       <p className="font-semibold text-warn">此功能未啟用</p>
       <p className="mt-2 text-ink">
         AI 客服屬進階功能,請至
-        <a href="/ui/plan" className="mx-1 text-brand underline">方案頁</a>
+        <a href="/plan" className="mx-1 text-brand underline">方案頁</a>
         升級或啟用後再試。
       </p>
     </div>

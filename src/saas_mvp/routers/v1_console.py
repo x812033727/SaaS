@@ -2772,3 +2772,544 @@ def account_resend_verification(
         email_user_limiter._check_rate_limit(f"user:{actor.user.id}")
     outcome = account_email_svc.send_verification_email(db, actor.user, mailer)
     return {"outcome": outcome}
+
+
+# ──────────────────── 方案/帳單/進階功能(R8-4)────────────────────
+# 與 /ui/plan、/ui/billing、/ui/features 共用 services/billing、plans、
+# features、tenant_einvoice、invoice_profiles。金錢面 mutation 限 owner;
+# ecpay 模式回 checkout_url(絕對網址,console 開新視窗完成綠界授權)。
+# 公開定價頁 /ui/pricing 留 Jinja。
+
+
+class PlanCard(BaseModel):
+    key: str
+    label: str
+    monthly_price_cents: int
+    feature_labels: list[str]
+    is_current: bool
+
+
+class PlanInfo(BaseModel):
+    effective: str
+    effective_label: str
+    paid: str
+    paid_label: str
+    trial_active: bool
+    trial_days_left: int | None
+
+
+class PlanEnvelope(BaseModel):
+    plan_info: PlanInfo
+    plans: list[PlanCard]
+
+
+class SubscribeResultOut(BaseModel):
+    mode: str
+    enabled: bool
+    payment_id: str | None
+    checkout_url: str | None
+
+
+def _plan_envelope(db, tenant_id: int) -> PlanEnvelope:
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.routers.ui.billing import _plan_info
+    from saas_mvp.services import plans as plans_svc
+
+    tenant = db.get(Tenant, tenant_id)
+    info = _plan_info(tenant)
+    return PlanEnvelope(
+        plan_info=PlanInfo(**info),
+        plans=[
+            PlanCard(
+                key=p["key"],
+                label=p["label"],
+                monthly_price_cents=p["monthly_price_cents"],
+                feature_labels=p["feature_labels"],
+                is_current=p["is_current"],
+            )
+            for p in plans_svc.list_plans(current=info["effective"])
+        ],
+    )
+
+
+@router.get("/plan", response_model=PlanEnvelope)
+def plan_overview(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _require_owner(actor)
+    return _plan_envelope(db, actor.user.tenant_id)
+
+
+@router.post("/plan/{plan}/subscribe", response_model=SubscribeResultOut)
+def plan_subscribe(
+    plan: str,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """訂閱方案。stub 立即生效;ecpay 回 checkout_url(完成首期授權後生效)。"""
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.services import billing as billing_svc
+
+    _require_owner(actor)
+    bundle_key = {v: k for k, v in features_svc.BUNDLE_TO_PLAN.items()}.get(plan)
+    if bundle_key is None:
+        raise HTTPException(status_code=422, detail="未知的方案。")
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    result = billing_svc.subscribe_bundle(db, tenant, bundle_key, actor.user.id)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.plan.subscribe",
+        target=f"tenant:{tenant.id}",
+        detail={"plan": plan, "mode": result.mode},
+        request=request,
+    )
+    db.commit()
+    return SubscribeResultOut(
+        mode=result.mode,
+        enabled=result.enabled,
+        payment_id=result.payment_id,
+        checkout_url=result.checkout_url,
+    )
+
+
+@router.post("/plan/unsubscribe", response_model=PlanEnvelope)
+def plan_unsubscribe(
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """退訂 → 降 free(已付費者保留原方案至最後扣款日+31 天)。"""
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.services import billing as billing_svc
+
+    _require_owner(actor)
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    billing_svc.unsubscribe_bundle(db, tenant, actor.user.id)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.plan.unsubscribe",
+        target=f"tenant:{tenant.id}",
+        request=request,
+    )
+    db.commit()
+    return _plan_envelope(db, actor.user.tenant_id)
+
+
+# ── 帳單 ──
+
+
+class ChargeRow(BaseModel):
+    id: int
+    period_no: int
+    success: bool
+    amount_cents: int
+    charged_at: datetime.datetime | None
+    rtn_msg: str | None
+    invoice_status: str | None
+    invoice_no: str | None
+
+
+class BundleSubRow(BaseModel):
+    feature: str
+    label: str
+    status: str
+    period_amount_cents: int
+    next_charge_at: datetime.datetime | None
+
+
+class EinvoiceConfigOut(BaseModel):
+    configured: bool
+    merchant_id: str
+    environment: str
+    enabled: bool
+    has_hash_key: bool
+    has_hash_iv: bool
+
+
+class InvoiceProfileOut(BaseModel):
+    configured: bool
+    mode: str | None
+    buyer_name: str | None
+    buyer_identifier: str | None
+    carrier_type: str | None
+    has_carrier_number: bool
+    masked_carrier: str | None
+    donation_code: str | None
+
+
+class BillingEnvelope(BaseModel):
+    plan_info: PlanInfo
+    subscription: BundleSubRow | None
+    charges: list[ChargeRow]
+    einvoice_config: EinvoiceConfigOut
+    invoice_profile: InvoiceProfileOut
+
+
+class EinvoiceConfigBody(BaseModel):
+    merchant_id: str = ""
+    hash_key: str = ""
+    hash_iv: str = ""
+    environment: str = "stage"
+    enabled: bool = False
+
+
+class InvoiceProfileBody(BaseModel):
+    mode: str
+    buyer_name: str = ""
+    buyer_identifier: str = ""
+    carrier_type: str = "ecpay"
+    carrier_number: str = ""
+    donation_code: str = ""
+
+
+def _billing_envelope(db, actor: Actor) -> BillingEnvelope:
+    import datetime as _dt
+
+    from sqlalchemy import select as _select
+
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+    from saas_mvp.models.invoice import Invoice
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.routers.ui.billing import _plan_info
+    from saas_mvp.services import invoice_profiles as invoice_profiles_svc
+    from saas_mvp.services import tenant_einvoice as einvoice_svc
+
+    tid = actor.user.tenant_id
+    tenant = db.get(Tenant, tid)
+    sub = (
+        db.execute(
+            _select(FeatureSubscription)
+            .where(
+                FeatureSubscription.tenant_id == tid,
+                FeatureSubscription.feature.in_(features_svc.VALID_BUNDLES),
+            )
+            .order_by(FeatureSubscription.id.desc())
+        )
+        .scalars()
+        .first()
+    )
+    charges: list = []
+    next_charge_at = None
+    if sub is not None:
+        charges = (
+            db.execute(
+                _select(SubscriptionCharge)
+                .where(SubscriptionCharge.subscription_id == sub.id)
+                .order_by(SubscriptionCharge.id.desc())
+                .limit(24)
+            )
+            .scalars()
+            .all()
+        )
+        if sub.status == "active" and sub.last_charged_at is not None:
+            next_charge_at = sub.last_charged_at + _dt.timedelta(days=30)
+    invoice_by_charge: dict = {}
+    if charges:
+        rows = (
+            db.execute(
+                _select(Invoice).where(
+                    Invoice.subscription_charge_id.in_([c.id for c in charges])
+                )
+            )
+            .scalars()
+            .all()
+        )
+        invoice_by_charge = {r.subscription_charge_id: r for r in rows}
+    cfg = einvoice_svc.get_config(db, tid)
+    profile = invoice_profiles_svc.profile_status(db, tid)
+    return BillingEnvelope(
+        plan_info=PlanInfo(**_plan_info(tenant)),
+        subscription=(
+            BundleSubRow(
+                feature=sub.feature,
+                label=features_svc.BUNDLE_LABELS.get(sub.feature, sub.feature),
+                status=sub.status,
+                period_amount_cents=sub.period_amount_cents,
+                next_charge_at=next_charge_at,
+            )
+            if sub
+            else None
+        ),
+        charges=[
+            ChargeRow(
+                id=c.id,
+                period_no=c.period_no,
+                success=bool(c.success),
+                amount_cents=c.amount_cents,
+                charged_at=c.charged_at,
+                rtn_msg=c.rtn_msg,
+                invoice_status=(
+                    invoice_by_charge[c.id].status if c.id in invoice_by_charge else None
+                ),
+                invoice_no=(
+                    invoice_by_charge[c.id].invoice_no
+                    if c.id in invoice_by_charge
+                    else None
+                ),
+            )
+            for c in charges
+        ],
+        # 憑證絕不外流:只回布林/遮罩
+        einvoice_config=EinvoiceConfigOut(
+            configured=cfg is not None,
+            merchant_id=cfg.merchant_id if cfg else "",
+            environment=cfg.environment if cfg else "stage",
+            enabled=bool(cfg.enabled) if cfg else False,
+            has_hash_key=bool(cfg.hash_key_enc) if cfg else False,
+            has_hash_iv=bool(cfg.hash_iv_enc) if cfg else False,
+        ),
+        invoice_profile=InvoiceProfileOut(**profile),
+    )
+
+
+@router.get("/billing", response_model=BillingEnvelope)
+def billing_overview(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _require_owner(actor)
+    return _billing_envelope(db, actor)
+
+
+@router.post("/billing/einvoice-config", response_model=BillingEnvelope)
+def billing_einvoice_config_save(
+    body: EinvoiceConfigBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """店家自有電子發票憑證(opt-in);HashKey/IV 留空=沿用既有值。"""
+    from saas_mvp.services import tenant_einvoice as einvoice_svc
+
+    _require_owner(actor)
+    try:
+        einvoice_svc.save_config(
+            db,
+            tenant_id=actor.user.tenant_id,
+            merchant_id=body.merchant_id,
+            hash_key=body.hash_key,
+            hash_iv=body.hash_iv,
+            environment=body.environment,
+            enabled=body.enabled,
+            updated_by_user_id=actor.user.id,
+        )
+    except einvoice_svc.EinvoiceConfigError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.einvoice_config.update",
+        target="einvoice:config",
+        detail={"enabled": body.enabled, "environment": body.environment},
+        request=request,
+    )
+    db.commit()
+    return _billing_envelope(db, actor)
+
+
+@router.post("/billing/invoice-profile", response_model=BillingEnvelope)
+def billing_invoice_profile_save(
+    body: InvoiceProfileBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """平台開給店家的發票買受資訊;載具號碼加密保存、留空=沿用。"""
+    from saas_mvp.services import invoice_profiles as invoice_profiles_svc
+
+    _require_owner(actor)
+    try:
+        row = invoice_profiles_svc.save_profile(
+            db,
+            tenant_id=actor.user.tenant_id,
+            mode=body.mode,
+            buyer_name=body.buyer_name,
+            buyer_identifier=body.buyer_identifier,
+            carrier_type=body.carrier_type,
+            carrier_number=body.carrier_number,
+            donation_code=body.donation_code,
+            actor_user_id=actor.user.id,
+        )
+    except invoice_profiles_svc.InvoiceProfileError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.invoice_profile.update",
+        target=f"tenant:{actor.user.tenant_id}",
+        detail={
+            "mode": row.mode,
+            "carrier_type": row.carrier_type,
+            "has_identifier": bool(row.buyer_identifier),
+            "has_donation_code": bool(row.donation_code),
+        },
+        request=request,
+    )
+    db.commit()
+    return _billing_envelope(db, actor)
+
+
+# ── 進階功能 ──
+
+
+class FeatureSubInfo(BaseModel):
+    status: str
+    total_success_times: int
+    last_charged_at: datetime.datetime | None
+
+
+class FeatureCard(BaseModel):
+    key: str
+    label: str
+    monthly_price_cents: int
+    enabled: bool
+    subscription: FeatureSubInfo | None
+
+
+class FeatureChargeRow(BaseModel):
+    id: int
+    feature: str
+    feature_label: str
+    period_no: int
+    success: bool
+    amount_cents: int
+    charged_at: datetime.datetime | None
+
+
+class FeaturesEnvelope(BaseModel):
+    features: list[FeatureCard]
+    charges: list[FeatureChargeRow]
+    is_owner: bool
+
+
+def _features_envelope(db, actor: Actor) -> FeaturesEnvelope:
+    from saas_mvp.models.feature_subscription import FeatureSubscription
+    from saas_mvp.models.subscription_charge import SubscriptionCharge
+
+    tid = actor.user.tenant_id
+    charges = (
+        db.query(SubscriptionCharge, FeatureSubscription.feature)
+        .join(
+            FeatureSubscription,
+            SubscriptionCharge.subscription_id == FeatureSubscription.id,
+        )
+        .filter(SubscriptionCharge.tenant_id == tid)
+        .order_by(SubscriptionCharge.id.desc())
+        .limit(20)
+        .all()
+    )
+    # 扣款列可能含 bundle(BUNDLE_*),標籤合併 BUNDLE_LABELS
+    labels = {**features_svc._FEATURE_LABELS, **features_svc.BUNDLE_LABELS}
+    role = getattr(actor.user, "role", None) or "owner"
+    return FeaturesEnvelope(
+        features=[
+            FeatureCard(
+                key=f["key"],
+                label=f["label"],
+                monthly_price_cents=f["monthly_price_cents"],
+                enabled=f["enabled"],
+                subscription=(
+                    FeatureSubInfo(
+                        status=f["subscription"]["status"],
+                        total_success_times=f["subscription"]["total_success_times"],
+                        last_charged_at=f["subscription"]["last_charged_at"],
+                    )
+                    if f["subscription"]
+                    else None
+                ),
+            )
+            for f in features_svc.list_for_tenant(db, tid)
+        ],
+        charges=[
+            FeatureChargeRow(
+                id=c.id,
+                feature=feature,
+                feature_label=labels.get(feature, feature),
+                period_no=c.period_no,
+                success=bool(c.success),
+                amount_cents=c.amount_cents,
+                charged_at=c.charged_at,
+            )
+            for c, feature in charges
+        ],
+        is_owner=(role == "owner" or actor.user.is_admin),
+    )
+
+
+@router.get("/features", response_model=FeaturesEnvelope)
+def features_overview(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """功能清單任一成員可看(比照 /ui);mutation 才限 owner。"""
+    return _features_envelope(db, actor)
+
+
+@router.post("/features/{feature}/subscribe", response_model=SubscribeResultOut)
+def features_subscribe(
+    feature: str,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.services import billing as billing_svc
+
+    _require_owner(actor)
+    try:
+        features_svc.validate_feature(feature)
+    except features_svc.UnknownFeatureError:
+        raise HTTPException(status_code=422, detail="未知的功能。")
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    result = billing_svc.subscribe_feature(db, tenant, feature, actor.user.id)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.feature.subscribe",
+        target=f"tenant:{tenant.id}",
+        detail={"feature": feature},
+        request=request,
+    )
+    db.commit()
+    return SubscribeResultOut(
+        mode=result.mode,
+        enabled=result.enabled,
+        payment_id=result.payment_id,
+        checkout_url=result.checkout_url,
+    )
+
+
+@router.post("/features/{feature}/unsubscribe", response_model=FeaturesEnvelope)
+def features_unsubscribe(
+    feature: str,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.models.tenant import Tenant
+    from saas_mvp.services import billing as billing_svc
+
+    _require_owner(actor)
+    try:
+        features_svc.validate_feature(feature)
+    except features_svc.UnknownFeatureError:
+        raise HTTPException(status_code=422, detail="未知的功能。")
+    tenant = db.get(Tenant, actor.user.tenant_id)
+    billing_svc.unsubscribe_feature(db, tenant, feature, actor.user.id)
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="billing.feature.unsubscribe",
+        target=f"tenant:{tenant.id}",
+        detail={"feature": feature},
+        request=request,
+    )
+    db.commit()
+    return _features_envelope(db, actor)

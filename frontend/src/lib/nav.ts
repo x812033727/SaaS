@@ -75,9 +75,9 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "帳務設定",
     items: [
-      { label: "方案", href: "/ui/plan", migrated: false },
-      { label: "帳單", href: "/ui/billing", migrated: false },
-      { label: "進階功能", href: "/ui/features", migrated: false },
+      { label: "方案", href: "/plan", migrated: true },
+      { label: "帳單", href: "/billing", migrated: true },
+      { label: "進階功能", href: "/features", migrated: true },
       { label: "API 金鑰", href: "/api-keys", migrated: true },
       { label: "成員", href: "/members", migrated: true },
       { label: "帳號", href: "/account", migrated: true },
