@@ -40,6 +40,7 @@ _UPSERTABLE = frozenset(
         "seo_description",
         "intro",
         "announcement",
+        "review_url",
         "is_published",
     }
 )

@@ -47,6 +47,8 @@ _NOT_FOUND = HTMLResponse(
 
 # msg 代碼 → 顯示文字(PRG 用 querystring 傳代碼,不傳自由文字防注入/長度濫用)
 _MESSAGES = {
+    "referral_ok": "推薦碼已綁定!您到店消費後,推薦人將獲得回饋點數。",
+    "referral_bad": "推薦碼無效或您已綁定過推薦人。",
     "cancelled": "預約已取消。",
     "confirmed": "已確認出席,期待您的光臨!",
     "rescheduled": "改期完成。",
@@ -100,6 +102,14 @@ def portal_page(
         waitlist_rows = [
             {"entry": e, "slot": slot_map.get(e.slot_id)} for e in entries
         ]
+    # R11-B:我的推薦碼(惰性產生)+ 可綁定推薦人(尚未綁定時)
+    from saas_mvp.services import referrals as referrals_svc
+
+    try:
+        referral_code = referrals_svc.get_or_create_code(db, customer)
+        db.commit()
+    except referrals_svc.ReferralError:
+        referral_code = None
     return templates.TemplateResponse(
         "customer_portal/portal.html",
         {
@@ -111,8 +121,31 @@ def portal_page(
             "history": data["history"],
             "waitlist": waitlist_rows,
             "message": _MESSAGES.get(msg or ""),
+            "referral_code": referral_code,
+            "can_bind_referral": customer.referred_by_customer_id is None,
         },
     )
+
+
+@router.post("/{token}/referral", response_class=HTMLResponse)
+def portal_bind_referral(
+    token: str,
+    code: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """綁定推薦人(R11-B):新客輸入親友推薦碼;到場後推薦人得點。"""
+    from saas_mvp.services import referrals as referrals_svc
+
+    customer = _resolve(db, token)
+    if customer is None:
+        return _NOT_FOUND
+    try:
+        referrals_svc.bind_by_code(db, customer=customer, code=code)
+        db.commit()
+    except referrals_svc.ReferralError:
+        db.rollback()
+        return _redirect(token, "referral_bad")
+    return _redirect(token, "referral_ok")
 
 
 @router.post("/{token}/email", response_class=HTMLResponse)

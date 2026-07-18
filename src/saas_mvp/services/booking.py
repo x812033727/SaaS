@@ -704,6 +704,11 @@ def mark_attendance(
     if reservation is None:
         raise ReservationNotFoundError(f"reservation {reservation_id} not found")
     reservation.attended = attended
+    if attended:
+        # R11-B:被推薦客首次到場 → 推薦人得點(冪等,同一交易)
+        from saas_mvp.services import referrals as referrals_svc
+
+        referrals_svc.reward_if_due(db, reservation)
     db.commit()
     db.refresh(reservation)
     return reservation

@@ -58,6 +58,12 @@ class Customer(Base):
     points_balance = Column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    # R11-B 推薦迴路:每客專屬推薦碼(tenant 內唯一)、被誰推薦、獎勵發放時間
+    referral_code = Column(String(12), nullable=True)
+    referred_by_customer_id = Column(
+        Integer, ForeignKey("booking_customers.id", ondelete="SET NULL"), nullable=True
+    )
+    referral_rewarded_at = Column(DateTime(timezone=True), nullable=True)
     tier = Column(
         String(16), nullable=False, default="regular", server_default="regular"
     )
@@ -101,6 +107,9 @@ class Customer(Base):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "line_user_id", name="uq_booking_customer"),
+        UniqueConstraint(
+            "tenant_id", "referral_code", name="uq_customer_referral_code"
+        ),
     )
 
 

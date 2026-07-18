@@ -303,10 +303,28 @@ def _drop_opted_out(customers: list[Customer]) -> list[Customer]:
     return [c for c in customers if not customer_marketing.is_opted_out(c)]
 
 
-def _render(template: str, customer: Customer) -> str:
-    """簡易訊息渲染：替換 {name} 為顧客顯示名。"""
+def _render(
+    template: str,
+    customer: Customer,
+    *,
+    db: Session | None = None,
+    review_url: str | None = None,
+) -> str:
+    """簡易訊息渲染:{name}=顯示名;{review_url}=店家評論連結;
+    {referral_code}=顧客專屬推薦碼(僅模板用到才惰性產生,需 db)。"""
     name = customer.display_name or "顧客"
-    return template.replace("{name}", name)
+    text = template.replace("{name}", name)
+    if "{review_url}" in text:
+        text = text.replace("{review_url}", review_url or "")
+    if "{referral_code}" in text and db is not None:
+        from saas_mvp.services import referrals as referrals_svc
+
+        try:
+            code = referrals_svc.get_or_create_code(db, customer)
+        except referrals_svc.ReferralError:
+            code = ""
+        text = text.replace("{referral_code}", code)
+    return text
 
 
 def _push_campaign_message(
@@ -425,6 +443,13 @@ def run_campaign(
     skipped = 0
     period_key = period_key_for(campaign, now)
     customers = eligible_customers(db, campaign, now)
+    # R11-B:{review_url} 佔位符來源(整批共用,一次查)
+    review_url = None
+    if "{review_url}" in (campaign.message_template or ""):
+        from saas_mvp.services import profile as profile_svc
+
+        prof = profile_svc.get_by_tenant(db, campaign.tenant_id)
+        review_url = prof.review_url if prof else None
 
     # 本期既有 send 一次撈出（冪等跳過用；只在迴圈起點快照，
     # 並發下漏掉的仍會被 INSERT unique 擋下走 IntegrityError 舊路徑）。
@@ -515,7 +540,10 @@ def run_campaign(
             # 4. 推播訊息（無 line_user_id 不可推，標 failed）。
             #    R6-B1:惰性簽發退訂 token(隨本筆交易提交)並附退訂連結。
             customer_marketing.assign_unsubscribe_token_if_missing(customer)
-            text = _render(campaign.message_template, customer)
+            text = _render(
+                campaign.message_template, customer,
+                db=db, review_url=review_url,
+            )
             text += customer_marketing.unsubscribe_suffix(customer)
             if not customer.line_user_id:
                 row.status = CAMPAIGN_SEND_FAILED

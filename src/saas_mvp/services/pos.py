@@ -342,6 +342,10 @@ def checkout(
     # 連動預約：標到場（mark_attendance 行內邏輯，同一交易）。
     if reservation is not None:
         reservation.attended = True
+        # R11-B:推薦獎勵與 mark_attendance 同步(冪等)
+        from saas_mvp.services import referrals as referrals_svc
+
+        referrals_svc.reward_if_due(db, reservation)
 
     order.total_cents = total + tip_cents
     if mark_paid:
