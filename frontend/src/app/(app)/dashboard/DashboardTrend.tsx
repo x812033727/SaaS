@@ -18,7 +18,7 @@ export default function DashboardTrend() {
     <section className="mt-6 rounded-xl border border-line bg-surface p-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-muted">近 12 個月趨勢</h2>
-        <a href="/reports" className="text-sm text-brand hover:underline">完整報表 →</a>
+        <a href="/console/reports" className="text-sm text-brand hover:underline">完整報表 →</a>
       </div>
       {trend.isLoading && <p className="mt-3 text-sm text-muted">載入中…</p>}
       {trend.data && trend.data.length > 0 && (
