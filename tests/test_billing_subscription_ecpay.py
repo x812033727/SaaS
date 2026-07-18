@@ -195,3 +195,30 @@ class TestEcpayUnsubscribe:
             SubscriptionCharge.success.is_(True),
         ).all()
         assert len(charges) == 1  # 無幻影扣款列
+
+
+class TestPendingSweep:
+    def test_repeat_subscribe_cancels_stale_pending(self, db, monkeypatch):
+        """R8-4 對抗審查:重按訂閱不得累積孤兒 pending(每張舊 checkout
+        完成授權都會各自扣款,unsubscribe 只取消最新一張)。"""
+        from saas_mvp.models.feature_subscription import (
+            SUB_PENDING,
+            FeatureSubscription,
+        )
+
+        monkeypatch.setattr(settings, "payment_provider", "ecpay")
+        monkeypatch.setattr(settings, "public_base_url", "https://shop.example")
+        t = _tenant(db)
+        billing_svc.subscribe_feature(db, t, FEAT, actor_user_id=1)
+        billing_svc.subscribe_feature(db, t, FEAT, actor_user_id=1)
+        billing_svc.subscribe_feature(db, t, FEAT, actor_user_id=1)
+        subs = (
+            db.query(FeatureSubscription)
+            .filter(
+                FeatureSubscription.tenant_id == t.id,
+                FeatureSubscription.feature == FEAT,
+            )
+            .order_by(FeatureSubscription.id)
+            .all()
+        )
+        assert [s.status for s in subs] == [SUB_CANCELLED, SUB_CANCELLED, SUB_PENDING]

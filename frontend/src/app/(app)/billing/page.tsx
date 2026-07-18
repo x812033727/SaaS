@@ -134,7 +134,7 @@ export default function BillingPage() {
               </p>
             ) : (
               <p className="mt-1 text-muted">
-                尚無訂閱;前往<a href="/plan" className="mx-1 text-brand underline">方案頁</a>選購。
+                尚無訂閱;前往<a href="/console/plan" className="mx-1 text-brand underline">方案頁</a>選購。
               </p>
             )}
           </section>
@@ -144,7 +144,7 @@ export default function BillingPage() {
             <h2 className="font-semibold">發票資料(平台開立給您的月費發票)</h2>
             <p className="mt-0.5 text-xs text-muted">
               {env.invoice_profile.configured
-                ? `目前:${mode === "business" ? `統編 ${env.invoice_profile.buyer_identifier ?? ""}(${env.invoice_profile.buyer_name ?? ""})` : mode === "donation" ? `捐贈 ${env.invoice_profile.donation_code ?? ""}` : `個人${env.invoice_profile.masked_carrier ? `・載具 ${env.invoice_profile.masked_carrier}` : ""}`}`
+                ? `目前:${env.invoice_profile.mode === "business" ? `統編 ${env.invoice_profile.buyer_identifier ?? ""}(${env.invoice_profile.buyer_name ?? ""})` : env.invoice_profile.mode === "donation" ? `捐贈 ${env.invoice_profile.donation_code ?? ""}` : `個人${env.invoice_profile.masked_carrier ? `・載具 ${env.invoice_profile.masked_carrier}` : ""}`}`
                 : "尚未設定,預設開立個人電子發票。"}
             </p>
             <form className="mt-3 grid gap-3 text-sm"
@@ -155,7 +155,12 @@ export default function BillingPage() {
                   mode,
                   buyer_name: String(f.get("buyer_name") ?? ""),
                   buyer_identifier: String(f.get("buyer_identifier") ?? ""),
-                  carrier_type: String(f.get("carrier_type") ?? "ecpay"),
+                  // 非個人模式表單沒有載具欄位:送「已存」carrier_type 讓後端
+                  // blank-keep 生效,避免切到公司模式就把個人載具誤毀(鏡射 /ui)
+                  carrier_type:
+                    mode === "personal"
+                      ? String(f.get("carrier_type") ?? "ecpay")
+                      : env.invoice_profile.carrier_type ?? "ecpay",
                   carrier_number: String(f.get("carrier_number") ?? ""),
                   donation_code: String(f.get("donation_code") ?? ""),
                 });
@@ -280,7 +285,9 @@ export default function BillingPage() {
                         {c.invoice_status
                           ? c.invoice_status === "issued" && c.invoice_no
                             ? c.invoice_no
-                            : INVOICE_STATUS_LABELS[c.invoice_status] ?? c.invoice_status
+                            : ["voiding", "void"].includes(c.invoice_status) && c.invoice_no
+                              ? `${c.invoice_no}(${INVOICE_STATUS_LABELS[c.invoice_status]})`
+                              : INVOICE_STATUS_LABELS[c.invoice_status] ?? "—"
                           : "—"}
                       </td>
                     </tr>

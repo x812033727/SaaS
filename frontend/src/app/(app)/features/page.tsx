@@ -37,6 +37,7 @@ function errText(e: unknown): string {
 export default function FeaturesPage() {
   const qc = useQueryClient();
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
 
   const data = useQuery({
     queryKey: ["features"],
@@ -52,9 +53,13 @@ export default function FeaturesPage() {
       postJson<SubscribeResult>(`/api/v1/features/${key}/subscribe`, {}),
     onSuccess: (r) => {
       if (r.checkout_url) {
+        // window.open 在 async callback 可能被彈窗攔截(noopener 下也偵測不到),
+        // 一律留 fallback 連結,錢路不可斷
+        setCheckoutUrl(r.checkout_url);
         window.open(r.checkout_url, "_blank", "noopener");
         setMsg({ kind: "ok", text: "請於新視窗完成綠界授權;完成首期授權後功能自動開通。" });
       } else {
+        setCheckoutUrl(null);
         setMsg({ kind: "ok", text: "功能已開通。" });
       }
       refresh();
@@ -76,12 +81,22 @@ export default function FeaturesPage() {
     <div className="mx-auto max-w-5xl">
       <h1 className="text-2xl font-semibold">進階功能</h1>
       <p className="mt-1 text-sm text-muted">
-        單一功能月訂閱;<a href="/plan" className="text-brand underline">方案</a>內含的功能會直接顯示已開通。
+        單一功能月訂閱;<a href="/console/plan" className="text-brand underline">方案</a>內含的功能會直接顯示已開通。
       </p>
       {msg && (
         <p className={`mt-4 rounded-lg px-3 py-2 text-sm ${msg.kind === "ok" ? "bg-ok-soft text-ok" : "bg-danger-soft text-danger"}`}>
           {msg.text}
         </p>
+      )}
+      {checkoutUrl && (
+        <div className="mt-4 rounded-lg border border-line bg-ok-soft p-3 text-sm">
+          <p>若新視窗未開啟,請
+            <a href={checkoutUrl} target="_blank" rel="noopener noreferrer" className="mx-1 text-brand underline">
+              點此前往綠界付款
+            </a>
+            完成授權。
+          </p>
+        </div>
       )}
       {data.isLoading && <p className="mt-6 text-sm text-muted">載入中…</p>}
 

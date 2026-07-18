@@ -143,8 +143,8 @@ export default function PlanPage() {
             </div>
           )}
           <p className="mt-4 text-sm text-muted">
-            扣款明細與發票資訊請見<a href="/billing" className="mx-1 text-brand underline">帳單頁</a>;
-            單一功能可於<a href="/features" className="mx-1 text-brand underline">進階功能頁</a>個別訂閱。
+            扣款明細與發票資訊請見<a href="/console/billing" className="mx-1 text-brand underline">帳單頁</a>;
+            單一功能可於<a href="/console/features" className="mx-1 text-brand underline">進階功能頁</a>個別訂閱。
           </p>
         </>
       )}

@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from saas_mvp.auth.dependencies import Actor, get_current_actor
@@ -2950,10 +2950,12 @@ class BillingEnvelope(BaseModel):
 
 
 class EinvoiceConfigBody(BaseModel):
-    merchant_id: str = ""
-    hash_key: str = ""
-    hash_iv: str = ""
-    environment: str = "stage"
+    # 長度上限鏡射 /ui Form(max_length=...):merchant_id 欄位 String(20),
+    # 超長不擋會在 PG 撞 StringDataRightTruncation → 500(SQLite 測試看不到)
+    merchant_id: str = Field("", max_length=20)
+    hash_key: str = Field("", max_length=64)
+    hash_iv: str = Field("", max_length=64)
+    environment: str = Field("stage", max_length=8)
     enabled: bool = False
 
 

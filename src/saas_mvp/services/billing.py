@@ -155,8 +155,27 @@ def subscribe_feature(
     features_svc.validate_feature(feature)
 
     if _payment_provider(db) == "ecpay":
+        from saas_mvp.models.feature_subscription import (
+            SUB_PENDING,
+            FeatureSubscription,
+        )
         from saas_mvp.services import subscriptions as subs_svc
 
+        # 重按訂閱不得累積孤兒 pending(retry 後每張舊 checkout 完成授權都會
+        # 各自扣款,而 unsubscribe 只取消最新一張)。pending=綠界端尚無生效
+        # 扣款,直接取消安全(比照 unsubscribe 的 pending 路徑;bundle 版
+        # 已有 _ecpay_cancel_active_bundle_subs 同款掃除)。
+        stale = (
+            db.query(FeatureSubscription)
+            .filter(
+                FeatureSubscription.tenant_id == tenant.id,
+                FeatureSubscription.feature == feature,
+                FeatureSubscription.status == SUB_PENDING,
+            )
+            .all()
+        )
+        for old in stale:
+            subs_svc.mark_cancelled(db, old, ok=True)
         sub = subs_svc.create_subscription(
             db,
             tenant_id=tenant.id,

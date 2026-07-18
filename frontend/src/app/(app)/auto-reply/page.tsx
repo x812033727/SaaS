@@ -155,7 +155,7 @@ export default function AutoReplyPage() {
       {env && env.bot_mode !== "auto_reply" && (
         <p className="mt-4 rounded-lg bg-warn-soft px-3 py-2 text-sm text-warn">
           目前 Bot 模式為「{env.bot_mode}」,自動回覆規則僅在「auto_reply」模式生效;請至
-          <a href="/line-settings" className="mx-1 underline">LINE 設定</a>切換。
+          <a href="/console/line-settings" className="mx-1 underline">LINE 設定</a>切換。
         </p>
       )}
       {msg && (
