@@ -27,6 +27,7 @@ from saas_mvp.models.user import User
 from saas_mvp.services import analytics as analytics_svc
 from saas_mvp.services import audit as audit_svc
 from saas_mvp.services import features as features_svc
+from saas_mvp.services.mailer import get_mailer as _get_mailer_dep
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import calendar_view as calendar_svc
 from saas_mvp.services import customers as customers_svc
@@ -2388,3 +2389,386 @@ def delete_auto_reply_rule(
 
     auto_reply_svc.delete_rule(db, tenant_id=current_user.tenant_id, rule_id=rule_id)
     return list_auto_reply_rules(current_user=current_user, db=db)
+
+
+# ──────────────────────── 成員管理(R8-3)────────────────────────
+# 與 /ui/members 共用 services/members;全程 owner 限定。service 自帶
+# commit,route 只補 audit(第二次 commit,同 /ui 既有雙 commit 模式);
+# MemberActionError(中文文案)→ 422。受邀者公開 join 流留在 /ui/join。
+
+
+class MemberRow(BaseModel):
+    id: int
+    email: str
+    role: str
+    disabled: bool
+    is_self: bool
+
+
+class MemberRoleBody(BaseModel):
+    role: str
+
+
+class InviteResult(BaseModel):
+    invite_url: str
+
+
+def _member_rows(db, actor: Actor) -> list[MemberRow]:
+    from saas_mvp.services import members as members_svc
+
+    return [
+        MemberRow(
+            id=u.id,
+            email=u.email,
+            role=u.role or "owner",
+            disabled=u.disabled_at is not None,
+            is_self=u.id == actor.user.id,
+        )
+        for u in members_svc.list_members(db, actor.user.tenant_id)
+    ]
+
+
+@router.get("/members", response_model=list[MemberRow])
+def list_tenant_members(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    _require_owner(actor)
+    return _member_rows(db, actor)
+
+
+@router.post("/members/invite", response_model=InviteResult, status_code=201)
+def invite_tenant_member(
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """產生一次性邀請連結(7 天效期;受邀者自設 email/密碼建為 staff)。"""
+    import datetime as _dt
+
+    from saas_mvp.config import settings
+    from saas_mvp.models.email_token import (
+        PURPOSE_INVITE,
+        EmailToken,
+        generate_token,
+        hash_token,
+    )
+
+    _require_owner(actor)
+    token = generate_token()
+    db.add(
+        EmailToken(
+            user_id=actor.user.id,
+            purpose=PURPOSE_INVITE,
+            token_hash=hash_token(token),
+            expires_at=_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=7),
+        )
+    )
+    db.commit()
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="member.invite",
+        target=f"tenant:{actor.user.tenant_id}",
+        request=request,
+    )
+    db.commit()
+    base = settings.public_base_url.rstrip("/") or ""
+    return InviteResult(invite_url=f"{base}/ui/join/{token}")
+
+
+def _member_mutation(db, actor, request, action: str, user_id: int, fn):
+    from saas_mvp.services import members as members_svc
+
+    _require_owner(actor)
+    try:
+        fn()
+    except members_svc.MemberActionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action=action, target=f"user:{user_id}", request=request
+    )
+    db.commit()
+    return _member_rows(db, actor)
+
+
+@router.post("/members/{user_id}/role", response_model=list[MemberRow])
+def set_tenant_member_role(
+    user_id: int,
+    body: MemberRoleBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import members as members_svc
+
+    return _member_mutation(
+        db, actor, request, "member.role", user_id,
+        lambda: members_svc.set_role(db, actor.user, user_id, body.role),
+    )
+
+
+@router.post("/members/{user_id}/disable", response_model=list[MemberRow])
+def disable_tenant_member(
+    user_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """停用成員:token_version+1 立即撤銷其所有票與 API key。"""
+    from saas_mvp.services import members as members_svc
+
+    return _member_mutation(
+        db, actor, request, "member.disable", user_id,
+        lambda: members_svc.disable_member(db, actor.user, user_id),
+    )
+
+
+@router.post("/members/{user_id}/enable", response_model=list[MemberRow])
+def enable_tenant_member(
+    user_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import members as members_svc
+
+    return _member_mutation(
+        db, actor, request, "member.enable", user_id,
+        lambda: members_svc.enable_member(db, actor.user, user_id),
+    )
+
+
+@router.delete("/members/{user_id}", response_model=list[MemberRow])
+def remove_tenant_member(
+    user_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """永久移除成員(audit 於 service 成功後記——email 刪後不可查)。"""
+    from saas_mvp.services import members as members_svc
+
+    return _member_mutation(
+        db, actor, request, "member.remove", user_id,
+        lambda: members_svc.remove_member(db, actor.user, user_id),
+    )
+
+
+# ──────────────────────── 帳號設定(R8-3)────────────────────────
+# 與 /ui/account 共用 services/totp、members.logout_all_devices。
+# ★改密碼/登出所有裝置會 token_version+1 撤銷含當下這顆票——端點回新
+# access_token,由 Next session route(/api/session/*)重種 cookie 三顆,
+# 操作者本裝置不掉線。OAuth 連結流程(authorize redirect)留 server 端。
+
+
+class AccountSummary(BaseModel):
+    email: str
+    email_verified: bool
+    last_login_at: datetime.datetime | None
+    last_login_ip: str | None
+    totp_enabled: bool
+    remaining_recovery_codes: int
+    oauth_provider: str | None
+    line_login_configured: bool
+
+
+class PasswordChangeBody(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
+class TokenResult(BaseModel):
+    access_token: str
+
+
+class TotpStartResult(BaseModel):
+    qr_svg: str
+    secret: str
+    otpauth_uri: str
+
+
+class OtpBody(BaseModel):
+    otp: str
+
+
+class RecoveryCodesResult(BaseModel):
+    recovery_codes: list[str]
+
+
+@router.get("/account", response_model=AccountSummary)
+def account_summary(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.config import settings
+    from saas_mvp.services import oauth as oauth_svc
+    from saas_mvp.services import totp as totp_svc
+
+    user = actor.user
+    return AccountSummary(
+        email=user.email,
+        email_verified=user.email_verified_at is not None,
+        last_login_at=user.last_login_at,
+        last_login_ip=user.last_login_ip,
+        totp_enabled=bool(user.totp_enabled),
+        remaining_recovery_codes=(
+            totp_svc.remaining_recovery_codes(db, user) if user.totp_enabled else 0
+        ),
+        oauth_provider=user.oauth_provider,
+        line_login_configured=oauth_svc.provider_credentials_present(
+            "line", settings=settings, db=db
+        ),
+    )
+
+
+@router.post("/account/password", response_model=TokenResult)
+def account_change_password(
+    body: PasswordChangeBody,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """變更密碼:token_version+1 撤銷所有既有票,回新票供本裝置續留。"""
+    from saas_mvp.auth.security import (
+        create_access_token,
+        hash_password,
+        verify_password,
+    )
+
+    user = db.get(User, actor.user.id)
+    if not verify_password(body.current_password, user.hashed_password):
+        raise HTTPException(status_code=422, detail="目前密碼不正確。")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=422, detail="新密碼至少需 8 個字元。")
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=422, detail="兩次輸入的新密碼不一致。")
+    if verify_password(body.new_password, user.hashed_password):
+        raise HTTPException(status_code=422, detail="新密碼不可與目前密碼相同。")
+    user.hashed_password = hash_password(body.new_password)
+    user.token_version = (user.token_version or 0) + 1
+    db.add(user)
+    db.commit()
+    return TokenResult(
+        access_token=create_access_token(
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            token_version=user.token_version,
+        )
+    )
+
+
+@router.post("/account/logout-all", response_model=TokenResult)
+def account_logout_all(
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """登出所有裝置:token_version+1;回新票供本裝置續留。"""
+    from saas_mvp.auth.security import create_access_token
+    from saas_mvp.services import members as members_svc
+
+    user = db.get(User, actor.user.id)
+    members_svc.logout_all_devices(db, user)
+    audit_svc.record_from_actor(db, actor, action="auth.logout_all", request=request)
+    db.commit()
+    return TokenResult(
+        access_token=create_access_token(
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            token_version=user.token_version,
+        )
+    )
+
+
+@router.post("/account/totp/start", response_model=TotpStartResult)
+def account_totp_start(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """產生 TOTP secret(重呼覆蓋);QR 為伺服器端 inline SVG。"""
+    from saas_mvp.services import totp as totp_svc
+
+    if actor.user.totp_enabled:
+        raise HTTPException(status_code=409, detail="兩步驟驗證已啟用。")
+    secret = totp_svc.start_enrollment(db, actor.user)
+    uri = totp_svc.provisioning_uri(actor.user, secret)
+    return TotpStartResult(qr_svg=totp_svc.qr_svg(uri), secret=secret, otpauth_uri=uri)
+
+
+@router.post("/account/totp/confirm", response_model=RecoveryCodesResult)
+def account_totp_confirm(
+    body: OtpBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """確認啟用;恢復碼明文僅此回應出現一次,前端必須立即顯示。"""
+    from saas_mvp.services import totp as totp_svc
+
+    if actor.user.totp_enabled:
+        raise HTTPException(status_code=409, detail="兩步驟驗證已啟用。")
+    if not actor.user.totp_secret_enc:
+        raise HTTPException(status_code=422, detail="請先產生 QR code。")
+    codes = totp_svc.confirm_enrollment(db, actor.user, body.otp)
+    if codes is None:
+        raise HTTPException(
+            status_code=422, detail="驗證碼錯誤,請確認 App 時間同步後重試。"
+        )
+    audit_svc.record_from_actor(db, actor, action="auth.mfa.enable", request=request)
+    db.commit()
+    return RecoveryCodesResult(recovery_codes=codes)
+
+
+@router.post("/account/totp/disable")
+def account_totp_disable(
+    body: OtpBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.auth.ratelimit import otp_limiter
+    from saas_mvp.config import settings
+    from saas_mvp.services import totp as totp_svc
+
+    if not actor.user.totp_enabled:
+        raise HTTPException(status_code=409, detail="兩步驟驗證未啟用。")
+    if settings.rate_limit_enabled:
+        otp_limiter._check_rate_limit(f"user:{actor.user.id}")  # 429 直接透傳
+    if not totp_svc.disable(db, actor.user, body.otp):
+        raise HTTPException(status_code=422, detail="驗證碼錯誤,未停用。")
+    audit_svc.record_from_actor(db, actor, action="auth.mfa.disable", request=request)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/account/oauth/unlink")
+def account_oauth_unlink(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """解除社群帳號連結(使用者仍有密碼登入,不致被鎖在門外)。"""
+    user = db.get(User, actor.user.id)
+    user.oauth_provider = None
+    user.oauth_subject = None
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/account/resend-verification")
+def account_resend_verification(
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+    mailer=Depends(_get_mailer_dep),
+):
+    from saas_mvp.auth.ratelimit import email_user_limiter
+    from saas_mvp.config import settings
+    from saas_mvp.services import account_email as account_email_svc
+
+    if actor.user.email_verified_at is not None:
+        raise HTTPException(status_code=409, detail="Email 已完成驗證。")
+    if settings.rate_limit_enabled:
+        email_user_limiter._check_rate_limit(f"user:{actor.user.id}")
+    outcome = account_email_svc.send_verification_email(db, actor.user, mailer)
+    return {"outcome": outcome}
