@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "30 19 * * *"   # 03:30 Asia/Taipei
   workflow_dispatch:
+  # R11-C:每次合併 main 也跑(仍非 PR 門檻;nightly 曾連續失敗兩天無人察覺,
+  # merge 觸發縮短發現窗)
+  push:
+    branches: [main]
 
 jobs:
   smoke:

@@ -43,17 +43,26 @@ def server(tmp_path_factory) -> dict:
         "SAAS_BCRYPT_ROUNDS": "4",
         "SAAS_RATE_LIMIT_ENABLED": "false",
         "SAAS_FEATURES_DEFAULT_ENABLED": "true",
+        # R11-C:購卡流 sale_available 要求真實 provider;ecpay 憑證留空,
+        # 冒煙只驗到「渲染綠界導頁」為止,不真打外部
+        "SAAS_PAYMENT_PROVIDER": "ecpay",
         "SAAS_METRICS_TOKEN": "",
         "SAAS_PUBLIC_BASE_URL": "",
         "SAAS_SMTP_HOST": "",
         "SAAS_MINIMAX_API_KEY": "",
         "SAAS_SENTRY_DSN": "",
     }
+    logdir = os.environ.get("SAAS_E2E_LOGDIR")
+    out = (
+        open(Path(logdir) / "uvicorn.log", "wb")  # noqa: SIM115 — 進程生命週期
+        if logdir
+        else subprocess.PIPE
+    )
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "saas_mvp.app:create_app",
          "--factory", "--host", "127.0.0.1", "--port", str(port)],
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=out,
         stderr=subprocess.STDOUT,
     )
     base = f"http://127.0.0.1:{port}"
@@ -95,11 +104,17 @@ def console_server(server) -> dict:
         "SAAS_API_INTERNAL_URL": server["base"],
         "NODE_ENV": "production",
     }
+    logdir = os.environ.get("SAAS_E2E_LOGDIR")
+    out = (
+        open(Path(logdir) / "next.log", "wb")  # noqa: SIM115 — 進程生命週期
+        if logdir
+        else subprocess.PIPE
+    )
     proc = subprocess.Popen(
         ["npm", "run", "start"],
         cwd=str(frontend),
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=out,
         stderr=subprocess.STDOUT,
     )
     base = f"http://127.0.0.1:{port}"

@@ -65,7 +65,7 @@ def test_console_login_create_reservation_visible_in_ui(server, console_server, 
     page.goto(f"{console}/console/login")
     page.fill('input[name="email"]', email)
     page.fill('input[name="password"]', _PASSWORD)
-    page.click('button[type="submit"]')
+    page.click('button:has-text("登入")')
     page.wait_for_url("**/console/dashboard", timeout=15000)
     assert "今日營運" in page.content()
 
@@ -75,7 +75,7 @@ def test_console_login_create_reservation_visible_in_ui(server, console_server, 
     page.wait_for_selector('select[name="slot_id"]', timeout=10000)
     page.select_option('select[name="slot_id"]', index=1)  # index 0 是「選擇時段」
     page.fill('input[name="display_name"]', "E2E 顧客")
-    page.click('button:has-text("建立預約")')
+    page.locator('button:has-text("建立預約")').last.click()
     page.wait_for_selector("text=E2E 顧客", timeout=10000)
 
     # 3) /ui 同 session 可見(SSO 橋 cookie 已於 console 登入種下,跨 port 共享)
