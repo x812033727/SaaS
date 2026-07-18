@@ -16,7 +16,8 @@ export type NavGroup = {
 
 export const NAV_TOP: NavItem[] = [
   { label: "儀表板", href: "/dashboard", migrated: true },
-  { label: "舊版後台", href: "/ui/", migrated: false },
+  // R11-D:/ui 已遷頁退役(GET 302 → console),舊版入口只剩平台管理用途
+  { label: "平台管理", href: "/ui/admin", migrated: false },
 ];
 
 export const NAV_GROUPS: NavGroup[] = [

@@ -24,6 +24,7 @@ os.environ["SAAS_PUBLIC_BASE_URL"] = ""
 # 關閉 auth rate limit，避免多個測試累積超過 20 req/60s 的限制。
 # 這裡用 [] 而非 setdefault，確保無論環境原本是什麼值都覆蓋。
 os.environ["SAAS_RATE_LIMIT_ENABLED"] = "false"
+os.environ["SAAS_UI_RETIRED"] = "false"  # /ui 測試需直達頁面;退役重導另有專測
 
 # 關閉 /ui CSRF（double-submit token），既有 UI 測試不必逐一帶 token；
 # CSRF 行為本身由 tests/test_ui_csrf.py 以 monkeypatch 動態開啟專測。

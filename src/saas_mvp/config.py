@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     # Rate limiting — set SAAS_RATE_LIMIT_ENABLED=false to bypass (e.g. in tests)
     rate_limit_enabled: bool = True
+    # R11-D:/ui 已遷移頁退役 —— GET 302 導 console 對應頁(可逆旗標;
+    # admin/公開/SSO 豁免、POST 不動)。測試環境由 conftest 關閉。
+    ui_retired: bool = True
 
     # Business endpoint rate limits — format: "{calls}/{window_seconds}"
     # SAAS_KEY_RATE_LIMIT:    per-API-key limit (default 100 calls/60s)
