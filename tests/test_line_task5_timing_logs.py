@@ -235,7 +235,7 @@ class _HelperSpy:
 def helper_spy():
     spy = _HelperSpy()
     patcher = mock.patch(
-        "saas_mvp.routers.line_webhook._constant_time_verify",
+        "saas_mvp.routers.line_webhook.core._constant_time_verify",
         side_effect=spy,
     )
     patcher.start()
@@ -624,4 +624,4 @@ class TestExistingContractsStillHold:
 
     def test_helper_is_module_level_function(self):
         assert callable(line_webhook._constant_time_verify)
-        assert line_webhook._constant_time_verify.__module__ == "saas_mvp.routers.line_webhook"
+        assert line_webhook._constant_time_verify.__module__ == "saas_mvp.routers.line_webhook.core"

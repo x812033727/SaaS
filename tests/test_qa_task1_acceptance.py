@@ -77,7 +77,9 @@ from saas_mvp.translation import StubTranslator, get_translator        # noqa: E
 
 # ── 共用路徑（不依賴 cwd） ──────────────────────────────────────────────────
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-_LINE_WEBHOOK_PATH = _REPO_ROOT / "src" / "saas_mvp" / "routers" / "line_webhook.py"
+# R7-A 拆分後:line_webhook 為套件——來源驗收改讀全套件串接
+# (__init__ 先=模組 docstring 在最前,其後各子模組;6c 段在 core、reply 呼叫點跨檔)。
+_LINE_WEBHOOK_PKG = _REPO_ROOT / "src" / "saas_mvp" / "routers" / "line_webhook"
 _TO_THREAD_TEST_PATH = _REPO_ROOT / "tests" / "test_qa_task4_to_thread.py"
 
 # ── In-memory SQLite（測試用） ───────────────────────────────────────────────
@@ -96,7 +98,11 @@ _ACCESS_TOKEN = "test-access-token-abc"
 
 
 def _read_source() -> str:
-    return _LINE_WEBHOOK_PATH.read_text(encoding="utf-8")
+    # __init__.py 排最前(sorted 恰好如此),其模組 docstring 即整包 docstring。
+    return "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(_LINE_WEBHOOK_PKG.glob("*.py"))
+    )
 
 
 def _read_6c_block() -> str:
