@@ -2247,3 +2247,144 @@ def export_commission_activity(
         rows,
         f"commission-activity-{period_start.isoformat()}-{period_end.isoformat()}.csv",
     )
+
+
+# ──────────────────── LINE 自動回覆規則(R8-1)────────────────────
+# 與 /ui/auto-reply 共用 services/auto_reply;比照 /ui:任一租戶成員可管理
+# (無 owner 限制、無 feature 閘門、無 audit)。service 自帶 commit 與
+# HTTPException(404/422),端點薄轉即可。
+
+
+class AutoReplyRuleRow(BaseModel):
+    id: int
+    keyword: str
+    match_type: str
+    reply_type: str
+    reply_text: str | None
+    flex_menu_id: int | None
+    priority: int
+    is_active: bool
+
+
+class AutoReplyEnvelope(BaseModel):
+    rules: list[AutoReplyRuleRow]
+    flex_menus: list[NameRow]
+    bot_mode: str
+
+
+class AutoReplyRuleBody(BaseModel):
+    keyword: str
+    match_type: str = "contains"
+    reply_type: str = "text"
+    reply_text: str | None = None
+    flex_menu_id: int | None = None
+    priority: int = 0
+    is_active: bool = True
+
+
+def _auto_reply_rule_row(rule) -> AutoReplyRuleRow:
+    return AutoReplyRuleRow(
+        id=rule.id,
+        keyword=rule.keyword,
+        match_type=rule.match_type,
+        reply_type=rule.reply_type,
+        reply_text=rule.reply_text,
+        flex_menu_id=rule.flex_menu_id,
+        priority=rule.priority,
+        is_active=bool(rule.is_active),
+    )
+
+
+@router.get("/auto-reply", response_model=AutoReplyEnvelope)
+def list_auto_reply_rules(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """規則列表 + flex 選單下拉 + bot_mode(規則僅在 auto_reply 模式生效)。"""
+    from fastapi import HTTPException as _HTTPException
+
+    from saas_mvp.models.flex_menu import FlexMenu
+    from saas_mvp.services import auto_reply as auto_reply_svc
+    from saas_mvp.services import line_config as line_config_svc
+
+    tid = current_user.tenant_id
+    try:
+        cfg = line_config_svc.get_line_config(db, tid)
+        bot_mode = cfg.get("bot_mode", "translation")
+    except _HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        bot_mode = "translation"
+    menus = (
+        db.query(FlexMenu)
+        .filter(FlexMenu.tenant_id == tid)
+        .order_by(FlexMenu.id)
+        .all()
+    )
+    return AutoReplyEnvelope(
+        rules=[
+            _auto_reply_rule_row(r)
+            for r in auto_reply_svc.list_rules(db, tenant_id=tid)
+        ],
+        flex_menus=[NameRow(id=m.id, name=m.title or f"(未命名 #{m.id})") for m in menus],
+        bot_mode=bot_mode,
+    )
+
+
+@router.post("/auto-reply", response_model=AutoReplyRuleRow, status_code=201)
+def create_auto_reply_rule(
+    body: AutoReplyRuleBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import auto_reply as auto_reply_svc
+
+    rule = auto_reply_svc.create_rule(
+        db,
+        tenant_id=current_user.tenant_id,
+        keyword=body.keyword,
+        match_type=body.match_type,
+        reply_type=body.reply_type,
+        reply_text=body.reply_text,
+        flex_menu_id=body.flex_menu_id,
+        priority=body.priority,
+        is_active=body.is_active,
+    )
+    return _auto_reply_rule_row(rule)
+
+
+@router.put("/auto-reply/{rule_id}", response_model=AutoReplyRuleRow)
+def update_auto_reply_rule(
+    rule_id: int,
+    body: AutoReplyRuleBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """整筆更新(console 表單總是送完整欄位;toggle 亦走此端點)。"""
+    from saas_mvp.services import auto_reply as auto_reply_svc
+
+    rule = auto_reply_svc.update_rule(
+        db,
+        tenant_id=current_user.tenant_id,
+        rule_id=rule_id,
+        keyword=body.keyword,
+        match_type=body.match_type,
+        reply_type=body.reply_type,
+        reply_text=body.reply_text,
+        flex_menu_id=body.flex_menu_id,
+        priority=body.priority,
+        is_active=body.is_active,
+    )
+    return _auto_reply_rule_row(rule)
+
+
+@router.delete("/auto-reply/{rule_id}", response_model=AutoReplyEnvelope)
+def delete_auto_reply_rule(
+    rule_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import auto_reply as auto_reply_svc
+
+    auto_reply_svc.delete_rule(db, tenant_id=current_user.tenant_id, rule_id=rule_id)
+    return list_auto_reply_rules(current_user=current_user, db=db)
