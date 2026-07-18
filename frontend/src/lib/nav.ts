@@ -27,7 +27,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "行事曆", href: "/calendar", migrated: true },
       { label: "時段管理", href: "/slots", migrated: true },
       { label: "顧客", href: "/customers", migrated: true },
-      { label: "諮詢表／同意書", href: "/ui/client-forms", migrated: false },
+      { label: "諮詢表／同意書", href: "/client-forms", migrated: true },
       { label: "房間／設備", href: "/ui/resources", migrated: false },
       { label: "備註", href: "/notes", migrated: true },
     ],
@@ -48,7 +48,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "服務項目", href: "/services", migrated: true },
       { label: "服務套票", href: "/ui/packages", migrated: false },
-      { label: "電子禮物卡", href: "/ui/gift-cards", migrated: false },
+      { label: "電子禮物卡", href: "/gift-cards", migrated: true },
       { label: "POS 結帳", href: "/pos", migrated: true },
       { label: "商品", href: "/shop", migrated: true },
       { label: "優惠券", href: "/coupons", migrated: true },
