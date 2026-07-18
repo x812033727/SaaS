@@ -137,7 +137,11 @@ class SpyLineReplyClient(FakeLineReplyClient):
 
 # 模組載入後再 import line_webhook（避免 line_webhook import 時還沒
 # patch；用 patch.object 動態替換，import 時機無影響）
-import saas_mvp.routers.line_webhook as _lw  # noqa: E402
+# R7-A 拆分後:Session 工廠呼叫在 core(_process_events)、increment_usage
+# 的使用點在 events(_handle_line_event)——patch 必須指向「使用該名的模組」,
+# patch package __init__ 只會改 re-export、不會攔截實際呼叫(空轉綠)。
+import saas_mvp.routers.line_webhook.core as _lw  # noqa: E402
+import saas_mvp.routers.line_webhook.events as _lw_events  # noqa: E402
 
 # 全域 session spy list —— 每次背景 event 內 db = Session(bind=bind) 會 push 進來
 _BG_SESSIONS: list[RealSession] = []
@@ -574,12 +578,12 @@ class TestBackgroundExceptionSwallowed:
         app, tid = _setup_app_with_tenant("inc")
         assert _read_usage(tid) == (0, 0)  # 起點
 
-        real_increment = _lw.increment_usage
+        real_increment = _lw_events.increment_usage
 
         def exploding_increment(db, tenant_id, plan, chars):
             raise RuntimeError("DB 鎖死 / 連線炸 / increment 失敗")
 
-        _lw.increment_usage = exploding_increment
+        _lw_events.increment_usage = exploding_increment
         try:
             with caplog.at_level(logging.ERROR, logger="saas_mvp.routers.line_webhook"):
                 with TestClient(app, raise_server_exceptions=False) as c:
@@ -606,7 +610,7 @@ class TestBackgroundExceptionSwallowed:
                 f"log 應記錄『_process_events failed』，caplog:\n{log_text}"
             )
         finally:
-            _lw.increment_usage = real_increment
+            _lw_events.increment_usage = real_increment
 
 
 # ── 3. 背景未重用 request-scoped session（id 與時序） ─────────────────────

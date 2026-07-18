@@ -197,7 +197,7 @@ class TestAllRejectionPathsGoThroughHelper:
         """
         body = _payload(None)
         with patch(
-            "saas_mvp.routers.line_webhook._constant_time_verify",
+            "saas_mvp.routers.line_webhook.core._constant_time_verify",
             wraps=_constant_time_verify,
         ) as spy:
             r = client.post(
@@ -218,7 +218,7 @@ class TestAllRejectionPathsGoThroughHelper:
         """
         body = _payload(None)
         with patch(
-            "saas_mvp.routers.line_webhook._constant_time_verify",
+            "saas_mvp.routers.line_webhook.core._constant_time_verify",
             wraps=_constant_time_verify,
         ) as spy:
             r = client.post(
@@ -236,7 +236,7 @@ class TestAllRejectionPathsGoThroughHelper:
         """簽章錯路徑：cfg 存在、header 有但內容錯，走 helper 回 False。"""
         body = _payload(None)
         with patch(
-            "saas_mvp.routers.line_webhook._constant_time_verify",
+            "saas_mvp.routers.line_webhook.core._constant_time_verify",
             wraps=_constant_time_verify,
         ) as spy:
             r = client.post(
@@ -255,7 +255,7 @@ class TestAllRejectionPathsGoThroughHelper:
         """
         body = _payload(_OTHER_BOT_USER_ID)
         with patch(
-            "saas_mvp.routers.line_webhook._constant_time_verify",
+            "saas_mvp.routers.line_webhook.core._constant_time_verify",
             wraps=_constant_time_verify,
         ) as spy:
             r = client.post(
@@ -275,7 +275,7 @@ class TestAllRejectionPathsGoThroughHelper:
         """
         body = _payload(None)
         with patch(
-            "saas_mvp.routers.line_webhook._constant_time_verify",
+            "saas_mvp.routers.line_webhook.core._constant_time_verify",
             wraps=_constant_time_verify,
         ) as spy:
             r = client.post(

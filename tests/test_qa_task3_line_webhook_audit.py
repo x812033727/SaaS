@@ -32,13 +32,19 @@ import pytest
 
 # ── 路徑常數（相對於 repo root） ──────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
-WEBHOOK = ROOT / "src" / "saas_mvp" / "routers" / "line_webhook.py"
+# R7-A 拆分後:line_webhook 為套件,grep 門檻改對全套件串接來源驗證。
+WEBHOOK = ROOT / "src" / "saas_mvp" / "routers" / "line_webhook"
 M2_ISSUES = ROOT / "docs" / "M2_ISSUES.md"
 
 
 # ── 內部 helper ─────────────────────────────────────────────────────────────
 def _read(path: Path) -> str:
     assert path.exists(), f"必要檔案不存在：{path}"
+    if path.is_dir():
+        # R7-A:套件——串接全部子模組(__init__ 先,docstring 在最前)。
+        return "\n".join(
+            p.read_text(encoding="utf-8") for p in sorted(path.glob("*.py"))
+        )
     return path.read_text(encoding="utf-8")
 
 
