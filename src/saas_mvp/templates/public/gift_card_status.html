@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>禮物卡 · {{ display_name }}</title>
   <meta name="robots" content="noindex">
-  {% if pending %}<meta http-equiv="refresh" content="5">{% endif %}
+  {% if auto_refresh %}<meta http-equiv="refresh" content="5">{% endif %}
   <style>
     :root { --theme: #1A5C4A; --bg: #FAF9F6; --card-bg: #fff; --ink: #2B2B28;
             --muted: #8A867C; --line: #E9E5DD; }
@@ -24,7 +24,13 @@
 <body>
 <main>
   <a class="back" href="/p/{{ slug }}">← {{ display_name }}</a>
-  {% if code %}
+  {% if purchase.status == "issued" and not code %}
+    <h1>卡號讀取異常</h1>
+    <div class="card">
+      <p>您的禮物卡已發行,但卡號暫時無法顯示。</p>
+      <p class="muted">請查看您的電子郵件({{ purchase.purchaser_email }}),或聯繫店家協助。</p>
+    </div>
+  {% elif code %}
     <h1>購買完成 🎁</h1>
     <div class="card">
       <p>面額 <strong>NT${{ "{:,}".format(amount_twd) }}</strong></p>
@@ -40,8 +46,13 @@
   {% elif pending %}
     <h1>付款確認中…</h1>
     <div class="card">
+      {% if auto_refresh %}
       <p>我們正在等待金流回報,本頁每 5 秒自動更新。</p>
       <p class="muted">若您已完成付款,卡號將在幾秒內顯示於此,並寄送至您的電子郵件。</p>
+      {% else %}
+      <p>尚未收到付款結果。若您已完成付款,請重新整理本頁;卡號亦會寄送至您的電子郵件。</p>
+      <p class="muted">若未完成付款,可<a href="/p/{{ slug }}/gift-cards">重新購買</a>。</p>
+      {% endif %}
     </div>
   {% else %}
     <h1>訂單未完成</h1>

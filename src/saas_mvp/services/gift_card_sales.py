@@ -104,10 +104,25 @@ def save_config(
     return row
 
 
+_REAL_PROVIDERS = frozenset({"ecpay", "newebpay", "linepay"})
+
+
+def _payment_ready(db: Session) -> bool:
+    from saas_mvp.services.platform_payment_config import payment_provider
+
+    return payment_provider(db, settings) in _REAL_PROVIDERS
+
+
 def sale_available(db: Session, tenant_id: int) -> TenantGiftCardConfig | None:
-    """可販售 → 回 config;否則 None。閘門=feature GIFT_CARDS + 設定啟用+完整。"""
+    """可販售 → 回 config;否則 None。
+
+    閘門=feature GIFT_CARDS + 設定啟用+完整 + **平台有真實金流**
+    (stub=買家會被導向不存在的假結帳頁,寧可整頁 404)。
+    """
     from saas_mvp.services import features as features_svc
 
+    if not _payment_ready(db):
+        return None
     if not features_svc.is_enabled(db, tenant_id, features_svc.GIFT_CARDS):
         return None
     config = get_config(db, tenant_id)
@@ -141,6 +156,20 @@ def start_purchase(
     email = (purchaser_email or "").strip()
     if not _EMAIL_RE.fullmatch(email) or len(email) > 256:
         raise GiftCardSaleError("請填寫正確的電子郵件(用於寄送卡號)。")
+    # 匿名端點防灌單:每租戶每小時新購買數上限(公開 IP 限流之外的第二層)
+    hour_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        hours=1
+    )
+    recent = (
+        db.query(GiftCardPurchase)
+        .filter(
+            GiftCardPurchase.tenant_id == tenant_id,
+            GiftCardPurchase.created_at >= hour_ago,
+        )
+        .count()
+    )
+    if recent >= 30:
+        raise GiftCardSaleError("目前購買人數眾多,請稍後再試。")
 
     order = Order(tenant_id=tenant_id, total_cents=amount_twd * 100)
     db.add(order)

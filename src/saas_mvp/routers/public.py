@@ -329,6 +329,15 @@ def gift_card_buy_submit(
     return RedirectResponse(checkout_url, status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/{slug}/gift-cards/{trade_no}")
+def gift_card_purchase_status_post(slug: str, trade_no: str):
+    """NewebPay ReturnURL 是瀏覽器 form POST(非 GET redirect):
+    PRG 轉向 GET 狀態頁,否則買家付款完落在 405(R11-A 對抗審查)。"""
+    return RedirectResponse(
+        f"/p/{slug}/gift-cards/{trade_no}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @router.get("/{slug}/gift-cards/{trade_no}", response_class=HTMLResponse)
 def gift_card_purchase_status(
     slug: str,
@@ -352,6 +361,11 @@ def gift_card_purchase_status(
     )
     order = purchase.order
     issued = purchase.status == sales_svc.PURCHASE_ISSUED
+    pending = (not issued) and order.status == ORDER_PENDING
+    created = purchase.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    age = (_utcnow() - created) if created else datetime.timedelta(hours=99)
     return templates.TemplateResponse(
         "public/gift_card_status.html",
         {
@@ -360,7 +374,9 @@ def gift_card_purchase_status(
             "display_name": display_name,
             "purchase": purchase,
             "code": purchase.plain_code if issued else None,
-            "pending": (not issued) and order.status == ORDER_PENDING,
+            "pending": pending,
+            # 放棄付款的單會永遠 PENDING:只在購買後 15 分鐘內自動刷新
+            "auto_refresh": pending and age < datetime.timedelta(minutes=15),
             "amount_twd": purchase.amount_cents // 100,
         },
     )

@@ -96,7 +96,10 @@ class GiftCardPurchase(Base):
     def plain_code(self) -> str | None:
         if not self.code_enc:
             return None
-        return decrypt_field(self.code_enc)
+        try:
+            return decrypt_field(self.code_enc)
+        except Exception:  # noqa: BLE001 — 金鑰輪替等解密失敗不可 500 公開頁
+            return None
 
     def set_plain_code(self, code: str) -> None:
         self.code_enc = encrypt_field(code)

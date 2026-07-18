@@ -351,6 +351,14 @@ def mark_order_paid(
         if provider_trade_no and not order.provider_trade_no:
             order.provider_trade_no = provider_trade_no
         db.commit()
+        # R11-A 對抗審查:首次處理若在 commit 後、寄信/開票前崩潰,replay 是
+        # 唯一自癒管道 —— 兩者皆冪等(Invoice 依 order_id 查重、交付信依
+        # email_queued_at 守衛),在重送分支也補跑。
+        from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+        from saas_mvp.services import invoices as invoices_svc
+
+        invoices_svc.issue_for_order(db, order)
+        gift_card_sales_svc.queue_delivery_email(db, order)
         return order
     if order.status == ORDER_PENDING:
         order.status = ORDER_PAID
@@ -377,6 +385,15 @@ def mark_order_paid(
         invoices_svc.issue_for_order(db, order)
         # R11-A:購卡交付信入 outbox(commit 後 best-effort,永不拋錯)。
         gift_card_sales_svc.queue_delivery_email(db, order)
+        return order
+    # 非 PENDING/PAID(如 cancelled)卻收到付款回調:錢已被閘道收走但
+    # 訂單不會轉 PAID —— 高風險狀態,必須告警人工退款(R11-A 對抗審查)。
+    from saas_mvp.obs.alerts import capture_alert
+
+    capture_alert(
+        f"payment callback for order {order.id} in status={order.status}: "
+        "money captured but order not payable — manual refund needed"
+    )
     return order
 
 
@@ -389,6 +406,16 @@ def cancel_order(db: Session, *, tenant_id: int, order_id: int) -> Order:
         raise OrderNotFound(f"order {order_id} not found")
     if order.status == ORDER_CANCELLED:
         return order
+    # R11-A 對抗審查:線上購卡訂單不可由訂單管理取消 —— 取消後買家仍可能
+    # 在閘道完成付款(callback 對 cancelled 單只告警不發卡),形成收錢無卡。
+    # 已付款者走退款流(退款會作廢卡);未付款者放著等買家放棄即可。
+    from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+
+    if gift_card_sales_svc.purchase_for_order(db, order.id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="線上購卡訂單不可取消;已付款請走退款(將自動作廢卡片)。",
+        )
     was_paid = order.status == ORDER_PAID
     # 回補庫存（鎖商品列）
     items = list_order_items(db, tenant_id=tenant_id, order_id=order_id)

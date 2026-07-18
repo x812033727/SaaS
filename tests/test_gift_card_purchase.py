@@ -27,6 +27,15 @@ from saas_mvp.services import gift_card_sales as sales_svc  # noqa: E402
 from saas_mvp.services import shop as shop_svc  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _real_provider(monkeypatch):
+    """sale_available 要求真實金流(stub 會 404 整條購卡流)。"""
+    from saas_mvp.config import settings
+
+    monkeypatch.setattr(settings, "payment_provider", "ecpay")
+    monkeypatch.setattr(settings, "public_base_url", "https://shop.example")
+
+
 @pytest.fixture()
 def env():
     engine = create_engine(
@@ -130,8 +139,7 @@ class TestPublicPages:
         tid, slug = _setup_tenant(sf)
         r = client.post(f"/p/{slug}/gift-cards", data=_FORM, follow_redirects=False)
         assert r.status_code == 303, r.text
-        # stub provider 的 checkout URL(外部模擬頁)
-        assert "checkout" in r.headers["location"]
+        assert "/payments/ecpay/checkout/" in r.headers["location"]
         db = sf()
         try:
             order = db.query(Order).filter(Order.tenant_id == tid).one()
@@ -268,6 +276,159 @@ class TestConfigService:
                     db, tenant_id=tid, online_sale_enabled=True,
                     denominations=[50], fulfillment_guarantee="夠長的履約保障文案十字以上",
                     updated_by_user_id=None,
+                )
+        finally:
+            db.close()
+
+
+class TestAdversarialRegressions:
+    """R11-A 對抗審查確認缺陷的回歸鎖。"""
+
+    def _paid_purchase(self, client, sf, slug: str, tid: int):
+        r = client.post(f"/p/{slug}/gift-cards", data=_FORM, follow_redirects=False)
+        assert r.status_code == 303
+        db = sf()
+        try:
+            order = (
+                db.query(Order)
+                .filter(Order.tenant_id == tid)
+                .order_by(Order.id.desc())
+                .first()
+            )
+            # stub provider 的退款路徑不需外部交易編號,便於驗證 void 鉤子
+            shop_svc.mark_order_paid(
+                db, tenant_id=tid, order_id=order.id,
+                provider="stub", provider_trade_no="STUB1",
+            )
+            return order.id
+        finally:
+            db.close()
+
+    def test_stub_provider_gates_public_page_404(self, env, monkeypatch):
+        from saas_mvp.config import settings
+
+        client, sf = env
+        _, slug = _setup_tenant(sf)
+        monkeypatch.setattr(settings, "payment_provider", "stub")
+        assert client.get(f"/p/{slug}/gift-cards").status_code == 404
+
+    def test_status_page_post_prg_303(self, env):
+        client, sf = env
+        tid, slug = _setup_tenant(sf)
+        client.post(f"/p/{slug}/gift-cards", data=_FORM, follow_redirects=False)
+        db = sf()
+        try:
+            order = db.query(Order).filter(Order.tenant_id == tid).one()
+            trade_no = order.merchant_trade_no
+        finally:
+            db.close()
+        # NewebPay ReturnURL form POST → PRG 303 到 GET
+        r2 = client.post(
+            f"/p/{slug}/gift-cards/{trade_no}",
+            data={"TradeInfo": "xxx"},
+            follow_redirects=False,
+        )
+        assert r2.status_code == 303
+        assert r2.headers["location"].endswith(f"/gift-cards/{trade_no}")
+
+    def test_cancel_order_blocked_for_purchases(self, env):
+        client, sf = env
+        tid, slug = _setup_tenant(sf)
+        client.post(f"/p/{slug}/gift-cards", data=_FORM, follow_redirects=False)
+        db = sf()
+        try:
+            from fastapi import HTTPException
+
+            order = db.query(Order).filter(Order.tenant_id == tid).one()
+            with pytest.raises(HTTPException) as exc:
+                shop_svc.cancel_order(db, tenant_id=tid, order_id=order.id)
+            assert exc.value.status_code == 409
+        finally:
+            db.close()
+
+    def test_refund_voids_card_and_blocks_after_redeem(self, env):
+        from saas_mvp.services import gift_cards as gift_cards_svc
+        from saas_mvp.services import order_refund as refund_svc
+
+        client, sf = env
+        tid, slug = _setup_tenant(sf)
+        order_id = self._paid_purchase(client, sf, slug, tid)
+        db = sf()
+        try:
+            purchase = sales_svc.purchase_for_order(db, order_id)
+            # 全額退款 → 卡同交易作廢、餘額歸零
+            refund_svc.request_order_refund(
+                db, tenant_id=tid, order_id=order_id, actor_user_id=1,
+            )
+            card = db.get(GiftCard, purchase.gift_card_id)
+            assert card.status == "void"
+            assert (
+                gift_cards_svc.balance_cents(
+                    db, tenant_id=tid, gift_card_id=card.id
+                )
+                == 0
+            )
+        finally:
+            db.close()
+        # 第二單:先折抵再退款 → 擋下
+        order_id2 = self._paid_purchase(client, sf, slug, tid)
+        db = sf()
+        try:
+            from saas_mvp.models.gift_card import GiftCardLedger
+
+            purchase2 = sales_svc.purchase_for_order(db, order_id2)
+            db.add(GiftCardLedger(
+                tenant_id=tid, gift_card_id=purchase2.gift_card_id,
+                delta_cents=-10000, kind="redeem", order_id=None,
+            ))
+            db.commit()
+            with pytest.raises(refund_svc.OrderRefundError):
+                refund_svc.request_order_refund(
+                    db, tenant_id=tid, order_id=order_id2, actor_user_id=1,
+                )
+        finally:
+            db.close()
+
+    def test_replay_heals_lost_delivery_email(self, env):
+        client, sf = env
+        tid, slug = _setup_tenant(sf)
+        order_id = self._paid_purchase(client, sf, slug, tid)
+        db = sf()
+        try:
+            from saas_mvp.models.email_delivery import EmailDelivery
+
+            # 模擬「commit 後、寄信前崩潰」:清掉 email 痕跡
+            purchase = sales_svc.purchase_for_order(db, order_id)
+            purchase.email_queued_at = None
+            db.query(EmailDelivery).filter(
+                EmailDelivery.category == "gift_card_purchase"
+            ).delete()
+            db.commit()
+            # callback replay(ORDER_PAID 分支)須自癒補寄
+            shop_svc.mark_order_paid(db, tenant_id=tid, order_id=order_id)
+            rows = (
+                db.query(EmailDelivery)
+                .filter(EmailDelivery.category == "gift_card_purchase")
+                .count()
+            )
+            assert rows == 1
+        finally:
+            db.close()
+
+    def test_tenant_hourly_flood_gate(self, env):
+        client, sf = env
+        tid, slug = _setup_tenant(sf)
+        db = sf()
+        try:
+            for _ in range(30):
+                sales_svc.start_purchase(
+                    db, tenant_id=tid, amount_twd=500,
+                    purchaser_email="flood@example.com",
+                )
+            with pytest.raises(sales_svc.GiftCardSaleError):
+                sales_svc.start_purchase(
+                    db, tenant_id=tid, amount_twd=500,
+                    purchaser_email="flood@example.com",
                 )
         finally:
             db.close()
