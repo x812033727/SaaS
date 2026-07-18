@@ -111,7 +111,10 @@ async function handle(
         ? { "Content-Type": request.headers.get("content-type") as string }
         : {}),
     },
-    body: MUTATING.has(request.method) ? await request.arrayBuffer() : undefined,
+    // 以 text 轉發:把 request.arrayBuffer() 交給 fetch 在部分 Node/undici
+    // 版本會 detached ArrayBuffer → TypeError(e2e 實測)。console 經 proxy 的
+    // 皆為 JSON body(上傳走 base64-in-JSON),text 轉發等價且無 buffer 雷。
+    body: MUTATING.has(request.method) ? await request.text() : undefined,
   });
 
   const headers = new Headers({ "Content-Type": upstream.headers.get("content-type") ?? "application/json" });

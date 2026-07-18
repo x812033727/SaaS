@@ -233,6 +233,20 @@ def book_slot(
             display_name=display_name,
         )
         chosen_customer_id = customer.id
+    elif display_name:
+        # R11-C 揪出:店家代訂(現場/電話)只填姓名時,原本姓名被靜默丟棄
+        # (不建客→列表顧客欄空白)。建 walk-in 顧客留檔,與 LINE 客同權
+        # (portal token/行銷/推薦皆可用)。
+        customer = Customer(
+            tenant_id=tenant_id,
+            line_user_id=None,
+            display_name=display_name.strip()[:128],
+            booking_count=1,
+            last_booked_at=_utcnow(),
+        )
+        db.add(customer)
+        db.flush()
+        chosen_customer_id = customer.id
 
     # R5-B2:建單即補發顧客 portal token(同交易、不另 commit)——
     # 後續提醒/通知/成功回覆附「管理預約」連結時 token 保證已存在。

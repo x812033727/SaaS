@@ -247,3 +247,43 @@ def test_non_create_action_skips_profile_fetch():
     _post(client, s["tenant_id"], _text_event("我的預約", eid="b5"))
 
     assert stub.calls == []
+
+
+def test_manual_booking_with_name_creates_walkin_customer():
+    """R11-C E2E 揪出:店家代訂只填姓名(無 LINE)原本靜默丟名。
+    修正後應建 walk-in Customer 並掛上預約(列表顧客欄可見)。"""
+    from saas_mvp.models.customer import Customer
+    from saas_mvp.services.booking import book_slot
+
+    s = _seed()
+    db = _Session()
+    try:
+        reservation = book_slot(
+            db,
+            tenant_id=s["tenant_id"],
+            slot_id=s["slot_id"],
+            party_size=2,
+            display_name="現場王小姐",
+        )
+        assert reservation.customer_id is not None
+        cust = db.get(Customer, reservation.customer_id)
+        assert cust.display_name == "現場王小姐"
+        assert cust.line_user_id is None
+        assert cust.booking_count == 1
+    finally:
+        db.close()
+
+
+def test_manual_booking_without_name_keeps_no_customer():
+    """未填姓名的匿名代訂維持原行為(不建客)。"""
+    from saas_mvp.services.booking import book_slot
+
+    s = _seed()
+    db = _Session()
+    try:
+        reservation = book_slot(
+            db, tenant_id=s["tenant_id"], slot_id=s["slot_id"], party_size=1,
+        )
+        assert reservation.customer_id is None
+    finally:
+        db.close()
