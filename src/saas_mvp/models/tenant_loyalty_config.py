@@ -32,6 +32,8 @@ class TenantLoyaltyConfig(Base):
     silver_discount_pct = Column(Integer, nullable=False, default=5, server_default="5")
     gold_discount_pct = Column(Integer, nullable=False, default=10, server_default="10")
     points_per_booking = Column(Integer, nullable=False, default=10, server_default="10")
+    # R11-B:被推薦客首次到訪後,推薦人獲得的點數
+    referral_points = Column(Integer, nullable=False, default=50, server_default="50")
     updated_by_user_id = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(

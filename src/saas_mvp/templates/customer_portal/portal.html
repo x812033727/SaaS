@@ -131,6 +131,24 @@
       {% endfor %}
     {% endif %}
 
+    {# R11-B:推薦迴路 #}
+    {% if referral_code %}
+    <h2 style="margin-top:1.6rem">推薦好友</h2>
+    <div class="card">
+      <div class="meta">我的推薦碼:<strong style="font-size:1.2rem;letter-spacing:.1em">{{ referral_code }}</strong></div>
+      <div class="meta" style="color:var(--muted)">親友首次預約時輸入此碼,他們到店後您將獲得回饋點數。</div>
+    </div>
+    {% endif %}
+    {% if can_bind_referral %}
+    <div class="card">
+      <form method="post" action="/booking/my/{{ token }}/referral" style="display:flex;gap:.5rem;align-items:center">
+        <input name="code" placeholder="輸入親友的推薦碼" maxlength="12" required
+               style="flex:1;padding:.5rem .7rem;border:1px solid var(--line,#ddd);border-radius:8px;text-transform:uppercase">
+        <button type="submit">綁定</button>
+      </form>
+    </div>
+    {% endif %}
+
   {% elif state == "pick_date" %}
     <h1>改期 — 選擇新日期</h1>
     <p class="meta" style="color:var(--muted)">原時段:{{ target.slot_start.strftime('%Y-%m-%d %H:%M') }}</p>

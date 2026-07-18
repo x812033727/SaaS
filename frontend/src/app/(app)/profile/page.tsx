@@ -12,6 +12,7 @@ type Profile = {
   seo_description: string | null;
   intro: string | null;
   announcement: string | null;
+  review_url: string | null;
   is_published: boolean;
 };
 
@@ -23,6 +24,7 @@ const EMPTY: Profile = {
   seo_description: "",
   intro: "",
   announcement: "",
+  review_url: "",
   is_published: false,
 };
 
@@ -118,6 +120,12 @@ export default function ProfilePage() {
           公告
           <textarea className="rounded-lg border border-line bg-surface px-3 py-2" rows={2} value={form.announcement ?? ""}
             onChange={(e) => set("announcement", e.target.value)} />
+        </label>
+        <label className="grid gap-1 text-sm">
+          評論連結(Google/FB;行銷訊息 {"{review_url}"} 佔位符會替換為此連結)
+          <input className="rounded-lg border border-line bg-surface px-3 py-2" maxLength={512}
+            value={form.review_url ?? ""} placeholder="https://g.page/r/..."
+            onChange={(e) => set("review_url", e.target.value)} />
         </label>
         <label className="flex items-center gap-2 text-sm font-medium">
           <input type="checkbox" checked={form.is_published}

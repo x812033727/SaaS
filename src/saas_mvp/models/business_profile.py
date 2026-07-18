@@ -51,6 +51,8 @@ class BusinessProfile(Base):
     intro = Column(Text, nullable=True)
     # 公告文字（對標 vibeaico 公開頁「公告」）；既有 DB 由 _migrate_add_profile_announcement 補欄。
     announcement = Column(Text, nullable=True)
+    # R11-B:外部評論連結(Google/FB),post_visit 訊息 {review_url} 佔位符來源
+    review_url = Column(String(512), nullable=True)
 
     is_published = Column(
         Boolean, nullable=False, default=False, server_default=text("false")
