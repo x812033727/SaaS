@@ -52,7 +52,7 @@ function AddItemForm({
   const qc = useQueryClient();
 
   const add = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson(`/packages/${packageId}/items`, body),
+    mutationFn: (body: Record<string, unknown>) => postJson(`/api/v1/packages/${packageId}/items`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["packages"] }),
     onError: (e) => onError(errText(e)),
   });
@@ -97,7 +97,7 @@ export default function PackagesPage() {
 
   const packages = useQuery({
     queryKey: ["packages"],
-    queryFn: () => fetchJson<PackageRow[]>("/packages"),
+    queryFn: () => fetchJson<PackageRow[]>("/api/v1/packages"),
     retry: false,
   });
   const services = useQuery({
@@ -107,7 +107,7 @@ export default function PackagesPage() {
   });
 
   const create = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/packages", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/packages", body),
     onSuccess: () => {
       setMsg({ kind: "ok", text: "套票已建立,請加入服務組成。" });
       qc.invalidateQueries({ queryKey: ["packages"] });
@@ -117,7 +117,7 @@ export default function PackagesPage() {
 
   const setActive = useMutation({
     mutationFn: (input: { id: number; active: boolean }) =>
-      postJson(`/packages/${input.id}/active`, { active: input.active }),
+      postJson(`/api/v1/packages/${input.id}/active`, { active: input.active }),
     onSuccess: () => {
       setMsg(null);
       qc.invalidateQueries({ queryKey: ["packages"] });

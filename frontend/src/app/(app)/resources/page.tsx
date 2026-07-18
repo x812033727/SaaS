@@ -69,7 +69,7 @@ export default function ResourcesPage() {
 
   const overview = useQuery({
     queryKey: ["resources-overview"],
-    queryFn: () => fetchJson<Overview>("/resources/overview"),
+    queryFn: () => fetchJson<Overview>("/api/v1/resources/overview"),
     retry: false,
   });
 
@@ -78,53 +78,53 @@ export default function ResourcesPage() {
   const onErr = (e: unknown) => setMsg({ kind: "error", text: errText(e) });
 
   const createType = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/resources/types", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/resources/types", body),
     onSuccess: onOk, onError: onErr,
   });
   const toggleType = useMutation({
     mutationFn: (input: { id: number; active: boolean }) =>
-      postJson(`/resources/types/${input.id}/active`, { active: input.active }),
+      postJson(`/api/v1/resources/types/${input.id}/active`, { active: input.active }),
     onSuccess: onOk, onError: onErr,
   });
   const createResource = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/resources", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/resources", body),
     onSuccess: onOk, onError: onErr,
   });
   const updateResource = useMutation({
     mutationFn: (input: { id: number; body: Record<string, unknown> }) =>
-      patchJson(`/resources/${input.id}`, input.body),
+      patchJson(`/api/v1/resources/${input.id}`, input.body),
     onSuccess: () => { setEditingResource(null); onOk(); },
     onError: onErr,
   });
   const toggleResource = useMutation({
     mutationFn: (input: { id: number; active: boolean }) =>
-      postJson(`/resources/${input.id}/active`, { active: input.active }),
+      postJson(`/api/v1/resources/${input.id}/active`, { active: input.active }),
     onSuccess: onOk, onError: onErr,
   });
   const setRequirement = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/resources/requirements", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/resources/requirements", body),
     onSuccess: onOk, onError: onErr,
   });
   const deleteRequirement = useMutation({
-    mutationFn: (id: number) => delJson(`/resources/requirements/${id}`),
+    mutationFn: (id: number) => delJson(`/api/v1/resources/requirements/${id}`),
     onSuccess: onOk, onError: onErr,
   });
   const addWindow = useMutation({
     mutationFn: (input: { id: number; body: Record<string, unknown> }) =>
-      postJson(`/resources/${input.id}/availability`, input.body),
+      postJson(`/api/v1/resources/${input.id}/availability`, input.body),
     onSuccess: onOk, onError: onErr,
   });
   const deleteWindow = useMutation({
-    mutationFn: (id: number) => delJson(`/resources/availability/${id}`),
+    mutationFn: (id: number) => delJson(`/api/v1/resources/availability/${id}`),
     onSuccess: onOk, onError: onErr,
   });
   const addBlock = useMutation({
     mutationFn: (input: { id: number; body: Record<string, unknown> }) =>
-      postJson(`/resources/${input.id}/blocks`, input.body),
+      postJson(`/api/v1/resources/${input.id}/blocks`, input.body),
     onSuccess: onOk, onError: onErr,
   });
   const deleteBlock = useMutation({
-    mutationFn: (id: number) => delJson(`/resources/blocks/${id}`),
+    mutationFn: (id: number) => delJson(`/api/v1/resources/blocks/${id}`),
     onSuccess: onOk, onError: onErr,
   });
 

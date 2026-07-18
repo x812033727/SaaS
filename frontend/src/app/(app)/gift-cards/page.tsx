@@ -54,13 +54,13 @@ export default function GiftCardsPage() {
 
   const cards = useQuery({
     queryKey: ["gift-cards"],
-    queryFn: () => fetchJson<GiftCardRow[]>("/gift-cards"),
+    queryFn: () => fetchJson<GiftCardRow[]>("/api/v1/gift-cards"),
     retry: false,
   });
 
   const issue = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      postJson<GiftCardIssued>("/gift-cards", { ...body, issuance_key: issuanceKey }),
+      postJson<GiftCardIssued>("/api/v1/gift-cards", { ...body, issuance_key: issuanceKey }),
     onSuccess: (r) => {
       setIssuanceKey(newIssuanceKey());
       setIssuedCode(r.code);
@@ -72,7 +72,7 @@ export default function GiftCardsPage() {
 
   const voidMut = useMutation({
     mutationFn: (input: { id: number; note: string }) =>
-      postJson<GiftCardRow>(`/gift-cards/${input.id}/void`, { note: input.note }),
+      postJson<GiftCardRow>(`/api/v1/gift-cards/${input.id}/void`, { note: input.note }),
     onSuccess: () => {
       setMsg({ kind: "ok", text: "禮物卡已作廢,剩餘餘額已沖銷。" });
       qc.invalidateQueries({ queryKey: ["gift-cards"] });

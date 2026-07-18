@@ -116,7 +116,7 @@ function TieredRuleForm({
   const [tierCount, setTierCount] = useState(2);
 
   const save = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/commissions/tiered-rules", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/commissions/tiered-rules", body),
     onSuccess: onDone,
     onError,
   });
@@ -216,12 +216,12 @@ export default function CommissionsPage() {
 
   const overview = useQuery({
     queryKey: ["commissions-overview"],
-    queryFn: () => fetchJson<Overview>("/commissions/overview"),
+    queryFn: () => fetchJson<Overview>("/api/v1/commissions/overview"),
     retry: false,
   });
   const detail = useQuery({
     queryKey: ["commissions-pay-run", selectedRunId],
-    queryFn: () => fetchJson<PayRunDetail>(`/commissions/pay-runs/${selectedRunId}`),
+    queryFn: () => fetchJson<PayRunDetail>(`/api/v1/commissions/pay-runs/${selectedRunId}`),
     enabled: selectedRunId !== null,
     retry: false,
   });
@@ -237,26 +237,26 @@ export default function CommissionsPage() {
   const onErr = (e: unknown) => setMsg({ kind: "error", text: errText(e) });
 
   const saveRule = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/commissions/rules", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/commissions/rules", body),
     onSuccess: () => onOk("抽成規則已儲存。"), onError: onErr,
   });
   const saveGoal = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/commissions/goals", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/commissions/goals", body),
     onSuccess: () => onOk("業績目標已儲存。"), onError: onErr,
   });
   const createRun = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson<PayRunDetail>("/commissions/pay-runs", body),
+    mutationFn: (body: Record<string, unknown>) => postJson<PayRunDetail>("/api/v1/commissions/pay-runs", body),
     onSuccess: (d) => { setSelectedRunId(d.run.id); onOk("結算單已建立(草稿)。"); },
     onError: onErr,
   });
   const adjustRun = useMutation({
     mutationFn: (input: { id: number; body: Record<string, unknown> }) =>
-      postJson(`/commissions/pay-runs/${input.id}/adjust`, input.body),
+      postJson(`/api/v1/commissions/pay-runs/${input.id}/adjust`, input.body),
     onSuccess: () => onOk("加減項已更新。"), onError: onErr,
   });
   const transition = useMutation({
     mutationFn: (input: { id: number; action: "finalize" | "paid" | "delete" }) =>
-      postJson(`/commissions/pay-runs/${input.id}/${input.action}`, {}),
+      postJson(`/api/v1/commissions/pay-runs/${input.id}/${input.action}`, {}),
     onSuccess: (_d, input) => {
       if (input.action === "delete") setSelectedRunId(null);
       onOk(
@@ -354,7 +354,7 @@ export default function CommissionsPage() {
                 </h2>
                 <div className="flex flex-wrap gap-2 text-sm">
                   <a className="rounded-lg border border-line px-3 py-1.5 hover:bg-line/20"
-                    href={`/console/api/proxy/commissions/pay-runs/${detail.data.run.id}/export.csv`}>
+                    href={`/console/api/proxy/api/v1/commissions/pay-runs/${detail.data.run.id}/export.csv`}>
                     匯出 CSV
                   </a>
                   {detail.data.run.status === "draft" && (
@@ -577,7 +577,7 @@ export default function CommissionsPage() {
                   e.preventDefault();
                   const f = new FormData(e.currentTarget);
                   window.location.href =
-                    `/console/api/proxy/commissions/activity.csv?period_start=${f.get("ps")}&period_end=${f.get("pe")}`;
+                    `/console/api/proxy/api/v1/commissions/activity.csv?period_start=${f.get("ps")}&period_end=${f.get("pe")}`;
                 }}>
                 <label>起<input name="ps" type="date" required className="rounded-lg border border-line bg-surface px-2 py-1" /></label>
                 <label>迄<input name="pe" type="date" required className="rounded-lg border border-line bg-surface px-2 py-1" /></label>

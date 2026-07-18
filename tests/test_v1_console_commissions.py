@@ -306,12 +306,15 @@ class TestCommissionsConsole:
         )
         assert r2.status_code == 200
         assert r2.json()["run"]["status"] == "finalized"
-        # 確認後不可再調整 → 409/422(service 把關)
-        assert client.post(
-            f"/api/v1/commissions/pay-runs/{run_id}/adjust",
-            json={"staff_id": staff_id, "adjustment_twd": "0"},
-            headers=headers,
-        ).status_code in (409, 422)
+        # 確認後不可再調整 → 409(狀態衝突,與轉移端點一致)
+        assert (
+            client.post(
+                f"/api/v1/commissions/pay-runs/{run_id}/adjust",
+                json={"staff_id": staff_id, "adjustment_twd": "0"},
+                headers=headers,
+            ).status_code
+            == 409
+        )
         # 確認後不可刪 → 409
         assert (
             client.post(
@@ -343,16 +346,102 @@ class TestCommissionsConsole:
         _set_feature(sf, tid)
         _seed_staff_and_earning(sf, tid)
         run_id = _mk_run(client, headers)["run"]["id"]
+        r = client.post(
+            f"/api/v1/commissions/pay-runs/{run_id}/delete",
+            json={},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        # 明細釋回 → 同期間可再建
+        assert _mk_run(client, headers)["run"]["total_cents"] == 50000
+
+    def test_draft_delete_with_reversal_pair_no_negative_run(self, v1_client):
+        """對抗審查發現:draft 內的沖銷配對若被拆開釋回,重建結算單會
+        變成 -500(員工被倒扣從未領過的錢)。修正後配對一併消滅。"""
+        from saas_mvp.models.commission import CommissionEarning
+        from saas_mvp.models.order import Order
+
+        client, sf = v1_client
+        tid, headers = _register(client)
+        _set_feature(sf, tid)
+        _seed_staff_and_earning(sf, tid)
+        run_id = _mk_run(client, headers)["run"]["id"]
+        # 訂單取消 → reverse_order 把 -50000 沖銷掛進同一張 draft
+        db = sf()
+        try:
+            order = db.query(Order).filter(Order.tenant_id == tid).one()
+            commissions_svc.reverse_order(db, order=order)
+            db.commit()
+        finally:
+            db.close()
+        detail = client.get(
+            f"/api/v1/commissions/pay-runs/{run_id}", headers=headers
+        ).json()
+        assert detail["run"]["total_cents"] == 0  # 配對淨零
+        # 刪除草稿:配對不得拆開釋回
         assert (
             client.post(
                 f"/api/v1/commissions/pay-runs/{run_id}/delete",
                 json={},
                 headers=headers,
             ).status_code
-            == 204
+            == 200
         )
-        # 明細釋回 → 同期間可再建
-        assert _mk_run(client, headers)["run"]["total_cents"] == 50000
+        # 池中不得殘留裸沖銷;同期間重建 → 無未結算明細 → 422,而非 -50000
+        r = client.post(
+            "/api/v1/commissions/pay-runs",
+            json={"period_start": _PS, "period_end": _PE},
+            headers=headers,
+        )
+        assert r.status_code == 422, r.text
+        db = sf()
+        try:
+            leftovers = (
+                db.query(CommissionEarning)
+                .filter(
+                    CommissionEarning.tenant_id == tid,
+                    CommissionEarning.reversal_of_id.is_not(None),
+                )
+                .count()
+            )
+            assert leftovers == 0
+        finally:
+            db.close()
+
+    def test_huge_number_maps_422_not_500(self, v1_client):
+        """對抗審查發現:>28 位數令 Decimal.quantize 拋 InvalidOperation
+        → 500。修正後映射 422。"""
+        client, sf = v1_client
+        tid, headers = _register(client)
+        _set_feature(sf, tid)
+        staff_id = _seed_staff_and_earning(sf, tid)
+        assert (
+            client.post(
+                "/api/v1/commissions/rules",
+                json={
+                    "staff_id": staff_id,
+                    "item_type": "service",
+                    "method": "percent",
+                    "value": "1e30",
+                    "effective_from": "2020-01-01",
+                },
+                headers=headers,
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                "/api/v1/commissions/goals",
+                json={
+                    "staff_id": staff_id,
+                    "target_twd": "9" * 30,
+                    "effective_from": "2020-01-01",
+                },
+                headers=headers,
+            ).status_code
+            == 422
+        )
 
     def test_csv_exports(self, v1_client):
         client, sf = v1_client

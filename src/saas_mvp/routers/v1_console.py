@@ -1688,20 +1688,24 @@ class PayRunAdjustBody(BaseModel):
 
 
 def _money_cents(raw: str, *, allow_negative: bool = False) -> int:
-    """沿 /ui 慣例:字串金額 → cents;格式錯誤丟 CommissionError。"""
+    """沿 /ui 慣例:字串金額 → cents;格式錯誤丟 CommissionError。
+
+    quantize 也包進 try:超過 Decimal context 精度(28 位)的巨大輸入
+    會在 quantize 時拋 InvalidOperation,須映射 422 而非 500。
+    """
     from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
     from saas_mvp.services import commissions as commissions_svc
 
     try:
         value = Decimal(raw.strip())
+        if not value.is_finite():
+            raise InvalidOperation
+        if not allow_negative and value < 0:
+            raise commissions_svc.CommissionError("金額不可為負數。")
+        return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     except (InvalidOperation, AttributeError):
         raise commissions_svc.CommissionError("金額格式不正確。") from None
-    if not value.is_finite():
-        raise commissions_svc.CommissionError("金額格式不正確。")
-    if not allow_negative and value < 0:
-        raise commissions_svc.CommissionError("金額不可為負數。")
-    return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _rule_value_units(method: str, raw: str) -> int:
@@ -1713,11 +1717,11 @@ def _rule_value_units(method: str, raw: str) -> int:
     if method == "percent":
         try:
             value = Decimal(raw.strip())
+            if not value.is_finite():
+                raise InvalidOperation
+            return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         except (InvalidOperation, AttributeError):
             raise commissions_svc.CommissionError("抽成數值格式不正確。") from None
-        if not value.is_finite():
-            raise commissions_svc.CommissionError("抽成數值格式不正確。")
-        return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return _money_cents(raw)
 
 
@@ -1773,7 +1777,8 @@ def commissions_overview(
     tid = actor.user.tenant_id
     staff = staff_svc.list_staff(db, tenant_id=tid)
     rules = commissions_svc.latest_rules(db, tenant_id=tid)
-    today = datetime.date.today()
+    # UTC 記帳日(鏡射 /ui;目標期間邊界以 UTC 落庫的 paid_at 比對)
+    today = datetime.datetime.now(datetime.timezone.utc).date()
     return CommissionsOverview(
         staff=[NameRow(id=s.id, name=s.name) for s in staff],
         rules=[
@@ -2026,6 +2031,17 @@ def adjust_commission_pay_run(
 ):
     from saas_mvp.services import commissions as commissions_svc
 
+    _require_owner(actor)
+    # 先分類錯誤面:找不到 → 404、非草稿 → 409(與轉移端點一致),
+    # 其後 service 內的同名守衛仍把關實際寫入(雙保險)。
+    try:
+        run = commissions_svc.get_pay_run(
+            db, tenant_id=actor.user.tenant_id, pay_run_id=pay_run_id
+        )
+    except commissions_svc.CommissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if run.status != "draft":
+        raise HTTPException(status_code=409, detail="只有草稿結算單可以調整。")
     _commission_mutation(
         db, actor, request, "commissions.pay_run.adjust",
         f"pay_run:{pay_run_id}",
@@ -2102,7 +2118,6 @@ def pay_commission_pay_run(
 
 @router.post(
     "/commissions/pay-runs/{pay_run_id}/delete",
-    status_code=204,
     dependencies=_COMMISSIONS_FEATURE,
 )
 def delete_commission_pay_run(
@@ -2111,9 +2126,13 @@ def delete_commission_pay_run(
     actor: Actor = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ):
-    """僅 draft 可刪(service 把關);釋放明細回未結算池。"""
+    """僅 draft 可刪(service 把關);釋放明細回未結算池。
+
+    回 JSON 而非 204:console 的 postJson 一律 response.json(),且
+    Next proxy 對 204 需特判;比照 R7-C3 delete 端點回有體回應。
+    """
     _pay_run_transition_api(db, actor, request, pay_run_id, "delete")
-    return Response(status_code=204)
+    return {"ok": True, "deleted_pay_run_id": pay_run_id}
 
 
 def _commission_csv(rows: list[list], filename: str) -> Response:

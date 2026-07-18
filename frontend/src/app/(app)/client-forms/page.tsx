@@ -66,7 +66,7 @@ function AddQuestionForm({
 
   const add = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      postJson(`/client-forms/${templateId}/questions`, body),
+      postJson(`/api/v1/client-forms/${templateId}/questions`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["client-forms"] }),
     onError: (e) => onError(errText(e)),
   });
@@ -124,7 +124,7 @@ export default function ClientFormsPage() {
 
   const templates = useQuery({
     queryKey: ["client-forms"],
-    queryFn: () => fetchJson<TemplateRow[]>("/client-forms"),
+    queryFn: () => fetchJson<TemplateRow[]>("/api/v1/client-forms"),
     retry: false,
   });
   const services = useQuery({
@@ -134,7 +134,7 @@ export default function ClientFormsPage() {
   });
 
   const create = useMutation({
-    mutationFn: (body: Record<string, unknown>) => postJson("/client-forms", body),
+    mutationFn: (body: Record<string, unknown>) => postJson("/api/v1/client-forms", body),
     onSuccess: () => {
       setMsg({ kind: "ok", text: "表單已建立,請加入題目後啟用。" });
       qc.invalidateQueries({ queryKey: ["client-forms"] });
@@ -144,7 +144,7 @@ export default function ClientFormsPage() {
 
   const setActive = useMutation({
     mutationFn: (input: { id: number; active: boolean }) =>
-      postJson(`/client-forms/${input.id}/active`, { active: input.active }),
+      postJson(`/api/v1/client-forms/${input.id}/active`, { active: input.active }),
     onSuccess: () => {
       setMsg(null);
       qc.invalidateQueries({ queryKey: ["client-forms"] });

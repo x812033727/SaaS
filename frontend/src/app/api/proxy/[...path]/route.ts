@@ -108,7 +108,12 @@ async function handle(
   const headers = new Headers({ "Content-Type": upstream.headers.get("content-type") ?? "application/json" });
   const totalCount = upstream.headers.get("x-total-count");
   if (totalCount) headers.set("X-Total-Count", totalCount);
-  const response = new NextResponse(await upstream.arrayBuffer(), { status: upstream.status, headers });
+  // CSV 匯出等下載要保留後端的檔名(後端控管、純 ASCII,轉發安全)。
+  const disposition = upstream.headers.get("content-disposition");
+  if (disposition) headers.set("Content-Disposition", disposition);
+  // 204/304 依 fetch 規範不得帶 body(即使 0 byte ArrayBuffer 也會拋)。
+  const body = upstream.status === 204 || upstream.status === 304 ? null : await upstream.arrayBuffer();
+  const response = new NextResponse(body, { status: upstream.status, headers });
   if (renewed) applyRenewedCookies(response, request, renewed);
   return response;
 }

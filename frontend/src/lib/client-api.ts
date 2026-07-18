@@ -37,6 +37,7 @@ export async function fetchJson<T>(path: string, init: RequestInit = {}): Promis
     throw new ApiError(401, "unauthenticated");
   }
   if (!response.ok) throw await parseError(response);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
