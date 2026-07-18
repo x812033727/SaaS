@@ -643,8 +643,15 @@ def create_pay_run(
     return run
 
 
-def get_pay_run(db: Session, *, tenant_id: int, pay_run_id: int) -> PayRun:
-    row = tenant_query(db, PayRun, tenant_id).filter(PayRun.id == pay_run_id).first()
+def get_pay_run(
+    db: Session, *, tenant_id: int, pay_run_id: int, lock: bool = False
+) -> PayRun:
+    """lock=True 供狀態轉移用:鎖列避免 check-then-act 併發(調整已確認單/
+    delete-vs-finalize 交錯造成已確認明細釋回池)。SQLite 無 FOR UPDATE,忽略。"""
+    query = tenant_query(db, PayRun, tenant_id).filter(PayRun.id == pay_run_id)
+    if lock:
+        query = query.with_for_update()
+    row = query.first()
     if row is None:
         raise CommissionError("找不到該結算單。")
     return row
@@ -659,7 +666,7 @@ def update_adjustment(
     adjustment_cents: int,
     note: str | None,
 ) -> PayRunItem:
-    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id)
+    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id, lock=True)
     if run.status != PAY_RUN_DRAFT:
         raise CommissionError("只有草稿結算單可以調整。")
     if abs(adjustment_cents) > 100_000_000:
@@ -687,7 +694,7 @@ def update_adjustment(
 def finalize_pay_run(
     db: Session, *, tenant_id: int, pay_run_id: int, actor_user_id: int
 ) -> PayRun:
-    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id)
+    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id, lock=True)
     if run.status != PAY_RUN_DRAFT:
         raise CommissionError("只有草稿結算單可以確認。")
     run.status = PAY_RUN_FINALIZED
@@ -700,7 +707,7 @@ def finalize_pay_run(
 def mark_pay_run_paid(
     db: Session, *, tenant_id: int, pay_run_id: int, actor_user_id: int
 ) -> PayRun:
-    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id)
+    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id, lock=True)
     if run.status != PAY_RUN_FINALIZED:
         raise CommissionError("結算單必須先確認，才能標記已付款。")
     run.status = PAY_RUN_PAID
@@ -711,15 +718,27 @@ def mark_pay_run_paid(
 
 
 def delete_draft(db: Session, *, tenant_id: int, pay_run_id: int) -> None:
-    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id)
+    run = get_pay_run(db, tenant_id=tenant_id, pay_run_id=pay_run_id, lock=True)
     if run.status != PAY_RUN_DRAFT:
         raise CommissionError("只有草稿結算單可以刪除。")
-    for earning in (
+    earnings = (
         tenant_query(db, CommissionEarning, tenant_id)
         .filter(CommissionEarning.pay_run_id == run.id)
         .all()
-    ):
-        earning.pay_run_id = None
+    )
+    # 沖銷配對(original 已標 reversed_at + 同 run 的負向 reversal)淨額為
+    # 零,不可拆開釋回:sweep 會排除 original(reversed_at 過濾)卻收下
+    # 裸 reversal,令下一張結算單憑空倒扣。配對成立時連 reversal 一併刪
+    # 除(original 保留標記,不再可結算)。
+    in_run_ids = {e.id for e in earnings}
+    for earning in earnings:
+        if (
+            earning.reversal_of_id is not None
+            and earning.reversal_of_id in in_run_ids
+        ):
+            db.delete(earning)
+        else:
+            earning.pay_run_id = None
     db.flush()
     db.delete(run)
 
