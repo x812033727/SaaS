@@ -47,7 +47,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "商店銷售",
     items: [
       { label: "服務項目", href: "/services", migrated: true },
-      { label: "服務套票", href: "/ui/packages", migrated: false },
+      { label: "服務套票", href: "/packages", migrated: true },
       { label: "電子禮物卡", href: "/gift-cards", migrated: true },
       { label: "POS 結帳", href: "/pos", migrated: true },
       { label: "商品", href: "/shop", migrated: true },
