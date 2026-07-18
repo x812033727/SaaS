@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # admin-only 全租戶掃描,短 TTL 過期資料可接受;測試預設 0 保即時斷言。
     admin_dashboard_cache_ttl_seconds: int = 30
 
+    # 到訪後感謝行銷(R7-B):attended 標記後多少小時內視為「剛到訪」受眾。
+    post_visit_hours: int = 24
+
     # Server — 127.0.0.1 by default; override with SAAS_HOST=0.0.0.0 for containers
     host: str = "127.0.0.1"
     port: int = 8000
