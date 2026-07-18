@@ -14,16 +14,19 @@ from __future__ import annotations
 
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from saas_mvp.auth.dependencies import Actor, get_current_actor
 from saas_mvp.deps import get_current_user, get_db, require_rate_limit
 from saas_mvp.line_client import LinePushClient, get_push_client
 from saas_mvp.models.booking_waitlist import WAITLIST_WAITING, WaitlistEntry
 from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
 from saas_mvp.models.user import User
 from saas_mvp.services import analytics as analytics_svc
+from saas_mvp.services import audit as audit_svc
+from saas_mvp.services import features as features_svc
 from saas_mvp.services import booking as booking_svc
 from saas_mvp.services import calendar_view as calendar_svc
 from saas_mvp.services import customers as customers_svc
@@ -374,3 +377,416 @@ def line_chat_reply(
         )
     except line_chat_svc.LineChatError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+
+# ────────────────────────── 電子禮物卡(R7-C1)──────────────────────────
+# 與 /ui/gift-cards 共用 services/gift_cards;發卡/作廢限 owner(比照
+# require_ui_owner 的角色語意),feature 閘門沿 require_feature(403)。
+
+
+def _require_owner(actor: Actor) -> None:
+    """API 版 owner 檢查:比照 require_ui_owner(NULL 防禦性視為 owner)。"""
+    role = getattr(actor.user, "role", None) or "owner"
+    if role != "owner" and not actor.user.is_admin:
+        raise HTTPException(status_code=403, detail="此操作僅限負責人。")
+
+
+class GiftCardRow(BaseModel):
+    id: int
+    code_last4: str
+    status: str
+    initial_value_cents: int
+    balance_cents: int
+    recipient_customer_id: int | None
+    purchaser_name: str | None
+    recipient_name: str | None
+    message: str | None
+    created_at: datetime.datetime
+
+
+class GiftCardIssued(BaseModel):
+    card: GiftCardRow
+    code: str | None
+    created: bool
+
+
+class GiftCardIssueBody(BaseModel):
+    amount_twd: int
+    fulfillment_guarantee: str
+    issuance_key: str
+    compliance_ack: bool = False
+    recipient_customer_id: int | None = None
+    purchaser_name: str = ""
+    recipient_name: str = ""
+    message: str = ""
+
+
+class GiftCardVoidBody(BaseModel):
+    note: str = ""
+
+
+def _gift_card_row(balance) -> GiftCardRow:
+    card = balance.card
+    return GiftCardRow(
+        id=card.id,
+        code_last4=card.code_last4,
+        status=card.status,
+        initial_value_cents=card.initial_value_cents,
+        balance_cents=balance.balance_cents,
+        recipient_customer_id=card.recipient_customer_id,
+        purchaser_name=card.purchaser_name,
+        recipient_name=card.recipient_name,
+        message=card.message,
+        created_at=card.created_at,
+    )
+
+
+@router.get(
+    "/gift-cards",
+    response_model=list[GiftCardRow],
+    dependencies=[Depends(features_svc.require_feature(features_svc.GIFT_CARDS))],
+)
+def list_gift_cards(
+    response: Response,
+    limit: int = Query(100, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """近期發行的禮物卡(含 ledger 加總餘額)。"""
+    from saas_mvp.services import gift_cards as gift_cards_svc
+
+    rows = gift_cards_svc.recent_cards(
+        db, tenant_id=current_user.tenant_id, limit=limit
+    )
+    response.headers["X-Total-Count"] = str(len(rows))
+    return [_gift_card_row(b) for b in rows]
+
+
+@router.post(
+    "/gift-cards",
+    response_model=GiftCardIssued,
+    status_code=201,
+    dependencies=[Depends(features_svc.require_feature(features_svc.GIFT_CARDS))],
+)
+def issue_gift_card(
+    body: GiftCardIssueBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """發行禮物卡;明碼卡號只在本回應出現一次(created=false 為冪等重放)。"""
+    from saas_mvp.services import gift_cards as gift_cards_svc
+
+    _require_owner(actor)
+    try:
+        if not body.compliance_ack:
+            raise gift_cards_svc.GiftCardError(
+                "請確認已核對履約保障與禮券法規資訊。"
+            )
+        result = gift_cards_svc.issue_card(
+            db,
+            tenant_id=actor.user.tenant_id,
+            amount_cents=body.amount_twd * 100,
+            fulfillment_guarantee=body.fulfillment_guarantee,
+            issuance_key=body.issuance_key,
+            issued_by_user_id=actor.user.id,
+            recipient_customer_id=body.recipient_customer_id,
+            purchaser_name=body.purchaser_name,
+            recipient_name=body.recipient_name,
+            message=body.message,
+        )
+        if result.created:
+            audit_svc.record_from_actor(
+                db,
+                actor,
+                action="gift_cards.issue",
+                target=f"gift_card:{result.card.id}",
+                detail={
+                    "amount_cents": result.card.initial_value_cents,
+                    "recipient_customer_id": result.card.recipient_customer_id,
+                },
+                request=request,
+            )
+        db.commit()
+    except gift_cards_svc.GiftCardError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    balance = gift_cards_svc.GiftCardBalance(
+        result.card,
+        gift_cards_svc.balance_cents(
+            db, tenant_id=actor.user.tenant_id, gift_card_id=result.card.id
+        ),
+    )
+    return GiftCardIssued(
+        card=_gift_card_row(balance), code=result.code, created=result.created
+    )
+
+
+@router.post(
+    "/gift-cards/{gift_card_id}/void",
+    response_model=GiftCardRow,
+    dependencies=[Depends(features_svc.require_feature(features_svc.GIFT_CARDS))],
+)
+def void_gift_card(
+    gift_card_id: int,
+    body: GiftCardVoidBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """作廢禮物卡(餘額歸零沖銷;冪等——已作廢直接回現況)。"""
+    from saas_mvp.services import gift_cards as gift_cards_svc
+
+    _require_owner(actor)
+    try:
+        card = gift_cards_svc.void_card(
+            db,
+            tenant_id=actor.user.tenant_id,
+            gift_card_id=gift_card_id,
+            note=body.note,
+            actor_user_id=actor.user.id,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="gift_cards.void",
+            target=f"gift_card:{card.id}",
+            request=request,
+        )
+        db.commit()
+    except gift_cards_svc.GiftCardNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except gift_cards_svc.GiftCardError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    balance = gift_cards_svc.GiftCardBalance(
+        card,
+        gift_cards_svc.balance_cents(
+            db, tenant_id=actor.user.tenant_id, gift_card_id=card.id
+        ),
+    )
+    return _gift_card_row(balance)
+
+
+# ────────────────────── 顧客表單／同意書(R7-C1)──────────────────────
+# 與 /ui/client-forms 共用 services/client_forms;建立/加題/啟停限 owner。
+# 公開填寫流(/forms/{token})不在本 API 範圍。
+
+
+class ClientFormQuestionRow(BaseModel):
+    id: int
+    label: str
+    field_type: str
+    is_required: bool
+    options: list[str]
+    sort_order: int
+
+
+class ClientFormTemplateRow(BaseModel):
+    id: int
+    name: str
+    intro: str | None
+    consent_text: str
+    service_id: int | None
+    require_signature: bool
+    is_active: bool
+    version: int
+    questions: list[ClientFormQuestionRow]
+
+
+class ClientFormCreateBody(BaseModel):
+    name: str
+    intro: str = ""
+    consent_text: str
+    service_id: int | None = None
+    require_signature: bool = True
+
+
+class ClientFormQuestionBody(BaseModel):
+    label: str
+    field_type: str
+    required: bool = False
+    options: str = ""
+
+
+class ClientFormActiveBody(BaseModel):
+    active: bool
+
+
+def _client_form_template_row(db, tenant_id: int, template) -> ClientFormTemplateRow:
+    from saas_mvp.services import client_forms as client_forms_svc
+
+    rows = client_forms_svc.questions(
+        db, tenant_id=tenant_id, template_id=template.id
+    )
+    import json as _json
+
+    return ClientFormTemplateRow(
+        id=template.id,
+        name=template.name,
+        intro=template.intro,
+        consent_text=template.consent_text,
+        service_id=template.service_id,
+        require_signature=bool(template.require_signature),
+        is_active=bool(template.is_active),
+        version=template.version,
+        questions=[
+            ClientFormQuestionRow(
+                id=q.id,
+                label=q.label,
+                field_type=q.field_type,
+                is_required=bool(q.is_required),
+                options=_json.loads(q.options_json) if q.options_json else [],
+                sort_order=q.sort_order,
+            )
+            for q in rows
+        ],
+    )
+
+
+@router.get(
+    "/client-forms",
+    response_model=list[ClientFormTemplateRow],
+    dependencies=[Depends(features_svc.require_feature(features_svc.CLIENT_FORMS))],
+)
+def list_client_forms(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """表單範本列表(含題目)。"""
+    from saas_mvp.services import client_forms as client_forms_svc
+
+    templates = client_forms_svc.list_templates(db, tenant_id=current_user.tenant_id)
+    response.headers["X-Total-Count"] = str(len(templates))
+    return [
+        _client_form_template_row(db, current_user.tenant_id, t) for t in templates
+    ]
+
+
+@router.post(
+    "/client-forms",
+    response_model=ClientFormTemplateRow,
+    status_code=201,
+    dependencies=[Depends(features_svc.require_feature(features_svc.CLIENT_FORMS))],
+)
+def create_client_form(
+    body: ClientFormCreateBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import client_forms as client_forms_svc
+
+    _require_owner(actor)
+    try:
+        row = client_forms_svc.create_template(
+            db,
+            tenant_id=actor.user.tenant_id,
+            name=body.name,
+            intro=body.intro,
+            consent_text=body.consent_text,
+            service_id=body.service_id,
+            require_signature=body.require_signature,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="client_forms.create",
+            target=f"form:{row.id}",
+            request=request,
+        )
+        db.commit()
+    except client_forms_svc.ClientFormError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _client_form_template_row(db, actor.user.tenant_id, row)
+
+
+@router.post(
+    "/client-forms/{template_id}/questions",
+    response_model=ClientFormTemplateRow,
+    status_code=201,
+    dependencies=[Depends(features_svc.require_feature(features_svc.CLIENT_FORMS))],
+)
+def add_client_form_question(
+    template_id: int,
+    body: ClientFormQuestionBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import client_forms as client_forms_svc
+
+    _require_owner(actor)
+    try:
+        client_forms_svc.add_question(
+            db,
+            tenant_id=actor.user.tenant_id,
+            template_id=template_id,
+            label=body.label,
+            field_type=body.field_type,
+            required=body.required,
+            options=body.options,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="client_forms.question.add",
+            target=f"form:{template_id}",
+            request=request,
+        )
+        db.commit()
+    except client_forms_svc.ClientFormNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except client_forms_svc.ClientFormError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    template = next(
+        t
+        for t in client_forms_svc.list_templates(db, tenant_id=actor.user.tenant_id)
+        if t.id == template_id
+    )
+    return _client_form_template_row(db, actor.user.tenant_id, template)
+
+
+@router.post(
+    "/client-forms/{template_id}/active",
+    response_model=ClientFormTemplateRow,
+    dependencies=[Depends(features_svc.require_feature(features_svc.CLIENT_FORMS))],
+)
+def set_client_form_active(
+    template_id: int,
+    body: ClientFormActiveBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import client_forms as client_forms_svc
+
+    _require_owner(actor)
+    try:
+        row = client_forms_svc.set_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            template_id=template_id,
+            active=body.active,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="client_forms.active",
+            target=f"form:{row.id}",
+            detail={"active": row.is_active},
+            request=request,
+        )
+        db.commit()
+    except client_forms_svc.ClientFormNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except client_forms_svc.ClientFormError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _client_form_template_row(db, actor.user.tenant_id, row)
