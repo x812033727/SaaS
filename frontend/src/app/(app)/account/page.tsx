@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ApiError, fetchJson, postJson } from "@/lib/client-api";
 
@@ -67,6 +67,24 @@ export default function AccountPage() {
     queryFn: () => fetchJson<Summary>("/api/v1/account"),
     retry: false,
   });
+
+  // OAuth 綁定結果由 /auth/oauth callback 以 query 參數導回(?linked=|oauth_error=)
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const linked = q.get("linked");
+    const oauthError = q.get("oauth_error");
+    if (linked) {
+      setMsg({ kind: "ok", text: `已連結 ${PROVIDER_LABELS[linked] ?? linked} 帳號。` });
+    } else if (oauthError === "in_use") {
+      setMsg({ kind: "error", text: "此社群帳號已綁定其他使用者,無法連結。" });
+    } else if (oauthError === "not_configured") {
+      setMsg({ kind: "error", text: "平台尚未設定此社群登入,暫無法連結。" });
+    }
+    if (linked || oauthError) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["account"] });
   const onErr = (e: unknown) => setMsg({ kind: "error", text: errText(e) });
@@ -280,11 +298,11 @@ export default function AccountPage() {
               </div>
             ) : s.line_login_configured ? (
               <div className="mt-2">
-                <a href="/auth/oauth/line/login?link=1"
+                <a href="/auth/oauth/line/login?link=1&next=console"
                   className="inline-block rounded-lg bg-[#06C755] px-4 py-2 font-semibold text-white hover:opacity-90">
                   連結 LINE 帳號
                 </a>
-                <p className="mt-1 text-xs text-muted">授權完成後會導回舊版帳號頁,連結即生效。</p>
+                <p className="mt-1 text-xs text-muted">將前往 LINE 授權頁,完成後導回本頁。</p>
               </div>
             ) : (
               <p className="mt-2 text-muted">平台尚未設定 LINE Login,暫無法連結社群帳號。</p>

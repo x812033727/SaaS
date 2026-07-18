@@ -2627,6 +2627,7 @@ def account_summary(
 @router.post("/account/password", response_model=TokenResult)
 def account_change_password(
     body: PasswordChangeBody,
+    request: Request,
     actor: Actor = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ):
@@ -2649,6 +2650,9 @@ def account_change_password(
     user.hashed_password = hash_password(body.new_password)
     user.token_version = (user.token_version or 0) + 1
     db.add(user)
+    audit_svc.record_from_actor(
+        db, actor, action="auth.password_change", request=request
+    )
     db.commit()
     return TokenResult(
         access_token=create_access_token(
@@ -2745,13 +2749,22 @@ def account_totp_disable(
 
 @router.post("/account/oauth/unlink")
 def account_oauth_unlink(
+    request: Request,
     actor: Actor = Depends(get_current_actor),
     db: Session = Depends(get_db),
 ):
     """解除社群帳號連結(使用者仍有密碼登入,不致被鎖在門外)。"""
     user = db.get(User, actor.user.id)
+    provider = user.oauth_provider
     user.oauth_provider = None
     user.oauth_subject = None
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="auth.oauth.unlink",
+        detail={"provider": provider},
+        request=request,
+    )
     db.commit()
     return {"ok": True}
 

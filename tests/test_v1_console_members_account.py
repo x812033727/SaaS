@@ -306,3 +306,53 @@ class TestAccountConsole:
         r = client.post("/api/v1/account/oauth/unlink", json={}, headers=headers)
         assert r.status_code == 200
         assert client.get("/api/v1/account", headers=headers).json()["oauth_provider"] is None
+
+
+class TestAccountAudits:
+    def test_password_change_and_unlink_write_audit_rows(self, v1_client):
+        """R9-2:改密碼與解除社群連結須落稽核(auth.password_change / auth.oauth.unlink)。"""
+        from saas_mvp.models.audit_log import AuditLog
+
+        client, sf = v1_client
+        tid, headers = _register(client)
+        r = client.post(
+            "/api/v1/account/password",
+            json={
+                "current_password": "safe-password-123",
+                "new_password": "new-password-456",
+                "confirm_password": "new-password-456",
+            },
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+        new_headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        # 種 oauth 綁定再解除
+        db = sf()
+        try:
+            user = (
+                db.query(User).filter(User.tenant_id == tid).order_by(User.id).first()
+            )
+            user.oauth_provider = "line"
+            user.oauth_subject = "U-audit"
+            db.commit()
+            user_id = user.id
+        finally:
+            db.close()
+        assert (
+            client.post(
+                "/api/v1/account/oauth/unlink", json={}, headers=new_headers
+            ).status_code
+            == 200
+        )
+        db = sf()
+        try:
+            actions = {
+                row.action
+                for row in db.query(AuditLog)
+                .filter(AuditLog.actor_user_id == user_id)
+                .all()
+            }
+            assert "auth.password_change" in actions
+            assert "auth.oauth.unlink" in actions
+        finally:
+            db.close()

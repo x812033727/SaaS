@@ -464,3 +464,54 @@ def test_line_provider_allows_missing_email_for_account_link(monkeypatch):
     identity = provider.exchange_code("code", "https://example.com/callback")
 
     assert identity == {"email": None, "subject": "U123", "name": "LINE User"}
+
+
+class TestOAuthLinkConsoleDestination:
+    def test_link_next_console_redirects_to_console_account(self, client):
+        """R9-2:console 帳號頁發起綁定(?next=console)→ callback 導回 /console/account,
+        並落 auth.oauth.link 稽核。"""
+        from saas_mvp.models.audit_log import AuditLog
+
+        email = f"con_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+
+        r = client.get("/auth/oauth/line/login?link=1&next=console")
+        assert r.status_code == 302, r.text
+        assert client.cookies.get("oauth_intent") == "link-console"
+        state = client.cookies.get("oauth_state")
+
+        code = f"lineid_{uuid.uuid4().hex[:8]}"
+        r2 = client.get(f"/auth/oauth/line/callback?code={code}&state={state}")
+        assert r2.status_code == 303, r2.text
+        assert r2.headers["location"] == "/console/account?linked=line"
+
+        db = _Session()
+        try:
+            u = db.query(User).filter(User.email == email).first()
+            assert u.oauth_provider == "line"
+            row = (
+                db.query(AuditLog)
+                .filter(
+                    AuditLog.action == "auth.oauth.link",
+                    AuditLog.actor_user_id == u.id,
+                )
+                .first()
+            )
+            assert row is not None
+        finally:
+            db.close()
+        client.cookies.clear()
+
+    def test_plain_link_still_lands_on_ui_account(self, client):
+        """未帶 next 的既有 /ui 流不受影響。"""
+        email = f"ui_{uuid.uuid4().hex[:8]}@example.com"
+        _register(client, email)
+        _ui_login(client, email)
+        state = _link_login_and_get_state(client, "line")
+        r = client.get(
+            f"/auth/oauth/line/callback?code=c{uuid.uuid4().hex[:6]}&state={state}"
+        )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/ui/account?linked=line"
+        client.cookies.clear()

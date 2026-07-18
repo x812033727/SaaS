@@ -974,13 +974,22 @@ def admin_deploy(
 
 @router.post("/account/oauth/unlink", response_class=HTMLResponse)
 def account_oauth_unlink(
+    request: Request,
     actor: Actor = Depends(require_ui_user),
     db: Session = Depends(get_db),
 ):
     """解除社群帳號連結。使用者仍保有密碼登入，故解除後不致被鎖在門外。"""
     user = db.get(User, actor.user.id)
+    provider = user.oauth_provider
     user.oauth_provider = None
     user.oauth_subject = None
+    audit_svc.record_from_actor(
+        db,
+        actor,
+        action="auth.oauth.unlink",
+        detail={"provider": provider},
+        request=request,
+    )
     db.commit()
     return RedirectResponse("/ui/account", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1020,6 +1029,9 @@ def account_change_password(
     # 讓操作者留在登入態(否則自己剛改完密碼下一個請求就被踢登出)。
     user.token_version = (user.token_version or 0) + 1
     db.add(user)
+    audit_svc.record_from_actor(
+        db, actor, action="auth.password_change", request=request
+    )
     db.commit()
     resp = templates.TemplateResponse(
         "_account_password.html",
