@@ -790,3 +790,227 @@ def set_client_form_active(
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc))
     return _client_form_template_row(db, actor.user.tenant_id, row)
+
+
+# ─────────────────────────── 服務套票(R7-C2)───────────────────────────
+# 與 /ui/packages 共用 services/service_packages;定義 CRUD 限 owner。
+# 顧客層(發放/錢包/取消)已在 customer-detail 流程,不在本 API 範圍。
+
+
+class PackageItemRow(BaseModel):
+    service_id: int
+    service_name: str
+    included_quantity: int
+
+
+class PackageRow(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    price_cents: int
+    validity_days: int
+    is_active: bool
+    items: list[PackageItemRow]
+
+
+class PackageCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    price_twd: int
+    validity_days: int
+
+
+class PackageItemBody(BaseModel):
+    service_id: int
+    included_quantity: int
+
+
+class PackageActiveBody(BaseModel):
+    active: bool
+
+
+def _package_row(db, tenant_id: int, package) -> PackageRow:
+    from saas_mvp.models.service import Service
+    from saas_mvp.services import service_packages as packages_svc
+
+    items = packages_svc.package_items(
+        db, tenant_id=tenant_id, package_id=package.id
+    )
+    names = {
+        s.id: s.name
+        for s in db.query(Service).filter(Service.tenant_id == tenant_id).all()
+    }
+    return PackageRow(
+        id=package.id,
+        name=package.name,
+        description=package.description,
+        price_cents=package.price_cents,
+        validity_days=package.validity_days,
+        is_active=bool(package.is_active),
+        items=[
+            PackageItemRow(
+                service_id=i.service_id,
+                service_name=names.get(i.service_id, f"#{i.service_id}"),
+                included_quantity=i.included_quantity,
+            )
+            for i in items
+        ],
+    )
+
+
+@router.get(
+    "/packages",
+    response_model=list[PackageRow],
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def list_service_packages(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """套票定義列表(含服務組成)。"""
+    from saas_mvp.services import service_packages as packages_svc
+
+    rows = packages_svc.list_packages(db, tenant_id=current_user.tenant_id)
+    response.headers["X-Total-Count"] = str(len(rows))
+    return [_package_row(db, current_user.tenant_id, p) for p in rows]
+
+
+@router.post(
+    "/packages",
+    response_model=PackageRow,
+    status_code=201,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def create_service_package(
+    body: PackageCreateBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import service_packages as packages_svc
+
+    _require_owner(actor)
+    try:
+        row = packages_svc.create_package(
+            db,
+            tenant_id=actor.user.tenant_id,
+            name=body.name,
+            description=body.description,
+            price_cents=body.price_twd * 100,
+            validity_days=body.validity_days,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.create",
+            target=f"package:{row.id}",
+            detail={
+                "price_cents": row.price_cents,
+                "validity_days": row.validity_days,
+            },
+            request=request,
+        )
+        db.commit()
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _package_row(db, actor.user.tenant_id, row)
+
+
+@router.post(
+    "/packages/{package_id}/items",
+    response_model=PackageRow,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def upsert_service_package_item(
+    package_id: int,
+    body: PackageItemBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """新增或更新套票內某服務的次數(upsert)。"""
+    from saas_mvp.services import service_packages as packages_svc
+
+    _require_owner(actor)
+    try:
+        packages_svc.add_or_update_item(
+            db,
+            tenant_id=actor.user.tenant_id,
+            package_id=package_id,
+            service_id=body.service_id,
+            included_quantity=body.included_quantity,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.item.update",
+            target=f"package:{package_id}",
+            detail={
+                "service_id": body.service_id,
+                "quantity": body.included_quantity,
+            },
+            request=request,
+        )
+        db.commit()
+    except packages_svc.PackageNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    package = next(
+        p
+        for p in packages_svc.list_packages(db, tenant_id=actor.user.tenant_id)
+        if p.id == package_id
+    )
+    return _package_row(db, actor.user.tenant_id, package)
+
+
+@router.post(
+    "/packages/{package_id}/active",
+    response_model=PackageRow,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def set_service_package_active(
+    package_id: int,
+    body: PackageActiveBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import service_packages as packages_svc
+
+    _require_owner(actor)
+    try:
+        row = packages_svc.set_active(
+            db,
+            tenant_id=actor.user.tenant_id,
+            package_id=package_id,
+            active=body.active,
+        )
+        audit_svc.record_from_actor(
+            db,
+            actor,
+            action="packages.active",
+            target=f"package:{package_id}",
+            detail={"active": body.active},
+            request=request,
+        )
+        db.commit()
+    except packages_svc.PackageNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _package_row(db, actor.user.tenant_id, row)
