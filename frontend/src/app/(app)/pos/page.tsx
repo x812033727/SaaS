@@ -85,7 +85,7 @@ export default function PosPage() {
         <h1 className="text-2xl font-semibold">POS 結帳</h1>
         <div className="mt-6 rounded-xl border border-line bg-warn-soft p-6 text-sm">
           <p className="font-semibold text-warn">此功能未啟用</p>
-          <p className="mt-2">商品銷售屬進階功能,請至<a href="/ui/plan" className="mx-1 text-brand underline">方案頁</a>啟用。</p>
+          <p className="mt-2">商品銷售屬進階功能,請至<a href="/console/plan" className="mx-1 text-brand underline">方案頁</a>啟用。</p>
         </div>
       </div>
     );

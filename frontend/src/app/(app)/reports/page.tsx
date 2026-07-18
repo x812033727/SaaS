@@ -207,7 +207,7 @@ export default function ReportsPage() {
           <p className="font-semibold text-warn">進階報表未啟用</p>
           <p className="mt-2 text-ink">
             員工產能/熱門服務/回訪率與 Excel/PDF 匯出屬進階功能,請至
-            <a href="/plan" className="mx-1 text-brand underline">方案頁</a>升級或啟用。
+            <a href="/console/plan" className="mx-1 text-brand underline">方案頁</a>升級或啟用。
           </p>
         </section>
       ) : (

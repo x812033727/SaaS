@@ -89,7 +89,7 @@ export default function RichMenuPage() {
         <div className="mt-6 rounded-xl border border-line bg-warn-soft p-6 text-sm">
           <p className="font-semibold text-warn">尚未設定 LINE 官方帳號</p>
           <p className="mt-2 text-ink">
-            請先至<a href="/line-settings" className="mx-1 text-brand underline">LINE 設定</a>
+            請先至<a href="/console/line-settings" className="mx-1 text-brand underline">LINE 設定</a>
             完成 Channel 憑證設定,再回來套用圖文選單。
           </p>
         </div>
