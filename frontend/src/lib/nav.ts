@@ -38,7 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "LINE 設定", href: "/line-settings", migrated: true },
       { label: "客服訊息", href: "/line-chat", migrated: true },
       { label: "自動回覆", href: "/auto-reply", migrated: true },
-      { label: "圖文選單", href: "/ui/rich-menu", migrated: false },
+      { label: "圖文選單", href: "/rich-menu", migrated: true },
       { label: "圖文卡片", href: "/flex-menu", migrated: true },
       { label: "AI 客服", href: "/faq", migrated: true },
     ],
@@ -70,7 +70,6 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "報表",
     items: [
       { label: "營運報表", href: "/reports", migrated: true },
-      { label: "進階報表/匯出", href: "/ui/reports", migrated: false },
     ],
   },
   {

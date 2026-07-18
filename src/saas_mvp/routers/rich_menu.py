@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -36,11 +36,17 @@ class ApplyBody(BaseModel):
 
 @router.get("/options")
 def options() -> dict:
-    """回傳可用的主題 / 版型 / 模式（供管理 UI 下拉）。"""
+    """回傳可用的主題 / 版型 / 模式（供管理 UI 下拉）。
+
+    template_labels 為增量欄位(console 顯示用),既有 key 清單形狀不變。
+    """
     return {
         "themes": rich_menu_svc.list_themes(),
         "templates": rich_menu_svc.list_templates(),
         "modes": rich_menu_svc.list_modes(),
+        "template_labels": {
+            key: spec["label"] for key, spec in rich_menu_svc.TEMPLATES.items()
+        },
     }
 
 
@@ -91,3 +97,19 @@ def clear(
     client: LineRichMenuClient = Depends(get_rich_menu_client),
 ) -> dict:
     return rich_menu_svc.clear_rich_menu(db, current_user.tenant_id, client=client)
+
+
+@router.get("/preview.png")
+def preview(
+    template: str,
+    theme: str,
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """套用前預覽:即席產生選單圖(不動 DB、不打 LINE;鏡射 /ui 版)。"""
+    rich_menu_svc._validate(template, theme)
+    _, image = rich_menu_svc.build_rich_menu_payload(template, theme)
+    return Response(
+        content=image,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
