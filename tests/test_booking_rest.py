@@ -215,6 +215,24 @@ class TestReservations:
 
 
 class TestCustomers:
+    def test_walkin_customer_listed_without_500(self, client):
+        """R12-D 回歸:walk-in/網路預約客 line_user_id=NULL,原 response model
+        型別為 str → 只要租戶有一個 walk-in 客,整條列表/明細回應 500。"""
+        token = _register(client)
+        slot = _make_slot(client, token, max_capacity=4)
+        r = client.post(
+            "/booking/reservations/",
+            headers=_auth(token),
+            json={"slot_id": slot["id"], "party_size": 1, "display_name": "現場客"},
+        )
+        assert r.status_code == 201, r.text
+        lst = client.get("/booking/customers/", headers=_auth(token))
+        assert lst.status_code == 200, lst.text
+        rows = [c for c in lst.json() if c["display_name"] == "現場客"]
+        assert len(rows) == 1 and rows[0]["line_user_id"] is None
+        one = client.get(f"/booking/customers/{rows[0]['id']}", headers=_auth(token))
+        assert one.status_code == 200
+
     def test_customer_listed_and_patch(self, client):
         token = _register(client)
         slot = _make_slot(client, token, max_capacity=4)

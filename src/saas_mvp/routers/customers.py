@@ -86,7 +86,9 @@ class CustomerUpdate(BaseModel):
 class CustomerResponse(BaseModel):
     id: int
     tenant_id: int
-    line_user_id: str
+    # NULL = walk-in/網路預約客(R12-D:原 str 型別讓任何 walk-in 客
+    # 使整條列表/明細回應 500)
+    line_user_id: str | None
     display_name: str | None
     phone: str | None
     booking_count: int

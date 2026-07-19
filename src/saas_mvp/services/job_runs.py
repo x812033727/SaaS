@@ -52,6 +52,13 @@ def record(session_factory: sessionmaker, job_name: str) -> Iterator[_RunHandle]
     handle = _RunHandle(None)
     started = time.monotonic()
     try:
+        # R12-D:心跳是 ops 行程第一個 ORM 觸點;若呼叫端尚未 import 全部
+        # model,configure_mappers 會因 relationship 字串(如 Tenant→'User')
+        # 解析失敗而炸——aggregate_daily_stats 曾因此自 R6-C3 上線起每日
+        # 靜默死(dry-run 不經心跳所以看不出來)。集中在此保證冪等載入。
+        from saas_mvp.db import import_all_models
+
+        import_all_models()
         with session_factory() as db:
             row = JobRun(job_name=job_name[:64], status=JOB_RUNNING, started_at=_utcnow())
             db.add(row)

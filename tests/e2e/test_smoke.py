@@ -45,7 +45,7 @@ def _seed(db_path: str) -> str:
         db.close()
 
 
-def test_booking_smoke_path(server, page):
+def test_booking_smoke_path(server, console_server, page):
     base = server["base"]
 
     # 1) 店家註冊(自動登入導向 dashboard)
@@ -72,6 +72,7 @@ def test_booking_smoke_path(server, page):
     finally:
         ctx2.close()
 
-    # 4) 店家後台看到這筆預約(R12-C3a:/ui/booking 已刪,驗 console)
-    page.goto(f"{base}/console/reservations")
+    # 4) 店家後台看到這筆預約(R12-C3a:/ui/booking 已刪,驗 console;
+    #    console 是獨立 next server port,cookie 同 host 跨 port 共享)
+    page.goto(f"{console_server['base']}/console/reservations")
     page.wait_for_selector("text=冒煙顧客", timeout=15000)
