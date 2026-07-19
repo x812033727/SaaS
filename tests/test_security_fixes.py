@@ -85,8 +85,19 @@ def _login(client) -> str:
 
 
 def _disable(client, feature: str) -> None:
-    r = client.post(f"/ui/features/{feature}/unsubscribe")
-    assert r.status_code == 200
+    """R12-C3a:/ui/features 頁已刪,改走 service 層關閉最近登入租戶的功能。"""
+    del client
+    from saas_mvp.services import features as features_svc
+
+    db = _Session()
+    try:
+        user = db.query(User).order_by(User.id.desc()).first()
+        features_svc.set_enabled(
+            db, user.tenant_id, feature, False, actor_user_id=None, source="test"
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 # ── S1：付費功能旁路 — POST 也要擋 ───────────────────────────────────────────
@@ -100,31 +111,6 @@ class TestS1PaywallBypass:
         _login(client)
         _disable(client, "AI_ASSISTANT")
         r = client.post("/ui/faq/ask", data={"question": "營業時間？"})
-        assert r.status_code == 200
-        assert LOCKED_MARKER in r.text
-
-    def test_campaigns_create_locked_when_disabled(self, client):
-        _login(client)
-        _disable(client, "MARKETING_AUTO")
-        r = client.post("/ui/campaigns", data={
-            "name": "生日優惠", "type": "birthday", "message_template": "hi",
-        })
-        assert r.status_code == 200
-        assert LOCKED_MARKER in r.text
-
-    def test_pos_checkout_locked_when_disabled(self, client):
-        _login(client)
-        _disable(client, "PRODUCT_SALES")
-        r = client.post("/ui/pos/checkout", data={"phone": "", "qty_1": "1"})
-        assert r.status_code == 200
-        assert LOCKED_MARKER in r.text
-
-    def test_flex_add_card_locked_when_disabled(self, client):
-        _login(client)
-        _disable(client, "FLEX_MENU")
-        r = client.post("/ui/flex-menu/cards", data={
-            "title": "卡片", "action_type": "uri", "action_data": "https://x.test",
-        })
         assert r.status_code == 200
         assert LOCKED_MARKER in r.text
 

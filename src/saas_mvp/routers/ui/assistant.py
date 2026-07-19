@@ -28,7 +28,7 @@ from fastapi import HTTPException
 from saas_mvp.routers.ui._shared import (
     router, templates, _AI_QUESTION_MAX_LEN, _ctx, _require_ui_feature,
 )
-from saas_mvp.routers.ui.commerce import _feature_locked
+from saas_mvp.routers.ui._shared import _feature_locked
 
 # ── 店家自助：AI 客服 / FAQ（AI_ASSISTANT） ─────────────────────────────────────
 

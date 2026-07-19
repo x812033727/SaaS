@@ -79,6 +79,6 @@ def test_console_login_create_reservation_visible_in_ui(server, console_server, 
     page.wait_for_selector("text=E2E 顧客", timeout=10000)
 
     # 3) /ui 同 session 可見(SSO 橋 cookie 已於 console 登入種下,跨 port 共享)
-    page.goto(f"{server['base']}/ui/booking")
+    page.goto(f"{server['base']}/ui/loyalty")  # R12-C3a:/ui/booking 已刪,改保留頁
     assert "/ui/login" not in page.url  # 免二次登入
     assert "E2E 顧客" in page.content()

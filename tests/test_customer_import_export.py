@@ -254,7 +254,9 @@ def client():
         yield c
 
 
-def _login(client) -> int:
+def _login(client) -> tuple[int, dict[str, str]]:
+    """回傳 (tenant_id, Bearer headers)。R12-C3a:/ui 匯入/匯出頁已刪,
+    endpoint 測試改打 API 層(header auth)。"""
     email = f"csv_{uuid.uuid4().hex[:8]}@example.com"
     r = client.post("/auth/register", json={
         "email": email, "password": "Test1234!",
@@ -262,66 +264,16 @@ def _login(client) -> int:
     })
     assert r.status_code == 201
     token = r.json()["access_token"]
-    tid = client.get(
-        "/tenants/me", headers={"Authorization": f"Bearer {token}"}
-    ).json()["id"]
+    headers = {"Authorization": f"Bearer {token}"}
+    tid = client.get("/tenants/me", headers=headers).json()["id"]
     client.post("/ui/login", data={"email": email, "password": "Test1234!"},
                 follow_redirects=False)
-    return tid
-
-
-class TestImportEndpoint:
-    def test_upload_and_report(self, client):
-        _login(client)
-        content = _csv_bytes([
-            {"display_name": "上傳客", "phone": "0987654321",
-             "birthday": "", "note": ""},
-        ])
-        r = client.post(
-            "/ui/customers/import",
-            files={"file": ("customers.csv", content, "text/csv")},
-        )
-        assert r.status_code == 200
-        assert "新增 1" in r.text
-        assert "上傳客" in client.get("/ui/customers").text
-
-    def test_error_report_rendered(self, client):
-        _login(client)
-        content = _csv_bytes([
-            {"display_name": "", "phone": "", "birthday": "", "note": ""},
-        ])
-        r = client.post(
-            "/ui/customers/import",
-            files={"file": ("bad.csv", content, "text/csv")},
-        )
-        assert "匯入失敗" in r.text
-        assert "第 2 列" in r.text
-
-    def test_csrf_enforced_on_multipart(self, client, monkeypatch):
-        from saas_mvp.config import settings
-
-        _login(client)
-        monkeypatch.setattr(settings, "ui_csrf_enabled", True)
-        content = _csv_bytes([
-            {"display_name": "X", "phone": "", "birthday": "", "note": ""},
-        ])
-        r = client.post(
-            "/ui/customers/import",
-            files={"file": ("x.csv", content, "text/csv")},
-        )
-        assert r.status_code == 403  # 未帶 token
-        token = client.cookies.get("csrf_token")
-        r2 = client.post(
-            "/ui/customers/import",
-            headers={"X-CSRF-Token": token},
-            files={"file": ("x.csv", content, "text/csv")},
-        )
-        assert r2.status_code == 200
+    return tid, headers
 
 
 class TestExports:
     def test_customers_roundtrip(self, client):
-        tid = _login(client)
+        tid, headers = _login(client)
         db = _Session()
         try:
             db.add(Customer(
@@ -331,15 +283,17 @@ class TestExports:
             db.commit()
         finally:
             db.close()
-        r = client.get("/ui/customers/export.csv")
+        r = client.get("/booking/customers/export.csv", headers=headers)
         assert r.status_code == 200
         assert "匯出客" in r.text
-        # round-trip:匯出檔直接再匯入 → 同電話全 skip,不產生重複
+        # round-trip:匯出檔直接再匯入(v1 console)→ 同電話全 skip,不重複
         r2 = client.post(
-            "/ui/customers/import",
-            files={"file": ("export.csv", r.content, "text/csv")},
+            "/api/v1/customers/import",
+            json={"content": r.text},
+            headers=headers,
         )
-        assert r2.status_code == 200
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["ok"] is True
         db = _Session()
         try:
             assert db.query(Customer).filter(
@@ -349,7 +303,7 @@ class TestExports:
             db.close()
 
     def test_products_and_services_export(self, client):
-        tid = _login(client)
+        tid, _headers = _login(client)
         db = _Session()
         try:
             from saas_mvp.services import catalog as catalog_svc
@@ -370,7 +324,7 @@ class TestExports:
         assert rs.status_code == 200 and "剪髮" in rs.text
 
     def test_export_tenant_scoped(self, client):
-        tid_a = _login(client)
+        tid_a, _headers_a = _login(client)
         db = _Session()
         try:
             db.add(Customer(
@@ -380,6 +334,6 @@ class TestExports:
         finally:
             db.close()
         client.get("/ui/logout")
-        _login(client)
-        r = client.get("/ui/customers/export.csv")
+        _tid_b, headers_b = _login(client)
+        r = client.get("/booking/customers/export.csv", headers=headers_b)
         assert "A店專屬" not in r.text

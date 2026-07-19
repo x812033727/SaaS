@@ -72,6 +72,6 @@ def test_booking_smoke_path(server, page):
     finally:
         ctx2.close()
 
-    # 4) 店家後台看到這筆預約
-    page.goto(f"{base}/ui/booking")
-    assert "冒煙顧客" in page.content() or "Ue2e" in page.content()
+    # 4) 店家後台看到這筆預約(R12-C3a:/ui/booking 已刪,驗 console)
+    page.goto(f"{base}/console/reservations")
+    page.wait_for_selector("text=冒煙顧客", timeout=15000)
