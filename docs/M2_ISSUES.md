@@ -4,6 +4,8 @@
 
 ## M2-LINE-WEBHOOK-ASYNC
 
+Issue: https://github.com/x812033727/SaaS/issues/42
+
 標題：LINE webhook 背景處理整套 async 化
 
 範圍：
