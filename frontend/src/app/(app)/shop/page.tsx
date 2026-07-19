@@ -15,6 +15,29 @@ type ProductRow = {
   is_active: boolean;
 };
 
+type OrderRow = {
+  id: number;
+  status: string;
+  total_cents: number;
+  refund_status: string | null;
+  refunded_cents: number;
+  created_at: string | null;
+};
+
+const ORDER_STATUS_LABEL: Record<string, string> = {
+  pending: "待付款",
+  paid: "已付款",
+  cancelled: "已取消",
+};
+
+const REFUND_LABEL: Record<string, string> = {
+  refunded: "已退款",
+  partially_refunded: "部分退款",
+  processing: "退款處理中",
+  manual_required: "需人工對帳",
+  failed: "退款失敗",
+};
+
 function errText(error: unknown): string {
   if (error instanceof ApiError) return error.detail || `錯誤(${error.status})`;
   return "操作失敗,請重試。";
@@ -45,6 +68,61 @@ export default function ShopPage() {
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["products-admin"] });
+
+  const orders = useQuery({
+    queryKey: ["shop-orders"],
+    queryFn: () => fetchJson<OrderRow[]>("/api/v1/orders"),
+    retry: false,
+  });
+  const invalidateOrders = () => qc.invalidateQueries({ queryKey: ["shop-orders"] });
+
+  // R12-C1:/ui 退役後訂單退款只剩此入口。amount 留空=全額餘額。
+  const refundMut = useMutation({
+    mutationFn: (input: { id: number; amount_twd: number | null }) =>
+      postJson(`/api/v1/orders/${input.id}/refund`,
+        input.amount_twd ? { amount_twd: input.amount_twd } : {}),
+    onSuccess: () => { invalidateOrders(); setMessage({ kind: "ok", text: "退款已送出。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
+  const manualRefundMut = useMutation({
+    mutationFn: (input: { id: number; note: string; amount_twd: number | null }) =>
+      postJson(`/api/v1/orders/${input.id}/refund/manual`, {
+        note: input.note,
+        ...(input.amount_twd ? { amount_twd: input.amount_twd } : {}),
+      }),
+    onSuccess: () => { invalidateOrders(); setMessage({ kind: "ok", text: "已對帳為人工退款。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
+
+  function askRefund(o: OrderRow) {
+    const raw = window.prompt(
+      `退款金額(NT$,留空=全額 NT$${Math.floor((o.total_cents - o.refunded_cents) / 100)})`, "");
+    if (raw === null) return;
+    const amount = raw.trim() === "" ? null : Number(raw);
+    if (amount !== null && (!Number.isInteger(amount) || amount < 1)) {
+      setMessage({ kind: "error", text: "金額須為正整數(或留空=全額)。" });
+      return;
+    }
+    if (!window.confirm(`確認對訂單 #${o.id} 退款${amount ? ` NT$${amount}` : "(全額)"}?`)) return;
+    refundMut.mutate({ id: o.id, amount_twd: amount });
+  }
+
+  function askManualRefund(o: OrderRow) {
+    const note = window.prompt("已在金流後台退款的對帳備註(必填):", "");
+    if (note === null) return;
+    if (note.trim().length < 2) {
+      setMessage({ kind: "error", text: "備註至少 2 個字。" });
+      return;
+    }
+    const raw = window.prompt("對帳金額(NT$,留空=全額):", "");
+    if (raw === null) return;
+    const amount = raw.trim() === "" ? null : Number(raw);
+    if (amount !== null && (!Number.isInteger(amount) || amount < 1)) {
+      setMessage({ kind: "error", text: "金額須為正整數(或留空=全額)。" });
+      return;
+    }
+    manualRefundMut.mutate({ id: o.id, note: note.trim(), amount_twd: amount });
+  }
 
   const saveMut = useMutation({
     mutationFn: async (input: { id: number | null; body: Record<string, unknown> }) =>
@@ -144,6 +222,64 @@ export default function ShopPage() {
           </tbody>
         </table>
       </div>
+
+      <section className="mt-8">
+        <h2 className="text-lg font-semibold">訂單</h2>
+        <div className="mt-3 overflow-x-auto rounded-xl border border-line bg-surface">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="border-b border-line text-left text-muted">
+                <th className="px-4 py-2.5 font-medium">#</th>
+                <th className="px-4 py-2.5 font-medium">建立時間</th>
+                <th className="px-4 py-2.5 font-medium">金額</th>
+                <th className="px-4 py-2.5 font-medium">狀態</th>
+                <th className="px-4 py-2.5 font-medium">退款</th>
+                <th className="px-4 py-2.5 font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.isLoading && (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">載入中…</td></tr>
+              )}
+              {orders.data?.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">尚無訂單。</td></tr>
+              )}
+              {orders.data?.map((o) => (
+                <tr key={o.id} className="border-b border-line/60">
+                  <td className="px-4 py-2.5">#{o.id}</td>
+                  <td className="px-4 py-2.5 text-muted">
+                    {o.created_at ? new Date(o.created_at).toLocaleString("zh-TW") : "—"}
+                  </td>
+                  <td className="px-4 py-2.5">NT${Math.floor(o.total_cents / 100).toLocaleString()}</td>
+                  <td className="px-4 py-2.5">{ORDER_STATUS_LABEL[o.status] ?? o.status}</td>
+                  <td className="px-4 py-2.5">
+                    {o.refund_status
+                      ? `${REFUND_LABEL[o.refund_status] ?? o.refund_status}(NT$${Math.floor(o.refunded_cents / 100)})`
+                      : "—"}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {o.status === "paid" && o.refund_status !== "refunded" && (
+                      <div className="flex gap-2">
+                        <button onClick={() => askRefund(o)}
+                          disabled={refundMut.isPending}
+                          className="rounded-md border border-line px-2 py-1 text-xs hover:bg-danger-soft">
+                          退款
+                        </button>
+                        <button onClick={() => askManualRefund(o)}
+                          disabled={manualRefundMut.isPending}
+                          className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft"
+                          title="已在金流後台退款後,在系統對帳(不會重複退刷)">
+                          人工對帳
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section id="prod-form" className="mt-6 rounded-xl border border-line bg-surface p-6">
         <h2 className="font-semibold">{editing ? `編輯:${editing.name}` : "新增商品"}</h2>

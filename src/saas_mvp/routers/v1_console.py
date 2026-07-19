@@ -3416,3 +3416,279 @@ def save_gift_card_online_config(
     )
     db.commit()
     return _gift_card_online_config_out(db, actor.user.tenant_id)
+
+
+# ────────────────────────── R12-C1:金流能力補齊 ──────────────────────────
+# /ui 退役後,訂單退款/定金退款/候補管理原本只存在於被重導的 /ui 頁
+# (能力缺口審計揪出)。此處以 console JSON 端點補齊,語意鏡像原 /ui
+# handler:owner 限定、audit、可部分退款(amount_twd 省略=全額)。
+
+
+class OrderRow(BaseModel):
+    id: int
+    status: str
+    total_cents: int
+    refund_status: str | None
+    refunded_cents: int
+    created_at: datetime.datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class RefundBody(BaseModel):
+    amount_twd: int | None = Field(default=None, ge=1)
+
+
+class ManualRefundBody(BaseModel):
+    note: str = Field(min_length=2, max_length=200)
+    amount_twd: int | None = Field(default=None, ge=1)
+
+
+@router.get(
+    "/orders",
+    response_model=list[OrderRow],
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.PRODUCT_SALES))
+    ],
+)
+def console_list_orders(
+    response: Response,
+    status_filter: str | None = Query(default=None, alias="status"),
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import shop as shop_svc
+
+    rows = shop_svc.list_orders(
+        db, tenant_id=actor.user.tenant_id, status_filter=status_filter
+    )
+    response.headers["X-Total-Count"] = str(len(rows))
+    return [OrderRow.model_validate(o) for o in rows]
+
+
+@router.post(
+    "/orders/{order_id}/refund",
+    response_model=OrderRow,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.PRODUCT_SALES))
+    ],
+)
+def console_refund_order(
+    order_id: int,
+    body: RefundBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """已付訂單閘道退款(可部分,預設全額餘額);owner 限定、服務層鎖列防重。"""
+    from saas_mvp.services import order_refund as order_refund_svc
+
+    _require_owner(actor)
+    try:
+        order = order_refund_svc.request_order_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            order_id=order_id,
+            actor_user_id=actor.user.id,
+            amount_cents=body.amount_twd * 100 if body.amount_twd else None,
+        )
+    except order_refund_svc.OrderRefundError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action="shop.order.refund", target=f"order:{order_id}",
+        detail={"refunded_twd": (order.refunded_cents or 0) // 100},
+        request=request,
+    )
+    db.commit()
+    return OrderRow.model_validate(order)
+
+
+@router.post(
+    "/orders/{order_id}/refund/manual",
+    response_model=OrderRow,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.PRODUCT_SALES))
+    ],
+)
+def console_manual_refund_order(
+    order_id: int,
+    body: ManualRefundBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """外部金流後台已退款後的人工對帳(不呼叫金流、不重複退刷);owner 限定。"""
+    from saas_mvp.services import order_refund as order_refund_svc
+
+    _require_owner(actor)
+    try:
+        order = order_refund_svc.confirm_manual_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            order_id=order_id,
+            actor_user_id=actor.user.id,
+            note=body.note,
+            amount_cents=body.amount_twd * 100 if body.amount_twd else None,
+        )
+    except order_refund_svc.OrderRefundError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action="shop.order.refund.manual", target=f"order:{order_id}",
+        detail={
+            "refunded_twd": (order.refunded_cents or 0) // 100,
+            "note": body.note[:200],
+        },
+        request=request,
+    )
+    db.commit()
+    return OrderRow.model_validate(order)
+
+
+class DepositRefundOut(BaseModel):
+    id: int
+    deposit_status: str | None
+    deposit_cents: int | None
+    deposit_refunded_cents: int | None
+
+    model_config = {"from_attributes": True}
+
+
+@router.post("/reservations/{reservation_id}/deposit-refund", response_model=DepositRefundOut)
+def console_refund_deposit(
+    reservation_id: int,
+    body: RefundBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """退還已付定金(可部分,預設全額);owner 限定、服務層鎖列防重。"""
+    from saas_mvp.services import deposit as deposit_svc
+
+    _require_owner(actor)
+    try:
+        row = deposit_svc.request_full_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            reservation_id=reservation_id,
+            actor_user_id=actor.user.id,
+            amount_cents=body.amount_twd * 100 if body.amount_twd else None,
+        )
+    except deposit_svc.DepositRefundError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action="booking.deposit.refund",
+        target=f"reservation:{reservation_id}",
+        detail={
+            "result": "refunded",
+            "amount_twd": (row.deposit_refunded_cents or row.deposit_cents or 0) // 100,
+        },
+        request=request,
+    )
+    db.commit()
+    return DepositRefundOut.model_validate(row)
+
+
+@router.post(
+    "/reservations/{reservation_id}/deposit-refund/manual",
+    response_model=DepositRefundOut,
+)
+def console_manual_refund_deposit(
+    reservation_id: int,
+    body: ManualRefundBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """外部金流後台已退定金後的人工對帳(不呼叫金流);owner 限定。"""
+    from saas_mvp.services import deposit as deposit_svc
+
+    _require_owner(actor)
+    try:
+        row = deposit_svc.confirm_manual_refund(
+            db,
+            tenant_id=actor.user.tenant_id,
+            reservation_id=reservation_id,
+            actor_user_id=actor.user.id,
+            note=body.note,
+            amount_cents=body.amount_twd * 100 if body.amount_twd else None,
+        )
+    except deposit_svc.DepositRefundError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action="booking.deposit.refund.manual",
+        target=f"reservation:{reservation_id}",
+        detail={"note": body.note[:200]},
+        request=request,
+    )
+    db.commit()
+    return DepositRefundOut.model_validate(row)
+
+
+class WaitlistRow(BaseModel):
+    id: int
+    slot_id: int
+    status: str
+    party_size: int
+    display_name: str | None
+    line_user_id: str | None
+    created_at: datetime.datetime | None
+    slot_start: datetime.datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/waitlist", response_model=list[WaitlistRow])
+def console_list_waitlist(
+    response: Response,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """候補清單(新到舊),附時段起始時間。"""
+    from saas_mvp.models.booking_slot import BookingSlot
+    from saas_mvp.services import waitlist as waitlist_svc
+
+    rows = waitlist_svc.list_waitlist(db, tenant_id=actor.user.tenant_id)
+    slot_ids = {r.slot_id for r in rows}
+    slots = {
+        s.id: s
+        for s in tenant_query(db, BookingSlot, actor.user.tenant_id)
+        .filter(BookingSlot.id.in_(slot_ids))
+        .all()
+    } if slot_ids else {}
+    out = []
+    for r in rows:
+        row = WaitlistRow.model_validate(r)
+        slot = slots.get(r.slot_id)
+        row.slot_start = slot.slot_start if slot else None
+        out.append(row)
+    response.headers["X-Total-Count"] = str(len(out))
+    return out
+
+
+@router.post("/waitlist/{entry_id}/cancel", response_model=WaitlistRow)
+def console_cancel_waitlist(
+    entry_id: int,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """店家取消候補(釋放 notified 保留的名額)。"""
+    from saas_mvp.services import waitlist as waitlist_svc
+
+    try:
+        entry = waitlist_svc.cancel_waitlist_by_staff(
+            db, tenant_id=actor.user.tenant_id, entry_id=entry_id
+        )
+    except waitlist_svc.WaitlistEntryNotFound:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="候補紀錄不存在。")
+    audit_svc.record_from_actor(
+        db, actor, action="booking.waitlist.cancel",
+        target=f"waitlist:{entry_id}", detail={}, request=request,
+    )
+    db.commit()
+    return WaitlistRow.model_validate(entry)

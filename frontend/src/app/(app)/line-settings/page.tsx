@@ -96,7 +96,6 @@ export default function LineSettingsPage() {
     <div className="mx-auto max-w-3xl">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">LINE 設定</h1>
-        <a href="/ui/line-config" className="text-sm text-muted hover:text-ink">完整設定指南 → 舊版</a>
       </header>
 
       {message && (
