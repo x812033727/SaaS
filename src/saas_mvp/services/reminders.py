@@ -58,12 +58,19 @@ def enqueue_reminders(
 ) -> int:
     """為一筆預約入列 day_before / day_of 兩筆 pending 提醒（不 commit）。
 
-    僅在 enabled 且 reservation 有 line_user_id（可推播）時入列。
+    enabled 時入列:有 line_user_id(可推播)照舊;無 LINE 身分(R12-B,
+    網路預約 walk-in 客)則僅在顧客檔有 email 時入列(line_user_id=NULL,
+    派送端路由 email)。兩者皆無 → 0。
     重複入列由 UniqueConstraint(reservation_id, kind) 擋下（catch IntegrityError 跳過）。
     回傳實際新增筆數。
     """
-    if not enabled or not reservation.line_user_id:
+    if not enabled:
         return 0
+    if not reservation.line_user_id:
+        from saas_mvp.services import email_delivery as email_svc
+
+        if not email_svc.customer_recipient(db, reservation.customer_id):
+            return 0
 
     times = compute_remind_times(
         slot.slot_start, day_of_lead_minutes, hours_before=hours_before

@@ -17,6 +17,7 @@ customer_id 路徑不含黑名單檢查,本服務在併檔時自行檢查。
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 
 from sqlalchemy.orm import Session
@@ -30,6 +31,8 @@ from saas_mvp.services.tenants import tenant_query
 
 # 建單備註:店家在預約列表看得到來源;同時是防灌單計數的查詢鍵。
 WEB_BOOKING_NOTE = "網路預約"
+
+_log = logging.getLogger("saas.public_booking")
 
 _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
@@ -182,3 +185,51 @@ def submit(
         require_deposit=True,
     )
     return resv, customer, created
+
+
+def queue_confirmation_email(db: Session, reservation, customer) -> None:
+    """網路預約成立後的確認信(R12-B,best-effort)。
+
+    走 email_delivery 可靠佇列(失敗自動重試);顧客無 email → no-op。
+    在 book_slot commit 之後呼叫,任何失敗只記 log,絕不影響已成立的預約。
+    portal 連結寄到顧客檔「所存」的 email —— 併檔情境下地址屬於檔主本人,
+    冒用他人電話預約反而會通知到本人,是特性不是洩漏。
+    """
+    email = (customer.email or "").strip()
+    if not email:
+        return
+    try:
+        from saas_mvp.models.booking_slot import BookingSlot
+        from saas_mvp.models.tenant import Tenant
+        from saas_mvp.services import customer_portal as portal_svc
+        from saas_mvp.services import email_delivery as email_svc
+        from saas_mvp.services.mailer import get_mailer
+
+        slot = db.get(BookingSlot, reservation.slot_id)
+        tenant = db.get(Tenant, reservation.tenant_id)
+        store = tenant.name if tenant is not None else ""
+        lines = [
+            f"{store} 預約成立通知",
+            "",
+            f"預約編號:#{reservation.id}",
+        ]
+        if slot is not None:
+            when = slot.slot_start.strftime("%Y-%m-%d %H:%M")
+            if slot.slot_end:
+                when += f" – {slot.slot_end.strftime('%H:%M')}"
+            lines.append(f"時間:{when}")
+        lines.append(f"人數:{reservation.party_size} 位")
+        portal = portal_svc.portal_url(customer)
+        if portal:
+            lines += ["", f"查看/改期/取消預約:{portal}"]
+        email_svc.deliver_or_queue(
+            db,
+            get_mailer(db),
+            user_id=None,
+            category="booking_confirmation",
+            recipient=email,
+            subject=f"【預約成立】{store}",
+            body="\n".join(lines),
+        )
+    except Exception:  # noqa: BLE001 — 確認信絕不影響已成立的預約
+        _log.warning("booking confirmation email failed", exc_info=True)

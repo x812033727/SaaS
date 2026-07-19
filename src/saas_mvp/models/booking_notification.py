@@ -63,7 +63,9 @@ class BookingNotification(Base):
         nullable=False,
         index=True,
     )
-    line_user_id = Column(String(64), nullable=False)
+    # R12-B:NULL = 無 LINE 身分的 email-only 收件人(網路預約客),
+    # 派送端以此路由 email 而非 LINE push。
+    line_user_id = Column(String(64), nullable=True)
     kind = Column(String(16), nullable=False)  # change | cancel | deposit_refund
     # R4-B2:同一預約同 kind 可有多筆(例:分批退款各發一則通知);唯一鍵改
     # (reservation_id, kind, occurrence)。change/cancel 恆用 1,維持原冪等語意。
