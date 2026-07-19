@@ -23,6 +23,32 @@ type ReservationRow = {
 type PointTx = { id: number; delta: number; reason: string; created_at: string };
 type Tag = { id: number; name: string };
 
+type WalletCredit = {
+  customer_package_id: number;
+  package_name: string;
+  service_id: number;
+  service_name: string;
+  remaining: number;
+  expires_at: string | null;
+};
+type PackageLedgerRow = {
+  id: number;
+  customer_package_id: number;
+  kind: string;
+  delta: number;
+  created_at: string | null;
+};
+type CustomerPackages = { wallet: WalletCredit[]; ledger: PackageLedgerRow[] };
+type PackageDef = { id: number; name: string; price_cents: number; is_active: boolean };
+
+const LEDGER_KIND: Record<string, string> = {
+  issue: "發行",
+  redeem: "扣抵",
+  refund: "退回",
+  adjust: "調整",
+  cancel: "作廢沖銷",
+};
+
 function errText(error: unknown): string {
   if (error instanceof ApiError) return error.detail || `錯誤(${error.status})`;
   return "操作失敗,請重試。";
@@ -49,6 +75,18 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     queryKey: ["customer-tags", id],
     queryFn: () => fetchJson<Tag[]>(`/booking/customers/${id}/tags`),
   });
+  // R12-C2:顧客套票操作(/ui 退役後只剩此入口);feature 未開 → 403 → 隱藏區塊
+  const pkgs = useQuery({
+    queryKey: ["customer-packages", id],
+    queryFn: () => fetchJson<CustomerPackages>(`/api/v1/customers/${id}/packages`),
+    retry: false,
+  });
+  const packageDefs = useQuery({
+    queryKey: ["package-defs"],
+    queryFn: () => fetchJson<PackageDef[]>("/api/v1/packages"),
+    retry: false,
+    enabled: !(pkgs.error instanceof ApiError && pkgs.error.status === 403),
+  });
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["customer", id] });
@@ -73,6 +111,22 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     onSuccess: () => { refresh(); setMessage({ kind: "ok", text: "點數已調整。" }); },
     onError: (e) => setMessage({ kind: "error", text: errText(e) }),
   });
+  const refreshPkgs = () => qc.invalidateQueries({ queryKey: ["customer-packages", id] });
+  const issuePkgMut = useMutation({
+    mutationFn: (package_id: number) =>
+      postJson(`/api/v1/customers/${id}/packages`, {
+        package_id,
+        issuance_key: `console-${id}-${package_id}-${Date.now()}`,
+      }),
+    onSuccess: () => { refreshPkgs(); setMessage({ kind: "ok", text: "套票已發行。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
+  const cancelPkgMut = useMutation({
+    mutationFn: (customer_package_id: number) =>
+      postJson(`/api/v1/customers/${id}/packages/${customer_package_id}/cancel`, {}),
+    onSuccess: () => { refreshPkgs(); setMessage({ kind: "ok", text: "套票已作廢。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
 
   if (customer.isLoading) return <p className="text-muted">載入中…</p>;
   if (!customer.data) return <p className="text-muted">找不到顧客。</p>;
@@ -89,10 +143,10 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             )}
           </h1>
           <p className="mt-1 text-sm text-muted">
-            LINE:{c.line_user_id.slice(0, 12)}… · 預約 {c.booking_count} 次 · {c.tier}
+            {c.line_user_id ? `LINE:${c.line_user_id.slice(0, 12)}…` : "無 LINE(walk-in/網路預約)"}
+            {" "}· 預約 {c.booking_count} 次 · {c.tier}
           </p>
         </div>
-        <a href={`/ui/customers`} className="text-sm text-muted hover:text-ink">進階功能 → 舊版頁面</a>
       </header>
 
       {message && (
@@ -238,6 +292,85 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           </div>
         )}
       </section>
+
+      {!(pkgs.error instanceof ApiError && pkgs.error.status === 403) && (
+        <section className="mt-4 rounded-xl border border-line bg-surface p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-semibold">服務套票</h2>
+            <div className="flex items-center gap-2 text-sm">
+              <select id="issue-pkg" className="rounded-lg border border-line px-2 py-1.5">
+                <option value="">選擇套票…</option>
+                {(packageDefs.data ?? []).filter((p) => p.is_active).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}(NT${Math.floor(p.price_cents / 100)})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  const sel = document.getElementById("issue-pkg") as HTMLSelectElement | null;
+                  const pid = sel?.value ? Number(sel.value) : null;
+                  if (!pid) { setMessage({ kind: "error", text: "請先選擇套票。" }); return; }
+                  if (window.confirm("確認對此顧客發行套票?")) issuePkgMut.mutate(pid);
+                }}
+                disabled={issuePkgMut.isPending}
+                className="rounded-lg bg-brand px-3 py-1.5 font-semibold text-white hover:bg-brand-deep disabled:opacity-60">
+                發行套票
+              </button>
+            </div>
+          </div>
+          {pkgs.data?.wallet.length === 0 ? (
+            <p className="mt-3 text-sm text-muted">目前沒有可用套票。</p>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[480px] text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-muted">
+                    <th className="py-2 pr-4 font-medium">套票</th>
+                    <th className="py-2 pr-4 font-medium">服務</th>
+                    <th className="py-2 pr-4 font-medium">剩餘次數</th>
+                    <th className="py-2 pr-4 font-medium">到期</th>
+                    <th className="py-2 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(pkgs.data?.wallet ?? []).map((w) => (
+                    <tr key={`${w.customer_package_id}-${w.service_id}`} className="border-b border-line/60">
+                      <td className="py-2 pr-4 font-medium">{w.package_name}</td>
+                      <td className="py-2 pr-4">{w.service_name}</td>
+                      <td className="py-2 pr-4">{w.remaining}</td>
+                      <td className="py-2 pr-4 text-muted">{w.expires_at ? w.expires_at.slice(0, 10) : "—"}</td>
+                      <td className="py-2">
+                        <button
+                          onClick={() =>
+                            window.confirm("作廢此套票?未使用次數將以帳本沖銷(不處理金流退款)。")
+                            && cancelPkgMut.mutate(w.customer_package_id)}
+                          disabled={cancelPkgMut.isPending}
+                          className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">
+                          作廢
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {(pkgs.data?.ledger.length ?? 0) > 0 && (
+            <details className="mt-3 text-sm">
+              <summary className="cursor-pointer text-muted">次數帳本({pkgs.data?.ledger.length})</summary>
+              <ul className="mt-2 grid gap-1">
+                {(pkgs.data?.ledger ?? []).map((l) => (
+                  <li key={l.id} className="text-muted">
+                    {l.created_at ? l.created_at.slice(0, 16).replace("T", " ") : "—"} ·{" "}
+                    {LEDGER_KIND[l.kind] ?? l.kind} {l.delta > 0 ? `+${l.delta}` : l.delta}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { ApiError, fetchJson, postJson } from "@/lib/client-api";
+import { ApiError, delJson, fetchJson, postJson } from "@/lib/client-api";
 
 type CampaignRow = {
   id: number;
@@ -56,6 +56,12 @@ export default function CampaignsPage() {
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["campaigns-admin"] });
+
+  const delMut = useMutation({
+    mutationFn: (id: number) => delJson(`/booking/campaigns/${id}`),
+    onSuccess: () => { invalidate(); setMessage({ kind: "ok", text: "已刪除。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
 
   const saveMut = useMutation({
     mutationFn: async (input: { id: number | null; body: Record<string, unknown> }) =>
@@ -185,6 +191,13 @@ export default function CampaignsPage() {
                     <button onClick={() => { setEditing(c); setMessage(null); }}
                       className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft">
                       編輯
+                    </button>
+                    <button onClick={() =>
+                        window.confirm(`確定刪除「${c.name}」?此動作無法復原。`)
+                        && delMut.mutate(c.id)}
+                      disabled={delMut.isPending}
+                      className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">
+                      刪除
                     </button>
                   </div>
                 </td>

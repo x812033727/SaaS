@@ -1,17 +1,18 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import { fetchList } from "@/lib/client-api";
+import { ApiError, fetchList, postJson } from "@/lib/client-api";
 import { pageOffset } from "@/lib/pagination";
 import { DataTable, type Column } from "@/components/ui/DataTable";
 import { Pager } from "@/components/ui/Pager";
 
 export type CustomerRow = {
   id: number;
-  line_user_id: string;
+  // NULL = walk-in/網路預約客(無 LINE 身分)
+  line_user_id: string | null;
   display_name: string | null;
   phone: string | null;
   booking_count: number;
@@ -44,10 +45,45 @@ const columns: Column<CustomerRow>[] = [
   { header: "等級", cell: (c) => c.tier },
 ];
 
+type ImportReport = {
+  created: number; updated: number; skipped: number; errors: string[]; ok: boolean;
+};
+
 export default function CustomersPage() {
+  const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [applied, setApplied] = useState("");
   const [page, setPage] = useState(0);
+  const [report, setReport] = useState<ImportReport | null>(null);
+  const [importError, setImportError] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const updateExistingRef = useRef<HTMLInputElement>(null);
+
+  // R12-C2:CSV 匯入(/ui 退役後只剩此入口)。內容以 UTF-8 字串上傳。
+  const importMut = useMutation({
+    mutationFn: (input: { content: string; update_existing: boolean }) =>
+      postJson<ImportReport>("/api/v1/customers/import", input),
+    onSuccess: (r) => {
+      setReport(r);
+      setImportError("");
+      if (r.ok) qc.invalidateQueries({ queryKey: ["customers"] });
+    },
+    onError: (e) =>
+      setImportError(e instanceof ApiError ? e.detail || `錯誤(${e.status})` : "匯入失敗,請重試。"),
+  });
+
+  function submitImport() {
+    const file = fileRef.current?.files?.[0];
+    if (!file) { setImportError("請先選擇 CSV 檔案。"); return; }
+    const reader = new FileReader();
+    reader.onload = () =>
+      importMut.mutate({
+        content: String(reader.result ?? ""),
+        update_existing: Boolean(updateExistingRef.current?.checked),
+      });
+    reader.onerror = () => setImportError("讀取檔案失敗。");
+    reader.readAsText(file, "utf-8");
+  }
 
   const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(pageOffset(page, PAGE_SIZE)) });
   if (applied) query.set("q", applied);
@@ -61,7 +97,38 @@ export default function CustomersPage() {
     <div className="mx-auto max-w-6xl">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">顧客</h1>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <a href="/console/api/proxy/booking/customers/export.csv"
+            className="rounded-lg border border-line px-3 py-1.5 hover:bg-brand-soft">
+            匯出 CSV
+          </a>
+          <input ref={fileRef} type="file" accept=".csv,text/csv" className="text-xs" />
+          <label className="flex items-center gap-1">
+            <input ref={updateExistingRef} type="checkbox" />
+            更新既有
+          </label>
+          <button onClick={submitImport} disabled={importMut.isPending}
+            className="rounded-lg bg-brand px-3 py-1.5 font-semibold text-white hover:bg-brand-deep disabled:opacity-60">
+            {importMut.isPending ? "匯入中…" : "匯入 CSV"}
+          </button>
+        </div>
       </header>
+
+      {importError && (
+        <p className="mt-3 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{importError}</p>
+      )}
+      {report && (
+        <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${report.ok ? "bg-ok-soft text-ok" : "bg-danger-soft text-danger"}`}>
+          {report.ok
+            ? `匯入完成:新增 ${report.created}、更新 ${report.updated}、略過 ${report.skipped}。`
+            : `匯入失敗(整批未寫入):`}
+          {!report.ok && (
+            <ul className="mt-1 list-disc pl-5">
+              {report.errors.slice(0, 10).map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       <form
         className="mt-4 flex gap-2 text-sm"
