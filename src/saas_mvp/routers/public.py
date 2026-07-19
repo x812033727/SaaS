@@ -24,6 +24,7 @@ from saas_mvp.db import get_db
 from saas_mvp.services import catalog as catalog_svc
 from saas_mvp.services import coupons as coupons_svc
 from saas_mvp.services import gift_card_sales as gift_card_sales_svc
+from saas_mvp.services import public_booking as public_booking_svc
 from saas_mvp.services import portfolio as portfolio_svc
 from saas_mvp.services import profile as profile_svc
 from saas_mvp.services import shop as shop_svc
@@ -215,6 +216,9 @@ def public_profile(
             "json_ld": json_ld_str,
             # R11-A:線上禮物卡販售入口(未開賣不渲染)
             "gift_card_sale": gift_card_sales_svc.sale_available(db, tenant_id)
+            is not None,
+            # R12-A:常駐線上預約入口(opt-in+feature 未過不渲染)
+            "online_booking": public_booking_svc.resolve_entry(db, slug)
             is not None,
         },
     )

@@ -13,6 +13,7 @@ type Profile = {
   intro: string | null;
   announcement: string | null;
   review_url: string | null;
+  online_booking_enabled: boolean;
   is_published: boolean;
 };
 
@@ -25,6 +26,7 @@ const EMPTY: Profile = {
   intro: "",
   announcement: "",
   review_url: "",
+  online_booking_enabled: false,
   is_published: false,
 };
 
@@ -132,11 +134,20 @@ export default function ProfilePage() {
             onChange={(e) => set("is_published", e.target.checked)} />
           公開此頁
         </label>
+        <label className="grid gap-1 text-sm font-medium">
+          <span className="flex items-center gap-2">
+            <input type="checkbox" checked={form.online_booking_enabled}
+              onChange={(e) => set("online_booking_enabled", e.target.checked)} />
+            開放線上預約(公開頁常駐「線上預約」入口)
+          </span>
+          <span className="ml-6 font-normal text-muted">
+            訪客不需加 LINE 即可在 /p/{form.slug || "你的代稱"}/book 預約;需啟用「網頁預約表單」進階功能且公開此頁。
+          </span>
+        </label>
         <div className="flex items-center gap-3">
           <button disabled={saving} className="rounded-lg bg-brand px-4 py-2 font-semibold text-white hover:bg-brand-deep disabled:opacity-60">
             {saving ? "儲存中…" : "儲存"}
           </button>
-          <a href="/ui/profile" className="text-sm text-muted hover:text-ink">進階(橫幅/社群連結)→ 舊版</a>
         </div>
       </form>
     </div>

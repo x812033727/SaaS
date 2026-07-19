@@ -41,6 +41,7 @@ from saas_mvp.routers import pos as pos_router
 from saas_mvp.routers import ai as ai_router
 from saas_mvp.routers import pii as pii_router
 from saas_mvp.routers import booking_form as booking_form_router
+from saas_mvp.routers import public_booking as public_booking_router
 from saas_mvp.routers import customer_portal as customer_portal_router
 from saas_mvp.routers import unsubscribe as unsubscribe_router
 from saas_mvp.routers import flex_menu as flex_menu_router
@@ -151,6 +152,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_router.router)
     app.include_router(pii_router.router)
     app.include_router(booking_form_router.router)
+    app.include_router(public_booking_router.router)
     app.include_router(customer_portal_router.router)
     app.include_router(unsubscribe_router.router)
     app.include_router(flex_menu_router.router)
