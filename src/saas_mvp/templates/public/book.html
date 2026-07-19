@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>{{ shop_name or "線上預約" }} — 線上預約</title>
+  <style>
+    :root {
+      --bg: #FAF9F6; --card: #fff; --ink: #2B2B28; --muted: #8A867C;
+      --line: #E9E5DD; --brand: #1A5C4A; --brand-deep: #124436;
+      --brand-soft: #EDF3F0; --gold: #C4956A;
+      --danger: #B3564D; --danger-soft: #F9ECEA;
+    }
+    body { font-family: "Noto Sans TC", -apple-system, "Helvetica Neue", Arial, sans-serif;
+           max-width: 460px; margin: 2rem auto; padding: 0 1.1rem;
+           background: var(--bg); color: var(--ink); line-height: 1.6; }
+    h1 { font-size: 1.25rem; letter-spacing: .02em; margin-bottom: .4rem; }
+    h1::after { content: ""; display: block; width: 36px; height: 3px;
+                background: var(--gold); border-radius: 2px; margin-top: .6rem; }
+    label { display: block; margin: 1rem 0 0.3rem; font-weight: 600; font-size: .9rem; color: var(--muted); }
+    select, input { width: 100%; padding: 0.7rem 0.8rem; box-sizing: border-box;
+            border: 1px solid var(--line); border-radius: 8px; font-size: 1rem;
+            background: var(--card); color: var(--ink); font-family: inherit; }
+    select:focus, input:focus { outline: none; border-color: var(--brand);
+            box-shadow: 0 0 0 3px var(--brand-soft); }
+    button { margin-top: 1.5rem; width: 100%; padding: 0.85rem; font-size: 1rem;
+             background: var(--brand); color: #fff; border: none; border-radius: 8px;
+             font-family: inherit; cursor: pointer; }
+    button:active { background: var(--brand-deep); }
+    .choice { display: block; margin: 0.6rem 0; padding: 0.85rem 1rem;
+              background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+              box-shadow: 0 1px 2px rgba(43,43,40,.05); text-decoration: none;
+              color: var(--ink); font-weight: 600; }
+    .choice:active, .choice:hover { border-color: var(--brand); }
+    .choice small { color: var(--muted); display: block; font-weight: 400; }
+    .state { padding: 1.5rem; background: var(--card); border: 1px solid var(--line);
+             border-radius: 12px; text-align: center; }
+    .error { padding: 1rem; background: var(--danger-soft); border-radius: 8px;
+             border-left: 3px solid var(--danger); color: var(--danger); }
+    .back { display: inline-block; margin-top: 1rem; color: var(--brand); }
+    .slot-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0;
+                padding: 0.7rem 0.9rem; background: var(--card);
+                border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+    .slot-row:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+    .slot-row input[type="radio"] { width: auto; accent-color: var(--brand); }
+    .slot-row small { color: var(--muted); }
+    .slot-full { opacity: .55; cursor: default; }
+    .muted { color: var(--muted); font-size: .9rem; }
+    .pay-note { color: var(--danger); }
+    .pay-btn { display: inline-block; padding: .8rem 1.5rem; background: var(--brand);
+               color: #fff; border-radius: 8px; text-decoration: none; }
+  </style>
+</head>
+<body>
+  {% if state == "error" %}
+    <div class="error"><p>{{ message }}</p></div>
+    <a class="back" href="/p/{{ slug }}/book{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 回上一步重新選擇</a>
+
+  {% elif state == "done" %}
+    <div class="state">
+      <h1>✅ 預約完成</h1>
+      <p>{{ shop_name }}<br>預約編號 <strong>#{{ reservation.id }}</strong>，共 {{ reservation.party_size }} 位。</p>
+      {% if client_form_links %}<div><h2>預約前請完成</h2>{% for item in client_form_links %}<p><a class="pay-btn" href="{{ item.url }}">填寫 {{ item.name }}</a></p>{% endfor %}<p class="muted">送出後會安全保存到本次預約與顧客紀錄。</p></div>{% endif %}
+      {% if deposit_url %}
+      <p class="pay-note"><strong>{{ deposit_note }}</strong></p>
+      <p><a href="{{ deposit_url }}" class="pay-btn">前往付定金</a></p>
+      {% endif %}
+      {% if portal_url %}
+      <p><a class="pay-btn" href="{{ portal_url }}">管理我的預約</a></p>
+      <p class="muted">收藏這個連結，隨時可查看、改期或取消預約。</p>
+      {% else %}
+      <p class="muted">如需改期或取消，請直接與店家聯繫。</p>
+      {% endif %}
+    </div>
+    <a class="back" href="/p/{{ slug }}">← 回店家頁</a>
+
+  {% elif state == "pick_service" %}
+    <h1>{{ shop_name }} — 選擇服務</h1>
+    {% for s in services %}
+      <a class="choice" href="/p/{{ slug }}/book?service_id={{ s.id }}">
+        {{ s.name }}
+        <small>
+          {% if s.duration_minutes %}{{ s.duration_minutes }} 分鐘{% endif %}
+          {% if s.price_cents %}｜NT$ {{ s.price_cents // 100 }}{% endif %}
+        </small>
+      </a>
+    {% endfor %}
+
+  {% elif state == "pick_date" %}
+    <h1>{{ shop_name }} — 選擇日期</h1>
+    {% if dates %}
+      {% for d in dates %}
+        <a class="choice" href="/p/{{ slug }}/book?{% if service_id is not none %}service_id={{ service_id }}&{% endif %}date={{ d }}">{{ d }}</a>
+      {% endfor %}
+    {% else %}
+      <div class="state"><p>目前沒有可預約的日期，請稍後再試。</p></div>
+    {% endif %}
+    {% if service_id is not none %}
+      <a class="back" href="/p/{{ slug }}/book">← 重選服務</a>
+    {% endif %}
+
+  {% elif state == "pick_slot" %}
+    <h1>{{ shop_name }} — 選擇時段</h1>
+    {% if slots %}
+      <form method="post" action="/p/{{ slug }}/book">
+        {% if service_id is not none %}
+          <input type="hidden" name="service_id" value="{{ service_id }}">
+        {% endif %}
+        {% for s in slots %}
+          <label class="slot-row">
+            <input type="radio" name="slot_id" value="{{ s.id }}" {% if loop.first %}checked{% endif %}>
+            {{ s.slot_start.strftime('%H:%M') }}
+            {%- if s.slot_end %} – {{ s.slot_end.strftime('%H:%M') }}{% endif %}
+            <small>（尚餘 {{ s.online_available }} 位）</small>
+          </label>
+        {% endfor %}
+        {% if staff %}
+          <label for="staff_id">指定服務人員（選填）</label>
+          <select id="staff_id" name="staff_id">
+            <option value="">不指定</option>
+            {% for st in staff %}
+              <option value="{{ st.id }}">{{ st.name }}</option>
+            {% endfor %}
+          </select>
+        {% endif %}
+        <label for="party_size">人數</label>
+        <select id="party_size" name="party_size">
+          {% for n in range(1, 7) %}<option value="{{ n }}">{{ n }} 位</option>{% endfor %}
+        </select>
+        <label for="name">姓名 <span style="color:var(--danger)">*</span></label>
+        <input id="name" name="name" required maxlength="128" placeholder="王小明" autocomplete="name">
+        <label for="phone">聯絡電話 <span style="color:var(--danger)">*</span></label>
+        <input id="phone" name="phone" required type="tel" maxlength="20" placeholder="0912345678" autocomplete="tel">
+        <label for="email">Email（選填，用於預約提醒）</label>
+        <input id="email" name="email" type="email" maxlength="255" placeholder="you@example.com" autocomplete="email">
+        <button type="submit">確認預約 {{ date }}</button>
+      </form>
+    {% endif %}
+    {% if full_slots %}
+      <h1 style="margin-top:2rem">已額滿時段</h1>
+      {% for s in full_slots %}
+        <div class="slot-row slot-full">
+          {{ s.slot_start.strftime('%H:%M') }}{% if s.slot_end %} – {{ s.slot_end.strftime('%H:%M') }}{% endif %}
+          <small>已額滿</small>
+        </div>
+      {% endfor %}
+      <p class="muted">額滿時段的候補請透過店家 LINE 官方帳號登記。</p>
+    {% endif %}
+    {% if not slots and not full_slots %}
+      <div class="state"><p>{{ date }} 沒有可預約的時段。</p></div>
+    {% endif %}
+    <a class="back" href="/p/{{ slug }}/book{% if service_id is not none %}?service_id={{ service_id }}{% endif %}">← 重選日期</a>
+  {% endif %}
+</body>
+</html>

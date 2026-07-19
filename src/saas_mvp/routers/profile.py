@@ -38,6 +38,7 @@ class ProfileUpsert(BaseModel):
     intro: str | None = None
     announcement: str | None = None
     review_url: str | None = Field(default=None, max_length=512)
+    online_booking_enabled: bool | None = None
     is_published: bool | None = None
 
 
@@ -54,6 +55,7 @@ class ProfileResponse(BaseModel):
     intro: str | None
     announcement: str | None
     review_url: str | None
+    online_booking_enabled: bool
     is_published: bool
 
     model_config = {"from_attributes": True}

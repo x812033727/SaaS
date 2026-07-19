@@ -53,6 +53,11 @@ class BusinessProfile(Base):
     announcement = Column(Text, nullable=True)
     # R11-B:外部評論連結(Google/FB),post_visit 訊息 {review_url} 佔位符來源
     review_url = Column(String(512), nullable=True)
+    # R12-A:公開頁常駐線上預約入口(/p/{slug}/book)。店家 opt-in;
+    # 另需 WEB_BOOKING feature + is_published 才對外露出。
+    online_booking_enabled = Column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     is_published = Column(
         Boolean, nullable=False, default=False, server_default=text("false")

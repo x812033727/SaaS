@@ -41,6 +41,7 @@ _UPSERTABLE = frozenset(
         "intro",
         "announcement",
         "review_url",
+        "online_booking_enabled",
         "is_published",
     }
 )
