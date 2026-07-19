@@ -8,7 +8,6 @@ prefix /s，include_in_schema=False，**無一般認證**：token 即能力（ca
 
 from __future__ import annotations
 
-import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -22,7 +21,16 @@ from saas_mvp.models.reservation import RESERVATION_CONFIRMED, Reservation
 from saas_mvp.services import staff as staff_svc
 from saas_mvp.services.tenants import tenant_query
 
-router = APIRouter(prefix="/s", tags=["staff-portal"], include_in_schema=False)
+from saas_mvp.auth.ratelimit import public_limiter
+
+# R12-D:公開 token 面補 per-IP 限流(比照 pii/booking_form/customer_portal;
+# token 雖不可猜,枚舉噪音與濫用面仍應有第二層閘)。
+router = APIRouter(
+    prefix="/s",
+    tags=["staff-portal"],
+    include_in_schema=False,
+    dependencies=[Depends(public_limiter)],
+)
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # src/saas_mvp
 templates = Jinja2Templates(directory=str(_PKG_DIR / "templates"))
