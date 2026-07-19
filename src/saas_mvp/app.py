@@ -103,6 +103,13 @@ def create_app() -> FastAPI:
     # Response 上的 set_cookie 不會進最終回應。純 JWT 運算無 DB,失敗吞掉。
     @app.middleware("http")
     async def _ui_sliding_renew(request, call_next):
+        # R11-D:/ui 已遷移頁退役 —— GET 302 → console(可逆旗標,詳
+        # saas_mvp/ui_retirement.py;先於 handler,不進路由)。
+        from saas_mvp.ui_retirement import retirement_redirect
+
+        redirect = retirement_redirect(request)
+        if redirect is not None:
+            return redirect
         response = await call_next(request)
         if request.url.path.startswith("/ui"):
             ui.maybe_renew_ui_cookie(request, response)

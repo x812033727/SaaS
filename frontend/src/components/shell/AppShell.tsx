@@ -84,8 +84,8 @@ export default function AppShell({
           </label>
           <p className="truncate text-sm text-muted lg:hidden">{context.tenant.name}</p>
           <div className="ml-auto flex items-center gap-3">
-            <a href="/ui/" className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-ink">
-              舊版後台
+            <a href="/ui/admin" className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-ink">
+              平台管理
             </a>
             <form action="/console/api/session/logout" method="post">
               <button className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-danger-soft hover:text-danger">

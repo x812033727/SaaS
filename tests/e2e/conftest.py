@@ -42,6 +42,7 @@ def server(tmp_path_factory) -> dict:
         "SAAS_TESTING": "1",
         "SAAS_BCRYPT_ROUNDS": "4",
         "SAAS_RATE_LIMIT_ENABLED": "false",
+        "SAAS_UI_RETIRED": "false",
         "SAAS_FEATURES_DEFAULT_ENABLED": "true",
         # R11-C:購卡流 sale_available 要求真實 provider;ecpay 憑證留空,
         # 冒煙只驗到「渲染綠界導頁」為止,不真打外部
