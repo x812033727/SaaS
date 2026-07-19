@@ -34,4 +34,6 @@ from saas_mvp.routers.ui._shared import (  # noqa: F401 — app.py/oauth.py 引�
 )
 
 # ⚠️ 按原檔區段順序 import — 路由註冊順序即路徑匹配順序,不可重排(P4 純搬移)。
-from saas_mvp.routers.ui import session, billing, account, admin, booking, customers, automation, commerce, org, crm, marketing, resources, pos, assistant, calendar_ui  # noqa: E402, F401
+# R12-C3a:已遷 console 的頁面模組實體刪除(booking/customers/automation/
+# commerce/marketing/resources/pos/calendar_ui);GET 由 ui_retirement 302。
+from saas_mvp.routers.ui import session, billing, account, admin, org, crm, assistant  # noqa: E402, F401

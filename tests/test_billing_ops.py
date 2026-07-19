@@ -37,7 +37,6 @@ from saas_mvp.app import create_app  # noqa: E402
 from saas_mvp.config import settings  # noqa: E402
 from saas_mvp.db import Base, get_db  # noqa: E402
 from saas_mvp.models.feature_subscription import (  # noqa: E402
-    SUB_ACTIVE,
     SUB_CANCEL_FAILED,
     SUB_CANCELLED,
     SUB_FAILED,
@@ -305,22 +304,3 @@ class TestFeaturesPage:
         client.post("/ui/login", data={"email": email, "password": "Test1234!"},
                     follow_redirects=False)
         return tid
-
-    def test_features_page_shows_subscription_and_charges(self, client):
-        tid = self._login(client)
-        db = _Session()
-        try:
-            sub = subs_svc.create_subscription(
-                db, tenant_id=tid, feature="COUPON_SYSTEM",
-                amount_cents=29900,
-            )
-            subs_svc.activate(db, sub)
-            sub.status = SUB_CANCEL_FAILED
-            db.commit()
-        finally:
-            db.close()
-        r = client.get("/ui/features")
-        assert r.status_code == 200
-        assert "停扣未確認" in r.text     # cancel_failed 警示
-        assert "扣款紀錄" in r.text
-        assert "299 元" in r.text        # 明細金額

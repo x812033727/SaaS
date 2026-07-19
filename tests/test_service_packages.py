@@ -321,60 +321,6 @@ def _login(client: TestClient) -> tuple[int, str]:
     return tenant_id, email
 
 
-def test_ui_owner_can_create_package_and_staff_cannot_mutate(client):
-    tenant_id, email = _login(client)
-    with _Session() as db:
-        service = Service(tenant_id=tenant_id, name="頭皮護理", duration_minutes=60, price_cents=1000)
-        customer = Customer(
-            tenant_id=tenant_id,
-            line_user_id="U-owner-issue",
-            display_name="發行驗收顧客",
-        )
-        db.add_all([service, customer])
-        db.commit()
-        service_id, customer_id = service.id, customer.id
-    response = client.post(
-        "/ui/packages",
-        data={"name": "頭皮 5 次卡", "description": "", "price_twd": "40", "validity_days": "180"},
-    )
-    assert response.status_code == 200
-    assert "頭皮 5 次卡" in response.text
-    with _Session() as db:
-        package = packages_svc.list_packages(db, tenant_id=tenant_id)[0]
-        package_id = package.id
-    response = client.post(
-        f"/ui/packages/{package_id}/items",
-        data={"service_id": str(service_id), "included_quantity": "5"},
-    )
-    assert response.status_code == 200
-    assert "頭皮護理：5 次" in response.text
-    issuance = {
-        "package_id": str(package_id),
-        "issuance_key": "ui-double-submit-key",
-    }
-    first = client.post(
-        f"/ui/customers/{customer_id}/packages", data=issuance
-    )
-    second = client.post(
-        f"/ui/customers/{customer_id}/packages", data=issuance
-    )
-    assert first.status_code == second.status_code == 200
-    with _Session() as db:
-        from saas_mvp.models.service_package import CustomerPackage
-
-        assert db.query(CustomerPackage).filter_by(
-            tenant_id=tenant_id, issuance_key="ui-double-submit-key"
-        ).count() == 1
-    with _Session() as db:
-        db.query(User).filter_by(email=email).one().role = "staff"
-        db.commit()
-    forbidden = client.post(
-        "/ui/packages",
-        data={"name": "越權套票", "price_twd": "0", "validity_days": "30"},
-    )
-    assert forbidden.status_code == 403
-
-
 def test_web_booking_can_opt_in_to_package_credit(client):
     tenant_id, _ = _login(client)
     with _Session() as db:

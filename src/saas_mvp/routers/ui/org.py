@@ -24,8 +24,8 @@ from fastapi import HTTPException
 from saas_mvp.routers.ui._shared import (
     router, templates, _ctx, _opt_int, _require_ui_feature,
 )
-from saas_mvp.routers.ui.booking import _parse_slot_start
-from saas_mvp.routers.ui.commerce import _feature_locked
+from saas_mvp.routers.ui._shared import _parse_slot_start
+from saas_mvp.routers.ui._shared import _feature_locked
 
 # ── 店家自助：分店（MULTI_LOCATION） ─────────────────────────────────────────────
 

@@ -6,18 +6,15 @@ import os
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("SAAS_RATE_LIMIT_ENABLED", "false")
 
-from saas_mvp.app import create_app  # noqa: E402
-from saas_mvp.db import Base, get_db  # noqa: E402
+from saas_mvp.db import Base  # noqa: E402
 from saas_mvp.models.order import ORDER_PAID, Order  # noqa: E402
 from saas_mvp.models.tenant import Tenant  # noqa: E402
-from saas_mvp.models.user import User  # noqa: E402
 from saas_mvp.services import order_refund as refund_svc  # noqa: E402
 
 _engine = create_engine(
@@ -222,63 +219,3 @@ class TestManualConfirm:
             db.close()
         assert _get(oid).refund_status == "processing"  # 未被覆寫
 
-
-class TestUI:
-    @pytest.fixture()
-    def client(self):
-        app = create_app()
-
-        def override_db():
-            s = _Session()
-            try:
-                yield s
-            finally:
-                s.close()
-
-        app.dependency_overrides[get_db] = override_db
-        with TestClient(app, follow_redirects=False) as c:
-            yield c
-
-    def _login(self, client, role="owner") -> int:
-        from saas_mvp.auth.security import hash_password
-        email = f"{role}_{uuid.uuid4().hex[:8]}@example.com"
-        db = _Session()
-        try:
-            t = Tenant(name=f"t_{uuid.uuid4().hex[:6]}", plan="pro")
-            db.add(t)
-            db.flush()
-            db.add(User(email=email, hashed_password=hash_password("Test1234!"),
-                        tenant_id=t.id, role=role))
-            db.commit()
-            tid = t.id
-        finally:
-            db.close()
-        client.post("/ui/login", data={"email": email, "password": "Test1234!"})
-        return tid
-
-    def test_owner_refund_stub_order(self, client):
-        tid = self._login(client, "owner")
-        db = _Session()
-        try:
-            o = Order(tenant_id=tid, status=ORDER_PAID, total_cents=50000, payment_provider="stub")
-            db.add(o)
-            db.commit()
-            oid = o.id
-        finally:
-            db.close()
-        r = client.post(f"/ui/shop/orders/{oid}/refund")
-        assert r.status_code == 200
-        assert _get(oid).refund_status == "refunded"
-
-    def test_staff_cannot_refund(self, client):
-        tid = self._login(client, "staff")
-        db = _Session()
-        try:
-            o = Order(tenant_id=tid, status=ORDER_PAID, total_cents=50000, payment_provider="stub")
-            db.add(o)
-            db.commit()
-            oid = o.id
-        finally:
-            db.close()
-        r = client.post(f"/ui/shop/orders/{oid}/refund")
-        assert r.status_code == 403

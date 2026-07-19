@@ -34,6 +34,48 @@ router = APIRouter(
 )
 
 
+# R12-C3a:顧客 CSV 匯出自 /ui/customers/export.csv 移入 API 層(原 /ui 頁
+# 已刪;console 顧客頁的匯出連結指向此)。⚠️ 必須註冊在 /{customer_id}
+# 之前,否則被路徑參數路由攔走變成 422。
+@router.get("/export.csv")
+def export_customers_csv(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """顧客匯出(欄位為匯入格式超集,round-trip 相容)。"""
+    import csv as _csv
+    import io as _io
+
+    from saas_mvp.services import customers as customers_svc
+
+    fieldnames = [
+        "display_name", "phone", "birthday", "note", "email", "line_user_id",
+        "points_balance", "tier", "booking_count", "last_booked_at", "created_at",
+    ]
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    for c in customers_svc.list_customers(db, tenant_id=current_user.tenant_id):
+        writer.writerow({
+            "display_name": c.display_name or "",
+            "phone": c.phone or "",
+            "birthday": c.birthday.isoformat() if c.birthday else "",
+            "note": c.note or "",
+            "email": c.email or "",
+            "line_user_id": c.line_user_id or "",
+            "points_balance": c.points_balance,
+            "tier": c.tier,
+            "booking_count": c.booking_count,
+            "last_booked_at": c.last_booked_at.isoformat() if c.last_booked_at else "",
+            "created_at": c.created_at.isoformat() if c.created_at else "",
+        })
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=customers.csv"},
+    )
+
+
 # ─────────────────────────────── Schemas ─────────────────────────────────────
 
 class CustomerUpdate(BaseModel):

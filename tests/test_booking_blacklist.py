@@ -338,28 +338,21 @@ class TestUi:
         )
         cid = client.get("/booking/customers/", headers=_auth(token)).json()[0]["id"]
 
-        # 以同帳號 cookie 登入後台
-        login = client.post(
-            "/ui/login",
-            data={"email": email, "password": password},
-            follow_redirects=False,
-        )
-        assert login.status_code == 303
-
-        # 加入黑名單 → partial 出現徽章與原因
+        # R12-C3a:/ui/booking 頁已刪,黑名單切換改驗 API 端點
+        # (console 顧客明細頁走同一端點)。
         on = client.post(
-            f"/ui/booking/customers/{cid}/blacklist",
-            data={"blacklisted": "true", "reason": "現場鬧事"},
+            f"/booking/customers/{cid}/blacklist", headers=_auth(token),
+            json={"blacklisted": True, "reason": "現場鬧事"},
         )
         assert on.status_code == 200
-        assert "黑名單" in on.text
-        assert "現場鬧事" in on.text
-        assert "解除黑名單" in on.text
+        body = on.json()
+        assert body["blacklisted"] is True
+        assert body.get("blacklist_reason") == "現場鬧事"
 
-        # 解除 → 徽章移除、回到「加入黑名單」
         off = client.post(
-            f"/ui/booking/customers/{cid}/blacklist",
-            data={"blacklisted": "false"},
+            f"/booking/customers/{cid}/blacklist", headers=_auth(token),
+            json={"blacklisted": False},
         )
         assert off.status_code == 200
-        assert "加入黑名單" in off.text
+        assert off.json()["blacklisted"] is False
+
