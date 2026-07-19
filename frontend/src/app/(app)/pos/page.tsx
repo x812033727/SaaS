@@ -123,7 +123,6 @@ export default function PosPage() {
     <div className="mx-auto max-w-6xl">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">POS 結帳</h1>
-        <a href="/ui/pos" className="text-sm text-muted hover:text-ink">舊版頁面</a>
       </header>
 
       {message && (
@@ -138,7 +137,7 @@ export default function PosPage() {
           <h2 className="font-semibold">商品</h2>
           {products.isLoading && <p className="mt-4 text-sm text-muted">載入中…</p>}
           {activeProducts.length === 0 && !products.isLoading && (
-            <p className="mt-4 text-sm text-muted">尚無上架商品。<a href="/ui/shop" className="text-brand underline">去建立</a></p>
+            <p className="mt-4 text-sm text-muted">尚無上架商品。<a href="/console/shop" className="text-brand underline">去建立</a></p>
           )}
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {activeProducts.map((p) => (

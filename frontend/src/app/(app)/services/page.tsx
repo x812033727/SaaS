@@ -86,7 +86,6 @@ export default function ServicesPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">服務項目</h1>
         <div className="flex items-center gap-3 text-sm">
-          <a href="/ui/services" className="text-muted hover:text-ink">分類/指定員工 → 舊版</a>
           <button
             onClick={() => { setEditing(null); setMessage(null); document.getElementById("svc-form")?.scrollIntoView(); }}
             className="rounded-lg bg-brand px-4 py-2 font-semibold text-white hover:bg-brand-deep"

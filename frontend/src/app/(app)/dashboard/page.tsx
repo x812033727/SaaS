@@ -83,7 +83,7 @@ export default async function DashboardPage() {
       <section className="mt-6 rounded-xl border border-line bg-surface p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">今日預約</h2>
-          <a href="/ui/booking" className="text-sm text-brand hover:underline">
+          <a href="/console/reservations" className="text-sm text-brand hover:underline">
             前往預約管理 →
           </a>
         </div>

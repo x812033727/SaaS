@@ -88,7 +88,6 @@ export default function PortfolioPage() {
     <div className="mx-auto max-w-4xl">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">作品集</h1>
-        <a href="/ui/portfolio" className="text-sm text-muted hover:text-ink">進階(排序/批次)→ 舊版</a>
       </header>
 
       {msg && (

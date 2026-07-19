@@ -61,9 +61,6 @@ export default function CustomersPage() {
     <div className="mx-auto max-w-6xl">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">顧客</h1>
-        <a href="/ui/customers" className="text-sm text-muted hover:text-ink">
-          進階(匯入/分眾/標籤管理)→ 舊版頁面
-        </a>
       </header>
 
       <form

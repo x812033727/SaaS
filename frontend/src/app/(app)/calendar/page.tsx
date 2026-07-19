@@ -83,7 +83,6 @@ export default function CalendarPage() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">行事曆</h1>
         <div className="flex items-center gap-2 text-sm">
-          <a href="/ui/calendar?mode=staff" className="text-muted hover:text-ink">員工班表(舊版)</a>
           <div className="rounded-lg border border-line p-0.5">
             {(["month", "week"] as const).map((m) => (
               <button key={m} onClick={() => setMode(m)}

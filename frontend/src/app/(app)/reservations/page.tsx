@@ -22,6 +22,15 @@ type ReservationRow = {
 };
 
 type SlotRow = { id: number; slot_start: string; online_available: number; is_active: boolean };
+type WaitlistRow = {
+  id: number;
+  slot_id: number;
+  status: string;
+  party_size: number;
+  display_name: string | null;
+  created_at: string | null;
+  slot_start: string | null;
+};
 type ServiceRow = { id: number; name: string; is_active: boolean };
 type StaffRow = { id: number; name: string; is_active: boolean };
 
@@ -73,6 +82,50 @@ function ReservationsInner() {
     onError: (e) => setActionError(errText(e)),
   });
 
+  // R12-C1:/ui 退役後定金退款只剩此入口(取消後的已付定金)。
+  const depositRefundMut = useMutation({
+    mutationFn: (input: { id: number; amount_twd: number | null }) =>
+      postJson(`/api/v1/reservations/${input.id}/deposit-refund`,
+        input.amount_twd ? { amount_twd: input.amount_twd } : {}),
+    onSuccess: () => { invalidate(); setActionError(""); },
+    onError: (e) => setActionError(errText(e)),
+  });
+  const depositManualMut = useMutation({
+    mutationFn: (input: { id: number; note: string }) =>
+      postJson(`/api/v1/reservations/${input.id}/deposit-refund/manual`, { note: input.note }),
+    onSuccess: () => { invalidate(); setActionError(""); },
+    onError: (e) => setActionError(errText(e)),
+  });
+
+  function askDepositRefund(r: ReservationRow) {
+    const raw = window.prompt("退還定金金額(NT$,留空=全額):", "");
+    if (raw === null) return;
+    const amount = raw.trim() === "" ? null : Number(raw);
+    if (amount !== null && (!Number.isInteger(amount) || amount < 1)) {
+      setActionError("金額須為正整數(或留空=全額)。");
+      return;
+    }
+    if (!window.confirm(`確認退還預約 #${r.id} 的定金${amount ? ` NT$${amount}` : "(全額)"}?`)) return;
+    depositRefundMut.mutate({ id: r.id, amount_twd: amount });
+  }
+
+  function askDepositManual(r: ReservationRow) {
+    const note = window.prompt("已在金流後台退款的對帳備註(必填):", "");
+    if (note === null) return;
+    if (note.trim().length < 2) { setActionError("備註至少 2 個字。"); return; }
+    depositManualMut.mutate({ id: r.id, note: note.trim() });
+  }
+
+  const waitlist = useQuery({
+    queryKey: ["waitlist"],
+    queryFn: () => fetchJson<WaitlistRow[]>("/api/v1/waitlist"),
+  });
+  const waitlistCancelMut = useMutation({
+    mutationFn: (id: number) => postJson(`/api/v1/waitlist/${id}/cancel`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["waitlist"] }),
+    onError: (e) => setActionError(errText(e)),
+  });
+
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
   return (
@@ -80,7 +133,6 @@ function ReservationsInner() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">預約管理</h1>
         <div className="flex items-center gap-2">
-          <a href="/ui/booking" className="text-sm text-muted hover:text-ink">舊版頁面</a>
           <button
             onClick={() => setShowCreate(true)}
             className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand-deep"
@@ -159,6 +211,12 @@ function ReservationsInner() {
                   {r.deposit_status === "pending" && (
                     <span className="ml-1 rounded-full bg-warn-soft px-2 py-0.5 text-xs text-warn">待付定金</span>
                   )}
+                  {r.deposit_status === "paid" && (
+                    <span className="ml-1 rounded-full bg-ok-soft px-2 py-0.5 text-xs text-ok">已付定金</span>
+                  )}
+                  {r.deposit_status === "refunded" && (
+                    <span className="ml-1 rounded-full bg-line px-2 py-0.5 text-xs text-muted">定金已退</span>
+                  )}
                   {r.attended === true && <span className="ml-1 text-xs text-ok">已到場</span>}
                   {r.attended === false && <span className="ml-1 text-xs text-danger">未到</span>}
                 </td>
@@ -176,6 +234,21 @@ function ReservationsInner() {
                         className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">取消</button>
                     </div>
                   )}
+                  {r.status === "cancelled" && r.deposit_status === "paid" && (
+                    <div className="flex flex-wrap gap-1.5">
+                      <button onClick={() => askDepositRefund(r)}
+                        disabled={depositRefundMut.isPending}
+                        className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">
+                        退定金
+                      </button>
+                      <button onClick={() => askDepositManual(r)}
+                        disabled={depositManualMut.isPending}
+                        className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft"
+                        title="已在金流後台退款後,在系統對帳(不會重複退刷)">
+                        人工對帳
+                      </button>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -190,6 +263,55 @@ function ReservationsInner() {
         <button disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}
           className="rounded-md border border-line px-3 py-1 disabled:opacity-40">下一頁</button>
       </div>
+
+      <section className="mt-8">
+        <h2 className="text-lg font-semibold">候補名單</h2>
+        <div className="mt-3 overflow-x-auto rounded-xl border border-line bg-surface">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="border-b border-line text-left text-muted">
+                <th className="px-4 py-2.5 font-medium">時段</th>
+                <th className="px-4 py-2.5 font-medium">顧客</th>
+                <th className="px-4 py-2.5 font-medium">人數</th>
+                <th className="px-4 py-2.5 font-medium">狀態</th>
+                <th className="px-4 py-2.5 font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {waitlist.isLoading && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">載入中…</td></tr>
+              )}
+              {waitlist.data?.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">目前沒有候補。</td></tr>
+              )}
+              {waitlist.data?.map((w) => (
+                <tr key={w.id} className="border-b border-line/60">
+                  <td className="px-4 py-2.5 font-medium">{w.slot_start ? fmt(w.slot_start) : "—"}</td>
+                  <td className="px-4 py-2.5">{w.display_name ?? "—"}</td>
+                  <td className="px-4 py-2.5">{w.party_size}</td>
+                  <td className="px-4 py-2.5">
+                    {w.status === "waiting" ? "等待中"
+                      : w.status === "notified" ? "已通知"
+                      : w.status === "cancelled" ? "已取消"
+                      : w.status === "booked" ? "已成單" : w.status}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {(w.status === "waiting" || w.status === "notified") && (
+                      <button
+                        onClick={() =>
+                          window.confirm("取消這筆候補?") && waitlistCancelMut.mutate(w.id)}
+                        disabled={waitlistCancelMut.isPending}
+                        className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">
+                        取消候補
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {showCreate && (
         <CreateDialog
