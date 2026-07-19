@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { ApiError, fetchJson, postJson } from "@/lib/client-api";
+import { ApiError, delJson, fetchJson, postJson } from "@/lib/client-api";
 
 type ProductRow = {
   id: number;
@@ -124,6 +124,12 @@ export default function ShopPage() {
     manualRefundMut.mutate({ id: o.id, note: note.trim(), amount_twd: amount });
   }
 
+  const delProductMut = useMutation({
+    mutationFn: (id: number) => delJson(`/booking/products/${id}`),
+    onSuccess: () => { invalidate(); setMessage({ kind: "ok", text: "已刪除。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
+
   const saveMut = useMutation({
     mutationFn: async (input: { id: number | null; body: Record<string, unknown> }) =>
       input.id === null
@@ -212,10 +218,19 @@ export default function ShopPage() {
                   }`}>{p.is_active ? "上架" : "下架"}</span>
                 </td>
                 <td className="px-4 py-2.5">
-                  <button onClick={() => { setEditing(p); setMessage(null); }}
-                    className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft">
-                    編輯
-                  </button>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => { setEditing(p); setMessage(null); }}
+                      className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft">
+                      編輯
+                    </button>
+                    <button onClick={() =>
+                        window.confirm(`確定刪除「${p.name}」?此動作無法復原。`)
+                        && delProductMut.mutate(p.id)}
+                      disabled={delProductMut.isPending}
+                      className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">
+                      刪除
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

@@ -3692,3 +3692,211 @@ def console_cancel_waitlist(
     )
     db.commit()
     return WaitlistRow.model_validate(entry)
+
+
+# ────────────────────────── R12-C2:營運能力補齊 ──────────────────────────
+# 缺口審計第二批:顧客 CSV 匯入、顧客套票操作(發行/作廢/錢包/帳本)。
+# 語意鏡像原 /ui handler:匯入 all-or-nothing;套票 owner 限定+audit。
+
+
+class ImportReportOut(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
+    ok: bool
+
+
+class CustomerImportBody(BaseModel):
+    # CSV 內容以 UTF-8 字串傳(console proxy 以 text 轉發,不走 multipart)
+    content: str = Field(min_length=1, max_length=5_000_000)
+    update_existing: bool = False
+
+
+@router.post("/customers/import", response_model=ImportReportOut)
+def console_import_customers(
+    body: CustomerImportBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """顧客 CSV 批次匯入(all-or-nothing,任何錯誤整批不寫)。"""
+    from saas_mvp.services import customer_import as import_svc
+
+    report = import_svc.import_customers(
+        db,
+        tenant_id=actor.user.tenant_id,
+        content=body.content.encode("utf-8"),
+        update_existing=body.update_existing,
+    )
+    if report.ok:
+        audit_svc.record_from_actor(
+            db, actor, action="customers.import",
+            target=f"tenant:{actor.user.tenant_id}",
+            detail={"created": report.created, "updated": report.updated},
+            request=request,
+        )
+        db.commit()
+    else:
+        db.rollback()
+    return ImportReportOut(
+        created=report.created, updated=report.updated,
+        skipped=report.skipped, errors=report.errors, ok=report.ok,
+    )
+
+
+class WalletCreditRow(BaseModel):
+    customer_package_id: int
+    package_name: str
+    service_id: int
+    service_name: str
+    remaining: int
+    expires_at: datetime.datetime | None
+
+
+class PackageLedgerRow(BaseModel):
+    id: int
+    customer_package_id: int
+    service_id: int
+    reservation_id: int | None
+    kind: str
+    delta: int
+    created_at: datetime.datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class CustomerPackagesOut(BaseModel):
+    wallet: list[WalletCreditRow]
+    ledger: list[PackageLedgerRow]
+
+
+@router.get(
+    "/customers/{customer_id}/packages",
+    response_model=CustomerPackagesOut,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def console_customer_packages(
+    customer_id: int,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    from saas_mvp.services import service_packages as packages_svc
+
+    tid = actor.user.tenant_id
+    wallet = [
+        WalletCreditRow(
+            customer_package_id=w.customer_package.id,
+            package_name=w.customer_package.package_name_snapshot,
+            service_id=w.service.id,
+            service_name=w.service.name,
+            remaining=w.remaining,
+            expires_at=w.customer_package.expires_at,
+        )
+        for w in packages_svc.customer_wallet(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+    ]
+    ledger = [
+        PackageLedgerRow.model_validate(row)
+        for row in packages_svc.ledger_for_customer(
+            db, tenant_id=tid, customer_id=customer_id
+        )
+    ]
+    return CustomerPackagesOut(wallet=wallet, ledger=ledger)
+
+
+class IssuePackageBody(BaseModel):
+    package_id: int
+    issuance_key: str = Field(min_length=1, max_length=64)
+
+
+@router.post(
+    "/customers/{customer_id}/packages",
+    response_model=CustomerPackagesOut,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def console_issue_package(
+    customer_id: int,
+    body: IssuePackageBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """對顧客發行套票(issuance_key 冪等,owner 限定)。"""
+    from saas_mvp.services import service_packages as packages_svc
+
+    _require_owner(actor)
+    try:
+        owned = packages_svc.issue_package(
+            db,
+            tenant_id=actor.user.tenant_id,
+            customer_id=customer_id,
+            package_id=body.package_id,
+            actor_user_id=actor.user.id,
+            issuance_key=body.issuance_key,
+        )
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action="packages.issue",
+        target=f"customer_package:{owned.id}",
+        detail={
+            "customer_id": customer_id,
+            "package_id": body.package_id,
+            "price_cents": owned.price_cents_snapshot,
+        },
+        request=request,
+    )
+    db.commit()
+    return console_customer_packages(customer_id, actor, db)
+
+
+class CancelPackageBody(BaseModel):
+    note: str | None = Field(default=None, max_length=200)
+
+
+@router.post(
+    "/customers/{customer_id}/packages/{customer_package_id}/cancel",
+    response_model=CustomerPackagesOut,
+    dependencies=[
+        Depends(features_svc.require_feature(features_svc.SERVICE_PACKAGES))
+    ],
+)
+def console_cancel_customer_package(
+    customer_id: int,
+    customer_package_id: int,
+    body: CancelPackageBody,
+    request: Request,
+    actor: Actor = Depends(get_current_actor),
+    db: Session = Depends(get_db),
+):
+    """作廢顧客套票(帳本沖銷未用次數;不處理金流退款);owner 限定。"""
+    from saas_mvp.services import service_packages as packages_svc
+
+    _require_owner(actor)
+    try:
+        packages_svc.cancel_customer_package(
+            db,
+            tenant_id=actor.user.tenant_id,
+            customer_id=customer_id,
+            customer_package_id=customer_package_id,
+            actor_user_id=actor.user.id,
+            note=body.note,
+        )
+    except packages_svc.ServicePackageError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_svc.record_from_actor(
+        db, actor, action="packages.cancel",
+        target=f"customer_package:{customer_package_id}",
+        detail={"customer_id": customer_id, "note": (body.note or "")[:200]},
+        request=request,
+    )
+    db.commit()
+    return console_customer_packages(customer_id, actor, db)

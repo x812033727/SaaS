@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { ApiError, fetchJson, postJson } from "@/lib/client-api";
+import { ApiError, delJson, fetchJson, postJson } from "@/lib/client-api";
 
 type CouponRow = {
   id: number;
@@ -97,6 +97,13 @@ export default function CouponsPage() {
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["coupons-admin"] });
+
+  // R12-C2:/ui 退役後刪除只剩此入口(API DELETE 本就存在,前端未接)
+  const delMut = useMutation({
+    mutationFn: (id: number) => delJson(`/booking/coupons/${id}`),
+    onSuccess: () => { invalidate(); setMessage({ kind: "ok", text: "已刪除。" }); },
+    onError: (e) => setMessage({ kind: "error", text: errText(e) }),
+  });
 
   const saveMut = useMutation({
     mutationFn: async (input: { id: number | null; body: Record<string, unknown> }) =>
@@ -220,6 +227,13 @@ export default function CouponsPage() {
                       <button onClick={() => { setEditing(c); setMessage(null); }}
                         className="rounded-md border border-line px-2 py-1 text-xs hover:bg-brand-soft">
                         編輯
+                      </button>
+                      <button onClick={() =>
+                          window.confirm(`確定刪除「${c.code}」?此動作無法復原。`)
+                          && delMut.mutate(c.id)}
+                        disabled={delMut.isPending}
+                        className="rounded-md border border-line px-2 py-1 text-xs text-danger hover:bg-danger-soft">
+                        刪除
                       </button>
                     </div>
                   </td>
