@@ -76,6 +76,18 @@ def deliver_or_queue(
     return attempt(db, row, mailer, now=now)
 
 
+def customer_recipient(db: Session, customer_id: int | None) -> str | None:
+    """顧客檔的 email 收件地址;無檔/無 email 回 None(R12-B 共用)。"""
+    if customer_id is None:
+        return None
+    from saas_mvp.models.customer import Customer
+
+    customer = db.get(Customer, customer_id)
+    if customer is None or not customer.email:
+        return None
+    return customer.email
+
+
 def due_ids(db: Session, *, now: datetime.datetime, limit: int = 100) -> list[int]:
     return list(db.execute(
         select(EmailDelivery.id)

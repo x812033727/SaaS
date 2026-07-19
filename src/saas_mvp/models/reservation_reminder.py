@@ -59,7 +59,9 @@ class ReservationReminder(Base):
         nullable=False,
         index=True,
     )
-    line_user_id = Column(String(64), nullable=False)
+    # R12-B:NULL = 無 LINE 身分的 email-only 收件人(網路預約客),
+    # 派送端以此路由 email 而非 LINE push。
+    line_user_id = Column(String(64), nullable=True)
     kind = Column(String(16), nullable=False)  # day_before | day_of
     remind_at = Column(DateTime(timezone=True), nullable=False)
     status = Column(

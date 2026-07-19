@@ -102,8 +102,15 @@ def _enqueue(
     occurrence(R4-B2):同預約同 kind 可多筆(分批退款各一則);change/cancel
     恆用預設 1,維持「一預約一 kind 一筆」的冪等語意。
     """
-    if not enabled or not reservation.line_user_id:
+    if not enabled:
         return 0
+    if not reservation.line_user_id:
+        # R12-B:無 LINE 身分(網路預約 walk-in 客)→ 顧客檔有 email 才入列
+        # (line_user_id=NULL,派送端路由 email 而非 LINE push)。
+        from saas_mvp.services import email_delivery as email_svc
+
+        if not email_svc.customer_recipient(db, reservation.customer_id):
+            return 0
     row = BookingNotification(
         tenant_id=reservation.tenant_id,
         reservation_id=reservation.id,

@@ -40,8 +40,10 @@ from saas_mvp.models.reservation_reminder import (
     ReservationReminder,
 )
 from saas_mvp.models.tenant import Tenant
+from saas_mvp.services import email_delivery as email_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.services.mailer import get_mailer
 from saas_mvp.services.reminders import build_reminder_text
 
 
@@ -191,12 +193,17 @@ def _process_one(
             db.commit()
             return ReminderResult(reminder_id, "skipped", "reservation_inactive")
 
+        # R12-B:line_user_id=NULL = email-only 列(網路預約客)。純 email
+        # 派送不經 LINE,不受 LINE channel/bot_mode 閘(店家可能根本沒接 LINE)。
+        email_only = rem.line_user_id is None
         cfg = db.execute(
             select(LineChannelConfig).where(
                 LineChannelConfig.tenant_id == rem.tenant_id
             )
         ).scalar_one_or_none()
-        if cfg is None or (cfg.bot_mode or "translation") != "booking":
+        if not email_only and (
+            cfg is None or (cfg.bot_mode or "translation") != "booking"
+        ):
             rem.status = REMINDER_SKIPPED
             rem.updated_at = now
             db.commit()
@@ -233,6 +240,49 @@ def _process_one(
         # E3 fallback 用:rollback 會 expire ORM 物件,先抓純值
         fallback_tenant_id, fallback_user_id = rem.tenant_id, rem.line_user_id
         fallback_customer_id = resv.customer_id
+
+        if email_only:
+            # 直送 email(可靠佇列,失敗自動重試):不佔 LINE 推播額度。
+            # deliver_or_queue 自帶 commit,連同下方狀態變更一併落盤。
+            recipient = email_svc.customer_recipient(db, fallback_customer_id)
+            if not recipient:
+                rem.status = REMINDER_SKIPPED
+                rem.last_error = "no_email"
+                rem.updated_at = now
+                db.commit()
+                return ReminderResult(reminder_id, "skipped", "no_email")
+            rem.status = REMINDER_SENT
+            rem.sent_at = now
+            rem.attempt_count = (rem.attempt_count or 0) + 1
+            rem.updated_at = now
+            try:
+                email_svc.deliver_or_queue(
+                    db,
+                    get_mailer(db),
+                    user_id=None,
+                    category="booking_reminder",
+                    recipient=recipient,
+                    subject="【預約提醒】您有即將到來的預約",
+                    body=text,
+                )
+            except Exception as exc:  # noqa: BLE001 — per-row failure must not stop batch
+                db.rollback()
+                rem2 = db.execute(
+                    select(ReservationReminder)
+                    .where(ReservationReminder.id == reminder_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if rem2 is not None:
+                    rem2.status = REMINDER_FAILED
+                    rem2.attempt_count = (rem2.attempt_count or 0) + 1
+                    rem2.last_error = type(exc).__name__[:255]
+                    rem2.updated_at = now
+                    db.commit()
+                return ReminderResult(
+                    reminder_id, "failed", "email_error",
+                    error_type=type(exc).__name__,
+                )
+            return ReminderResult(reminder_id, "sent", "emailed")
 
         # 月度推播額度閘門：超出本月額度則跳過（不推播、標 skipped），
         # 同租戶超額不影響其他列（per-row isolation）。

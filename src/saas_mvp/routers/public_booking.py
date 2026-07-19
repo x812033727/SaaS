@@ -143,6 +143,9 @@ def public_booking_submit(
     except (booking_svc.SlotNotFoundError, booking_svc.CrossTenantReferenceError):
         return _err("預約資料有誤,請回上一步重新選擇。")
 
+    # 確認信(R12-B,best-effort;book_slot 已 commit,失敗只記 log)。
+    public_booking_svc.queue_confirmation_email(db, resv, customer)
+
     # 定金(照 tenant 既有政策)與待填諮詢表:鏡像 tokenized 表單完成頁。
     deposit_url = None
     deposit_note = None

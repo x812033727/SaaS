@@ -37,8 +37,18 @@ from saas_mvp.models.booking_notification import (
 )
 from saas_mvp.models.line_channel_config import LineChannelConfig
 from saas_mvp.models.reservation import Reservation
+from saas_mvp.services import email_delivery as email_svc
 from saas_mvp.services import features as features_svc
 from saas_mvp.services import push_quota as push_quota_svc
+from saas_mvp.services.mailer import get_mailer
+
+# email-only 列的主旨(R12-B):依 kind 對應;未知 kind 用通用主旨。
+_EMAIL_SUBJECTS = {
+    "change": "【預約變更通知】您的預約時間已調整",
+    "cancel": "【預約取消通知】您的預約已取消",
+    "deposit_refund": "【退款通知】您的定金退款已處理",
+}
+_EMAIL_SUBJECT_DEFAULT = "【預約通知】"
 
 
 def _utcnow() -> datetime.datetime:
@@ -113,12 +123,17 @@ def _process_one(
                 notification_id, "skipped", "reservation_missing"
             )
 
+        # R12-B:line_user_id=NULL = email-only 列(網路預約客)。純 email
+        # 派送不經 LINE,不受 LINE channel/bot_mode 閘(店家可能沒接 LINE)。
+        email_only = notif.line_user_id is None
         cfg = db.execute(
             select(LineChannelConfig).where(
                 LineChannelConfig.tenant_id == notif.tenant_id
             )
         ).scalar_one_or_none()
-        if cfg is None or (cfg.bot_mode or "translation") != "booking":
+        if not email_only and (
+            cfg is None or (cfg.bot_mode or "translation") != "booking"
+        ):
             notif.status = NOTIFY_SKIPPED
             notif.updated_at = now
             db.commit()
@@ -142,6 +157,51 @@ def _process_one(
         if not apply:
             db.rollback()
             return NotificationResult(notification_id, "would_send", "dry_run")
+
+        if email_only:
+            # 直送 email(可靠佇列,失敗自動重試):不佔 LINE 推播額度。
+            # deliver_or_queue 自帶 commit,連同下方狀態變更一併落盤。
+            recipient = email_svc.customer_recipient(db, resv.customer_id)
+            if not recipient:
+                notif.status = NOTIFY_SKIPPED
+                notif.last_error = "no_email"
+                notif.updated_at = now
+                db.commit()
+                return NotificationResult(notification_id, "skipped", "no_email")
+            notif.status = NOTIFY_SENT
+            notif.sent_at = now
+            notif.attempt_count = (notif.attempt_count or 0) + 1
+            notif.updated_at = now
+            try:
+                email_svc.deliver_or_queue(
+                    db,
+                    get_mailer(db),
+                    user_id=None,
+                    category="booking_notify",
+                    recipient=recipient,
+                    subject=_EMAIL_SUBJECTS.get(
+                        notif.kind, _EMAIL_SUBJECT_DEFAULT
+                    ),
+                    body=text,
+                )
+            except Exception as exc:  # noqa: BLE001 - per-row failure must not stop batch
+                db.rollback()
+                notif2 = db.execute(
+                    select(BookingNotification)
+                    .where(BookingNotification.id == notification_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if notif2 is not None:
+                    notif2.status = NOTIFY_FAILED
+                    notif2.attempt_count = (notif2.attempt_count or 0) + 1
+                    notif2.last_error = type(exc).__name__[:255]
+                    notif2.updated_at = now
+                    db.commit()
+                return NotificationResult(
+                    notification_id, "failed", "email_error",
+                    error_type=type(exc).__name__,
+                )
+            return NotificationResult(notification_id, "sent", "emailed")
 
         # 月度推播額度閘門：超出本月額度則跳過（不推播、標 skipped）。
         if not push_quota_svc.has_push_quota(db, notif.tenant_id, now=now):
