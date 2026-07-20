@@ -1,17 +1,28 @@
 """FastAPI application factory."""
 
+import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 import saas_mvp
 from saas_mvp.auth.dependencies import UIForbidden, UILoginRequired, UITenantDisabled
 from saas_mvp.config import settings
 from saas_mvp.db import init_db
-from saas_mvp.obs import ObservabilityMiddleware, configure_logging, install_error_handlers
+from saas_mvp.obs import (
+    ObservabilityMiddleware,
+    configure_logging,
+    install_error_handlers,
+)
 from saas_mvp.routers import auth, notes, tenants, ui, v1, v1_console
 from saas_mvp.routers import quota as quota_router
 from saas_mvp.routers import api_keys as api_keys_router
@@ -50,6 +61,13 @@ from saas_mvp.routers import auto_reply_rules as auto_reply_rules_router
 from saas_mvp.routers import client_forms as client_forms_router
 
 _PKG_DIR = Path(__file__).resolve().parent  # src/saas_mvp
+_GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _deployed_git_sha() -> str:
+    """Return the immutable image revision, never arbitrary environment text."""
+    value = os.getenv("SAAS_GIT_SHA", "").strip().lower()
+    return value if _GIT_SHA_RE.fullmatch(value) else "unknown"
 
 
 @asynccontextmanager
@@ -97,7 +115,9 @@ def create_app() -> FastAPI:
     )
 
     # 可觀測性：request-id 串接 + 結構化存取日誌 + Prometheus HTTP 指標。
-    app.add_middleware(ObservabilityMiddleware, metrics_enabled=settings.metrics_enabled)
+    app.add_middleware(
+        ObservabilityMiddleware, metrics_enabled=settings.metrics_enabled
+    )
 
     # 滑動續期(R4-C1):/ui 回應快過期時靜默換新 auth cookie。middleware 而非
     # dependency —— /ui handler 都直接回 TemplateResponse,dependency 注入的
@@ -233,6 +253,9 @@ def create_app() -> FastAPI:
 
         body = {
             "status": "ok" if db_status == "ok" else "error",
+            # Public deployment identity used by the autonomy health contract.
+            # A commit SHA is non-secret; malformed/missing input fails closed.
+            "git_sha": _deployed_git_sha(),
             "db": db_status,
             # 回報實際生效後端（設定 redis 但降級時會是 "memory"）
             "rate_limit_backend": effective_backend_name(),

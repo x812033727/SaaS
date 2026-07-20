@@ -3,12 +3,15 @@
 # 詳見 README「Production / 多 worker 部署」。
 FROM python:3.12-slim AS base
 
+ARG SAAS_GIT_SHA=unknown
+
 # - PYTHONDONTWRITEBYTECODE：不寫 .pyc，映像更乾淨
 # - PYTHONUNBUFFERED：stdout/stderr 即時輸出（容器日誌即時可見）
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    SAAS_GIT_SHA=${SAAS_GIT_SHA}
 
 WORKDIR /app
 

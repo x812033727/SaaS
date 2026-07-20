@@ -23,6 +23,7 @@ def _reset_metrics():
 
 # ── request-id 串接 ──────────────────────────────────────────────────────────
 
+
 def test_request_id_generated_and_returned():
     client = TestClient(create_app())
     r = client.get("/")
@@ -55,12 +56,18 @@ def test_request_id_contextvar_isolated_after_request():
 
 # ── 結構化日誌 ───────────────────────────────────────────────────────────────
 
+
 def test_json_formatter_emits_valid_json_with_request_id():
     token = request_id_var.set("rid-json-1")
     try:
         rec = logging.LogRecord(
-            "saas_mvp.access", logging.INFO, __file__, 1,
-            "GET /x 200", None, None,
+            "saas_mvp.access",
+            logging.INFO,
+            __file__,
+            1,
+            "GET /x 200",
+            None,
+            None,
         )
         rec.method = "GET"
         rec.status = 200
@@ -76,7 +83,13 @@ def test_json_formatter_emits_valid_json_with_request_id():
 
 def test_text_formatter_includes_request_id_prefix():
     rec = logging.LogRecord(
-        "saas_mvp.access", logging.INFO, __file__, 1, "hello", None, None,
+        "saas_mvp.access",
+        logging.INFO,
+        __file__,
+        1,
+        "hello",
+        None,
+        None,
     )
     rec.request_id = "rid-text-1"
     out = TextFormatter().format(rec)
@@ -95,6 +108,7 @@ def test_configure_logging_is_idempotent():
 
 
 # ── Prometheus 指標 ──────────────────────────────────────────────────────────
+
 
 def test_metrics_registry_counter_and_histogram_render():
     reg = metrics.MetricsRegistry(buckets=(0.1, 1.0))
@@ -146,6 +160,7 @@ def test_metrics_uses_route_template_not_raw_path(monkeypatch):
 
 def test_metrics_disabled_returns_404(monkeypatch):
     from saas_mvp.config import settings as cfg
+
     monkeypatch.setattr(cfg, "metrics_enabled", False, raising=False)
     client = TestClient(create_app())
     r = client.get("/metrics")
@@ -154,13 +169,15 @@ def test_metrics_disabled_returns_404(monkeypatch):
 
 def test_metrics_token_required_when_set(monkeypatch):
     from saas_mvp.config import settings as cfg
+
     monkeypatch.setattr(cfg, "metrics_enabled", True, raising=False)
     monkeypatch.setattr(cfg, "metrics_token", "s3cr3t", raising=False)
     client = TestClient(create_app())
     assert client.get("/metrics").status_code == 401
-    assert client.get(
-        "/metrics", headers={"Authorization": "Bearer wrong"}
-    ).status_code == 401
+    assert (
+        client.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code
+        == 401
+    )
     ok = client.get("/metrics", headers={"Authorization": "Bearer s3cr3t"})
     assert ok.status_code == 200
 
@@ -176,6 +193,7 @@ def test_in_progress_gauge_returns_to_zero():
 
 # ── /readyz 探針 ─────────────────────────────────────────────────────────────
 
+
 def test_readyz_ok():
     client = TestClient(create_app())
     r = client.get("/readyz")
@@ -186,9 +204,16 @@ def test_readyz_ok():
     assert "rate_limit_backend" in body
 
 
-def test_healthz_still_works():
+def test_healthz_still_works(monkeypatch):
     """/readyz 的加入不得破壞既有 /healthz 契約。"""
+    monkeypatch.setenv("SAAS_GIT_SHA", "a" * 40)
     client = TestClient(create_app())
     r = client.get("/healthz")
     assert r.status_code == 200
     assert r.json()["db"] == "ok"
+    assert r.json()["git_sha"] == "a" * 40
+
+
+def test_healthz_revision_fails_closed(monkeypatch):
+    monkeypatch.setenv("SAAS_GIT_SHA", "not-a-commit")
+    assert TestClient(create_app()).get("/healthz").json()["git_sha"] == "unknown"
