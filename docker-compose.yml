@@ -40,7 +40,10 @@ services:
     mem_limit: 256m
 
   web:
-    build: .
+    build:
+      context: .
+      args:
+        SAAS_GIT_SHA: ${SAAS_GIT_SHA:-unknown}
     command: ["web"]
     env_file: ${SAAS_ENV_FILE:-.env}
     environment:

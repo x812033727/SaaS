@@ -47,6 +47,9 @@ echo "[deploy] $BEFORE -> $AFTER"
 if [ "$BEFORE" = "$AFTER" ]; then
   echo "[deploy] 無變更，仍重建以確保一致"
 fi
+# 將這次已通過 CI 的完整 commit 身分烘進 image；/healthz 只回此固定值，
+# 自治部署才能同時驗證「服務健康」與「實際運行版本等於剛合併版本」。
+export SAAS_GIT_SHA="$TARGET"
 docker-compose up -d --build
 docker image prune -f >/dev/null 2>&1 || true
 echo "=== $(date -u +%FT%TZ) [deploy] 完成 ($AFTER) ==="
